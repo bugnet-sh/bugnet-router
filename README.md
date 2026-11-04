@@ -129,8 +129,11 @@ Only `router-api` reads these.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `BUGNET_LISTEN_ADDR` | `:8080` | API listen address |
-| `BUGNET_RUNNER_LINUX_AMD64` | empty | Linux amd64 `bugnet-run` for sandboxes that need an upload |
-| `BUGNET_RUNNER_LINUX_ARM64` | empty | Linux arm64 `bugnet-run` for sandboxes that need an upload |
+| `BUGNET_RUNNER_LINUX_AMD64` | required for boxd, E2B, Koyeb and Boat | Linux amd64 `bugnet-run` uploaded into their sandboxes, `make build` in `bugnet-run` writes `dist/bugnet-run-linux-amd64` |
+| `BUGNET_RUNNER_LINUX_ARM64` | empty | Linux arm64 `bugnet-run` for providers with arm64 sandboxes, none today |
+
+`router-api` reads each build once at start and refuses to start when a configured provider
+needs one that is unset or unreadable.
 
 Only `router-worker` reads these.
 

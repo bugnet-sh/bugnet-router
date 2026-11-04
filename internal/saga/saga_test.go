@@ -91,7 +91,7 @@ type uploader struct {
 
 func (u uploader) Capabilities() provider.Capabilities {
 	c := u.Provider.Capabilities()
-	c.NeedsRunnerUpload = true
+	c.NeedsRunnerUpload, c.Arch = true, u.arch
 	return c
 }
 
@@ -1286,10 +1286,7 @@ func TestCreateUploadsRunnerForArch(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "runner.log")
 	fake := writeFile(t, dir, "fake-runner", "#!/bin/sh\necho \"$@\" >> "+log+"\n", 0o755)
-	runners := map[string]string{
-		"amd64": writeFile(t, dir, "amd64", "amd64 build", 0o644),
-		"arm64": writeFile(t, dir, "arm64", "arm64 build", 0o644),
-	}
+	runners := map[string][]byte{"amd64": []byte("amd64 build"), "arm64": []byte("arm64 build")}
 	root := t.TempDir()
 	u := uploader{newLocal(t, local.Options{Name: "u", Root: root, RunnerPath: fake}), "arm64"}
 	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, u)
@@ -1309,12 +1306,37 @@ func TestCreateUploadsRunnerForArch(t *testing.T) {
 	}
 }
 
-func TestCreateWithoutRunnerBuildFailsWithoutFailOver(t *testing.T) {
-	dir := t.TempDir()
-	runners := map[string]string{"arm64": writeFile(t, dir, "arm64", "arm64 build", 0o644)}
-	u := uploader{Provider: newLocal(t, local.Options{Name: "u"})}
+func TestCreateSkipsProviderWithoutRunnerBuild(t *testing.T) {
+	var creates atomic.Int64
+	runners := map[string][]byte{"arm64": []byte("arm64 build")}
+	u := uploader{Provider: newLocal(t, local.Options{Name: "u",
+		CreateHook: func(int, provider.CreateRequest) error {
+			creates.Add(1)
+			return nil
+		}})}
 	b := newLocal(t, local.Options{Name: "b"})
 	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, u, b)
+	p, _ := e.placeReady(t, "order-1")
+	if p.Provider != "b" || creates.Load() != 0 {
+		t.Fatalf("placed on %q after %d creates on u, want b and none on u", p.Provider,
+			creates.Load())
+	}
+
+	only := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners },
+		uploader{Provider: newLocal(t, local.Options{Name: "u"})})
+	failed, _ := only.place(t, "order-2")
+	if failed.State != store.PlacementFailed || !failed.Refundable ||
+		failed.FailureReason != "runner_unavailable" {
+		t.Fatalf("placement %+v, want failed refundable for runner_unavailable", failed)
+	}
+}
+
+func TestBootWithoutBuildForTheSandboxArchFailsWithoutFailOver(t *testing.T) {
+	runners := map[string][]byte{"amd64": []byte("amd64 build")}
+	// The provider promises amd64 but its sandbox turns out arm64, which has no build
+	u := uploader{Provider: newLocal(t, local.Options{Name: "u"})}
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, armSandboxes{u}, b)
 	p, _ := e.place(t, "order-1")
 	if p.State != store.PlacementFailed || !p.Refundable ||
 		p.FailureReason != "runner_unavailable" {
@@ -1326,6 +1348,19 @@ func TestCreateWithoutRunnerBuildFailsWithoutFailOver(t *testing.T) {
 	if iu := e.inUse(t, "u"); iu != 0 {
 		t.Fatalf("in use u=%d", iu)
 	}
+}
+
+// armSandboxes reports arm64 sandboxes whatever its capabilities say
+type armSandboxes struct{ uploader }
+
+func (a armSandboxes) Create(
+	ctx context.Context, req provider.CreateRequest,
+) (provider.Ref, error) {
+	ref, err := a.uploader.Create(ctx, req)
+	if err == nil {
+		ref.Meta = map[string]string{"arch": "arm64"}
+	}
+	return ref, err
 }
 
 /* Extend */

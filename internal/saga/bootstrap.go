@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -41,13 +40,9 @@ func (s *Saga) uploadRunner(ctx context.Context, prov provider.Provider, ref pro
 	if ref.Meta["arch"] == "arm64" {
 		arch = "arm64"
 	}
-	path := s.d.Runners[arch]
-	if path == "" {
+	data := s.d.Runners[arch]
+	if len(data) == 0 {
 		return fmt.Errorf("%w for %s", errNoRunnerBuild, arch)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("%w for %s: %w", errNoRunnerBuild, arch, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
 	defer cancel()

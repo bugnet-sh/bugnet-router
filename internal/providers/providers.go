@@ -82,6 +82,42 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 	return provider.NewRegistry(ps), nil
 }
 
+// runnerEnv names the setting that points at each architecture's bugnet-run build
+var runnerEnv = map[string]string{
+	"amd64": "BUGNET_RUNNER_LINUX_AMD64", "arm64": "BUGNET_RUNNER_LINUX_ARM64",
+}
+
+// Runners reads once the bugnet-run build of every architecture a provider in reg uploads to
+func Runners(cfg config.Config, reg *provider.Registry) (map[string][]byte, error) {
+	paths := map[string]string{"amd64": cfg.RunnerLinuxAMD64, "arm64": cfg.RunnerLinuxARM64}
+	out := map[string][]byte{}
+	for _, p := range reg.Ordered() {
+		caps := p.Capabilities()
+		arch := caps.RunnerArch()
+		if _, read := out[arch]; read || !caps.NeedsRunnerUpload {
+			continue
+		}
+		env := runnerEnv[arch]
+		if env == "" {
+			return nil, fmt.Errorf("providers: %s runs %s, which bugnet-run is not built for",
+				p.Name(), arch)
+		}
+		if paths[arch] == "" {
+			return nil, fmt.Errorf("providers: %s uploads bugnet-run, so %s must name its "+
+				"linux/%s build, make build in bugnet-run writes it to dist", p.Name(), env, arch)
+		}
+		data, err := os.ReadFile(paths[arch])
+		if err == nil && len(data) == 0 {
+			err = errors.New("the file is empty")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("providers: read the bugnet-run build in %s: %w", env, err)
+		}
+		out[arch] = data
+	}
+	return out, nil
+}
+
 // buildE2B reads the E2B settings, an adapter without templates is built but never a candidate
 func buildE2B(key string) (*e2b.Provider, error) {
 	if key == "" {

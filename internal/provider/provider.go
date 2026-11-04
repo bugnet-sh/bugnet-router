@@ -2,6 +2,7 @@
 package provider
 
 import (
+	"cmp"
 	"context"
 	"io/fs"
 	"time"
@@ -20,7 +21,12 @@ type Size struct {
 type Capabilities struct {
 	SSH, Preview, GPU, EgressControl, NeedsRunnerUpload bool
 	MaxLifetime                                         time.Duration
+	// Arch is the CPU architecture of the provider's sandboxes, amd64 when empty
+	Arch string
 }
+
+// RunnerArch names the bugnet-run build the provider's sandboxes run
+func (c Capabilities) RunnerArch() string { return cmp.Or(c.Arch, "amd64") }
 
 // Ref names one sandbox at one provider
 type Ref struct {

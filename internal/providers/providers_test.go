@@ -6,12 +6,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/local"
 	"github.com/oynozan/bugnet-router/internal/providers"
 )
 
@@ -321,5 +324,54 @@ func TestBuildRejectsUnknownProviders(t *testing.T) {
 	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}})
 	if err == nil || !strings.Contains(err.Error(), "nimbus") {
 		t.Fatalf("build nimbus: %v", err)
+	}
+}
+
+// uploading is a local provider that needs bugnet-run uploaded, like every remote adapter
+type uploading struct {
+	*local.Provider
+	arch string
+}
+
+func (u uploading) Capabilities() provider.Capabilities {
+	c := u.Provider.Capabilities()
+	c.NeedsRunnerUpload, c.Arch = true, u.arch
+	return c
+}
+
+func TestRunnersReadsTheBuildsUploadingProvidersNeed(t *testing.T) {
+	dir := t.TempDir()
+	amd := filepath.Join(dir, "bugnet-run-linux-amd64")
+	if err := os.WriteFile(amd, []byte("amd64 build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newLocal := func(name string) *local.Provider {
+		return local.New(local.Options{Name: name, Root: t.TempDir()})
+	}
+	reg := provider.NewRegistry([]provider.Provider{
+		newLocal("plain"), uploading{newLocal("up"), ""},
+	})
+	runners, err := providers.Runners(config.Config{RunnerLinuxAMD64: amd}, reg)
+	if err != nil || string(runners["amd64"]) != "amd64 build" || len(runners) != 1 {
+		t.Fatalf("runners %v, %v, want the amd64 build alone", runners, err)
+	}
+
+	_, err = providers.Runners(config.Config{}, reg)
+	if err == nil || !strings.Contains(err.Error(), "BUGNET_RUNNER_LINUX_AMD64") ||
+		!strings.Contains(err.Error(), "up") {
+		t.Fatalf("runners without the build gave %v, want an error naming the variable and up", err)
+	}
+	missing := config.Config{RunnerLinuxAMD64: filepath.Join(dir, "missing")}
+	if _, err := providers.Runners(missing, reg); err == nil {
+		t.Fatal("runners with an unreadable build gave no error")
+	}
+	arm := provider.NewRegistry([]provider.Provider{uploading{newLocal("arm"), "arm64"}})
+	_, err = providers.Runners(config.Config{RunnerLinuxAMD64: amd}, arm)
+	if err == nil || !strings.Contains(err.Error(), "BUGNET_RUNNER_LINUX_ARM64") {
+		t.Fatalf("runners for an arm64 provider gave %v, want the arm64 variable named", err)
+	}
+	if none, err := providers.Runners(config.Config{}, provider.NewRegistry(
+		[]provider.Provider{newLocal("plain")})); err != nil || len(none) != 0 {
+		t.Fatalf("runners with no uploading provider gave %v, %v, want none", none, err)
 	}
 }

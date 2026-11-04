@@ -100,6 +100,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	// A provider without its runner build would bill for sandboxes that can never run a job
+	runners, err := providers.Runners(cfg, reg)
+	if err != nil {
+		return err
+	}
 	// Insert only, the worker runs the jobs
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {
@@ -123,7 +128,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 		Tracker:      tracker,
 		ReplicaID:    cfg.ReplicaID,
 		DeploymentID: cfg.DeploymentID,
-		Runners:      runners(cfg),
+		Runners:      runners,
 		Log:          log,
 	})
 	js := jobs.New(jobs.Deps{
@@ -202,15 +207,4 @@ func shutdown(log *slog.Logger, hs *http.Server, js *jobs.Service, sg *saga.Saga
 	case <-time.After(shutdownTimeout):
 		log.Warn("placements were still being placed at exit")
 	}
-}
-
-func runners(cfg config.Config) map[string]string {
-	out := map[string]string{}
-	if cfg.RunnerLinuxAMD64 != "" {
-		out["amd64"] = cfg.RunnerLinuxAMD64
-	}
-	if cfg.RunnerLinuxARM64 != "" {
-		out["arm64"] = cfg.RunnerLinuxARM64
-	}
-	return out
 }

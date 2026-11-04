@@ -120,7 +120,7 @@ type Deps struct {
 	ReplicaID         string            // recorded as the saga owner of the placements it places
 	DeploymentID      string            // labels every sandbox, "main" when empty
 	HeartbeatInterval time.Duration     // 10 s when zero
-	Runners           map[string]string // architecture to the host path of its bugnet-run build
+	Runners           map[string][]byte // architecture to its bugnet-run build
 	Now               func() time.Time  // time.Now when nil
 	Log               *slog.Logger      // slog.Default when nil
 }
@@ -284,6 +284,14 @@ func (s *Saga) place(
 		c := cands[0]
 		name := c.Provider.Name()
 		tried[name] = true
+		// Without a build the sandbox could never run a job, so the provider is passed over
+		if caps := c.Provider.Capabilities(); caps.NeedsRunnerUpload &&
+			len(s.d.Runners[caps.RunnerArch()]) == 0 {
+			s.d.Log.Error("no bugnet-run build for a provider that needs one", "provider", name,
+				"arch", caps.RunnerArch())
+			reason, detail = reasonNoRunner, "no "+caps.RunnerArch()+" build for "+name
+			continue
+		}
 		reserved, err := s.reserve(ctx, p.ID, name)
 		if err != nil {
 			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
