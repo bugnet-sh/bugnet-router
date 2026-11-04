@@ -134,7 +134,9 @@ func (f faulty) ReadFile(
 	ctx context.Context, ref provider.Ref, path string, offset int64, length int,
 ) ([]byte, bool, error) {
 	if code, ok := strings.CutPrefix(path, "/fault/"); ok {
-		return nil, false, &provider.Error{Code: provider.Code(code), Err: errors.New("injected")}
+		return nil, false, &provider.Error{
+			Code: provider.Code(code), Err: errors.New("injected by provider local for sbx-1"),
+		}
 	}
 	return f.Provider.ReadFile(ctx, ref, path, offset, length)
 }
@@ -1305,6 +1307,16 @@ func TestErrorCodes(t *testing.T) {
 		err = readErr(h, "/fault/internal")
 		wantCode(t, err, connect.CodeUnavailable)
 		wantInfo(t, err, "internal")
+	})
+	t.Run("provider error text stays in the router", func(t *testing.T) {
+		for _, code := range []string{"internal", "invalid", "not_found"} {
+			err := readErr(h, "/fault/"+code)
+			if msg := err.Error(); strings.Contains(msg, "injected") ||
+				strings.Contains(msg, "local") || strings.Contains(msg, "sbx-1") {
+				t.Errorf("%s error %q carries the provider's text", code, msg)
+			}
+			wantInfo(t, err, code)
+		}
 	})
 	t.Run("missing file is not found", func(t *testing.T) {
 		err := readErr(h, "/root/missing.txt")

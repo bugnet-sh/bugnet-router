@@ -86,14 +86,16 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		}
 	}
 	if e, ok := provider.AsError(err); ok {
-		code := connect.CodeUnavailable
+		code, msg := connect.CodeUnavailable, "sandbox provider unavailable"
 		switch {
 		case e.Code == provider.CodeInvalid:
-			code = connect.CodeInvalidArgument
+			code, msg = connect.CodeInvalidArgument, "sandbox provider refused the request"
 		case e.Code == provider.CodeNotFound && fileOp:
-			code = connect.CodeNotFound
+			code, msg = connect.CodeNotFound, "no such file or directory"
 		}
-		return withInfo(connect.NewError(code, err), string(e.Code))
+		// The provider's text may name the provider or its sandbox, which the gateway never sees
+		s.d.Log.Warn("api: provider error", "code", e.Code, "err", err)
+		return withInfo(connect.NewError(code, errors.New(msg)), string(e.Code))
 	}
 	s.d.Log.Error("api: internal error", "err", err)
 	return connect.NewError(connect.CodeInternal, errors.New("internal error"))
