@@ -1,0 +1,22 @@
+{
+	"packages": [
+		{
+			"id": "cpu-small-10m",
+			"resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 50000
+		},
+		{
+			"id": "cpu-medium-30m",
+			"resources": {"vcpu": 4, "memory_mib": 8192, "disk_gib": 20, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 30,
+			"price_micros": 200000
+		},
+		{
+			"id": "gpu-small-30m",
+			"resources": {"vcpu": 4, "memory_mib": 16384, "disk_gib": 50, "gpu_count": 1, "gpu_memory_gib": 20},
+			"minutes": 30,
+			"price_micros": 1500000
+		}
+	]
+}
