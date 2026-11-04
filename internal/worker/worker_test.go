@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,22 +69,30 @@ func newLocal(t *testing.T, name string) *local.Provider {
 	})
 }
 
-// flaky fails ListOwned when listFails is set and Destroy for the sandbox named failID
+// flaky is a local provider whose listing and destroys fail on demand
 type flaky struct {
 	*local.Provider
-	listFails bool
-	failID    string
+	listFails    bool
+	zeroAge      bool         // lists every sandbox with a zero creation time
+	failID       string       // the sandbox whose every destroy fails
+	failDestroys atomic.Int32 // how many of the next destroys fail
 }
 
 func (f *flaky) ListOwned(ctx context.Context, l map[string]string) ([]provider.Summary, error) {
 	if f.listFails {
 		return nil, &provider.Error{Code: provider.CodeInternal, Err: errors.New("list refused")}
 	}
-	return f.Provider.ListOwned(ctx, l)
+	owned, err := f.Provider.ListOwned(ctx, l)
+	for i := range owned {
+		if f.zeroAge {
+			owned[i].CreatedAt = time.Time{}
+		}
+	}
+	return owned, err
 }
 
 func (f *flaky) Destroy(ctx context.Context, ref provider.Ref) error {
-	if ref.ID == f.failID {
+	if ref.ID == f.failID || f.failDestroys.Add(-1) >= 0 {
 		return &provider.Error{Code: provider.CodeInternal, Err: errors.New("destroy refused")}
 	}
 	return f.Provider.Destroy(ctx, ref)
@@ -146,16 +155,18 @@ type options struct {
 	workerClock *clock
 	log         io.Writer
 	providers   []provider.Provider
+	deployment  string
 }
 
 type env struct {
-	saga   *saga.Saga
-	store  *store.Store
-	pool   *pgxpool.Pool
-	river  *river.Client[pgx.Tx]
-	local  provider.Provider
-	priv   ed25519.PrivateKey
-	events <-chan *river.Event
+	saga       *saga.Saga
+	store      *store.Store
+	pool       *pgxpool.Pool
+	river      *river.Client[pgx.Tx]
+	local      provider.Provider
+	priv       ed25519.PrivateKey
+	deployment string
+	events     <-chan *river.Event
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -204,18 +215,19 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	st := store.New(pool)
 	sd := saga.Deps{
-		Store:       st,
-		Engine:      placement.New(reg, tracker),
-		Registry:    reg,
-		Catalog:     cat,
-		Valkey:      vk,
-		Prefix:      prefix,
-		OrderKey:    pub,
-		HandleKey:   hk,
-		MarginFloor: 0.5,
-		Tracker:     tracker,
-		ReplicaID:   "worker-test",
-		Log:         slog.New(slog.NewTextHandler(out, nil)),
+		Store:        st,
+		Engine:       placement.New(reg, tracker),
+		Registry:     reg,
+		Catalog:      cat,
+		Valkey:       vk,
+		Prefix:       prefix,
+		OrderKey:     pub,
+		HandleKey:    hk,
+		MarginFloor:  0.5,
+		Tracker:      tracker,
+		ReplicaID:    "worker-test",
+		DeploymentID: o.deployment,
+		Log:          slog.New(slog.NewTextHandler(out, nil)),
 	}
 	if o.sagaClock != nil {
 		sd.Now = o.sagaClock.Now
@@ -232,8 +244,12 @@ func newEnv(t *testing.T, o options) *env {
 		w.River().PeriodicJobs().Clear()
 	}
 	t.Cleanup(w.Saga().Wait)
+	if o.deployment == "" {
+		o.deployment = "main"
+	}
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
+		deployment: o.deployment,
 	}
 }
 
@@ -279,6 +295,23 @@ func (e *env) finished(t *testing.T, kind string, ids ...int64) {
 			}
 		case <-timeout:
 			t.Fatalf("%s jobs %v did not complete", kind, ids)
+		}
+	}
+}
+
+// next returns the next event of a job of kind
+func (e *env) next(t *testing.T, kind string) *river.Event {
+	t.Helper()
+	timeout := time.After(20 * time.Second)
+	for {
+		select {
+		case ev := <-e.events:
+			if ev.Job.Kind == kind {
+				return ev
+			}
+		case <-timeout:
+			t.Fatalf("no %s job ended", kind)
+			return nil
 		}
 	}
 }
@@ -358,8 +391,8 @@ func (e *env) readyPlacement(
 	t.Helper()
 	ctx := t.Context()
 	p := e.placing(t)
-	ref := e.sandbox(t, prov, labelsFor(p.ID))
-	if ok, err := e.store.ReserveCapacity(ctx, prov.Name()); err != nil || !ok {
+	ref := e.sandbox(t, prov, e.labelsFor(p.ID))
+	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, prov.Name()); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, readyAt,
@@ -369,8 +402,15 @@ func (e *env) readyPlacement(
 	return e.reload(t, p.ID), ref
 }
 
-func labelsFor(id uuid.UUID) map[string]string {
-	return map[string]string{"bugnet": "1", "placement": id.String()}
+// owned labels a sandbox as this deployment's without naming a placement
+func (e *env) owned() map[string]string {
+	return map[string]string{"bugnet": "1", "bugnet_deployment": e.deployment}
+}
+
+func (e *env) labelsFor(id uuid.UUID) map[string]string {
+	l := e.owned()
+	l["placement"] = id.String()
+	return l
 }
 
 func (e *env) sandbox(t *testing.T, prov provider.Provider, l map[string]string) provider.Ref {
@@ -528,7 +568,60 @@ func TestDeadlineReschedulesAfterExtend(t *testing.T) {
 	}
 }
 
+func TestDeadlineRetryFinishesTerminating(t *testing.T) {
+	prov := &flaky{Provider: newLocal(t, "local")}
+	e := newEnv(t, options{sagaClock: pastPaidTime(), providers: []provider.Provider{prov}})
+	p, _ := e.placeReady(t, "order-1")
+	prov.failDestroys.Store(1)
+	e.start(t)
+
+	if ev := e.next(t, "deadline"); ev.Kind != river.EventKindJobFailed {
+		t.Fatalf("first deadline job ended %s, want failed on the refused destroy", ev.Kind)
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementTerminating {
+		t.Fatalf("placement is %s after the refused destroy, want terminating", got.State)
+	}
+	if ev := e.next(t, "deadline"); ev.Kind != river.EventKindJobCompleted {
+		t.Fatalf("deadline retry ended %s: %+v", ev.Kind, ev.Job.Errors)
+	}
+	got := e.reload(t, p.ID)
+	if got.State != store.PlacementTerminated || got.CapacityProvider != "" {
+		t.Fatalf("placement %+v after the retry, want terminated holding no slot", got)
+	}
+	evs := e.pendingEvents(t, saga.EventTerminated)
+	if len(evs) != 1 || evs[0].Reason != "deadline" {
+		t.Fatalf("terminated events %+v, want one with reason deadline", evs)
+	}
+	if exists(t, prov, *p.ProviderRef) || e.inUse(t, "local") != 0 {
+		t.Fatalf("sandbox exists %v with %d in use, want gone and 0",
+			exists(t, prov, *p.ProviderRef), e.inUse(t, "local"))
+	}
+}
+
 /* Sweep */
+
+func TestStuckSweepJobIsRescued(t *testing.T) {
+	e := newEnv(t, options{periodic: true})
+	ctx := t.Context()
+	orphan := e.sandbox(t, e.local, e.labelsFor(uuid.New()))
+	res, err := e.river.Insert(ctx, jobargs.Sweep{}, worker.SingleRunOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A worker that crashed ten minutes into this sweep left it running, which blocks the schedule
+	_, err = e.pool.Exec(ctx, `
+		update river_job set state = 'running', attempt = 1, attempted_by = array['gone'],
+			attempted_at = now() - interval '10 minutes'
+		where id = $1`, res.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.finished(t, "sweep", res.Job.ID)
+	if exists(t, e.local, orphan) {
+		t.Fatal("orphan survived the rescued sweep")
+	}
+}
 
 func TestSweepDestroysExpiredAfterDowntime(t *testing.T) {
 	e := newEnv(t, options{periodic: true})
@@ -566,18 +659,18 @@ func TestSweepDestroysOrphans(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now()
 
-	orphanA := e.sandbox(t, a, labelsFor(uuid.New()))
-	orphanB := e.sandbox(t, b, labelsFor(uuid.New()))
-	stuck := e.sandbox(t, b, labelsFor(uuid.New()))
+	orphanA := e.sandbox(t, a, e.labelsFor(uuid.New()))
+	orphanB := e.sandbox(t, b, e.labelsFor(uuid.New()))
+	stuck := e.sandbox(t, b, e.labelsFor(uuid.New()))
 	b.failID = stuck.ID
 	ready, home := e.readyPlacement(t, a, now, now.Add(time.Hour))
-	strayA := e.sandbox(t, a, labelsFor(ready.ID))
-	strayB := e.sandbox(t, b, labelsFor(ready.ID))
+	strayA := e.sandbox(t, a, e.labelsFor(ready.ID))
+	strayB := e.sandbox(t, b, e.labelsFor(ready.ID))
 	failed := e.placing(t)
 	if err := e.store.MarkPlacementFailed(ctx, failed.ID, "boom", true); err != nil {
 		t.Fatal(err)
 	}
-	failedBox := e.sandbox(t, a, labelsFor(failed.ID))
+	failedBox := e.sandbox(t, a, e.labelsFor(failed.ID))
 	ended, endedBox := e.readyPlacement(t, b, now, now.Add(time.Hour))
 	if _, err := e.store.MarkPlacementTerminating(ctx, ended.ID); err != nil {
 		t.Fatal(err)
@@ -585,8 +678,10 @@ func TestSweepDestroysOrphans(t *testing.T) {
 	if err := e.store.MarkPlacementTerminated(ctx, ended.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	unlabelled := e.sandbox(t, a, map[string]string{"bugnet": "1"})
-	badLabel := e.sandbox(t, a, map[string]string{"bugnet": "1", "placement": "not-a-uuid"})
+	unlabelled := e.sandbox(t, a, e.owned())
+	bad := e.owned()
+	bad["placement"] = "not-a-uuid"
+	badLabel := e.sandbox(t, a, bad)
 	foreign := e.sandbox(t, a, map[string]string{"team": "other"})
 	e.start(t)
 
@@ -629,6 +724,93 @@ func TestSweepDestroysOrphans(t *testing.T) {
 	}
 }
 
+func TestSweepFinishesTerminating(t *testing.T) {
+	prov := &flaky{Provider: newLocal(t, "local")}
+	e := newEnv(t, options{providers: []provider.Provider{prov}})
+	ctx := t.Context()
+	now := time.Now()
+	expired, expiredBox := e.readyPlacement(t, prov, now.Add(-20*time.Minute),
+		now.Add(-10*time.Minute))
+	// Its stop broke off after destroying the sandbox, so only the overdue pass can finish it
+	stopped, stoppedBox := e.readyPlacement(t, prov, now.Add(-10*time.Minute),
+		now.Add(-10*time.Second))
+	if _, err := e.store.MarkPlacementTerminating(ctx, stopped.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := prov.Provider.Destroy(ctx, stoppedBox); err != nil {
+		t.Fatal(err)
+	}
+	prov.failDestroys.Store(1)
+	e.start(t)
+
+	e.run(t, jobargs.Sweep{})
+	for _, id := range []uuid.UUID{expired.ID, stopped.ID} {
+		if got := e.reload(t, id); got.State != store.PlacementTerminated ||
+			got.CapacityProvider != "" {
+			t.Fatalf("placement %+v after the sweep, want terminated holding no slot", got)
+		}
+	}
+	if exists(t, prov, expiredBox) || e.inUse(t, "local") != 0 {
+		t.Fatalf("expired sandbox exists %v with %d in use, want gone and 0",
+			exists(t, prov, expiredBox), e.inUse(t, "local"))
+	}
+	e.run(t, jobargs.Sweep{})
+	e.run(t, jobargs.Deadline{PlacementID: expired.ID})
+	evs := e.pendingEvents(t, saga.EventTerminated)
+	if len(evs) != 2 || evs[0].Reason != "deadline" || evs[1].Reason != "deadline" {
+		t.Fatalf("terminated events %+v, want one with reason deadline for each placement", evs)
+	}
+}
+
+func TestSweepKeepsOtherDeployments(t *testing.T) {
+	clk := &clock{}
+	e := newEnv(t, options{deployment: "blue", workerClock: clk})
+	own := e.sandbox(t, e.local, e.labelsFor(uuid.New()))
+	kept := map[string]provider.Ref{
+		"green orphan": e.sandbox(t, e.local, map[string]string{
+			"bugnet": "1", "bugnet_deployment": "green", "placement": uuid.NewString(),
+		}),
+		"green without a placement": e.sandbox(t, e.local, map[string]string{
+			"bugnet": "1", "bugnet_deployment": "green",
+		}),
+		"no deployment": e.sandbox(t, e.local, map[string]string{
+			"bugnet": "1", "placement": uuid.NewString(),
+		}),
+	}
+	e.start(t)
+	clk.Advance(11 * time.Minute)
+	e.run(t, jobargs.Sweep{})
+	if exists(t, e.local, own) {
+		t.Error("this deployment's orphan survived the sweep")
+	}
+	for name, ref := range kept {
+		if !exists(t, e.local, ref) {
+			t.Errorf("%s sandbox was destroyed", name)
+		}
+	}
+}
+
+func TestSweepKeepsUnlabelledOfUnknownAge(t *testing.T) {
+	clk := &clock{}
+	var logs syncBuffer
+	prov := &flaky{Provider: newLocal(t, "local"), zeroAge: true}
+	e := newEnv(t, options{workerClock: clk, log: &logs, providers: []provider.Provider{prov}})
+	unlabelled := e.sandbox(t, prov, e.owned())
+	orphan := e.sandbox(t, prov, e.labelsFor(uuid.New()))
+	e.start(t)
+	clk.Advance(time.Hour)
+	e.run(t, jobargs.Sweep{})
+	if !exists(t, prov, unlabelled) {
+		t.Fatal("sandbox of unknown age without a placement label was destroyed")
+	}
+	if exists(t, prov, orphan) {
+		t.Fatal("orphan of unknown age survived, want it judged by its placement")
+	}
+	if n := strings.Count(logs.String(), "unknown age"); n != 1 {
+		t.Fatalf("unknown age warned %d times, want once\n%s", n, logs.String())
+	}
+}
+
 func TestSweepFailsStuckPlacing(t *testing.T) {
 	e := newEnv(t, options{})
 	ctx := t.Context()
@@ -652,7 +834,7 @@ func TestSweepFailsStuckPlacing(t *testing.T) {
 	young := e.placing(t)
 
 	// The stale placement's saga went away holding a slot and a sandbox for its attempt
-	if ok, err := e.store.ReserveCapacity(ctx, "local"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, stale.ID, "local"); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.RecordAttempt(ctx, store.Attempt{
@@ -661,8 +843,8 @@ func TestSweepFailsStuckPlacing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	staleBox := e.sandbox(t, e.local, labelsFor(stale.ID))
-	freshBox := e.sandbox(t, e.local, labelsFor(fresh.ID))
+	staleBox := e.sandbox(t, e.local, e.labelsFor(stale.ID))
+	freshBox := e.sandbox(t, e.local, e.labelsFor(fresh.ID))
 	e.start(t)
 	e.run(t, jobargs.Sweep{})
 
@@ -1011,4 +1193,81 @@ func TestOutboxScheduleRunsOneJobAtATime(t *testing.T) {
 			t.Errorf("%d deliveries ran at once, want the schedule to run one outbox job", r.most)
 		}
 	})
+}
+
+func TestOutboxRedactsTransportError(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	addr := closed.Listener.Addr().String()
+	closed.Close()
+	var logs syncBuffer
+	url := "http://hook-user:hook-pass@" + addr + "/events?token=query-secret"
+	e := newEnv(t, options{eventsURL: url, log: &logs})
+	id := e.insertEvent(t, "one")
+	e.start(t)
+	e.run(t, jobargs.Outbox{})
+
+	row := e.outboxRow(t, id)
+	if row.attempts != 1 || !strings.HasPrefix(row.lastError, "Post: dial tcp") {
+		t.Fatalf("row %+v, want one failed attempt naming the method and the dial error", row)
+	}
+	for _, secret := range []string{"query-secret", "hook-user", "hook-pass", "/events"} {
+		if strings.Contains(row.lastError, secret) || strings.Contains(logs.String(), secret) {
+			t.Fatalf("%q leaked into last_error %q or the logs\n%s", secret, row.lastError,
+				logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "outbox delivery failed") {
+		t.Fatalf("failed delivery not logged\n%s", logs.String())
+	}
+}
+
+func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuffer
+	recv := newReceiver(t, pub)
+	recv.fail = http.StatusInternalServerError
+	e := newEnv(t, options{eventsURL: recv.srv.URL, eventKey: priv, log: &logs})
+	ctx := t.Context()
+	id := e.insertEvent(t, "dead")
+	// One failure short of dead, while the database refuses to record the tenth failure
+	_, err = e.pool.Exec(ctx, `update outbox set attempts = 9 where id = $1`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.pool.Exec(ctx,
+		`alter table outbox add constraint refuse_tenth check (attempts < 10)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	res, err := e.river.Insert(ctx, jobargs.Outbox{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := e.next(t, "outbox"); ev.Kind != river.EventKindJobFailed {
+		t.Fatalf("outbox job ended %s, want failed on the refused update", ev.Kind)
+	}
+	if _, err := e.river.JobCancel(ctx, res.Job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "outbox event is dead") {
+		t.Fatalf("dead event logged although its failure was rolled back\n%s", logs.String())
+	}
+	if row := e.outboxRow(t, id); row.attempts != 9 {
+		t.Fatalf("row %+v, want the ninth failure still the last recorded", row)
+	}
+
+	if _, err := e.pool.Exec(ctx, `alter table outbox drop constraint refuse_tenth`); err != nil {
+		t.Fatal(err)
+	}
+	e.run(t, jobargs.Outbox{})
+	if row := e.outboxRow(t, id); row.attempts != 10 || row.deliveredAt != nil {
+		t.Fatalf("row %+v, want undelivered after 10 attempts", row)
+	}
+	if n := strings.Count(logs.String(), "outbox event is dead"); n != 1 {
+		t.Fatalf("dead event logged %d times, want once\n%s", n, logs.String())
+	}
 }

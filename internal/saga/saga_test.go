@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -535,8 +536,10 @@ func TestCreatePlacementReady(t *testing.T) {
 	e.saga.Wait()
 
 	got := e.reload(t, p.ID)
-	if got.State != store.PlacementReady || got.Provider != "a" || got.ProviderRef == nil {
-		t.Fatalf("placement %+v", got)
+	if got.State != store.PlacementReady || got.Provider != "a" || got.ProviderRef == nil ||
+		got.CapacityProvider != "a" || e.inUse(t, "a") != 1 {
+		t.Fatalf("placement %+v with %d in use on a, want ready holding one slot on a", got,
+			e.inUse(t, "a"))
 	}
 	if got.ReadyAt == nil || got.Deadline == nil ||
 		!near(*got.Deadline, got.ReadyAt.Add(10*time.Minute)) {
@@ -585,6 +588,23 @@ func TestCreatePlacementReady(t *testing.T) {
 	}
 	if rows := e.attempts(t, p.ID); len(rows) != 1 || rows[0].state != "ready" {
 		t.Fatalf("attempts %+v", rows)
+	}
+}
+
+func TestSandboxesCarryDeploymentLabel(t *testing.T) {
+	for _, tc := range []struct{ set, want string }{{"", "main"}, {"blue", "blue"}} {
+		a := newLocal(t, local.Options{Name: "a"})
+		e := newEnvWith(t, func(d *saga.Deps) { d.DeploymentID = tc.set }, a)
+		p, _ := e.placeReady(t, "order-"+tc.want)
+		want := map[string]string{"bugnet": "1", "bugnet_deployment": tc.want}
+		if got := e.saga.OwnedLabels(); !maps.Equal(got, want) {
+			t.Fatalf("owned labels %v, want %v", got, want)
+		}
+		want["placement"] = p.ID.String()
+		got, err := a.ListOwned(t.Context(), want)
+		if err != nil || len(got) != 1 || got[0].Ref.ID != p.ProviderRef.ID {
+			t.Fatalf("sandboxes labelled %v: %+v %v, want the placement's", want, got, err)
+		}
 	}
 }
 
@@ -1013,7 +1033,7 @@ func TestFailStuckFailsOnlyPlacing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Its saga failed one attempt on a and went away while creating on b
-	if ok, err := e.store.ReserveCapacity(ctx, "b"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, stuck.ID, "b"); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	for _, rec := range []store.Attempt{
@@ -1028,7 +1048,9 @@ func TestFailStuckFailsOnlyPlacing(t *testing.T) {
 	for _, p := range []provider.Provider{a, b} {
 		_, err := p.Create(ctx, provider.CreateRequest{
 			IdempotencyKey: "left-" + p.Name(), Size: small, Lifetime: time.Hour,
-			Labels: map[string]string{"bugnet": "1", "placement": stuck.ID.String()},
+			Labels: map[string]string{
+				"bugnet": "1", "bugnet_deployment": "main", "placement": stuck.ID.String(),
+			},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1070,6 +1092,55 @@ func TestFailStuckFailsOnlyPlacing(t *testing.T) {
 	if n := len(e.events(t, saga.EventFailed)); n != 1 || e.inUse(t, "a")+e.inUse(t, "b") != 1 {
 		t.Fatalf("%d failed events and %d slots in use after repeats, want 1 and 1", n,
 			e.inUse(t, "a")+e.inUse(t, "b"))
+	}
+}
+
+func TestFailStuckRacingPlacingReleasesOneSlot(t *testing.T) {
+	a := gatedReady{newLocal(t, local.Options{Name: "a"}), make(chan struct{}),
+		make(chan struct{})}
+	e := newEnv(t, a)
+	ctx := t.Context()
+	// Another placement holds a slot on a, so releasing one slot twice would show
+	other, _, err := e.store.CreatePlacement(ctx, store.NewPlacement{
+		HandleSHA256: []byte("other-handle"), OrderID: "order-other", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.store.ReservePlacementCapacity(ctx, other.ID, "a"); err != nil || !ok {
+		t.Fatalf("reserve: %v %v", ok, err)
+	}
+	p, _, err := e.saga.Create(ctx, e.startToken(t, "order-1"), placement.Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-a.waiting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("placing never waited for ready")
+	}
+	if n := e.inUse(t, "a"); n != 2 {
+		t.Fatalf("in use %d while placing, want 2", n)
+	}
+	if err := e.saga.FailStuck(ctx, p.ID, saga.ReasonPlacingStalled); err != nil {
+		t.Fatalf("fail stuck: %v", err)
+	}
+	close(a.gate)
+	e.saga.Wait()
+
+	got := e.reload(t, p.ID)
+	if got.State != store.PlacementFailed || got.FailureReason != saga.ReasonPlacingStalled ||
+		got.CapacityProvider != "" {
+		t.Fatalf("placement %+v, want failed placing_stalled holding no slot", got)
+	}
+	if n := e.inUse(t, "a"); n != 1 {
+		t.Fatalf("in use %d after FailStuck and the saga's own cleanup, want 1", n)
+	}
+	if n := len(e.events(t, saga.EventFailed)); n != 1 {
+		t.Fatalf("%d failed events, want 1", n)
+	}
+	if n := len(owned(t, a)); n != 0 {
+		t.Fatalf("%d sandboxes left", n)
 	}
 }
 

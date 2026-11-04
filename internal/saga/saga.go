@@ -4,12 +4,14 @@
 // heartbeats the placement while it runs. A package no provider can host is recorded as failed
 // and refundable at once. Each candidate gets a capacity slot, a create under an idempotency key
 // derived from the order, attempt and provider, a wait for ready and, where needed, the runner
-// upload. A create whose outcome is unknown is retried with the same key on the same provider, a
-// known failure that allows it fails over to the next candidate, anything else fails the
-// placement as refundable. Once placing ends, every sandbox labelled for the placement other
-// than the ready one is destroyed. FailStuck fails a placement whose placing saga went away in
-// the same way. Every state change commits together with its outbox event and, for a deadline,
-// its River job, and is then published on Valkey for live readers.
+// upload. A placement holds at most one slot, recorded on its row, so no path frees it twice. A
+// create whose outcome is unknown is retried with the same key on the same provider, a known
+// failure that allows it fails over to the next candidate, anything else fails the placement as
+// refundable. Once placing ends, every sandbox labelled for the placement other than the ready
+// one is destroyed. FailStuck fails a placement whose placing saga went away in the same way.
+// Every sandbox is labelled with its placement and the saga's deployment. Every state change
+// commits together with its outbox event and, for a deadline, its River job, and is then
+// published on Valkey for live readers.
 package saga
 
 import (
@@ -68,6 +70,9 @@ const reasonFull = "capacity: every candidate provider is full"
 // reasonExhausted is the failure reason when placing ran out of candidates after the pre-check
 const reasonExhausted = "no provider could host the package"
 
+// defaultDeployment labels the sandboxes of a saga whose Deps name no deployment
+const defaultDeployment = "main"
+
 const (
 	maxAttempts      = 3
 	placingBudget    = 30 * time.Second
@@ -105,6 +110,7 @@ type Deps struct {
 	MarginFloor       float64
 	Tracker           *placement.Tracker
 	ReplicaID         string            // recorded as the saga owner of the placements it places
+	DeploymentID      string            // labels every sandbox, "main" when empty
 	HeartbeatInterval time.Duration     // 10 s when zero
 	Runners           map[string]string // architecture to the host path of its bugnet-run build
 	Now               func() time.Time  // time.Now when nil
@@ -127,6 +133,9 @@ func New(deps Deps) *Saga {
 	}
 	if deps.HeartbeatInterval <= 0 {
 		deps.HeartbeatInterval = heartbeatEvery
+	}
+	if deps.DeploymentID == "" {
+		deps.DeploymentID = defaultDeployment
 	}
 	return &Saga{d: deps}
 }
@@ -266,7 +275,7 @@ func (s *Saga) place(
 		c := cands[0]
 		name := c.Provider.Name()
 		tried[name] = true
-		reserved, err := s.reserve(ctx, name)
+		reserved, err := s.reserve(ctx, p.ID, name)
 		if err != nil {
 			reason = err.Error()
 			break
@@ -322,10 +331,10 @@ func (s *Saga) heartbeat(ctx context.Context, id uuid.UUID) (stop func()) {
 	}
 }
 
-func (s *Saga) reserve(ctx context.Context, providerName string) (bool, error) {
+func (s *Saga) reserve(ctx context.Context, id uuid.UUID, providerName string) (bool, error) {
 	ctx, cancel := step(ctx)
 	defer cancel()
-	return s.d.Store.ReserveCapacity(ctx, providerName)
+	return s.d.Store.ReservePlacementCapacity(ctx, id, providerName)
 }
 
 // attempt holds a capacity slot on c's provider and gives it back unless the sandbox is ready
@@ -343,14 +352,14 @@ func (s *Saga) attempt(
 		State:          attemptCreating,
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
-		s.release(ctx, name)
+		s.release(ctx, p.ID)
 		return outcome{reason: err.Error()}
 	}
 	started := s.now()
 	ref, err := s.create(budget, prov, provider.CreateRequest{
 		IdempotencyKey: rec.IdempotencyKey,
 		Size:           c.Size,
-		Labels:         labels(p.ID),
+		Labels:         s.labels(p.ID),
 		Lifetime:       time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
 	})
 	if err != nil {
@@ -467,7 +476,7 @@ func (s *Saga) abandon(
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.d.Log.Error("record failed attempt", "placement", rec.PlacementID, "err", err)
 	}
-	s.release(ctx, prov.Name())
+	s.release(ctx, rec.PlacementID)
 }
 
 func (s *Saga) recordAttempt(ctx context.Context, rec store.Attempt) error {
@@ -483,16 +492,9 @@ func (s *Saga) fail(
 	var ev Event
 	tctx, cancel := step(ctx)
 	err := s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
-		ts := s.d.Store.Tx(tx)
-		if err := ts.MarkPlacementFailed(tctx, p.ID, reason, true); err != nil {
-			return err
-		}
-		cur, err := ts.PlacementByID(tctx, p.ID)
-		if err != nil {
-			return err
-		}
-		ev = newEvent(cur, reason)
-		return s.d.Store.InsertOutbox(tctx, tx, EventFailed, ev)
+		var err error
+		ev, err = s.recordFailed(tctx, tx, p.ID, reason)
+		return err
 	})
 	cancel()
 	if err != nil {
@@ -501,12 +503,12 @@ func (s *Saga) fail(
 		s.publish(ctx, ev)
 	}
 	s.sweep(ctx, p.ID, attempted, nil)
+	s.release(ctx, p.ID)
 }
 
 // FailStuck fails a placing placement whose saga went away as placing would, else does nothing
 func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error {
 	var ev Event
-	var held []string
 	failed := false
 	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.d.Store.Tx(tx)
@@ -514,14 +516,13 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 		if err != nil || cur.State != store.PlacementPlacing {
 			return err
 		}
-		if err := ts.MarkPlacementFailed(ctx, id, reason, true); err != nil {
+		if ev, err = s.recordFailed(ctx, tx, id, reason); err != nil {
 			return err
 		}
 		attempts, err := ts.Attempts(ctx, id)
 		if err != nil {
 			return err
 		}
-		// An attempt still creating holds the capacity slot its saga never gave back
 		for _, a := range attempts {
 			if a.State != attemptCreating {
 				continue
@@ -530,14 +531,13 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 			if err := ts.RecordAttempt(ctx, a); err != nil {
 				return err
 			}
-			held = append(held, a.Provider)
 		}
-		if cur, err = ts.PlacementByID(ctx, id); err != nil {
+		// The slot goes with the failure, so it cannot leak when the cleanup below never runs
+		if _, err := ts.ReleasePlacementCapacity(ctx, id); err != nil {
 			return err
 		}
-		ev = newEvent(cur, reason)
 		failed = true
-		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, ev)
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("fail stuck placement: %w", err)
@@ -549,10 +549,23 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 	ctx = context.WithoutCancel(ctx)
 	s.publish(ctx, ev)
 	s.sweep(ctx, id, s.d.Registry.Ordered(), nil)
-	for _, name := range held {
-		s.release(ctx, name)
-	}
 	return nil
+}
+
+// recordFailed marks a placing placement failed and refundable with its placement.failed event
+func (s *Saga) recordFailed(
+	ctx context.Context, tx pgx.Tx, id uuid.UUID, reason string,
+) (Event, error) {
+	ts := s.d.Store.Tx(tx)
+	if err := ts.MarkPlacementFailed(ctx, id, reason, true); err != nil {
+		return Event{}, err
+	}
+	cur, err := ts.PlacementByID(ctx, id)
+	if err != nil {
+		return Event{}, err
+	}
+	ev := newEvent(cur, reason)
+	return ev, s.d.Store.InsertOutbox(ctx, tx, EventFailed, ev)
 }
 
 // sweep destroys every sandbox labelled for the placement on provs except keep
@@ -561,7 +574,7 @@ func (s *Saga) sweep(
 ) {
 	for _, prov := range provs {
 		lctx, cancel := step(ctx)
-		owned, err := prov.ListOwned(lctx, labels(id))
+		owned, err := prov.ListOwned(lctx, s.labels(id))
 		cancel()
 		if err != nil {
 			s.d.Log.Error("list sandboxes to destroy", "placement", id,
@@ -746,6 +759,9 @@ func (s *Saga) terminate(
 		if err := ts.MarkPlacementTerminated(ctx, p.ID, s.now()); err != nil {
 			return err
 		}
+		if _, err := ts.ReleasePlacementCapacity(ctx, p.ID); err != nil {
+			return err
+		}
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {
 			return err
 		}
@@ -756,7 +772,6 @@ func (s *Saga) terminate(
 		return store.Placement{}, fmt.Errorf("mark terminated: %w", err)
 	}
 	if !already {
-		s.release(ctx, p.Provider)
 		s.publish(ctx, ev)
 	}
 	return ended, nil
@@ -770,8 +785,15 @@ func idempotencyKey(orderID string, attempt int, providerName string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
-func labels(id uuid.UUID) map[string]string {
-	return map[string]string{"bugnet": "1", "placement": id.String()}
+// OwnedLabels selects every sandbox this saga's deployment created
+func (s *Saga) OwnedLabels() map[string]string {
+	return map[string]string{"bugnet": "1", "bugnet_deployment": s.d.DeploymentID}
+}
+
+func (s *Saga) labels(id uuid.UUID) map[string]string {
+	l := s.OwnedLabels()
+	l["placement"] = id.String()
+	return l
 }
 
 // hashHandle reports a malformed handle as not found, like a well formed unknown one
@@ -821,11 +843,12 @@ func (s *Saga) destroy(ctx context.Context, prov provider.Provider, ref provider
 	}
 }
 
-func (s *Saga) release(ctx context.Context, providerName string) {
+// release frees the slot the placement holds, if any, so a repeat or a racing caller frees nothing
+func (s *Saga) release(ctx context.Context, id uuid.UUID) {
 	ctx, cancel := step(ctx)
 	defer cancel()
-	if err := s.d.Store.ReleaseCapacity(ctx, providerName); err != nil {
-		s.d.Log.Error("release capacity", "provider", providerName, "err", err)
+	if _, err := s.d.Store.ReleasePlacementCapacity(ctx, id); err != nil {
+		s.d.Log.Error("release capacity", "placement", id, "err", err)
 	}
 }
 

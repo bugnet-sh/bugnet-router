@@ -6,9 +6,11 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,32 +53,49 @@ func (w *Worker) deliverOutbox(ctx context.Context) error {
 	return nil
 }
 
+// delivery is what one run did with the oldest due event
+type delivery struct {
+	ev  *store.OutboxEvent // nil when no event was due
+	err error              // why the event was not delivered
+}
+
 // deliverNext sends the oldest due event while its row is locked, so no other run sends it too
 func (w *Worker) deliverNext(ctx context.Context) (bool, error) {
-	handled := false
+	var d delivery
 	err := w.store.WithTx(ctx, func(tx pgx.Tx) error {
-		ts := w.store.Tx(tx)
-		due, err := ts.PendingOutbox(ctx, w.now(), 1)
-		if err != nil || len(due) == 0 {
-			return err
-		}
-		handled = true
-		ev := due[0]
-		perr := w.post(ctx, ev)
-		if perr == nil {
-			return ts.MarkOutboxDelivered(ctx, ev.ID)
-		}
-		attempts := ev.Attempts + 1
-		if attempts >= store.MaxOutboxAttempts {
-			w.log.Error("outbox event is dead", "event", ev.ID, "type", ev.EventType,
-				"attempts", attempts, "err", perr)
-		} else {
-			w.log.Warn("outbox delivery failed", "event", ev.ID, "attempts", attempts,
-				"err", perr)
-		}
-		return ts.MarkOutboxFailed(ctx, ev.ID, perr.Error(), w.now().Add(backoff(ev.Attempts)))
+		var err error
+		d, err = w.deliver(ctx, w.store.Tx(tx))
+		return err
 	})
-	return handled, err
+	if err != nil || d.ev == nil {
+		return false, err
+	}
+	if d.err == nil {
+		return true, nil
+	}
+	// Logged after the commit, so a failure the store did not record is never reported
+	if attempts := d.ev.Attempts + 1; attempts >= store.MaxOutboxAttempts {
+		w.log.Error("outbox event is dead", "event", d.ev.ID, "type", d.ev.EventType,
+			"attempts", attempts, "err", d.err)
+	} else {
+		w.log.Warn("outbox delivery failed", "event", d.ev.ID, "attempts", attempts,
+			"err", d.err)
+	}
+	return true, nil
+}
+
+// deliver posts the oldest due event and records on ts whether it arrived
+func (w *Worker) deliver(ctx context.Context, ts *store.Store) (delivery, error) {
+	due, err := ts.PendingOutbox(ctx, w.now(), 1)
+	if err != nil || len(due) == 0 {
+		return delivery{}, err
+	}
+	ev := due[0]
+	d := delivery{ev: &ev, err: w.post(ctx, ev)}
+	if d.err == nil {
+		return d, ts.MarkOutboxDelivered(ctx, ev.ID)
+	}
+	return d, ts.MarkOutboxFailed(ctx, ev.ID, d.err.Error(), w.now().Add(backoff(ev.Attempts)))
 }
 
 // backoff waits 2^n seconds after the nth earlier failure, at most maxBackoff
@@ -106,7 +125,7 @@ func (w *Worker) post(ctx context.Context, ev store.OutboxEvent) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.d.EventsURL,
 		bytes.NewReader(raw))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return fmt.Errorf("build request: %w", redact(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Bugnet-Event-Id", ev.ID.String())
@@ -114,7 +133,7 @@ func (w *Worker) post(ctx context.Context, ev store.OutboxEvent) error {
 		base64.StdEncoding.EncodeToString(ed25519.Sign(w.d.SigningKey, raw)))
 	resp, err := w.http.Do(req)
 	if err != nil {
-		return err
+		return redact(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// Reading a bounded rest of the answer lets the connection be reused
@@ -123,4 +142,13 @@ func (w *Worker) post(ctx context.Context, ev store.OutboxEvent) error {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// redact keeps a request error's method and cause but drops the URL, whose query may hold secrets
+func redact(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	return err
 }

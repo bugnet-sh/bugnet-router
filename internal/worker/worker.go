@@ -2,9 +2,11 @@
 //
 // New builds one River client that works all three kinds and a saga that inserts its deadline
 // jobs through that client. A deadline job ends a placement once its paid time is up. The sweep
-// runs every minute and destroys sandboxes no placement needs, terminates ready placements past
-// their deadline and fails placements whose placing saga went away. The outbox job runs every
-// second and posts each due event, signed, to the configured events URL.
+// runs every minute over this deployment's sandboxes, destroys the ones no placement needs, ends
+// ready and terminating placements past their deadline and fails placements whose placing saga
+// went away. The outbox job runs every second and posts each due event, signed, to the
+// configured events URL. A periodic job a crashed worker left running is rescued after a few
+// minutes, so it holds back the next run of its kind only that long.
 package worker
 
 import (
@@ -29,6 +31,8 @@ import (
 
 const (
 	maxWorkers    = 10
+	jobTimeout    = 60 * time.Second
+	rescueAfter   = 3 * time.Minute // a crashed worker's running job blocks its kind until rescued
 	sweepEvery    = 60 * time.Second
 	outboxEvery   = time.Second
 	postTimeout   = 10 * time.Second
@@ -84,10 +88,14 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &sweepWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: maxWorkers}},
-		Workers:      workers,
-		PeriodicJobs: periodicJobs(),
-		Logger:       sd.Log,
+		Queues: map[string]river.QueueConfig{
+			river.QueueDefault: {MaxWorkers: maxWorkers},
+		},
+		Workers:              workers,
+		PeriodicJobs:         periodicJobs(),
+		JobTimeout:           jobTimeout,
+		RescueStuckJobsAfter: rescueAfter,
+		Logger:               sd.Log,
 	})
 	if err != nil {
 		return nil, err
@@ -108,10 +116,7 @@ func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
 // periodicJobs runs the sweep and the outbox at start and on their intervals, one of each at a time
 func periodicJobs() []*river.PeriodicJob {
-	single := &river.InsertOpts{UniqueOpts: river.UniqueOpts{ByState: []rivertype.JobState{
-		rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
-		rivertype.JobStateScheduled,
-	}}}
+	single := singleRun()
 	return []*river.PeriodicJob{
 		river.NewPeriodicJob(river.PeriodicInterval(sweepEvery),
 			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Sweep{}, single },
@@ -120,4 +125,12 @@ func periodicJobs() []*river.PeriodicJob {
 			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Outbox{}, single },
 			&river.PeriodicJobOpts{RunOnStart: true}),
 	}
+}
+
+// singleRun skips inserting a job while one of its kind waits or runs
+func singleRun() *river.InsertOpts {
+	return &river.InsertOpts{UniqueOpts: river.UniqueOpts{ByState: []rivertype.JobState{
+		rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+		rivertype.JobStateScheduled,
+	}}}
 }

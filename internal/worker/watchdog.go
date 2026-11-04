@@ -15,10 +15,10 @@ const (
 	unbeatAfter = 2 * time.Minute
 )
 
-// watchPlacements ends ready placements past their deadline and fails placements left placing
+// watchPlacements ends placements past their deadline and fails placements left placing
 func (w *Worker) watchPlacements(ctx context.Context) {
 	now := w.now()
-	overdue, err := w.store.ReadyPastDeadline(ctx, now)
+	overdue, err := w.store.ReadyOrTerminatingPastDeadline(ctx, now)
 	if err != nil {
 		w.log.Error("sweep list overdue placements", "err", err)
 	}

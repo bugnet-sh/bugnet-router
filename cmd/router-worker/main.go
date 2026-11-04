@@ -91,18 +91,19 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, ln net.List
 	st := store.New(pool)
 	tracker := placement.NewTracker(time.Now)
 	w, err := worker.New(pool, saga.Deps{
-		Store:       st,
-		Engine:      placement.New(reg, tracker),
-		Registry:    reg,
-		Catalog:     cat,
-		Valkey:      vk,
-		Prefix:      cfg.ValkeyPrefix,
-		OrderKey:    cfg.OrderTokenPublicKey,
-		HandleKey:   cfg.HandleKey,
-		MarginFloor: cfg.MarginFloor,
-		Tracker:     tracker,
-		ReplicaID:   cfg.ReplicaID,
-		Log:         log,
+		Store:        st,
+		Engine:       placement.New(reg, tracker),
+		Registry:     reg,
+		Catalog:      cat,
+		Valkey:       vk,
+		Prefix:       cfg.ValkeyPrefix,
+		OrderKey:     cfg.OrderTokenPublicKey,
+		HandleKey:    cfg.HandleKey,
+		MarginFloor:  cfg.MarginFloor,
+		Tracker:      tracker,
+		ReplicaID:    cfg.ReplicaID,
+		DeploymentID: cfg.DeploymentID,
+		Log:          log,
 	}, worker.Deps{EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey})
 	if err != nil {
 		return err

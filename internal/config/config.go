@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,7 @@ type Config struct {
 	Providers           []string
 	MarginFloor         float64
 	ReplicaID           string
+	DeploymentID        string // labels this deployment's sandboxes so the sweep keeps to its own
 	RunnerLinuxAMD64    string
 	RunnerLinuxARM64    string
 	ProviderKeys        map[string]string
@@ -48,6 +50,8 @@ var providerKeyVars = []struct{ name, env string }{
 	{"koyeb", "KOYEB_API_TOKEN"},
 	{"boat", "BOAT_API_KEY"},
 }
+
+var deploymentID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 var knownProviders = map[string]bool{
 	"koyeb": true, "boat": true, "e2b": true, "boxd": true, "local": true,
@@ -112,6 +116,11 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	c.RunnerLinuxAMD64 = get("BUGNET_RUNNER_LINUX_AMD64", "")
 	c.RunnerLinuxARM64 = get("BUGNET_RUNNER_LINUX_ARM64", "")
 	c.ReplicaID = get("BUGNET_REPLICA_ID", defaultReplicaID())
+	c.DeploymentID = get("BUGNET_DEPLOYMENT_ID", "main")
+	if !deploymentID.MatchString(c.DeploymentID) {
+		return Config{}, fmt.Errorf(
+			"config: BUGNET_DEPLOYMENT_ID must be 1 to 32 lowercase letters, digits or hyphens")
+	}
 	c.LocalEnabled = get("BUGNET_ENABLE_LOCAL_PROVIDER", "") == "1"
 	c.LocalRoot = get("BUGNET_LOCAL_ROOT", filepath.Join(os.TempDir(), "bugnet-local"))
 	c.LocalRunnerPath = get("BUGNET_LOCAL_RUNNER", "")

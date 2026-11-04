@@ -25,7 +25,7 @@ func (dw *deadlineWorker) Work(ctx context.Context, job *river.Job[jobargs.Deadl
 	return dw.w.deadline(ctx, job.Args)
 }
 
-// deadline ends a ready placement whose paid time is up and waits again for one that was extended
+// deadline ends a placement whose paid time is up and waits again for one that was extended
 func (w *Worker) deadline(ctx context.Context, args jobargs.Deadline) error {
 	p, err := w.store.PlacementByID(ctx, args.PlacementID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -35,7 +35,8 @@ func (w *Worker) deadline(ctx context.Context, args jobargs.Deadline) error {
 	if err != nil {
 		return err
 	}
-	if p.State != store.PlacementReady {
+	// A terminating placement is ended again, since an earlier try broke off before it finished
+	if p.State != store.PlacementReady && p.State != store.PlacementTerminating {
 		return nil
 	}
 	if p.Deadline != nil && p.Deadline.Sub(w.now()) > rescheduleAfter {

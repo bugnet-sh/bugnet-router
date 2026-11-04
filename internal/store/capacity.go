@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -46,4 +47,65 @@ func (s *Store) SetCapacity(ctx context.Context, provider string, limit int) err
 		return fmt.Errorf("set capacity: %w", err)
 	}
 	return nil
+}
+
+// errFull rolls back a placement's claim on a provider that has no free slot
+var errFull = errors.New("store: provider is full")
+
+// ReservePlacementCapacity takes a slot on provider for a placing placement that holds none
+func (s *Store) ReservePlacementCapacity(
+	ctx context.Context, id uuid.UUID, provider string,
+) (bool, error) {
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := s.Tx(tx)
+		// The placement row is locked before the capacity row, in the order a release takes them
+		err := ts.transition(ctx, id, "hold capacity", `
+			update placements set capacity_provider = $2
+			where id = $1 and state = $3 and capacity_provider is null`,
+			provider, PlacementPlacing)
+		if err != nil {
+			return err
+		}
+		ok, err := ts.ReserveCapacity(ctx, provider)
+		if err == nil && !ok {
+			return errFull
+		}
+		return err
+	})
+	if errors.Is(err, errFull) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ReleasePlacementCapacity frees the slot a placement holds and reports whether it held one
+func (s *Store) ReleasePlacementCapacity(ctx context.Context, id uuid.UUID) (bool, error) {
+	released := false
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		var provider string
+		// RETURNING sees the cleared column, so the provider comes from the locked row
+		err := tx.QueryRow(ctx, `
+			with held as (
+				select id, capacity_provider from placements
+				where id = $1 and capacity_provider is not null
+				for update)
+			update placements p set capacity_provider = null from held
+			where p.id = held.id
+			returning held.capacity_provider`, id).Scan(&provider)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("clear held capacity: %w", err)
+		}
+		released = true
+		return s.Tx(tx).ReleaseCapacity(ctx, provider)
+	})
+	if err != nil {
+		return false, err
+	}
+	return released, nil
 }

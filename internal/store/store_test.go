@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -13,10 +14,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/oynozan/bugnet-router/migrations"
 )
 
 func newStore(t *testing.T) *store.Store {
@@ -428,7 +432,7 @@ func TestPendingOutboxSkipsLockedRows(t *testing.T) {
 	}
 }
 
-func TestReadyPastDeadline(t *testing.T) {
+func TestReadyOrTerminatingPastDeadline(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -436,22 +440,29 @@ func TestReadyPastDeadline(t *testing.T) {
 	overdue := newPlacement(t, s, "overdue")
 	due := newPlacement(t, s, "due")
 	newPlacement(t, s, "placing")
+	ending := newPlacement(t, s, "ending")
 	ended := newPlacement(t, s, "ended")
 	for p, deadline := range map[uuid.UUID]time.Time{
 		overdue.ID: now.Add(-time.Second), due.ID: now.Add(time.Second),
-		ended.ID: now.Add(-time.Hour),
+		ending.ID: now.Add(-time.Hour), ended.ID: now.Add(-time.Hour),
 	} {
-		err := s.MarkPlacementReady(ctx, p, ref, "s", now.Add(-time.Hour), deadline)
+		err := s.MarkPlacementReady(ctx, p, ref, "s", now.Add(-2*time.Hour), deadline)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.MarkPlacementTerminating(ctx, ended.ID); err != nil {
+	for _, id := range []uuid.UUID{ending.ID, ended.ID} {
+		if _, err := s.MarkPlacementTerminating(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkPlacementTerminated(ctx, ended.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := s.ReadyPastDeadline(ctx, now)
-	if err != nil || len(ids) != 1 || ids[0] != overdue.ID {
-		t.Fatalf("ReadyPastDeadline = %v, %v, want only %s", ids, err, overdue.ID)
+	ids, err := s.ReadyOrTerminatingPastDeadline(ctx, now)
+	if want := []uuid.UUID{ending.ID, overdue.ID}; err != nil || !slices.Equal(ids, want) {
+		t.Fatalf("ReadyOrTerminatingPastDeadline = %v, %v, want %v oldest deadline first", ids,
+			err, want)
 	}
 }
 
@@ -846,5 +857,190 @@ func TestPing(t *testing.T) {
 	pool.Close()
 	if err := s.Ping(t.Context()); err == nil {
 		t.Fatal("ping a closed pool succeeded")
+	}
+}
+
+func inUse(t *testing.T, pool *pgxpool.Pool, name string) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `select coalesce(
+		(select in_use from provider_capacity where provider = $1), 0)`, name).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func held(t *testing.T, s *store.Store, id uuid.UUID) string {
+	t.Helper()
+	p, err := s.PlacementByID(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.CapacityProvider
+}
+
+func TestPlacementCapacityHeldOnce(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	if err := s.SetCapacity(ctx, "a", 1); err != nil {
+		t.Fatal(err)
+	}
+	p := newPlacement(t, s, "p")
+	q := newPlacement(t, s, "q")
+	if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "a"); err != nil || !ok {
+		t.Fatalf("reserve for p = %v, %v", ok, err)
+	}
+	if got := held(t, s, p.ID); got != "a" {
+		t.Fatalf("p holds capacity on %q, want a", got)
+	}
+	_, err := s.ReservePlacementCapacity(ctx, p.ID, "b")
+	if !errors.Is(err, store.ErrStateConflict) || inUse(t, pool, "b") != 0 {
+		t.Fatalf("second reserve for p: %v with %d in use on b, want a state conflict and 0",
+			err, inUse(t, pool, "b"))
+	}
+	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a"); err != nil || ok {
+		t.Fatalf("reserve for q on a full provider = %v, %v, want false", ok, err)
+	}
+	if got := held(t, s, q.ID); got != "" || inUse(t, pool, "a") != 1 {
+		t.Fatalf("q holds %q with %d in use on a, want nothing and 1", got, inUse(t, pool, "a"))
+	}
+
+	err = s.WithTx(ctx, func(tx pgx.Tx) error {
+		if ok, err := s.Tx(tx).ReleasePlacementCapacity(ctx, p.ID); err != nil || !ok {
+			t.Errorf("release in a transaction = %v, %v", ok, err)
+		}
+		return errors.New("roll back")
+	})
+	if err == nil || held(t, s, p.ID) != "a" || inUse(t, pool, "a") != 1 {
+		t.Fatalf("a rolled back release left p holding %q with %d in use", held(t, s, p.ID),
+			inUse(t, pool, "a"))
+	}
+	for i, want := range []bool{true, false} {
+		released, err := s.ReleasePlacementCapacity(ctx, p.ID)
+		if err != nil || released != want {
+			t.Fatalf("release %d = %v, %v, want %v", i, released, err, want)
+		}
+	}
+	if got := held(t, s, p.ID); got != "" || inUse(t, pool, "a") != 0 {
+		t.Fatalf("after release p holds %q with %d in use, want nothing and 0", got,
+			inUse(t, pool, "a"))
+	}
+	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a"); err != nil || !ok {
+		t.Fatalf("reserve for q after the release = %v, %v", ok, err)
+	}
+
+	failed := newPlacement(t, s, "failed")
+	if err := s.MarkPlacementFailed(ctx, failed.ID, "x", true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.ReservePlacementCapacity(ctx, failed.ID, "b")
+	if !errors.Is(err, store.ErrStateConflict) || inUse(t, pool, "b") != 0 {
+		t.Fatalf("reserve for a failed placement: %v with %d in use, want a state conflict and 0",
+			err, inUse(t, pool, "b"))
+	}
+	if _, err := s.ReservePlacementCapacity(ctx, uuid.New(), "b"); !errors.Is(err,
+		store.ErrStateConflict) {
+		t.Fatalf("reserve for an unknown placement: %v, want a state conflict", err)
+	}
+}
+
+func TestReleasePlacementCapacityRacingReleaseFreesOneSlot(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	x := newPlacement(t, s, "x")
+	y := newPlacement(t, s, "y")
+	for _, p := range []store.Placement{x, y} {
+		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "b"); err != nil || !ok {
+			t.Fatalf("reserve = %v, %v", ok, err)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if ok, err := s.Tx(tx).ReleasePlacementCapacity(ctx, x.ID); err != nil || !ok {
+		t.Fatalf("first release = %v, %v", ok, err)
+	}
+	// The second release starts while the first is uncommitted and waits on the row lock
+	second := make(chan bool, 1)
+	go func() {
+		ok, err := s.ReleasePlacementCapacity(ctx, x.ID)
+		if err != nil {
+			t.Error(err)
+		}
+		second <- ok
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second release never waited on the first")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if <-second || inUse(t, pool, "b") != 1 {
+		t.Fatalf("the racing release freed a slot too, %d in use, want y's slot kept",
+			inUse(t, pool, "b"))
+	}
+}
+
+func TestMigrateKeepsHeldCapacity(t *testing.T) {
+	url := testenv.DatabaseURL(t)
+	ctx := context.Background()
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	gp, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gp.UpTo(ctx, 2); err != nil {
+		t.Fatalf("migrate to 2: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+		insert into placements (id, handle_sha256, order_id, package_id, state, provider)
+		values ('00000000-0000-0000-0000-000000000001', 'h1', 'o1', 'p', 'ready', 'a'),
+			('00000000-0000-0000-0000-000000000002', 'h2', 'o2', 'p', 'terminating', 'b'),
+			('00000000-0000-0000-0000-000000000003', 'h3', 'o3', 'p', 'terminated', 'a'),
+			('00000000-0000-0000-0000-000000000004', 'h4', 'o4', 'p', 'placing', null),
+			('00000000-0000-0000-0000-000000000005', 'h5', 'o5', 'p', 'placing', null);
+		insert into placement_attempts (placement_id, attempt, provider, state)
+		values ('00000000-0000-0000-0000-000000000004', 1, 'a', 'failed'),
+			('00000000-0000-0000-0000-000000000004', 2, 'c', 'creating'),
+			('00000000-0000-0000-0000-000000000005', 1, 'a', 'failed')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, url); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	s := store.New(pool)
+	want := []string{"a", "b", "", "c", ""}
+	for i, w := range want {
+		id := uuid.MustParse(fmt.Sprintf("00000000-0000-0000-0000-%012d", i+1))
+		if got := held(t, s, id); got != w {
+			t.Errorf("placement %d holds capacity on %q, want %q", i+1, got, w)
+		}
 	}
 }

@@ -21,9 +21,6 @@ const (
 	unlabelledAfter = 10 * time.Minute
 )
 
-// ownedLabels selects every sandbox the router created
-var ownedLabels = map[string]string{"bugnet": "1"}
-
 type sweepWorker struct {
 	river.WorkerDefaults[jobargs.Sweep]
 	w *Worker
@@ -36,11 +33,11 @@ func (sw *sweepWorker) Work(ctx context.Context, _ *river.Job[jobargs.Sweep]) er
 	return nil
 }
 
-// sweepSandboxes destroys every router sandbox on every provider that no placement needs
+// sweepSandboxes destroys every sandbox of this deployment on every provider no placement needs
 func (w *Worker) sweepSandboxes(ctx context.Context) {
 	for _, prov := range w.registry.Ordered() {
 		lctx, cancel := context.WithTimeout(ctx, callTimeout)
-		owned, err := prov.ListOwned(lctx, ownedLabels)
+		owned, err := prov.ListOwned(lctx, w.saga.OwnedLabels())
 		cancel()
 		if err != nil {
 			w.log.Error("sweep list sandboxes", "provider", prov.Name(), "err", err)
@@ -54,10 +51,15 @@ func (w *Worker) sweepSandboxes(ctx context.Context) {
 	}
 }
 
-// leftover reports whether a sandbox has no live placement on it, ending an expired one first
+// leftover reports whether a sandbox still needs destroying, ending an expired placement first
 func (w *Worker) leftover(ctx context.Context, prov provider.Provider, o provider.Summary) bool {
 	id, err := uuid.Parse(o.Labels["placement"])
 	if err != nil {
+		if o.CreatedAt.IsZero() {
+			w.log.Warn("sweep keeps a sandbox of unknown age without a placement label",
+				"provider", prov.Name(), "sandbox", o.Ref.ID)
+			return false
+		}
 		return w.now().Sub(o.CreatedAt) > unlabelledAfter
 	}
 	p, err := w.store.PlacementByID(ctx, id)
@@ -74,13 +76,12 @@ func (w *Worker) leftover(ctx context.Context, prov provider.Provider, o provide
 	case p.ProviderRef != nil && (p.Provider != prov.Name() || p.ProviderRef.ID != o.Ref.ID):
 		return true
 	case p.Deadline != nil && w.now().Sub(*p.Deadline) > expiredAfter:
-		if p.State == store.PlacementReady {
-			err := w.saga.Terminate(ctx, p.ID, saga.ReasonDeadline)
-			if err != nil && !errors.Is(err, saga.ErrNotReady) {
-				w.log.Error("sweep terminate expired placement", "placement", p.ID, "err", err)
-			}
+		// Terminate destroys the sandbox itself, a bare destroy only stops the bill when it fails
+		err := w.saga.Terminate(ctx, p.ID, saga.ReasonDeadline)
+		if err != nil {
+			w.log.Error("sweep terminate expired placement", "placement", p.ID, "err", err)
 		}
-		return true
+		return err != nil
 	}
 	return false
 }

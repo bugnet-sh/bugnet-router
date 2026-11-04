@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/testenv"
 )
@@ -98,10 +101,30 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 	}
 	_, prefix := testenv.Valkey(t)
 	setEnv(t, url, prefix)
+	t.Setenv("BUGNET_DEPLOYMENT_ID", "blue")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
+	reg, err := providers.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := reg.Get("local")
+	orphan := func(deployment string) provider.Ref {
+		size, _ := prov.SizeFor(provider.Resources{VCPU: 1})
+		ref, err := prov.Create(t.Context(), provider.CreateRequest{
+			IdempotencyKey: deployment, Size: size, Lifetime: time.Hour,
+			Labels: map[string]string{
+				"bugnet": "1", "bugnet_deployment": deployment, "placement": uuid.NewString(),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ref
+	}
+	blue, green := orphan("blue"), orphan("green")
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +157,11 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 				get(base+"/readyz"), swept)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	left, err := prov.ListOwned(t.Context(), nil)
+	if err != nil || len(left) != 1 || left[0].Ref.ID != green.ID {
+		t.Fatalf("sandboxes after the sweep %+v, %v, want only green %s and not blue %s", left,
+			err, green.ID, blue.ID)
 	}
 
 	cancel()

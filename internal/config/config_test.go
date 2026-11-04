@@ -52,6 +52,9 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if c.WorkerListenAddr != ":8081" {
 		t.Fatalf("worker listen addr %q, want :8081", c.WorkerListenAddr)
 	}
+	if c.DeploymentID != "main" {
+		t.Fatalf("deployment id %q, want main", c.DeploymentID)
+	}
 	if strings.Join(c.Providers, ",") != "koyeb,boat,e2b,boxd" || c.MarginFloor != 0.5 {
 		t.Fatalf("defaults: %+v", c)
 	}
@@ -110,6 +113,10 @@ func TestLoadValidation(t *testing.T) {
 		},
 		"BUGNET_LOCAL_HOURLY_MICROS":    {"BUGNET_LOCAL_HOURLY_MICROS": "-1"},
 		"non-numeric local hourly cost": {"BUGNET_LOCAL_HOURLY_MICROS": "1.5"},
+		"BUGNET_DEPLOYMENT_ID":          {"BUGNET_DEPLOYMENT_ID": "Prod"},
+		"deployment with underscore":    {"BUGNET_DEPLOYMENT_ID": "blue_green"},
+		"deployment with a space":       {"BUGNET_DEPLOYMENT_ID": "blue green"},
+		"long deployment":               {"BUGNET_DEPLOYMENT_ID": strings.Repeat("d", 33)},
 	}
 	secrets := map[string]string{
 		"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
@@ -183,6 +190,7 @@ func TestLoadOptional(t *testing.T) {
 		"BUGNET_VALKEY_PREFIX":         "t:",
 		"BUGNET_LOCAL_RUNNER":          "/r/local",
 		"BUGNET_LOCAL_HOURLY_MICROS":   "1500",
+		"BUGNET_DEPLOYMENT_ID":         "staging-2",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +203,14 @@ func TestLoadOptional(t *testing.T) {
 	}
 	if c.ListenAddr != ":9" || c.WorkerListenAddr != ":10" {
 		t.Fatalf("listen addrs %q and %q", c.ListenAddr, c.WorkerListenAddr)
+	}
+	if c.DeploymentID != "staging-2" {
+		t.Fatalf("deployment id %q, want staging-2", c.DeploymentID)
+	}
+	long := strings.Repeat("d", 32)
+	if c, err := LoadFrom(env(t, map[string]string{"BUGNET_DEPLOYMENT_ID": long})); err != nil ||
+		c.DeploymentID != long {
+		t.Fatalf("32 character deployment id %q, %v", c.DeploymentID, err)
 	}
 	want := map[string]string{"boxd": "bk", "e2b": "ek", "boat": "ok"}
 	if len(c.ProviderKeys) != 3 {

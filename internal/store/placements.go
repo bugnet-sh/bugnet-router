@@ -31,6 +31,8 @@ type Placement struct {
 	Refundable    bool
 	SagaOwner     string
 	SagaHeartbeat *time.Time
+	// CapacityProvider is the provider whose capacity slot the placement holds, empty for none
+	CapacityProvider string
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -55,14 +57,15 @@ type Attempt struct {
 
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
 	provider_ref, coalesce(size_name, ''), deadline, created_at, ready_at, terminated_at,
-	coalesce(failure_reason, ''), refundable, coalesce(saga_owner, ''), saga_heartbeat`
+	coalesce(failure_reason, ''), refundable, coalesce(saga_owner, ''), saga_heartbeat,
+	coalesce(capacity_provider, '')`
 
 func scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var ref []byte
 	err := row.Scan(&p.ID, &p.HandleSHA256, &p.OrderID, &p.PackageID, &p.State, &p.Provider,
 		&ref, &p.SizeName, &p.Deadline, &p.CreatedAt, &p.ReadyAt, &p.TerminatedAt,
-		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat)
+		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -193,11 +196,13 @@ func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt,
 	return out, nil
 }
 
-// ReadyPastDeadline returns the ready placements whose deadline is before now
-func (s *Store) ReadyPastDeadline(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
-	return s.placementIDs(ctx, "ready past deadline", `
-		select id from placements where state = $1 and deadline < $2 order by deadline`,
-		PlacementReady, utc(now))
+// ReadyOrTerminatingPastDeadline returns the placements still to end whose deadline is before now
+func (s *Store) ReadyOrTerminatingPastDeadline(
+	ctx context.Context, now time.Time,
+) ([]uuid.UUID, error) {
+	return s.placementIDs(ctx, "ready or terminating past deadline", `
+		select id from placements where state in ($1, $2) and deadline < $3 order by deadline`,
+		PlacementReady, PlacementTerminating, utc(now))
 }
 
 // StalledPlacing returns placing placements with no heartbeat since beat, or none since created
