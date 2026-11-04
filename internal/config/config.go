@@ -32,6 +32,8 @@ type Config struct {
 	ProviderKeys        map[string]string
 	LocalEnabled        bool
 	LocalRoot           string
+	LocalRunnerPath     string // host build of bugnet-run the local provider runs
+	LocalHourlyMicros   int64
 }
 
 const minHandleKeyBytes = 32
@@ -107,6 +109,12 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	c.ReplicaID = get("BUGNET_REPLICA_ID", defaultReplicaID())
 	c.LocalEnabled = get("BUGNET_ENABLE_LOCAL_PROVIDER", "") == "1"
 	c.LocalRoot = get("BUGNET_LOCAL_ROOT", filepath.Join(os.TempDir(), "bugnet-local"))
+	c.LocalRunnerPath = get("BUGNET_LOCAL_RUNNER", "")
+	c.LocalHourlyMicros, err = strconv.ParseInt(get("BUGNET_LOCAL_HOURLY_MICROS", "0"), 10, 64)
+	if err != nil || c.LocalHourlyMicros < 0 {
+		return Config{}, fmt.Errorf(
+			"config: BUGNET_LOCAL_HOURLY_MICROS must be a non-negative whole number")
+	}
 	c.MarginFloor, err = strconv.ParseFloat(get("BUGNET_MARGIN_FLOOR", "0.5"), 64)
 	if err != nil || math.IsNaN(c.MarginFloor) || math.IsInf(c.MarginFloor, 0) ||
 		c.MarginFloor < 0 || c.MarginFloor > 10 {
@@ -129,6 +137,10 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		if name == "local" && !c.LocalEnabled {
 			return Config{}, fmt.Errorf(
 				"config: BUGNET_PROVIDERS names local but BUGNET_ENABLE_LOCAL_PROVIDER is not 1")
+		}
+		if name == "local" && c.LocalRunnerPath == "" {
+			return Config{}, fmt.Errorf(
+				"config: BUGNET_PROVIDERS names local but BUGNET_LOCAL_RUNNER is not set")
 		}
 		c.Providers = append(c.Providers, name)
 	}

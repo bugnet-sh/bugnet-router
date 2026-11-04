@@ -700,3 +700,14 @@ func TestHasExtendOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestPing(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	if err := s.Ping(t.Context()); err != nil {
+		t.Fatalf("ping an open pool: %v", err)
+	}
+	pool.Close()
+	if err := s.Ping(t.Context()); err == nil {
+		t.Fatal("ping a closed pool succeeded")
+	}
+}

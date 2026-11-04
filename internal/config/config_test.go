@@ -59,6 +59,9 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if c.EventSigningKey != nil || c.LocalEnabled || len(c.ProviderKeys) != 0 {
 		t.Fatalf("optional fields set: %+v", c)
 	}
+	if c.LocalRunnerPath != "" || c.LocalHourlyMicros != 0 {
+		t.Fatalf("local runner settings: %+v", c)
+	}
 	if c.LocalRoot != filepath.Join(os.TempDir(), "bugnet-local") {
 		t.Fatalf("local root %q", c.LocalRoot)
 	}
@@ -99,6 +102,11 @@ func TestLoadValidation(t *testing.T) {
 		"trailing comma":                {"BUGNET_PROVIDERS": "boat,"},
 		"empty entry":                   {"BUGNET_PROVIDERS": "boat,,e2b"},
 		"local":                         {"BUGNET_PROVIDERS": "boat,local"},
+		"BUGNET_LOCAL_RUNNER": {
+			"BUGNET_PROVIDERS": "e2b,local", "BUGNET_ENABLE_LOCAL_PROVIDER": "1",
+		},
+		"BUGNET_LOCAL_HOURLY_MICROS":    {"BUGNET_LOCAL_HOURLY_MICROS": "-1"},
+		"non-numeric local hourly cost": {"BUGNET_LOCAL_HOURLY_MICROS": "1.5"},
 	}
 	secrets := map[string]string{
 		"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
@@ -121,6 +129,9 @@ func TestLoadValidation(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s: expected error", name)
 			continue
+		}
+		if strings.HasPrefix(name, "BUGNET_") && !strings.Contains(err.Error(), name) {
+			t.Errorf("%s: error does not name the variable: %v", name, err)
 		}
 		for k, v := range all {
 			if strings.Contains(err.Error(), v) {
@@ -166,6 +177,8 @@ func TestLoadOptional(t *testing.T) {
 		"BUGNET_VALKEY_ADDR":           "v:1",
 		"BUGNET_LISTEN_ADDR":           ":9",
 		"BUGNET_VALKEY_PREFIX":         "t:",
+		"BUGNET_LOCAL_RUNNER":          "/r/local",
+		"BUGNET_LOCAL_HOURLY_MICROS":   "1500",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +200,9 @@ func TestLoadOptional(t *testing.T) {
 	}
 	if c.RunnerLinuxAMD64 != "/r/amd" || c.RunnerLinuxARM64 != "/r/arm" {
 		t.Fatalf("%+v", c)
+	}
+	if c.LocalRunnerPath != "/r/local" || c.LocalHourlyMicros != 1500 {
+		t.Fatalf("local runner settings: %+v", c)
 	}
 }
 

@@ -1404,3 +1404,45 @@ func TestBilledSecondsUseSagaClock(t *testing.T) {
 		t.Fatalf("terminated event %+v, want 42 billed seconds", ev)
 	}
 }
+
+func TestChannelPatternMatchesOnlyItsPrefix(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	glob := prefix + `a*b?[c]\:`
+	c, cancel := vk.Dedicate()
+	t.Cleanup(cancel)
+	msgs := make(chan string, 4)
+	subscribed := make(chan struct{})
+	var once sync.Once
+	_ = c.SetPubSubHooks(valkey.PubSubHooks{
+		OnMessage: func(m valkey.PubSubMessage) { msgs <- m.Channel },
+		OnSubscription: func(valkey.PubSubSubscription) {
+			once.Do(func() { close(subscribed) })
+		},
+	})
+	cmd := c.B().Psubscribe().Pattern(saga.ChannelPattern(glob)).Build()
+	if err := c.Do(t.Context(), cmd).Error(); err != nil {
+		t.Fatalf("psubscribe: %v", err)
+	}
+	select {
+	case <-subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("psubscribe was not confirmed")
+	}
+	id := uuid.New()
+	// The pattern with its glob characters unescaped would match this channel first
+	unescaped := saga.Channel(prefix+"aXXbYc:", id)
+	for _, ch := range []string{unescaped, saga.Channel(glob, id)} {
+		pub := vk.B().Publish().Channel(ch).Message("m").Build()
+		if err := vk.Do(t.Context(), pub).Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case ch := <-msgs:
+		if ch != saga.Channel(glob, id) {
+			t.Fatalf("pattern matched %q", ch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the placement channel did not match")
+	}
+}

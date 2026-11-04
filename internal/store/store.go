@@ -83,6 +83,14 @@ func (s *Store) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return nil
 }
 
+// Ping checks that the database answers a query
+func (s *Store) Ping(ctx context.Context) error {
+	if _, err := s.q.Exec(ctx, "select 1"); err != nil {
+		return fmt.Errorf("ping: %w", err)
+	}
+	return nil
+}
+
 func utc(t time.Time) time.Time { return t.UTC() }
 
 func utcPtr(t *time.Time) *time.Time {

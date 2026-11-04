@@ -3,13 +3,17 @@ module github.com/oynozan/bugnet-router
 go 1.27
 
 require (
+	connectrpc.com/connect v1.21.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/oynozan/bugnet-proto v0.1.0
 	github.com/oynozan/bugnet-run v0.1.2
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.51.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.0
 	github.com/valkey-io/valkey-go v1.0.79
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -32,3 +36,5 @@ require (
 )
 
 replace github.com/oynozan/bugnet-run => ../bugnet-run
+
+replace github.com/oynozan/bugnet-proto => ../bugnet-proto

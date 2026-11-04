@@ -3,6 +3,7 @@ package saga
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,9 +54,23 @@ func billedSeconds(p store.Placement) int64 {
 	return max(int64(p.TerminatedAt.Sub(*p.ReadyAt)/time.Second), 0)
 }
 
+const channelKind = "placement:"
+
 // Channel is the Valkey channel that carries a placement's changes
 func Channel(prefix string, id uuid.UUID) string {
-	return prefix + "placement:" + id.String()
+	return prefix + channelKind + id.String()
+}
+
+// ChannelPattern is the Valkey pattern matching every placement's Channel under prefix
+func ChannelPattern(prefix string) string {
+	var b strings.Builder
+	for _, r := range prefix {
+		if strings.ContainsRune(`\*?[]`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String() + channelKind + "*"
 }
 
 // publish wakes live readers after a commit, a lost message only delays them until they poll
