@@ -50,7 +50,9 @@ const (
 	readerPoll    = 5 * time.Second
 	cancelWait    = 10 * time.Second
 	finishPoll    = 50 * time.Millisecond
+	holderPoll    = 50 * time.Millisecond
 	callTimeout   = 10 * time.Second
+	retryAfter    = 5 * time.Second
 )
 
 // reasonCancelled marks the exit frame of a job that ended after a cancel was asked for
@@ -61,7 +63,11 @@ var (
 	ErrInvalid  = errors.New("jobs: invalid command")
 	ErrNotReady = errors.New("jobs: placement is not ready")
 	ErrNotFound = errors.New("jobs: job not found")
+	// ErrShuttingDown means this replica stopped taking jobs, so the caller should try a peer
+	ErrShuttingDown = errors.New("jobs: service is shutting down")
 )
+
+var errNoProvider = errors.New("jobs: provider is not configured")
 
 // Deps are the services and settings a Service works with
 type Deps struct {
@@ -120,9 +126,15 @@ func (s *Service) provider(p store.Placement) (provider.Provider, error) {
 	}
 	prov, ok := s.d.Registry.Get(p.ProviderRef.Provider)
 	if !ok {
-		return nil, fmt.Errorf("jobs: provider %q is not configured", p.ProviderRef.Provider)
+		return nil, fmt.Errorf("%w: %q", errNoProvider, p.ProviderRef.Provider)
 	}
 	return prov, nil
+}
+
+func (s *Service) closing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // expiry keeps a job's keys 10 minutes past the deadline, or past now for a job outliving it
@@ -167,27 +179,66 @@ func (s *Service) Exec(
 		wait = defaultWait
 	}
 	deadline := time.Now().Add(min(wait, maxWait))
-
-	id := newJobID(p.ID, idemKey)
-	// The lease comes first so no scanner adopts the job before its command starts
-	lease, acquired, err := s.d.Bus.AcquireLease(ctx, id, s.d.ReplicaID)
-	if err != nil {
+	if s.closing() {
+		return ExecResult{}, ErrShuttingDown
+	}
+	nj := store.NewJob{ID: newJobID(p.ID, idemKey), PlacementID: p.ID, IdempotencyKey: idemKey}
+	c := &command{argv: argv, cwd: cwd, env: env}
+	if err := s.begin(ctx, p, prov, nj, c, deadline); err != nil {
 		return ExecResult{}, err
 	}
-	if acquired {
-		nj := store.NewJob{ID: id, PlacementID: p.ID, IdempotencyKey: idemKey}
-		job, _, err := s.d.Store.CreateJob(ctx, nj)
+	return s.collect(ctx, nj.ID, until, deadline)
+}
+
+// begin records and starts the job, or waits until the Exec holding its lease has recorded it
+func (s *Service) begin(
+	ctx context.Context, p store.Placement, prov provider.Provider, nj store.NewJob, c *command,
+	deadline time.Time,
+) error {
+	for {
+		// The lease comes first so no scanner adopts the job before its command starts
+		lease, acquired, err := s.d.Bus.AcquireLease(ctx, nj.ID, s.d.ReplicaID)
 		if err != nil {
-			s.giveBack(lease, true)
-			return ExecResult{}, err
+			return err
 		}
-		if job.State == store.JobRunning {
-			s.own(lease, p, prov, &command{argv: argv, cwd: cwd, env: env})
-		} else {
-			s.giveBack(lease, true)
+		if acquired {
+			return s.start(ctx, lease, p, prov, nj, c)
+		}
+		// The holder records the job at once unless it failed, and then its lease ends or expires
+		if _, err := s.d.Store.JobByID(ctx, nj.ID); !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			return fmt.Errorf("%w: %s was never recorded", ErrNotFound, nj.ID)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(min(holderPoll, left)):
 		}
 	}
-	return s.collect(ctx, id, until, deadline)
+}
+
+func (s *Service) start(
+	ctx context.Context, lease streams.Lease, p store.Placement, prov provider.Provider,
+	nj store.NewJob, c *command,
+) error {
+	if s.closing() {
+		s.giveBack(lease, false)
+		return ErrShuttingDown
+	}
+	job, _, err := s.d.Store.CreateJob(ctx, nj)
+	if err != nil {
+		s.giveBack(lease, true)
+		return err
+	}
+	if job.State == store.JobRunning {
+		s.own(lease, p, prov, c)
+	} else {
+		s.giveBack(lease, true)
+	}
+	return nil
 }
 
 type tails struct {
@@ -200,20 +251,23 @@ func (t *tails) add(f frame.Frame) {
 	if !ok {
 		return
 	}
-	b := append(t.data[i], f.Data...)
-	if len(b) > tailSize {
-		b = b[len(b)-tailSize:]
-	}
-	t.data[i] = b
+	t.data[i] = keepLast(t.data[i], f.Data, tailSize)
 	t.size[i] = max(t.size[i], f.Offset+int64(len(f.Data)))
+}
+
+// keepLast appends data to buf and returns at most the last n bytes of the result
+func keepLast(buf, data []byte, n int) []byte {
+	b := append(buf, data...)
+	if len(b) > n {
+		b = b[len(b)-n:]
+	}
+	return b
 }
 
 func (s *Service) collect(
 	ctx context.Context, id string, until Until, deadline time.Time,
 ) (ExecResult, error) {
 	r := s.reader(id, "", until)
-	// The lease holder may not have recorded the job yet
-	r.missingOK = true
 	var t tails
 	end, err := r.follow(ctx, deadline, func(e streams.Entry) error {
 		t.add(e.Frame)
@@ -272,12 +326,11 @@ func (s *Service) Watch(
 }
 
 type reader struct {
-	s         *Service
-	job       string
-	cursor    string
-	missingOK bool
-	next      [2]int64
-	progress  progress
+	s        *Service
+	job      string
+	cursor   string
+	next     [2]int64
+	progress progress
 }
 
 // ending says why follow stopped, both fields nil when until was met or the deadline passed
@@ -325,7 +378,6 @@ func (r *reader) follow(
 			}
 			job, err := r.s.d.Store.JobByID(ctx, r.job)
 			switch {
-			case errors.Is(err, store.ErrNotFound) && r.missingOK:
 			case errors.Is(err, store.ErrNotFound):
 				return ending{}, fmt.Errorf("%w: %s", ErrNotFound, r.job)
 			case err != nil:
@@ -404,21 +456,32 @@ func (s *Service) Cancel(ctx context.Context, p store.Placement, jobID string) (
 	if err := s.d.Bus.RequestCancel(ctx, jobID, expiry(p.Deadline)); err != nil {
 		return "", err
 	}
+	if err := runCancel(ctx, prov, *p.ProviderRef, jobID); err != nil {
+		// A cancel that never reached the job must not mark its natural exit as cancelled
+		clearCtx, done := detached(ctx)
+		defer done()
+		return "", errors.Join(err, s.d.Bus.ClearCancel(clearCtx, jobID))
+	}
+	return s.awaitFinish(ctx, jobID)
+}
+
+// runCancel runs bugnet-run cancel, which exits 0 once the command is signalled or had ended
+func runCancel(ctx context.Context, prov provider.Provider, ref provider.Ref, jobID string) error {
 	argv := []string{runnerPath, "cancel", "--job", jobID}
-	es, err := prov.Exec(ctx, *p.ProviderRef, provider.ExecSpec{Argv: argv})
+	es, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: argv})
 	if err != nil {
-		return "", fmt.Errorf("run bugnet-run cancel: %w", err)
+		return fmt.Errorf("run bugnet-run cancel: %w", err)
 	}
 	_, err = io.Copy(io.Discard, es)
 	code, waitErr := es.Wait()
 	_ = es.Close()
 	if err = errors.Join(err, waitErr); err != nil {
-		return "", fmt.Errorf("run bugnet-run cancel: %w", err)
+		return fmt.Errorf("run bugnet-run cancel: %w", err)
 	}
 	if code != 0 {
-		s.d.Log.Warn("bugnet-run cancel failed", "job", jobID, "exit", code)
+		return fmt.Errorf("run bugnet-run cancel: exit status %d", code)
 	}
-	return s.awaitFinish(ctx, jobID)
+	return nil
 }
 
 func (s *Service) awaitFinish(ctx context.Context, jobID string) (string, error) {
@@ -514,17 +577,19 @@ func (s *Service) takeover(ctx context.Context, id string) {
 	if err == nil {
 		p, err = s.d.Store.PlacementByID(ctx, job.PlacementID)
 	}
-	var prov provider.Provider
-	if err == nil {
-		prov, err = s.provider(p)
-		if errors.Is(err, ErrNotReady) {
-			err = nil
-		}
+	if errors.Is(err, store.ErrNotFound) {
+		// A placement with no row is not ready, so the owner records its job lost
+		p, err = store.Placement{ID: job.PlacementID}, nil
 	}
 	if err != nil {
 		s.scanFailed(ctx, "take a job over", err)
-		s.giveBack(lease, false)
+		s.retryLater(lease)
 		return
+	}
+	// The owner records the job lost when this replica has no provider able to reach it
+	prov, err := s.provider(p)
+	if errors.Is(err, errNoProvider) {
+		s.d.Log.Warn("taking over a job this replica cannot reach", "job", id, "err", err)
 	}
 	s.d.Log.Info("taking a job over", "job", id, "replica", s.d.ReplicaID)
 	s.own(lease, p, prov, nil)
@@ -601,13 +666,24 @@ func (s *Service) forget(o *owner) {
 
 // giveBack ends the lease of a finished job, or releases it for a peer to continue the job
 func (s *Service) giveBack(l streams.Lease, finished bool) {
+	if finished {
+		s.leaseCall(l, l.End)
+	} else {
+		s.leaseCall(l, l.Release)
+	}
+}
+
+// retryLater hands the lease back for a later takeover, so scanners do not retry every pass
+func (s *Service) retryLater(l streams.Lease) {
+	s.leaseCall(l, func(ctx context.Context) error {
+		return l.Postpone(ctx, time.Now().Add(retryAfter))
+	})
+}
+
+func (s *Service) leaseCall(l streams.Lease, call func(context.Context) error) {
 	ctx, cancel := detached(s.ctx)
 	defer cancel()
-	giveBack := l.Release
-	if finished {
-		giveBack = l.End
-	}
-	if err := giveBack(ctx); err != nil && !errors.Is(err, streams.ErrLeaseLost) {
+	if err := call(ctx); err != nil && !errors.Is(err, streams.ErrLeaseLost) {
 		s.d.Log.Warn("give a job lease back", "job", l.JobID(), "err", err)
 	}
 }

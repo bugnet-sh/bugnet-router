@@ -337,3 +337,45 @@ func TestCancelRequest(t *testing.T) {
 		t.Fatalf("cancel key ttl %d, %v, want it to expire", ttl, err)
 	}
 }
+
+func TestClearCancel(t *testing.T) {
+	b, _, _ := newBus(t)
+	ctx := t.Context()
+	if err := b.RequestCancel(ctx, "j1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ClearCancel(ctx, "j1"); err != nil {
+		t.Fatal(err)
+	}
+	if asked, err := b.CancelRequested(ctx, "j1"); err != nil || asked {
+		t.Fatalf("cancel requested after clearing it: %v, %v", asked, err)
+	}
+	if err := b.ClearCancel(ctx, "j2"); err != nil {
+		t.Fatalf("clear a cancel nobody asked for: %v", err)
+	}
+}
+
+func TestPostponedLeaseWaitsForItsTime(t *testing.T) {
+	b, _, _ := newBus(t)
+	ctx := t.Context()
+	now := time.Now()
+	l := acquire(t, b, "j1", "r1")
+	if err := l.Postpone(ctx, now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if expired, err := b.ExpiredLeases(ctx, now.Add(4*time.Second)); err != nil ||
+		len(expired) != 0 {
+		t.Fatalf("expired leases before the retry time: %q, %v, want none", expired, err)
+	}
+	expired, err := b.ExpiredLeases(ctx, now.Add(5*time.Second))
+	if err != nil || !slices.Equal(expired, []string{"j1"}) {
+		t.Fatalf("expired leases at the retry time: %q, %v, want [j1]", expired, err)
+	}
+	if err := l.Postpone(ctx, now); !errors.Is(err, streams.ErrLeaseLost) {
+		t.Fatalf("postpone a lease already given up: %v, want ErrLeaseLost", err)
+	}
+	next := acquire(t, b, "j1", "r2")
+	if next.Owner() == l.Owner() {
+		t.Fatalf("the next owner reuses %s", l.Owner())
+	}
+}

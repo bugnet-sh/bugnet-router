@@ -70,6 +70,8 @@ func unixMs(t time.Time) string { return strconv.FormatInt(t.UnixMilli(), 10) }
 
 /* Leases */
 
+// The scripts assume single-node Valkey, since a job's keys and the lease set share no hash tag
+
 var acquireScript = valkey.NewLuaScript(`
 if redis.call('EXISTS', KEYS[1]) == 1 then return false end
 local epoch = redis.call('INCR', KEYS[2])
@@ -90,10 +92,10 @@ return 1
 var releaseScript = valkey.NewLuaScript(`
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return false end
 redis.call('DEL', KEYS[1])
-if ARGV[3] == '1' then
+if ARGV[3] == '' then
 	redis.call('ZREM', KEYS[2], ARGV[2])
 else
-	redis.call('ZADD', KEYS[2], 0, ARGV[2])
+	redis.call('ZADD', KEYS[2], ARGV[3], ARGV[2])
 end
 return 1
 `)
@@ -164,14 +166,23 @@ func (l Lease) Renew(ctx context.Context) error {
 
 // Release gives the lease up and marks it expired so a peer takes the job over at once
 func (l Lease) Release(ctx context.Context) error {
-	keys := []string{l.bus.key(l.job, "owner"), l.bus.leasesKey()}
-	return l.run(ctx, "release", releaseScript, keys, []string{l.owner, l.job, "0"})
+	return l.giveUp(ctx, "release", "0")
+}
+
+// Postpone gives the lease up and keeps scanners from listing the job before at
+func (l Lease) Postpone(ctx context.Context, at time.Time) error {
+	return l.giveUp(ctx, "postpone", unixMs(at))
 }
 
 // End gives the lease of a finished job up so no peer takes the job over
 func (l Lease) End(ctx context.Context) error {
+	return l.giveUp(ctx, "end", "")
+}
+
+// giveUp drops the owner and scores the job at expiry in Unix ms, unlisting it for an empty one
+func (l Lease) giveUp(ctx context.Context, what, expiry string) error {
 	keys := []string{l.bus.key(l.job, "owner"), l.bus.leasesKey()}
-	return l.run(ctx, "end", releaseScript, keys, []string{l.owner, l.job, "1"})
+	return l.run(ctx, what, releaseScript, keys, []string{l.owner, l.job, expiry})
 }
 
 // Append adds f to the job's stream and returns its entry ID, or ErrLeaseLost from a stale owner
@@ -208,12 +219,16 @@ func (b *Bus) ExpiredLeases(ctx context.Context, now time.Time) ([]string, error
 
 /* Reading */
 
-func decode(raw valkey.XRangeEntry) (Entry, error) {
-	var f frame.Frame
-	if err := json.Unmarshal([]byte(raw.FieldValues["f"]), &f); err != nil {
-		return Entry{}, fmt.Errorf("decode stream entry %s: %w", raw.ID, err)
+func decodeAll(raw []valkey.XRangeEntry) ([]Entry, error) {
+	entries := make([]Entry, 0, len(raw))
+	for _, r := range raw {
+		var f frame.Frame
+		if err := json.Unmarshal([]byte(r.FieldValues["f"]), &f); err != nil {
+			return nil, fmt.Errorf("decode stream entry %s: %w", r.ID, err)
+		}
+		entries = append(entries, Entry{ID: r.ID, Frame: f})
 	}
-	return Entry{ID: raw.ID, Frame: f}, nil
+	return entries, nil
 }
 
 // Read returns entries after cursor, from the start when it is empty, waiting up to block for one
@@ -241,16 +256,7 @@ func (b *Bus) Read(
 	if err != nil {
 		return nil, fmt.Errorf("read job %s: %w", jobID, err)
 	}
-	raw := streams[key]
-	entries := make([]Entry, 0, len(raw))
-	for _, r := range raw {
-		e, err := decode(r)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return decodeAll(streams[key])
 }
 
 func (b *Bus) revRange(ctx context.Context, jobID, end string, n int64) ([]Entry, error) {
@@ -259,15 +265,7 @@ func (b *Bus) revRange(ctx context.Context, jobID, end string, n int64) ([]Entry
 	if err != nil {
 		return nil, fmt.Errorf("read job %s backwards: %w", jobID, err)
 	}
-	entries := make([]Entry, 0, len(raw))
-	for _, r := range raw {
-		e, err := decode(r)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, e)
-	}
-	return entries, nil
+	return decodeAll(raw)
 }
 
 // Last returns the job's newest entry, reporting false for an empty stream
@@ -332,6 +330,14 @@ func (b *Bus) RequestCancel(ctx context.Context, jobID string, expireAt time.Tim
 		PxatMillisecondsTimestamp(expireAt.UnixMilli()).Build()
 	if err := b.c.Do(ctx, cmd).Error(); err != nil {
 		return fmt.Errorf("request cancel of job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// ClearCancel forgets a cancel request that never reached the job
+func (b *Bus) ClearCancel(ctx context.Context, jobID string) error {
+	if err := b.c.Do(ctx, b.c.B().Del().Key(b.key(jobID, "cancel")).Build()).Error(); err != nil {
+		return fmt.Errorf("clear cancel of job %s: %w", jobID, err)
 	}
 	return nil
 }

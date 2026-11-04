@@ -149,8 +149,13 @@ func (e *env) readyPlacement(t *testing.T) store.Placement {
 
 func (e *env) service(t *testing.T, replica string) *jobs.Service {
 	t.Helper()
+	return e.serviceWith(t, replica, e.reg)
+}
+
+func (e *env) serviceWith(t *testing.T, replica string, reg *provider.Registry) *jobs.Service {
+	t.Helper()
 	s := jobs.New(jobs.Deps{
-		Store: e.store, Bus: e.bus, Registry: e.reg, ReplicaID: replica,
+		Store: e.store, Bus: e.bus, Registry: reg, ReplicaID: replica,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	t.Cleanup(func() {
@@ -808,5 +813,160 @@ func TestReadersDropRepeatedOutput(t *testing.T) {
 	}
 	if len(all) != 5 {
 		t.Fatalf("watch delivered %d entries, want the repeat dropped", len(all))
+	}
+}
+
+// brokenCancel fails every bugnet-run cancel, by an Exec error or by naming a missing job
+type brokenCancel struct {
+	*local.Provider
+	execFails atomic.Bool
+}
+
+func (b *brokenCancel) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	if len(spec.Argv) > 1 && spec.Argv[1] == "cancel" {
+		if b.execFails.Load() {
+			return nil, errors.New("connection reset")
+		}
+		spec.Argv = []string{spec.Argv[0], "cancel", "--job", "j_missing"}
+	}
+	return b.Provider.Exec(ctx, ref, spec)
+}
+
+func TestCancelThatFailsLeavesNoMark(t *testing.T) {
+	var broken *brokenCancel
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		broken = &brokenCancel{Provider: p}
+		return broken
+	})
+	s := e.service(t, "r1")
+	argv := []string{"sh", "-c", "echo started; sleep 2; exit 7"}
+	res := e.exec(t, s, argv, "", 0, jobs.Until{Pattern: regexp.MustCompile(`started`)})
+	unmarked := func(step string) {
+		t.Helper()
+		if asked, err := e.bus.CancelRequested(t.Context(), res.JobID); err != nil || asked {
+			t.Fatalf("%s: cancel mark %v, %v, want none", step, asked, err)
+		}
+	}
+
+	broken.execFails.Store(true)
+	if _, err := s.Cancel(t.Context(), e.place, res.JobID); err == nil {
+		t.Fatal("a cancel whose exec failed reported no error")
+	}
+	unmarked("after a failed exec")
+	broken.execFails.Store(false)
+	start := time.Now()
+	if _, err := s.Cancel(t.Context(), e.place, res.JobID); err == nil {
+		t.Fatal("a cancel exiting non-zero reported no error")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("a cancel exiting non-zero returned after %v", took)
+	}
+	unmarked("after a non-zero exit")
+
+	j := waitFinished(t, e.store, res.JobID)
+	if j.State != store.JobExited || j.ExitCode == nil || *j.ExitCode != 7 {
+		t.Fatalf("job row %+v, want exited with 7", j)
+	}
+	all := watch(t, s, res.JobID, "", jobs.Until{})
+	if last := all[len(all)-1].Frame; last.Kind != frame.KindExit || last.Reason != "" {
+		t.Fatalf("stream ends with %+v, want a plain exit", last)
+	}
+}
+
+func TestExecDuringShutdownRefuses(t *testing.T) {
+	e := newEnv(t)
+	first := e.service(t, "replica-1")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	first.Shutdown(ctx)
+
+	argv := []string{"sh", "-c", "echo ran >> late.txt; cat late.txt"}
+	_, err := first.Exec(ctx, e.place, argv, "", nil, "late", time.Second, jobs.Until{})
+	if !errors.Is(err, jobs.ErrShuttingDown) {
+		t.Fatalf("exec during shutdown: %v, want ErrShuttingDown", err)
+	}
+	id := jobs.JobIDFor(e.place.ID, "late")
+	if _, err := e.store.JobByID(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("exec during shutdown recorded job %s: %v", id, err)
+	}
+	expired, err := e.bus.ExpiredLeases(ctx, time.Now().Add(time.Minute))
+	if err != nil || len(expired) != 0 {
+		t.Fatalf("exec during shutdown left leases %q, %v", expired, err)
+	}
+
+	second := e.service(t, "replica-2")
+	res := e.exec(t, second, argv, "late", 0, jobs.Until{})
+	if res.JobID != id || res.State != store.JobExited || string(res.StdoutTail) != "ran\n" {
+		t.Fatalf("the same key on a peer: %+v, want job %s run once", res, id)
+	}
+}
+
+func TestTakeoverWithoutTheProviderEndsJobLost(t *testing.T) {
+	e := newEnv(t)
+	first := e.service(t, "replica-1")
+	argv := []string{"sh", "-c", "echo up; sleep 30"}
+	res := e.exec(t, first, argv, "", 0, jobs.Until{Pattern: regexp.MustCompile(`up`)})
+	if !jobs.StopRenewing(first, res.JobID) {
+		t.Fatal("the first replica does not own the job it started")
+	}
+	second := e.serviceWith(t, "replica-2", provider.NewRegistry(nil))
+	scan(t, second)
+
+	j := waitFinished(t, e.store, res.JobID)
+	if j.State != store.JobLost || j.ExitCode != nil || j.StdoutBytes != 3 {
+		t.Fatalf("job row %+v, want lost with no exit code", j)
+	}
+	all := watch(t, second, res.JobID, "", jobs.Until{})
+	last := all[len(all)-1].Frame
+	if last.Kind != frame.KindError || last.Reason != frame.ReasonJobLost {
+		t.Fatalf("stream ends with %+v, want a job_lost error", last)
+	}
+	expired, err := e.bus.ExpiredLeases(t.Context(), time.Now().Add(time.Minute))
+	if err != nil || len(expired) != 0 {
+		t.Fatalf("leases left after the job was lost: %q, %v", expired, err)
+	}
+}
+
+func TestExecWhenTheLeaseHolderRecordsNoJob(t *testing.T) {
+	e := newEnv(t)
+	s := e.service(t, "r1")
+	ctx := t.Context()
+	id := jobs.JobIDFor(e.place.ID, "orphan")
+	// A holder that never records the job, as one whose CreateJob failed or that crashed
+	ghost, ok, err := e.bus.AcquireLease(ctx, id, "ghost")
+	if err != nil || !ok {
+		t.Fatalf("acquire: %v, %v", ok, err)
+	}
+	argv := []string{"sh", "-c", "echo ran >> orphan.txt; cat orphan.txt"}
+
+	start := time.Now()
+	_, err = s.Exec(ctx, e.place, argv, "", nil, "orphan", 500*time.Millisecond, jobs.Until{})
+	if !errors.Is(err, jobs.ErrNotFound) {
+		t.Fatalf("exec behind a holder that records nothing: %v, want ErrNotFound", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("exec behind a holder that records nothing returned after %v", took)
+	}
+	if _, err := e.store.JobByID(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job %s recorded: %v", id, err)
+	}
+
+	gone := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		gone <- ghost.End(context.Background())
+	}()
+	start = time.Now()
+	res := e.exec(t, s, argv, "orphan", 10*time.Second, jobs.Until{})
+	if err := <-gone; err != nil {
+		t.Fatal(err)
+	}
+	if res.JobID != id || res.State != store.JobExited || string(res.StdoutTail) != "ran\n" {
+		t.Fatalf("exec after the holder gave up: %+v, want job %s run once", res, id)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("exec after the holder gave up took %v", took)
 	}
 }
