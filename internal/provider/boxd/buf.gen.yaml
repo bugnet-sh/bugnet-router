@@ -1,0 +1,14 @@
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-go
+    out: boxdpb
+    opt:
+      - paths=source_relative
+      - Mapi.proto=github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb
+  - local: protoc-gen-go-grpc
+    out: boxdpb
+    opt:
+      - paths=source_relative
+      - Mapi.proto=github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb

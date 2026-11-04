@@ -1,6 +1,7 @@
 package providers_test
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +54,33 @@ func TestBuildLocalRefusesWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestBuildBoxd(t *testing.T) {
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"boxd"},
+		ProviderKeys: map[string]string{"boxd": "bxd_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := reg.Get("boxd")
+	if !ok {
+		t.Fatalf("registry %v lacks boxd", reg.Ordered())
+	}
+	t.Cleanup(func() { _ = p.(io.Closer).Close() })
+	if !p.Capabilities().NeedsRunnerUpload || p.BillingIncrement() != time.Second {
+		t.Fatalf("boxd capabilities %+v, increment %v", p.Capabilities(), p.BillingIncrement())
+	}
+}
+
+func TestBuildBoxdNeedsKey(t *testing.T) {
+	_, err := providers.Build(config.Config{Providers: []string{"boxd"}})
+	if err == nil || !strings.Contains(err.Error(), "BOXD_API_KEY") {
+		t.Fatalf("build boxd without a key: %v", err)
+	}
+}
+
 func TestBuildRejectsProvidersWithoutAdapter(t *testing.T) {
-	for _, name := range []string{"koyeb", "boat", "e2b", "boxd"} {
+	for _, name := range []string{"koyeb", "boat", "e2b"} {
 		_, err := providers.Build(config.Config{Providers: []string{name}})
 		if err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("build %s: %v", name, err)

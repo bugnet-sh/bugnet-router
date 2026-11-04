@@ -8,6 +8,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/boxd"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
 )
 
@@ -31,6 +32,16 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 				Increment:        time.Second,
 				RunnerPath:       cfg.LocalRunnerPath,
 			})
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
+		case "boxd":
+			key := cfg.ProviderKeys["boxd"]
+			if key == "" {
+				return nil, fmt.Errorf("providers: boxd needs BOXD_API_KEY")
+			}
+			p, err := boxd.New(boxd.Options{APIKey: key})
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}

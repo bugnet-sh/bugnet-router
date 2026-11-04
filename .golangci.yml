@@ -12,6 +12,14 @@ linters:
     lll:
       line-length: 100
       tab-width: 4
+  exclusions:
+    paths:
+      - internal/provider/boxd/boxdpb
+    rules:
+      - path: internal/provider/boxd/
+        linters:
+          - revive
+        text: "var-naming: method \\w*Vm\\w* should be"
 
 formatters:
   enable:
