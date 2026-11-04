@@ -42,6 +42,9 @@ func TestPostgresDropsDatabaseOnCleanup(t *testing.T) {
 		}
 	})
 
+	if name == "" {
+		t.Fatal("inner test recorded no database name")
+	}
 	other := testenv.Postgres(t)
 	var n int
 	err := other.QueryRow(ctx,

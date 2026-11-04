@@ -18,6 +18,7 @@ import (
 const (
 	defaultPGURL     = "postgres://localhost:5432/postgres?sslmode=disable"
 	defaultValkeyURL = "localhost:6379"
+	cleanupTimeout   = 10 * time.Second
 )
 
 func randomHex(t *testing.T) string {
@@ -53,14 +54,16 @@ func DatabaseURL(t *testing.T) string {
 		t.Fatalf("create database: %v", err)
 	}
 	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), admin)
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		c, err := pgx.Connect(ctx, admin)
 		if err != nil {
 			t.Errorf("connect to postgres for drop: %v", err)
 			return
 		}
-		defer func() { _ = c.Close(context.Background()) }()
+		defer func() { _ = c.Close(ctx) }()
 		drop := "drop database if exists " + pgx.Identifier{name}.Sanitize() + " with (force)"
-		if _, err := c.Exec(context.Background(), drop); err != nil {
+		if _, err := c.Exec(ctx, drop); err != nil {
 			t.Errorf("drop database %s: %v", name, err)
 		}
 	})
@@ -99,7 +102,7 @@ func Valkey(t *testing.T) (valkey.Client, string) {
 	prefix := "bn:test:" + randomHex(t) + ":"
 	t.Cleanup(func() {
 		defer client.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		var cursor uint64
 		for {
