@@ -92,8 +92,10 @@ type fakeE2B struct {
 	envd *httptest.Server
 
 	// noRange makes envd ignore Range headers like a server without range support
-	noRange  bool
-	pageSize int
+	noRange bool
+	// noContentRange drops Content-Range from partial answers like a proxy that strips it
+	noContentRange bool
+	pageSize       int
 
 	mu       sync.Mutex
 	boxes    map[string]*fakeSandbox
@@ -122,6 +124,7 @@ func newFake(t *testing.T) *fakeE2B {
 	for pattern, h := range map[string]http.HandlerFunc{
 		"POST /v2/sandboxes":           f.create,
 		"GET /v2/sandboxes":            f.list,
+		"GET /sandboxes/{id}":          f.get,
 		"DELETE /sandboxes/{id}":       f.kill,
 		"POST /sandboxes/{id}/timeout": f.timeout,
 	} {
@@ -447,6 +450,24 @@ func (f *fakeE2B) list(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Next-Token", strconv.Itoa(end))
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (f *fakeE2B) get(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	box, ok := f.boxes[id]
+	if !ok {
+		writeError(w, http.StatusNotFound, "", "sandbox \""+id+"\" not found")
+		return
+	}
+	domain, md := fakeDomain, api.SandboxMetadata(maps.Clone(box.metadata))
+	writeJSON(w, http.StatusOK, api.SandboxDetail{
+		SandboxID: box.id, TemplateID: box.templateID, ClientID: "6532622b",
+		StartedAt: box.started, EndAt: box.endAt, CpuCount: 2, MemoryMB: 2048,
+		DiskSizeMB: 10240, Metadata: &md, State: api.SandboxState(box.state),
+		EnvdVersion: fakeEnvd, EnvdAccessToken: &box.token, Domain: &domain,
+	})
 }
 
 func (f *fakeE2B) kill(w http.ResponseWriter, r *http.Request) {
@@ -791,8 +812,20 @@ func (f *fakeE2B) download(w http.ResponseWriter, r *http.Request) {
 	if f.noRange {
 		r.Header.Del("Range")
 	}
+	if f.noContentRange {
+		w = dropContentRange{w}
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "", info.ModTime(), file)
+}
+
+type dropContentRange struct{ http.ResponseWriter }
+
+func (d dropContentRange) WriteHeader(status int) {
+	if status == http.StatusPartialContent {
+		d.Header().Del("Content-Range")
+	}
+	d.ResponseWriter.WriteHeader(status)
 }
 
 // upload writes like envd, files it creates get mode 0644 and files it replaces keep theirs

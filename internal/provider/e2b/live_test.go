@@ -69,6 +69,9 @@ func TestE2BLiveArch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ref.Meta["envd_token"] == "" {
+		t.Errorf("ref meta %v has no envd_token, v2 sandboxes are always secured", ref.Meta)
+	}
 	if err := p.WaitReady(ctx, ref); err != nil {
 		t.Fatal(err)
 	}

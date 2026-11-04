@@ -107,7 +107,16 @@ var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 // faulty fails reads of /fault/<code> with that provider error code and can hold readiness
 type faulty struct {
 	*local.Provider
-	hold <-chan struct{} // WaitReady waits for it to close, when set
+	hold        <-chan struct{} // WaitReady waits for it to close, when set
+	maxLifetime time.Duration   // replaces the local provider's cap, when set
+}
+
+func (f faulty) Capabilities() provider.Capabilities {
+	c := f.Provider.Capabilities()
+	if f.maxLifetime > 0 {
+		c.MaxLifetime = f.maxLifetime
+	}
+	return c
 }
 
 func (f faulty) WaitReady(ctx context.Context, ref provider.Ref) error {
@@ -131,8 +140,9 @@ func (f faulty) ReadFile(
 }
 
 type options struct {
-	readyDelay time.Duration
-	holdReady  <-chan struct{}
+	readyDelay  time.Duration
+	holdReady   <-chan struct{}
+	maxLifetime time.Duration
 }
 
 type env struct {
@@ -192,7 +202,9 @@ func newEnv(t *testing.T, opts options) *env {
 		Increment: time.Second, RunnerPath: runnerPath, ReadyDelay: opts.readyDelay,
 	})
 	t.Cleanup(func() { destroyAll(t, prov) })
-	reg := provider.NewRegistry([]provider.Provider{faulty{Provider: prov, hold: opts.holdReady}})
+	reg := provider.NewRegistry([]provider.Provider{faulty{
+		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
+	}})
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	st := store.New(pool)
@@ -1266,6 +1278,16 @@ func TestErrorCodes(t *testing.T) {
 		wantCode(t, extend(th, e.extendToken(t, th, morePkg, morePrice)),
 			connect.CodeFailedPrecondition)
 	})
+	t.Run("extension past the provider's max lifetime is a failed precondition",
+		func(t *testing.T) {
+			capped := newEnv(t, options{maxLifetime: 20 * time.Minute})
+			ch, _ := capped.readyPlacement(t)
+			_, err := capped.client.ExtendPlacement(ctx, connect.NewRequest(
+				&routerv1.ExtendPlacementRequest{
+					Handle: ch, OrderToken: capped.extendToken(t, ch, morePkg, morePrice),
+				}))
+			wantCode(t, err, connect.CodeFailedPrecondition)
+		})
 	t.Run("file over 256 KiB is invalid", func(t *testing.T) {
 		_, err := e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
 			Handle: h, Path: "/root/big", Data: make([]byte, maxFile+1),

@@ -37,6 +37,7 @@ var codes = []struct {
 	{jobs.ErrInvalid, connect.CodeInvalidArgument},
 	{streams.ErrBadCursor, connect.CodeInvalidArgument},
 	{saga.ErrNotReady, connect.CodeFailedPrecondition},
+	{saga.ErrExceedsLifetime, connect.CodeFailedPrecondition},
 	{jobs.ErrNotReady, connect.CodeFailedPrecondition},
 	{errNotReady, connect.CodeFailedPrecondition},
 	{placement.ErrNoCandidate, connect.CodeResourceExhausted},

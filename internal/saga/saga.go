@@ -44,12 +44,13 @@ import (
 
 // Errors the API maps to status codes
 var (
-	ErrBadToken       = errors.New("saga: bad order token")
-	ErrUnderpaid      = errors.New("saga: amount below the package price")
-	ErrUnknownPackage = errors.New("saga: unknown package")
-	ErrNotReady       = errors.New("saga: placement is not ready")
-	ErrHandleMismatch = errors.New("saga: order token is for another handle")
-	ErrNotExtension   = errors.New("saga: package does not extend this placement")
+	ErrBadToken        = errors.New("saga: bad order token")
+	ErrUnderpaid       = errors.New("saga: amount below the package price")
+	ErrUnknownPackage  = errors.New("saga: unknown package")
+	ErrNotReady        = errors.New("saga: placement is not ready")
+	ErrHandleMismatch  = errors.New("saga: order token is for another handle")
+	ErrNotExtension    = errors.New("saga: package does not extend this placement")
+	ErrExceedsLifetime = errors.New("saga: extension outlasts the provider's maximum lifetime")
 )
 
 // ReasonStop is the termination reason when the placement's owner stops it
@@ -630,6 +631,10 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if err != nil {
 		return store.Placement{}, err
 	}
+	by := time.Duration(pkg.Minutes) * time.Minute
+	if err := withinLifetime(prov, p, p.Deadline.Add(by)); err != nil {
+		return store.Placement{}, err
+	}
 
 	var applied bool
 	var ev Event
@@ -637,9 +642,12 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	// The lifetime is set inside the transaction so a refusal also takes back the extension
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		p, applied, err = s.d.Store.Tx(tx).ExtendDeadline(ctx, c.OrderID, id,
-			time.Duration(pkg.Minutes)*time.Minute)
+		p, applied, err = s.d.Store.Tx(tx).ExtendDeadline(ctx, c.OrderID, id, by)
 		if err != nil || !applied {
+			return err
+		}
+		// A concurrent extension may have moved the deadline since the check above
+		if err := withinLifetime(prov, p, *p.Deadline); err != nil {
 			return err
 		}
 		lctx, cancel := step(ctx)
@@ -668,6 +676,16 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	}
 	s.publish(ctx, ev)
 	return p, nil
+}
+
+// withinLifetime refuses a deadline whose sandbox would outlast the provider's maximum lifetime
+func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
+	limit := prov.Capabilities().MaxLifetime
+	if life := deadline.Add(lifetimeSlack).Sub(p.CreatedAt); limit > 0 && life > limit {
+		return fmt.Errorf("%w: %v from creation, %s allows %v", ErrExceedsLifetime,
+			life.Round(time.Second), prov.Name(), limit)
+	}
+	return nil
 }
 
 // replayExtend answers a repeated extend order with the placement as it is now

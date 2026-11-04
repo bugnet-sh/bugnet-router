@@ -179,6 +179,40 @@ func (l lifetimeProbe) SetLifetime(ctx context.Context, ref provider.Ref, until 
 	return l.Provider.SetLifetime(ctx, ref, until)
 }
 
+// capped caps its sandboxes' lifetime at limit, unlimited when zero, and can hold one SetLifetime
+type capped struct {
+	*local.Provider
+	limit   time.Duration
+	calls   *atomic.Int64
+	hold    *atomic.Bool  // the next SetLifetime waits for release while set
+	held    chan struct{} // closed once a SetLifetime is held
+	release chan struct{}
+}
+
+func newCapped(t *testing.T, root string, limit time.Duration) capped {
+	t.Helper()
+	return capped{
+		Provider: newLocal(t, local.Options{Name: "a", Root: root}), limit: limit,
+		calls: &atomic.Int64{}, hold: &atomic.Bool{}, held: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (c capped) Capabilities() provider.Capabilities {
+	caps := c.Provider.Capabilities()
+	caps.MaxLifetime = c.limit
+	return caps
+}
+
+func (c capped) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
+	c.calls.Add(1)
+	if c.hold.CompareAndSwap(true, false) {
+		close(c.held)
+		<-c.release
+	}
+	return c.Provider.SetLifetime(ctx, ref, until)
+}
+
 // clock is wall time shifted by an offset the test can move forward
 type clock struct {
 	mu     sync.Mutex
@@ -1403,6 +1437,119 @@ func TestExtendSetLifetimeFailureRollsBack(t *testing.T) {
 		t.Fatalf("provider lifetime %v, want %v", lt, want.Add(5*time.Minute))
 	}
 	e.oneEvent(t, saga.EventExtended)
+}
+
+func TestExtendRefusesPastMaxLifetime(t *testing.T) {
+	root := t.TempDir()
+	a := newCapped(t, root, 30*time.Minute)
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	want := p.Deadline.Add(10 * time.Minute)
+	if _, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice,
+		h)); err != nil {
+		t.Fatalf("extend within the provider's max lifetime: %v", err)
+	}
+
+	before := a.calls.Load()
+	for range 2 {
+		_, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-2", morePkg, morePrice, h))
+		if !errors.Is(err, saga.ErrExceedsLifetime) {
+			t.Fatalf("extend past the max lifetime gave %v, want ErrExceedsLifetime", err)
+		}
+	}
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(want) {
+		t.Fatalf("deadline %v, want %v from the first extension only", got.Deadline, want)
+	}
+	if n := a.calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls for a refused extension", n)
+	}
+	if lt := lifetime(t, root, p.ProviderRef); !near(lt, want.Add(5*time.Minute)) {
+		t.Fatalf("provider lifetime %v, want %v", lt, want.Add(5*time.Minute))
+	}
+	recorded, err := e.store.HasExtendOrder(t.Context(), "ext-2", p.ID)
+	if err != nil || recorded {
+		t.Fatalf("refused order recorded %v, %v", recorded, err)
+	}
+	e.oneEvent(t, saga.EventExtended)
+	if jobs := e.deadlineJobs(t); len(jobs) != 2 {
+		t.Fatalf("deadline jobs %+v, want the first and the extension's", jobs)
+	}
+
+	unlimited := newEnv(t, newCapped(t, t.TempDir(), 0))
+	_, uh := unlimited.placeReady(t, "order-2")
+	for _, order := range []string{"ext-3", "ext-4"} {
+		tok := unlimited.extendToken(t, order, morePkg, morePrice, uh)
+		if _, err := unlimited.saga.Extend(t.Context(), uh, tok); err != nil {
+			t.Fatalf("extend %s without a max lifetime: %v", order, err)
+		}
+	}
+}
+
+func TestExtendMaxLifetimeHoldsForConcurrentOrders(t *testing.T) {
+	a := newCapped(t, t.TempDir(), 30*time.Minute)
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	tok1 := e.extendToken(t, "ext-1", morePkg, morePrice, h)
+	tok2 := e.extendToken(t, "ext-2", morePkg, morePrice, h)
+	free := sync.OnceFunc(func() { close(a.release) })
+	t.Cleanup(free)
+	a.hold.Store(true)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.saga.Extend(t.Context(), h, tok1)
+		first <- err
+	}()
+	select {
+	case <-a.held:
+	case err := <-first:
+		t.Fatalf("first extension ended before setting the lifetime: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("first extension never set the lifetime")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := e.saga.Extend(t.Context(), h, tok2)
+		second <- err
+	}()
+	e.waitForLockWait(t)
+	free()
+
+	if err := <-first; err != nil {
+		t.Fatalf("first extension: %v", err)
+	}
+	if err := <-second; !errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Fatalf("second extension gave %v, want ErrExceedsLifetime", err)
+	}
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(p.Deadline.Add(10 * time.Minute)) {
+		t.Fatalf("deadline %v, want %v", got.Deadline, p.Deadline.Add(10*time.Minute))
+	}
+	if recorded, err := e.store.HasExtendOrder(t.Context(), "ext-2", p.ID); err != nil ||
+		recorded {
+		t.Fatalf("refused order recorded %v, %v", recorded, err)
+	}
+	e.oneEvent(t, saga.EventExtended)
+}
+
+// waitForLockWait returns once a session of the test's database waits on a lock
+func (e *env) waitForLockWait(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		err := e.pool.QueryRow(t.Context(), `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no session waited on a lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestExtendReplayAfterStop(t *testing.T) {

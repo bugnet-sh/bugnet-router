@@ -71,7 +71,15 @@ func TestE2BSendsHardeningFlags(t *testing.T) {
 	}
 
 	box, _ := f.box(ref.ID)
-	meta := map[string]string{"arch": "amd64", "domain": fakeDomain, "envd_token": box.token}
+	created, err := time.Parse(time.RFC3339, ref.Meta["created_at"])
+	if err != nil || created.After(box.started) || box.started.Sub(created) > 2*time.Second {
+		t.Errorf("ref created_at %q, want the second the sandbox started at %v or just before",
+			ref.Meta["created_at"], box.started)
+	}
+	meta := map[string]string{
+		"arch": "amd64", "domain": fakeDomain, "envd_token": box.token,
+		"created_at": ref.Meta["created_at"],
+	}
 	if ref.Provider != "e2b" || !maps.Equal(ref.Meta, meta) {
 		t.Errorf("ref %+v, want meta %v", ref, meta)
 	}
@@ -378,21 +386,60 @@ func TestE2BCreateRejectsBadInput(t *testing.T) {
 func TestE2BSetLifetime(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
-	ref := f.add(nil)
-	if err := p.SetLifetime(t.Context(), ref, time.Now().Add(time.Hour)); err != nil {
+	ctx := t.Context()
+	ref, err := createKey(t, p, "key-lifetime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetLifetime(ctx, ref, time.Now().Add(50*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	box, _ := f.box(ref.ID)
 	left := time.Until(box.endAt)
-	if left < time.Hour-2*time.Second || left > time.Hour+2*time.Second {
-		t.Fatalf("sandbox ends in %v, want an hour", left)
+	if left < 50*time.Minute-2*time.Second || left > 50*time.Minute+2*time.Second {
+		t.Fatalf("sandbox ends in %v, want 50 minutes", left)
 	}
-	if err := p.SetLifetime(t.Context(), ref, time.Now().Add(-time.Minute)); err != nil {
+	if err := p.SetLifetime(ctx, ref, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	box, _ = f.box(ref.ID)
 	if left = time.Until(box.endAt); left <= 0 || left > 2*time.Second {
 		t.Fatalf("a past lifetime left %v, want the one second minimum", left)
+	}
+
+	created, err := time.Parse(time.RFC3339, ref.Meta["created_at"])
+	if err != nil {
+		t.Fatalf("ref meta %v has no creation time: %v", ref.Meta, err)
+	}
+	err = p.SetLifetime(ctx, ref, created.Add(time.Hour+time.Second))
+	if !isCode(err, provider.CodeInvalid) {
+		t.Fatalf("lifetime past the cap gave %v, want invalid", err)
+	}
+	if n := f.callCount("POST /sandboxes/{id}/timeout"); n != 2 {
+		t.Fatalf("%d timeout calls, want the refused one kept from E2B", n)
+	}
+	if n := f.callCount("GET /sandboxes/{id}"); n != 0 {
+		t.Fatalf("%d sandbox lookups for a ref that carries its creation time", n)
+	}
+
+	old := f.add(nil)
+	f.setBox(old.ID, func(b *fakeSandbox) { b.started = time.Now().Add(-50 * time.Minute) })
+	err = p.SetLifetime(ctx, old, time.Now().Add(15*time.Minute))
+	if !isCode(err, provider.CodeInvalid) {
+		t.Fatalf("lifetime past the cap of a ref without its creation time gave %v", err)
+	}
+	if err := p.SetLifetime(ctx, old, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("lifetime within the cap of a ref without its creation time: %v", err)
+	}
+	if n := f.callCount("GET /sandboxes/{id}"); n != 2 {
+		t.Fatalf("%d sandbox lookups, want one per call on a ref without its creation time", n)
+	}
+	if err := p.Destroy(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	err = p.SetLifetime(ctx, old, time.Now().Add(time.Minute))
+	if !isCode(err, provider.CodeNotFound) {
+		t.Fatalf("lifetime of a gone sandbox gave %v, want not_found", err)
 	}
 }
 
@@ -564,14 +611,18 @@ func TestE2BExecCloseCancelsStream(t *testing.T) {
 }
 
 func TestE2BFiles(t *testing.T) {
-	for _, noRange := range []bool{false, true} {
-		name := "range"
-		if noRange {
-			name = "whole file"
-		}
-		t.Run(name, func(t *testing.T) {
+	modes := []struct {
+		name                    string
+		noRange, noContentRange bool
+	}{
+		{name: "range"},
+		{name: "range without content range", noContentRange: true},
+		{name: "whole file", noRange: true},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
 			f := newFake(t)
-			f.noRange = noRange
+			f.noRange, f.noContentRange = mode.noRange, mode.noContentRange
 			p := f.provider(t, fakeKey)
 			ref := f.add(nil)
 			ctx := t.Context()
@@ -597,6 +648,8 @@ func TestE2BFiles(t *testing.T) {
 				{int64(len(data) - 3), 2, data[len(data)-3 : len(data)-1], false},
 				{int64(len(data) - 3), 3, data[len(data)-3:], true},
 				{5, 0, nil, false},
+				{int64(len(data) - 1), 0, nil, false},
+				{int64(len(data)), 0, nil, true},
 				{int64(len(data)), 10, nil, true},
 				{int64(len(data) + 50), 10, nil, true},
 			}
@@ -607,7 +660,7 @@ func TestE2BFiles(t *testing.T) {
 						r.offset, r.length, len(got), eof, err, len(r.want), r.eof)
 				}
 			}
-			tail := fmt.Sprintf("bytes=%d-%d", len(data)-3, len(data)-2)
+			tail := fmt.Sprintf("bytes=%d-%d", len(data)-3, len(data)-1)
 			if asked := f.rangesAsked(); !slices.Contains(asked, tail) ||
 				!slices.Contains(asked, "bytes=5-5") {
 				t.Errorf("reads asked for ranges %v, want %s and bytes=5-5 among them", asked, tail)
@@ -919,7 +972,7 @@ func create(ctx context.Context, p *Provider, _ provider.Ref) error {
 }
 
 func setLifetime(ctx context.Context, p *Provider, ref provider.Ref) error {
-	return p.SetLifetime(ctx, ref, time.Now().Add(time.Hour))
+	return p.SetLifetime(ctx, ref, time.Now().Add(30*time.Minute))
 }
 
 func listOwned(ctx context.Context, p *Provider, _ provider.Ref) error {

@@ -3,10 +3,11 @@
 // E2B fixes vCPU and memory per template, so every size is a template the account has built.
 // Create sends the labels as metadata, the lifetime as the timeout, public traffic and auto
 // pause off, and an Idempotency-Key derived from the request's key, and it keeps the envd access
-// token from the reply in the ref. Calls to envd go through E2B's sandbox proxy, routed by
-// headers, and run as root. Commands go over envd's Connect Process service, file contents over
-// its /files endpoint and listings over its Filesystem service. An upload cannot carry a mode,
-// so WriteFile runs chmod when the mode is not the one envd gives new files.
+// token from the reply and the creation time in the ref, so SetLifetime can hold the plan's
+// lifetime cap. Calls to envd go through E2B's sandbox proxy, routed by headers, and run as root.
+// Commands go over envd's Connect Process service, file contents over its /files endpoint and
+// listings over its Filesystem service. An upload cannot carry a mode, so WriteFile runs chmod
+// when the mode is not the one envd gives new files.
 package e2b
 
 import (
@@ -286,6 +287,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, invalid(fmt.Errorf("lifetime %v is not within e2b's limit of %v",
 			req.Lifetime, p.maxLifetime))
 	}
+	// V2 has no secure flag because E2B issues an envd access token to every v2 sandbox
 	body := api.NewSandboxV2{
 		TemplateID: p.templates[i].TemplateID,
 		Timeout:    new(seconds(req.Lifetime)),
@@ -299,6 +301,8 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if req.IdempotencyKey != "" {
 		params.IdempotencyKey = new(idempotencyKey(req.IdempotencyKey))
 	}
+	// Taken before sending and cut to the second so SetLifetime never undercounts the runtime
+	created := time.Now().UTC().Truncate(time.Second)
 	_, raw, err := p.send(ctx, true, func(ctx context.Context) (*http.Response, error) {
 		return p.api.PostV2Sandboxes(ctx, params, body)
 	})
@@ -313,6 +317,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		}
 	}
 	ref := newRef(sb.SandboxID)
+	ref.Meta["created_at"] = created.Format(time.RFC3339)
 	ref.Meta["domain"] = p.domain
 	if sb.Domain != nil && *sb.Domain != "" {
 		ref.Meta["domain"] = *sb.Domain
@@ -378,17 +383,46 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	}
 }
 
-// SetLifetime replaces the sandbox's timeout, which E2B counts from now
+// SetLifetime replaces the sandbox's timeout, which E2B counts from now, within the plan's cap
 func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
 	id, err := sandboxID(ref)
 	if err != nil {
 		return err
+	}
+	created, err := p.createdAt(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if life := until.Sub(created); life > p.maxLifetime {
+		return invalid(fmt.Errorf("lifetime %v from creation is over e2b's limit of %v",
+			life.Round(time.Second), p.maxLifetime))
 	}
 	body := api.SandboxTimeoutRequest{Timeout: seconds(time.Until(until))}
 	_, _, err = p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
 		return p.api.PostSandboxesSandboxIDTimeout(ctx, id, body)
 	})
 	return err
+}
+
+// createdAt reads the creation time Create kept in the ref, or asks E2B when the ref lacks it
+func (p *Provider) createdAt(ctx context.Context, ref provider.Ref) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, ref.Meta["created_at"]); err == nil {
+		return t, nil
+	}
+	_, raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		return p.api.GetSandboxesSandboxID(ctx, ref.ID)
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	var sb api.SandboxDetail
+	if err := json.Unmarshal(raw, &sb); err != nil || sb.StartedAt.IsZero() {
+		return time.Time{}, &provider.Error{
+			Code: provider.CodeInternal,
+			Err:  fmt.Errorf("e2b sandbox %s reply has no start time: %.200s", ref.ID, raw),
+		}
+	}
+	return sb.StartedAt, nil
 }
 
 // Destroy kills the sandbox and treats one already gone as destroyed
@@ -870,8 +904,8 @@ func (p *Provider) ReadFile(
 	if err != nil {
 		return nil, false, err
 	}
-	// A zero length still asks for one byte, which tells whether offset is at the end
-	last := offset + int64(max(length, 1)) - 1
+	// One byte past the slice tells whether it reaches the end, with or without Content-Range
+	last := offset + int64(length)
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-"+strconv.FormatInt(last, 10))
 	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := p.envd.Do(req)
@@ -881,30 +915,20 @@ func (p *Provider) ReadFile(
 	defer drainClose(resp)
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
-		data, err := io.ReadAll(io.LimitReader(resp.Body, int64(length)))
+		data, err := io.ReadAll(io.LimitReader(resp.Body, int64(length)+1))
 		if err != nil {
 			return nil, false, envdError(err)
 		}
-		if total, ok := rangeTotal(resp.Header.Get("Content-Range")); ok {
-			return data, offset+int64(len(data)) >= total, nil
+		if len(data) > length {
+			return data[:length], false, nil
 		}
-		return data, len(data) < length, nil
+		return data, true, nil
 	case http.StatusRequestedRangeNotSatisfiable:
 		return nil, true, nil
 	case http.StatusOK:
 		return readSlice(resp.Body, offset, length)
 	}
 	return nil, false, filesError(resp)
-}
-
-// rangeTotal reads the file size from a Content-Range such as bytes 0-9/100
-func rangeTotal(h string) (int64, bool) {
-	i := strings.LastIndexByte(h, '/')
-	if i < 0 {
-		return 0, false
-	}
-	total, err := strconv.ParseInt(h[i+1:], 10, 64)
-	return total, err == nil
 }
 
 // readSlice cuts the range out of a whole file, reading at most one byte past it
