@@ -1,0 +1,23 @@
+{
+	"packages": [
+		{
+			"id": "dev-small-1m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 1,
+			"price_micros": 10000
+		},
+		{
+			"id": "dev-small-10m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 50000
+		},
+		{
+			"id": "dev-small-10m-more",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 45000,
+			"extension_of": "dev-small-10m"
+		}
+	]
+}

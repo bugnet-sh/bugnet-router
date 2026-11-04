@@ -1,0 +1,639 @@
+// Command bugnet-dev drives a Sandbox Router from the terminal during development.
+//
+// keys and token work offline. Every other command calls the API at BUGNET_API_URL over
+// unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and extend sign their own
+// order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from BUGNET_PACKAGES_FILE. exec and
+// watch write a job's output to stdout and stderr as it arrives and exit with the job's code.
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"connectrpc.com/connect"
+	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/handle"
+	"github.com/oynozan/bugnet-router/internal/ordertoken"
+)
+
+const usage = `usage: bugnet-dev <command> [flags]
+
+  keys                                   print fresh secrets as KEY=value lines
+  token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
+        [--priv K]                       print a signed order token
+  create --package P [--order O] [--token T]
+                                         create a placement and wait until it is ready
+  get --handle H                         print a placement
+  extend --handle H --package P [--order O] [--token T]
+                                         extend a ready placement
+  stop --handle H                        stop a placement
+  exec --handle H [--cwd D] [--env K=V]... -- ARGV
+                                         run a command and stream its output
+  watch --handle H --job J [--cursor C]  stream a job's output after a cursor
+
+Environment
+  BUGNET_API_URL            router API, default http://127.0.0.1:8080
+  BUGNET_INTERNAL_TOKEN     bearer token for the API
+  BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
+  BUGNET_PACKAGES_FILE      catalog that prices a token when --amount is not given
+`
+
+const (
+	defaultAPIURL = "http://127.0.0.1:8080"
+	defaultTTL    = 10 * time.Minute
+	pollWaitMs    = 25000
+	// execWaitMs keeps Exec short so the output streams through WatchJob as it arrives
+	execWaitMs  = 1
+	secretBytes = 32
+)
+
+var errUsage = errors.New("bad usage")
+
+// exitCode ends bugnet-dev with a job's exit code
+type exitCode int
+
+func (c exitCode) Error() string { return "exit code " + strconv.Itoa(int(c)) }
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Getenv)
+	stop()
+	os.Exit(code)
+}
+
+type cli struct {
+	ctx    context.Context
+	stdout io.Writer
+	stderr io.Writer
+	getenv func(string) string
+}
+
+// run executes one command and returns the process exit code, 2 for bad usage
+func run(
+	ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string,
+) int {
+	c := &cli{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
+	commands := map[string]func([]string) error{
+		"keys": c.keys, "token": c.token, "create": c.create, "get": c.get,
+		"extend": c.extend, "stop": c.stop, "exec": c.exec, "watch": c.watch,
+	}
+	switch {
+	case len(args) == 0:
+		_, _ = io.WriteString(stderr, usage)
+		return 2
+	case args[0] == "-h" || args[0] == "--help" || args[0] == "help":
+		_, _ = io.WriteString(stdout, usage)
+		return 0
+	}
+	command, ok := commands[args[0]]
+	if !ok {
+		_, _ = fmt.Fprintf(stderr, "bugnet-dev: unknown command %q\n\n%s", args[0], usage)
+		return 2
+	}
+	err := command(args[1:])
+	var code exitCode
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &code):
+		return int(code)
+	case errors.Is(err, flag.ErrHelp):
+		_, _ = io.WriteString(stdout, usage)
+		return 0
+	case errors.Is(err, errUsage):
+		_, _ = fmt.Fprintf(stderr, "bugnet-dev %s: %v\n\n%s", args[0], err, usage)
+		return 2
+	}
+	_, _ = fmt.Fprintf(stderr, "bugnet-dev %s: %v\n", args[0], err)
+	return 1
+}
+
+/* Arguments */
+
+func newFlags(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+// parse refuses positional arguments unless the command takes them
+func parse(fs *flag.FlagSet, args []string, positional bool) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+	if !positional && fs.NArg() > 0 {
+		return fmt.Errorf("%w: unexpected argument %q", errUsage, fs.Arg(0))
+	}
+	return nil
+}
+
+func required(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%w: --%s is required", errUsage, name)
+	}
+	return nil
+}
+
+func isSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+// envFlag collects repeated --env K=V values
+type envFlag map[string]string
+
+func (e envFlag) String() string { return "" }
+
+func (e envFlag) Set(kv string) error {
+	k, v, ok := strings.Cut(kv, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("%q is not K=V", kv)
+	}
+	e[k] = v
+	return nil
+}
+
+/* Keys and tokens */
+
+func (c *cli) keys(args []string) error {
+	if err := parse(newFlags("keys"), args, false); err != nil {
+		return err
+	}
+	orderPub, orderPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	eventPub, eventPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	token, handleKey := make([]byte, secretBytes), make([]byte, secretBytes)
+	for _, b := range [][]byte{token, handleKey} {
+		if _, err := rand.Read(b); err != nil {
+			return err
+		}
+	}
+	b64 := base64.StdEncoding.EncodeToString
+	return c.print([][2]string{
+		{"BUGNET_INTERNAL_TOKEN", hex.EncodeToString(token)},
+		{"BUGNET_ORDER_TOKEN_PUBLIC_KEY", b64(orderPub)},
+		{"BUGNET_ORDER_PRIVATE_KEY", b64(orderPriv.Seed())},
+		{"BUGNET_HANDLE_KEY", b64(handleKey)},
+		{"BUGNET_EVENT_SIGNING_KEY", b64(eventPriv.Seed())},
+		{"BUGNET_EVENT_PUBLIC_KEY", b64(eventPub)},
+	})
+}
+
+// order is what an order token claims before it is signed
+type order struct {
+	kind   ordertoken.Kind
+	pkg    string
+	id     string // random when empty
+	handle string // extend tokens only
+	amount int64
+	priced bool // amount was given, so the catalog is not read
+	ttl    time.Duration
+	priv   string // BUGNET_ORDER_PRIVATE_KEY when empty
+}
+
+func (c *cli) token(args []string) error {
+	fs := newFlags("token")
+	var o order
+	kind := fs.String("kind", string(ordertoken.KindStart), "start or extend")
+	fs.StringVar(&o.pkg, "package", "", "package id")
+	fs.StringVar(&o.handle, "handle", "", "handle the extend token is for")
+	fs.StringVar(&o.id, "order", "", "order id")
+	fs.Int64Var(&o.amount, "amount", 0, "paid micro-USD")
+	fs.DurationVar(&o.ttl, "ttl", defaultTTL, "token lifetime")
+	fs.StringVar(&o.priv, "priv", "", "base64 Ed25519 private key")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	o.kind, o.priced = ordertoken.Kind(*kind), isSet(fs, "amount")
+	token, err := c.sign(o)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(c.stdout, token)
+	return err
+}
+
+func (c *cli) sign(o order) (string, error) {
+	if o.kind != ordertoken.KindStart && o.kind != ordertoken.KindExtend {
+		return "", fmt.Errorf("%w: --kind must be start or extend", errUsage)
+	}
+	if err := required("package", o.pkg); err != nil {
+		return "", err
+	}
+	if o.ttl <= 0 {
+		return "", fmt.Errorf("%w: --ttl must be positive", errUsage)
+	}
+	claims := ordertoken.Claims{
+		OrderID: o.id, Kind: o.kind, PackageID: o.pkg, AmountMicros: o.amount,
+		ExpiresAt: time.Now().UTC().Add(o.ttl),
+	}
+	if claims.OrderID == "" {
+		claims.OrderID = "dev-" + strings.ToLower(rand.Text())
+	}
+	switch {
+	case o.kind == ordertoken.KindExtend:
+		if err := required("handle", o.handle); err != nil {
+			return "", err
+		}
+		sum, err := handle.Hash(o.handle)
+		if err != nil {
+			return "", err
+		}
+		claims.HandleSHA256 = hex.EncodeToString(sum)
+	case o.handle != "":
+		return "", fmt.Errorf("%w: --handle is only for extend tokens", errUsage)
+	}
+	if !o.priced {
+		price, err := c.price(o.pkg)
+		if err != nil {
+			return "", err
+		}
+		claims.AmountMicros = price
+	}
+	key, err := c.privateKey(o.priv)
+	if err != nil {
+		return "", err
+	}
+	return ordertoken.Sign(key, claims)
+}
+
+func (c *cli) price(pkg string) (int64, error) {
+	path := c.getenv("BUGNET_PACKAGES_FILE")
+	if path == "" {
+		return 0, fmt.Errorf("%w: --amount is required when BUGNET_PACKAGES_FILE is not set",
+			errUsage)
+	}
+	cat, err := catalog.Load(path)
+	if err != nil {
+		return 0, err
+	}
+	p, ok := cat.Get(pkg)
+	if !ok {
+		return 0, fmt.Errorf("package %q is not in %s", pkg, path)
+	}
+	return p.PriceMicros, nil
+}
+
+// privateKey takes a 32-byte seed, as bugnet-dev keys prints, or a full 64-byte key
+func (c *cli) privateKey(given string) (ed25519.PrivateKey, error) {
+	raw := given
+	if raw == "" {
+		raw = c.getenv("BUGNET_ORDER_PRIVATE_KEY")
+	}
+	if raw == "" {
+		return nil, fmt.Errorf("%w: --priv or BUGNET_ORDER_PRIVATE_KEY is required", errUsage)
+	}
+	b, err := base64.StdEncoding.DecodeString(raw)
+	switch {
+	case err == nil && len(b) == ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(b), nil
+	case err == nil && len(b) == ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(b), nil
+	}
+	return nil, errors.New("the order private key must be base64 of a 32 or 64 byte key")
+}
+
+// orderToken returns given, or signs a token for o when none was given
+func (c *cli) orderToken(o order, given string) (string, error) {
+	if given != "" {
+		return given, nil
+	}
+	if c.getenv("BUGNET_ORDER_PRIVATE_KEY") == "" {
+		return "", fmt.Errorf("%w: --token is required when BUGNET_ORDER_PRIVATE_KEY is not set",
+			errUsage)
+	}
+	return c.sign(o)
+}
+
+/* Placements */
+
+func (c *cli) create(args []string) error {
+	fs := newFlags("create")
+	o := order{kind: ordertoken.KindStart, ttl: defaultTTL}
+	fs.StringVar(&o.pkg, "package", "", "package id")
+	fs.StringVar(&o.id, "order", "", "order id")
+	given := fs.String("token", "", "order token")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	token, err := c.orderToken(o, *given)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
+		OrderToken: token,
+	}))
+	if err != nil {
+		return err
+	}
+	h, p := res.Msg.GetHandle(), res.Msg.GetPlacement()
+	// The handle comes first so it is not lost when waiting is interrupted
+	if err := c.print([][2]string{{"handle", h}}); err != nil {
+		return err
+	}
+	for p.GetState() == routerv1.PlacementState_PLACEMENT_STATE_PLACING {
+		r, err := api.GetPlacement(c.ctx, connect.NewRequest(&routerv1.GetPlacementRequest{
+			Handle: h, WaitMs: pollWaitMs, KnownState: p.GetState(),
+		}))
+		if err != nil {
+			return fmt.Errorf("wait for the placement: %w", err)
+		}
+		p = r.Msg.GetPlacement()
+	}
+	if err := c.printPlacement(p); err != nil {
+		return err
+	}
+	if p.GetState() != routerv1.PlacementState_PLACEMENT_STATE_READY {
+		return fmt.Errorf("placement is %s: %s", stateName(p.GetState()), p.GetFailureReason())
+	}
+	return nil
+}
+
+// handleFlag parses a command whose only flag is --handle
+func handleFlag(name string, args []string) (string, error) {
+	fs := newFlags(name)
+	h := fs.String("handle", "", "sandbox handle")
+	if err := parse(fs, args, false); err != nil {
+		return "", err
+	}
+	return *h, required("handle", *h)
+}
+
+func (c *cli) get(args []string) error {
+	h, err := handleFlag("get", args)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.GetPlacement(c.ctx, connect.NewRequest(&routerv1.GetPlacementRequest{
+		Handle: h,
+	}))
+	if err != nil {
+		return err
+	}
+	return c.printPlacement(res.Msg.GetPlacement())
+}
+
+func (c *cli) extend(args []string) error {
+	fs := newFlags("extend")
+	o := order{kind: ordertoken.KindExtend, ttl: defaultTTL}
+	fs.StringVar(&o.handle, "handle", "", "sandbox handle")
+	fs.StringVar(&o.pkg, "package", "", "extension package id")
+	fs.StringVar(&o.id, "order", "", "order id")
+	given := fs.String("token", "", "order token")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	if err := required("handle", o.handle); err != nil {
+		return err
+	}
+	token, err := c.orderToken(o, *given)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.ExtendPlacement(c.ctx, connect.NewRequest(&routerv1.ExtendPlacementRequest{
+		Handle: o.handle, OrderToken: token,
+	}))
+	if err != nil {
+		return err
+	}
+	return c.printPlacement(res.Msg.GetPlacement())
+}
+
+func (c *cli) stop(args []string) error {
+	h, err := handleFlag("stop", args)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.StopPlacement(c.ctx, connect.NewRequest(&routerv1.StopPlacementRequest{
+		Handle: h,
+	}))
+	if err != nil {
+		return err
+	}
+	return c.printPlacement(res.Msg.GetPlacement())
+}
+
+/* Jobs */
+
+func (c *cli) exec(args []string) error {
+	fs := newFlags("exec")
+	h := fs.String("handle", "", "sandbox handle")
+	cwd := fs.String("cwd", "", "working directory")
+	env := envFlag{}
+	fs.Var(env, "env", "K=V added to the environment, repeatable")
+	if err := parse(fs, args, true); err != nil {
+		return err
+	}
+	if err := required("handle", *h); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("%w: a command is required after --", errUsage)
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.Exec(c.ctx, connect.NewRequest(&routerv1.ExecRequest{
+		Handle: *h, Argv: fs.Args(), Cwd: *cwd, Env: env, WaitMs: execWaitMs,
+	}))
+	if err != nil {
+		return err
+	}
+	m := res.Msg
+	if m.GetTruncated() {
+		// The tails miss output, so the whole stream is read from its start
+		return c.follow(api, *h, m.GetJobId(), "")
+	}
+	if _, err := c.stdout.Write(m.GetStdoutTail()); err != nil {
+		return err
+	}
+	if _, err := c.stderr.Write(m.GetStderrTail()); err != nil {
+		return err
+	}
+	switch m.GetState() {
+	case routerv1.JobState_JOB_STATE_RUNNING:
+		return c.follow(api, *h, m.GetJobId(), m.GetCursor())
+	case routerv1.JobState_JOB_STATE_EXITED, routerv1.JobState_JOB_STATE_CANCELLED:
+		return exitCode(m.GetExitCode())
+	}
+	return fmt.Errorf("job %s is %s", m.GetJobId(), m.GetState())
+}
+
+func (c *cli) watch(args []string) error {
+	fs := newFlags("watch")
+	h := fs.String("handle", "", "sandbox handle")
+	job := fs.String("job", "", "job id")
+	cursor := fs.String("cursor", "", "stream cursor, the start when empty")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	if err := required("handle", *h); err != nil {
+		return err
+	}
+	if err := required("job", *job); err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	return c.follow(api, *h, *job, *cursor)
+}
+
+// follow writes a job's output after cursor until its exit frame and returns its exit code
+func (c *cli) follow(
+	api routerv1connect.SandboxRouterServiceClient, h, job, cursor string,
+) error {
+	stream, err := api.WatchJob(c.ctx, connect.NewRequest(&routerv1.WatchJobRequest{
+		Handle: h, JobId: job, Cursor: cursor,
+	}))
+	if err != nil {
+		return resumable(err, h, job, cursor)
+	}
+	defer func() { _ = stream.Close() }()
+	for stream.Receive() {
+		m := stream.Msg()
+		switch f := m.GetFrame().(type) {
+		case *routerv1.WatchJobResponse_Output:
+			w := c.stdout
+			if f.Output.GetStream() == routerv1.OutputStream_OUTPUT_STREAM_STDERR {
+				w = c.stderr
+			}
+			if _, err := w.Write(f.Output.GetData()); err != nil {
+				return err
+			}
+		case *routerv1.WatchJobResponse_Exit:
+			return exitCode(f.Exit.GetExitCode())
+		}
+		cursor = m.GetCursor()
+	}
+	err = stream.Err()
+	if err == nil {
+		err = errors.New("the stream ended before the job exited")
+	}
+	return resumable(err, h, job, cursor)
+}
+
+// resumable adds the watch command that continues the stream, unless the job itself ended
+func resumable(err error, h, job, cursor string) error {
+	if connect.CodeOf(err) == connect.CodeAborted {
+		return err
+	}
+	resume := "bugnet-dev watch --handle " + h + " --job " + job
+	if cursor != "" {
+		resume += " --cursor " + cursor
+	}
+	return fmt.Errorf("%w\nresume with: %s", err, resume)
+}
+
+/* API */
+
+// bearer sends every request with the internal token
+type bearer struct {
+	token string
+	next  http.RoundTripper
+}
+
+func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+b.token)
+	return b.next.RoundTrip(r)
+}
+
+func (c *cli) client() (routerv1connect.SandboxRouterServiceClient, error) {
+	token := c.getenv("BUGNET_INTERNAL_TOKEN")
+	if token == "" {
+		return nil, errors.New("BUGNET_INTERNAL_TOKEN is not set")
+	}
+	url := c.getenv("BUGNET_API_URL")
+	if url == "" {
+		url = defaultAPIURL
+	}
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	rt := bearer{token: token, next: &http.Transport{Protocols: &protocols}}
+	return routerv1connect.NewSandboxRouterServiceClient(&http.Client{Transport: rt}, url), nil
+}
+
+/* Output */
+
+func (c *cli) print(kv [][2]string) error {
+	var b strings.Builder
+	for _, p := range kv {
+		b.WriteString(p[0] + "=" + p[1] + "\n")
+	}
+	_, err := io.WriteString(c.stdout, b.String())
+	return err
+}
+
+func (c *cli) printPlacement(p *routerv1.Placement) error {
+	kv := [][2]string{
+		{"placement_id", p.GetPlacementId()},
+		{"state", stateName(p.GetState())},
+		{"package_id", p.GetPackageId()},
+		{"created_at", stamp(p.GetCreatedAt())},
+	}
+	if p.GetReadyAt() != nil {
+		kv = append(kv, [2]string{"ready_at", stamp(p.GetReadyAt())})
+	}
+	if p.GetDeadline() != nil {
+		kv = append(kv, [2]string{"deadline", stamp(p.GetDeadline())})
+	}
+	if p.GetFailureReason() != "" {
+		kv = append(kv, [2]string{"failure_reason", p.GetFailureReason()},
+			[2]string{"refundable", strconv.FormatBool(p.GetRefundable())})
+	}
+	return c.print(kv)
+}
+
+func stateName(s routerv1.PlacementState) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "PLACEMENT_STATE_"))
+}
+
+func stamp(ts *timestamppb.Timestamp) string {
+	return ts.AsTime().UTC().Format(time.RFC3339Nano)
+}
