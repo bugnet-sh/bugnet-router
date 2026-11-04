@@ -206,15 +206,26 @@ func (s *Store) MarkPlacementTerminating(ctx context.Context, id uuid.UUID) (boo
 	return tag.RowsAffected() == 1, nil
 }
 
-// MarkPlacementTerminated finishes a placement and stamps its termination time
+// MarkPlacementTerminated moves a terminating placement to terminated and stamps the time.
+// A placement that is already terminated is left alone; any other state is ErrStateConflict.
 func (s *Store) MarkPlacementTerminated(ctx context.Context, id uuid.UUID) error {
-	_, err := s.q.Exec(ctx, `
-		update placements set state = $2, terminated_at = coalesce(terminated_at, now())
-		where id = $1`, id, PlacementTerminated)
+	tag, err := s.q.Exec(ctx, `
+		update placements set state = $2, terminated_at = now()
+		where id = $1 and state = $3`, id, PlacementTerminated, PlacementTerminating)
 	if err != nil {
 		return fmt.Errorf("mark terminated: %w", err)
 	}
-	return nil
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	cur, err := s.PlacementByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("mark terminated %s: %w", id, err)
+	}
+	if cur.State == PlacementTerminated {
+		return nil
+	}
+	return fmt.Errorf("mark terminated %s in state %s: %w", id, cur.State, ErrStateConflict)
 }
 
 // ExtendDeadline pushes a ready placement's deadline out once per extend order
@@ -237,7 +248,20 @@ func (s *Store) ExtendDeadline(
 			return fmt.Errorf("insert extend order: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
-			return nil
+			var kind string
+			var owner uuid.UUID
+			err := tx.QueryRow(ctx,
+				`select kind, placement_id from orders where order_id = $1`,
+				orderID).Scan(&kind, &owner)
+			if err != nil {
+				return fmt.Errorf("select order: %w", err)
+			}
+			if kind != orderExtend || owner != placementID {
+				return fmt.Errorf("order %s already used as %s for %s: %w",
+					orderID, kind, owner, ErrStateConflict)
+			}
+			out, err = ts.PlacementByID(ctx, placementID)
+			return err
 		}
 		tag, err = tx.Exec(ctx, `
 			update placements set deadline = deadline + make_interval(secs => $2)

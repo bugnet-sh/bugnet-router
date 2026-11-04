@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -329,8 +330,12 @@ func TestOutboxPendingAndDelivered(t *testing.T) {
 	if err != nil || len(pending) != 3 {
 		t.Fatalf("pending=%v err=%v", pending, err)
 	}
-	if pending[0].EventType != "a" || string(pending[0].Payload) != `{"kind": "a"}` {
-		t.Fatalf("first = %+v", pending[0])
+	var payload map[string]string
+	if err := json.Unmarshal(pending[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if pending[0].EventType != "a" || len(payload) != 1 || payload["kind"] != "a" {
+		t.Fatalf("first = %+v payload=%v", pending[0], payload)
 	}
 	if limited, _ := s.PendingOutbox(ctx, 2); len(limited) != 2 {
 		t.Fatalf("limited = %v", limited)
@@ -365,5 +370,183 @@ func TestTxBoundStoreRollsBackTogether(t *testing.T) {
 	got, _ := s.PlacementByID(ctx, p.ID)
 	if got.State != store.PlacementPlacing {
 		t.Fatalf("state = %q", got.State)
+	}
+}
+
+func TestMarkPlacementTerminatedGuards(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	ready := newPlacement(t, s, "term-ready")
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, ready.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkPlacementTerminated(ctx, ready.ID); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("terminate ready err = %v", err)
+	}
+	if moved, err := s.MarkPlacementTerminating(ctx, ready.ID); err != nil || !moved {
+		t.Fatalf("terminating moved=%v err=%v", moved, err)
+	}
+	if err := s.MarkPlacementTerminated(ctx, ready.ID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.PlacementByID(ctx, ready.ID)
+	if err != nil || first.State != store.PlacementTerminated || first.TerminatedAt == nil {
+		t.Fatalf("placement = %+v err=%v", first, err)
+	}
+	if err := s.MarkPlacementTerminated(ctx, ready.ID); err != nil {
+		t.Fatalf("repeat err = %v", err)
+	}
+	again, _ := s.PlacementByID(ctx, ready.ID)
+	if !again.TerminatedAt.Equal(*first.TerminatedAt) {
+		t.Fatalf("terminated_at changed: %v vs %v", again.TerminatedAt, first.TerminatedAt)
+	}
+
+	placing := newPlacement(t, s, "term-placing")
+	if err := s.MarkPlacementTerminated(ctx, placing.ID); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("terminate placing err = %v", err)
+	}
+	failed := newPlacement(t, s, "term-failed")
+	if err := s.MarkPlacementFailed(ctx, failed.ID, "boom", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkPlacementTerminated(ctx, failed.ID); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("terminate failed err = %v", err)
+	}
+	if got, _ := s.PlacementByID(ctx, failed.ID); got.State != store.PlacementFailed {
+		t.Fatalf("state = %q", got.State)
+	}
+	if err := s.MarkPlacementTerminated(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing err = %v", err)
+	}
+}
+
+func TestExtendDeadlineRejectsForeignOrderID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	a := newPlacement(t, s, "start-a")
+	b := newPlacement(t, s, "start-b")
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	for _, p := range []store.Placement{a, b} {
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, applied, err := s.ExtendDeadline(ctx, "start-a", a.ID, time.Minute)
+	if !errors.Is(err, store.ErrStateConflict) || applied {
+		t.Fatalf("start order as extend applied=%v err=%v", applied, err)
+	}
+	if _, _, err := s.ExtendDeadline(ctx, "ext-a", a.ID, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	_, applied, err = s.ExtendDeadline(ctx, "ext-a", b.ID, time.Minute)
+	if !errors.Is(err, store.ErrStateConflict) || applied {
+		t.Fatalf("extend order on other placement applied=%v err=%v", applied, err)
+	}
+	got, _ := s.PlacementByID(ctx, b.ID)
+	if got.Deadline.Sub(now.Add(time.Minute)).Abs() > time.Millisecond {
+		t.Fatalf("deadline moved: %v", got.Deadline)
+	}
+}
+
+func newWidePoolStore(t *testing.T) *store.Store {
+	t.Helper()
+	url := testenv.DatabaseURL(t)
+	ctx := context.Background()
+	if err := store.Migrate(ctx, url); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 25
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return store.New(pool)
+}
+
+func TestCreatePlacementConcurrentSameOrder(t *testing.T) {
+	s := newWidePoolStore(t)
+	ctx := context.Background()
+	const n = 20
+	var wg sync.WaitGroup
+	var createdCount atomic.Int32
+	ids := make([]uuid.UUID, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, created, err := s.CreatePlacement(ctx, store.NewPlacement{
+				OrderID: "same", HandleSHA256: []byte("h"), PackageID: "pkg",
+			})
+			ids[i], errs[i] = p.ID, err
+			if created {
+				createdCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d: %v", i, errs[i])
+		}
+		if ids[i] != ids[0] {
+			t.Fatalf("goroutine %d id %s want %s", i, ids[i], ids[0])
+		}
+	}
+	if got := createdCount.Load(); got != 1 {
+		t.Fatalf("created %d times", got)
+	}
+}
+
+func TestExtendDeadlineConcurrentSameOrder(t *testing.T) {
+	s := newWidePoolStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	now := time.Now().UTC()
+	deadline := now.Add(time.Minute)
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline); err != nil {
+		t.Fatal(err)
+	}
+	const n = 20
+	var wg sync.WaitGroup
+	var appliedCount atomic.Int32
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, applied, err := s.ExtendDeadline(ctx, "ext-1", p.ID, 10*time.Minute)
+			errs[i] = err
+			if applied {
+				appliedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+	if got := appliedCount.Load(); got != 1 {
+		t.Fatalf("applied %d times", got)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := deadline.Add(10 * time.Minute)
+	if got.Deadline.Sub(want).Abs() > time.Millisecond {
+		t.Fatalf("deadline = %v want %v", got.Deadline, want)
 	}
 }

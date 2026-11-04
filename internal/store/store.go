@@ -92,3 +92,10 @@ func utcPtr(t *time.Time) *time.Time {
 	u := t.UTC()
 	return &u
 }
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

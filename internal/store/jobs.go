@@ -111,10 +111,3 @@ func (s *Store) RunningJobs(ctx context.Context) ([]Job, error) {
 	}
 	return out, nil
 }
-
-func nullIfEmpty(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
