@@ -6,6 +6,7 @@ require (
 	connectrpc.com/connect v1.21.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/koyeb/koyeb-api-client-go v0.0.0-20261103164324-d88c544f1680
 	github.com/oapi-codegen/runtime v1.8.0
 	github.com/oynozan/bugnet-proto v0.1.0
 	github.com/oynozan/bugnet-run v0.1.2
@@ -34,6 +35,7 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
@@ -42,3 +44,6 @@ require (
 replace github.com/oynozan/bugnet-run => ../bugnet-run
 
 replace github.com/oynozan/bugnet-proto => ../bugnet-proto
+
+// The Koyeb client's old oauth2 pulls in a 2020 genproto that also holds googleapis/rpc
+replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20261005182115-fad411399dd8

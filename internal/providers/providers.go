@@ -14,6 +14,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/boxd"
 	"github.com/oynozan/bugnet-router/internal/provider/e2b"
+	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
 )
 
@@ -61,6 +62,12 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
 			ps = append(ps, p)
+		case "koyeb":
+			p, err := buildKoyeb(cfg.ProviderKeys["koyeb"])
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
 		default:
 			return nil, fmt.Errorf("providers: %s has no adapter yet", name)
 		}
@@ -92,5 +99,21 @@ func buildE2B(key string) (*e2b.Provider, error) {
 		Domain:      os.Getenv("BUGNET_E2B_DOMAIN"),
 		Templates:   templates,
 		MaxLifetime: lifetime,
+	})
+}
+
+// buildKoyeb reads the Koyeb settings, every fra instance type is a size unless some are named
+func buildKoyeb(token string) (*koyeb.Provider, error) {
+	if token == "" {
+		return nil, errors.New("koyeb needs KOYEB_API_TOKEN")
+	}
+	types, err := koyeb.ParseInstanceTypes(os.Getenv("BUGNET_KOYEB_INSTANCE_TYPES"))
+	if err != nil {
+		return nil, fmt.Errorf("BUGNET_KOYEB_INSTANCE_TYPES: %w", err)
+	}
+	return koyeb.New(koyeb.Options{
+		APIToken:           token,
+		Region:             cmp.Or(os.Getenv("BUGNET_KOYEB_REGION"), "fra"),
+		InstanceTypeBySize: types,
 	})
 }

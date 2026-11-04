@@ -198,8 +198,69 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 	}
 }
 
+func TestBuildKoyeb(t *testing.T) {
+	t.Setenv("BUGNET_KOYEB_REGION", "")
+	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"koyeb"},
+		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := reg.Get("koyeb")
+	if !ok {
+		t.Fatalf("registry %v lacks koyeb", reg.Ordered())
+	}
+	caps := p.Capabilities()
+	if !caps.NeedsRunnerUpload || !caps.GPU || caps.MaxLifetime != 24*time.Hour ||
+		p.BillingIncrement() != time.Second {
+		t.Fatalf("koyeb capabilities %+v, increment %v", caps, p.BillingIncrement())
+	}
+	size, ok := p.SizeFor(provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10})
+	if !ok || size.Name != "medium" || p.HourlyCostMicros(size) != 28800 {
+		t.Fatalf("size for 2 vCPU: %+v, %v", size, ok)
+	}
+}
+
+func TestBuildKoyebInstanceTypes(t *testing.T) {
+	t.Setenv("BUGNET_KOYEB_REGION", "par")
+	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "cpu=large")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"koyeb"},
+		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := reg.Get("koyeb")
+	size, ok := p.SizeFor(provider.Resources{})
+	if !ok || size.Name != "cpu" || size.Resources.VCPU != 4 {
+		t.Fatalf("size from BUGNET_KOYEB_INSTANCE_TYPES: %+v, %v", size, ok)
+	}
+	if s, ok := p.SizeFor(provider.Resources{GPUCount: 1}); ok || p.Capabilities().GPU {
+		t.Fatalf("configured sizes without a GPU offer %+v and capabilities %+v", s,
+			p.Capabilities())
+	}
+}
+
+func TestBuildKoyebRejectsBadConfig(t *testing.T) {
+	_, err := providers.Build(config.Config{Providers: []string{"koyeb"}})
+	if err == nil || !strings.Contains(err.Error(), "KOYEB_API_TOKEN") {
+		t.Fatalf("build koyeb without a token: %v", err)
+	}
+	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "cpu=nano")
+	_, err = providers.Build(config.Config{
+		Providers:    []string{"koyeb"},
+		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "BUGNET_KOYEB_INSTANCE_TYPES") {
+		t.Fatalf("build koyeb with an unknown instance type: %v", err)
+	}
+}
+
 func TestBuildRejectsProvidersWithoutAdapter(t *testing.T) {
-	for _, name := range []string{"koyeb", "boat"} {
+	for _, name := range []string{"boat"} {
 		_, err := providers.Build(config.Config{Providers: []string{name}})
 		if err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("build %s: %v", name, err)

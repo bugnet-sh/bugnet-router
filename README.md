@@ -119,6 +119,8 @@ URL.
 | `BUGNET_E2B_DOMAIN` | `e2b.app` | E2B region domain, `e2b-juliett.dev` for EU-West-1 |
 | `BUGNET_E2B_MAX_LIFETIME` | `1h` | Longest lifetime the E2B plan allows, `24h` on Pro |
 | `KOYEB_API_TOKEN` | empty | Koyeb credentials |
+| `BUGNET_KOYEB_REGION` | `fra` | Koyeb region every sandbox runs in |
+| `BUGNET_KOYEB_INSTANCE_TYPES` | every fra type | Comma-separated `size=instanceType` sizes to sell |
 | `BOAT_API_KEY` | empty | Boat credentials |
 
 Only `router-api` reads these.
@@ -152,4 +154,5 @@ Money is integer micro-USD and times are UTC.
 - `boxd` runs isolated boxd machines.
 - `e2b` runs E2B sandboxes from templates built with `deploy/e2b`. Without
   `BUGNET_E2B_TEMPLATES` it has no sizes and is never chosen.
-- Adapters for Koyeb and Boat arrive next, until then `BUGNET_PROVIDERS` must not name them.
+- `koyeb` runs Koyeb sandbox services, one app each, with the RTX 4000 SFF Ada for GPU packages.
+- An adapter for Boat arrives next, until then `BUGNET_PROVIDERS` must not name it.

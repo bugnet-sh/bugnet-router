@@ -1,10 +1,12 @@
 package jobs_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -744,6 +747,150 @@ func TestOwnerReattachesAfterStreamDrops(t *testing.T) {
 	}
 	if got := output(t, e.streamed(t, res.JobID), frame.KindStdout); got != lines(1, 20) {
 		t.Fatalf("the stream across the drop holds %q, want lines 1 to 20 once each", got)
+	}
+}
+
+// lossyStream drops one line of the first runner stream as Koyeb's executor may, noting attaches
+type lossyStream struct {
+	*local.Provider
+	// beforeExit drops the stdout line just before the exit frame instead of the third one
+	beforeExit bool
+	execs      atomic.Int64
+	mu         sync.Mutex
+	dropped    *frame.Frame
+	attaches   [][]string
+}
+
+func (l *lossyStream) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	n := l.execs.Add(1)
+	if len(spec.Argv) > 1 && spec.Argv[1] == "attach" {
+		l.mu.Lock()
+		l.attaches = append(l.attaches, slices.Clone(spec.Argv))
+		l.mu.Unlock()
+	}
+	es, err := l.Provider.Exec(ctx, ref, spec)
+	if err != nil || n > 1 {
+		return es, err
+	}
+	return &lossyReader{ExecStream: es, l: l, lines: bufio.NewReader(es)}, nil
+}
+
+// drop records f as the lost line, once
+func (l *lossyStream) drop(f frame.Frame) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.dropped != nil {
+		return false
+	}
+	l.dropped = &f
+	return true
+}
+
+func (l *lossyStream) seen() (*frame.Frame, [][]string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dropped, slices.Clone(l.attaches)
+}
+
+type lossyReader struct {
+	provider.ExecStream
+	l      *lossyStream
+	lines  *bufio.Reader
+	stdout int
+	held   []byte
+	out    []byte
+	err    error
+}
+
+func (r *lossyReader) Read(p []byte) (int, error) {
+	for len(r.out) == 0 && r.err == nil {
+		line, err := r.lines.ReadBytes('\n')
+		if len(line) > 0 {
+			r.feed(line)
+		}
+		if err != nil {
+			r.out, r.held, r.err = append(r.out, r.held...), nil, err
+		}
+	}
+	if len(r.out) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.out)
+	r.out = r.out[n:]
+	return n, nil
+}
+
+// feed passes a frame line on unless it is the one line the stream loses
+func (r *lossyReader) feed(line []byte) {
+	var f frame.Frame
+	_ = json.Unmarshal(line, &f)
+	if !r.l.beforeExit {
+		if f.Kind == frame.KindStdout {
+			r.stdout++
+			if r.stdout == 3 && r.l.drop(f) {
+				return
+			}
+		}
+		r.out = append(r.out, line...)
+		return
+	}
+	if r.held != nil {
+		var held frame.Frame
+		_ = json.Unmarshal(r.held, &held)
+		lost := f.Kind == frame.KindExit && held.Kind == frame.KindStdout && r.l.drop(held)
+		if !lost {
+			r.out = append(r.out, r.held...)
+		}
+	}
+	r.held = line
+}
+
+func TestOwnerReattachesWhenTheStreamSkipsOutput(t *testing.T) {
+	cases := []struct {
+		name       string
+		beforeExit bool
+	}{
+		{"a line in the middle", false},
+		{"the last line before the exit", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var lossy *lossyStream
+			e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+				lossy = &lossyStream{Provider: p, beforeExit: c.beforeExit}
+				return lossy
+			})
+			s := e.service(t, "r1")
+			res := e.exec(t, s, slowLines(8, "0.05"), "", 10*time.Second, jobs.Until{})
+			if res.State != store.JobExited || res.ExitCode == nil || *res.ExitCode != 0 {
+				t.Fatalf("state %s exit %v, want exited with 0", res.State, res.ExitCode)
+			}
+			dropped, attaches := lossy.seen()
+			if dropped == nil {
+				t.Fatal("the runner stream never lost a line")
+			}
+			want := []string{
+				"/tmp/bugnet/bin/bugnet-run", "attach", "--job", res.JobID,
+				"--out", strconv.FormatInt(dropped.Offset, 10), "--err", "0",
+			}
+			if len(attaches) == 0 || !slices.Equal(attaches[0], want) {
+				t.Fatalf("attaches %q, want the first to resume at the lost line: %q",
+					attaches, want)
+			}
+			all := watch(t, s, res.JobID, "", jobs.Until{})
+			if got := output(t, all, frame.KindStdout); got != lines(1, 8) {
+				t.Fatalf("output across the lost line is %q, want lines 1 to 8", got)
+			}
+			if got := output(t, e.streamed(t, res.JobID), frame.KindStdout); got != lines(1, 8) {
+				t.Fatalf("the stream across the lost line holds %q, want lines 1 to 8", got)
+			}
+			j := waitFinished(t, e.store, res.JobID)
+			if j.StdoutBytes != int64(len(lines(1, 8))) {
+				t.Fatalf("job row %+v, want all %d stdout bytes", j, len(lines(1, 8)))
+			}
+		})
 	}
 }
 

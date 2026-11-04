@@ -1,0 +1,1033 @@
+package koyeb
+
+import (
+	"bufio"
+	"cmp"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	kapi "github.com/koyeb/koyeb-api-client-go/api/v1/koyeb"
+)
+
+const fakeToken = "koyeb-fake-token"
+
+var fakeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,21}[a-z0-9]$`)
+
+// fault answers matching control plane calls with an error, after serving them when after is set
+type fault struct {
+	status  int
+	code    string
+	message string
+	header  map[string]string
+	drop    bool
+	after   bool
+	times   int
+}
+
+type fakeApp struct {
+	id, name string
+	created  time.Time
+	status   string
+}
+
+type fakeService struct {
+	id, appID, name string
+	created         time.Time
+	status          string
+	deployment      string
+	body            map[string]any
+}
+
+type fakeDeployment struct {
+	id, serviceID, appID string
+	definition           kapi.DeploymentDefinition
+	status               string
+	// startPolls is how many reads still see the deployment starting
+	startPolls int
+	routingKey string
+}
+
+type logEntry struct {
+	Timestamp time.Time `json:"timestamp"`
+	Stream    string    `json:"stream"`
+	Data      string    `json:"data"`
+}
+
+// fakeProc is one start_process command, its log lines kept for every reader to replay
+type fakeProc struct {
+	mu      sync.Mutex
+	entries []logEntry
+	done    bool
+	changed chan struct{}
+}
+
+func (p *fakeProc) add(stream, line string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.entries = append(p.entries, logEntry{Timestamp: time.Now().UTC(), Stream: stream, Data: line})
+	close(p.changed)
+	p.changed = make(chan struct{})
+}
+
+func (p *fakeProc) finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.done = true
+	close(p.changed)
+	p.changed = make(chan struct{})
+}
+
+func (p *fakeProc) since(i int) ([]logEntry, bool, <-chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.entries[i:]), p.done, p.changed
+}
+
+type startCall struct {
+	header http.Header
+	cmd    string
+	cwd    string
+	env    map[string]string
+}
+
+// fakeKoyeb serves Koyeb's control plane from memory and each sandbox's executor from the host
+type fakeKoyeb struct {
+	t    *testing.T
+	api  *httptest.Server
+	exec *httptest.Server
+	pool *x509.CertPool
+
+	// conflictStatus is how a taken app name is refused, 409 when zero
+	conflictStatus int
+	// startPolls is how many reads see a new deployment still starting
+	startPolls int
+	// noMetadata leaves out the sandbox metadata so the executor is reached by the app domain
+	noMetadata bool
+	// goneStatus is what the edge answers for a deleted app, 404 when zero
+	goneStatus int
+	pageSize   int
+
+	mu          sync.Mutex
+	apps        map[string]*fakeApp
+	services    map[string]*fakeService
+	deployments map[string]*fakeDeployment
+	procs       map[string]*fakeProc
+	cmds        []*exec.Cmd
+	nextID      int
+	faults      map[string]*fault
+	calls       map[string]int
+	starts      []startCall
+	routes      []string
+	protos      []string
+	uploads     []*http.Request
+	healthDown  int
+	script      *string
+	cleanup     []string
+}
+
+func newFake(t *testing.T) *fakeKoyeb {
+	t.Helper()
+	f := &fakeKoyeb{
+		t: t, apps: map[string]*fakeApp{}, services: map[string]*fakeService{},
+		deployments: map[string]*fakeDeployment{}, procs: map[string]*fakeProc{},
+		faults: map[string]*fault{}, calls: map[string]int{},
+	}
+	api := http.NewServeMux()
+	for pattern, h := range map[string]http.HandlerFunc{
+		"POST /v1/apps":            f.createApp,
+		"GET /v1/apps":             f.listApps,
+		"GET /v1/apps/{id}":        f.getApp,
+		"DELETE /v1/apps/{id}":     f.deleteApp,
+		"POST /v1/services":        f.createService,
+		"GET /v1/services":         f.listServices,
+		"GET /v1/services/{id}":    f.getService,
+		"GET /v1/deployments/{id}": f.getDeployment,
+	} {
+		api.HandleFunc(pattern, f.gate(pattern, h))
+	}
+	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("adapter called the unexpected control plane route %s %s", r.Method, r.URL.Path)
+		writeError(w, http.StatusNotImplemented, "api_error", "not in the fake")
+	})
+	f.api = httptest.NewServer(api)
+
+	f.exec = httptest.NewUnstartedServer(http.HandlerFunc(f.edge))
+	f.exec.EnableHTTP2 = true
+	f.exec.StartTLS()
+	f.pool = x509.NewCertPool()
+	f.pool.AddCert(f.exec.Certificate())
+
+	t.Cleanup(func() {
+		f.api.Close()
+		f.exec.Close()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, cmd := range f.cmds {
+			if cmd.Process != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		}
+		for _, p := range f.cleanup {
+			_ = os.RemoveAll(p)
+		}
+		for _, proto := range f.protos {
+			if proto != "HTTP/1.1" {
+				t.Errorf("an executor request used %s, want HTTP/1.1 only", proto)
+			}
+		}
+	})
+	return f
+}
+
+// provider builds an adapter whose control plane is the fake and that trusts the fake's executor
+func (f *fakeKoyeb) provider(t *testing.T, token string) *Provider {
+	t.Helper()
+	p, err := New(Options{APIToken: token, BaseURL: f.api.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.trust(p)
+	p.pollInterval = 10 * time.Millisecond
+	p.exitDir = filepath.Join(t.TempDir(), "exec")
+	return p
+}
+
+func (f *fakeKoyeb) trust(p *Provider) {
+	p.exec.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: f.pool}
+}
+
+func (f *fakeKoyeb) inject(pattern string, ft fault) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.faults[pattern] = &ft
+}
+
+func (f *fakeKoyeb) take(pattern string) *fault {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[pattern]++
+	ft := f.faults[pattern]
+	if ft == nil {
+		return nil
+	}
+	if ft.times > 0 {
+		ft.times--
+		if ft.times == 0 {
+			delete(f.faults, pattern)
+		}
+	}
+	return ft
+}
+
+func (f *fakeKoyeb) callCount(pattern string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[pattern]
+}
+
+// gate checks the API token and applies any fault injected for the route
+func (f *fakeKoyeb) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+fakeToken {
+			writeError(w, http.StatusUnauthorized, "authentication_error",
+				"Request unauthenticated with bearer")
+			return
+		}
+		ft := f.take(pattern)
+		if ft == nil {
+			h(w, r)
+			return
+		}
+		if ft.after {
+			h(httptest.NewRecorder(), r)
+		}
+		if ft.drop {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
+		for k, v := range ft.header {
+			w.Header().Set(k, v)
+		}
+		writeError(w, ft.status, ft.code, ft.message)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{"status": status, "code": code, "message": message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (f *fakeKoyeb) id(kind string) string {
+	f.nextID++
+	return fmt.Sprintf("%s-%04d-4c1e-9d6b-%012d", kind, f.nextID, f.nextID)
+}
+
+/* Apps */
+
+func (f *fakeKoyeb) appJSON(a *fakeApp) kapi.App {
+	status := kapi.AppStatus(a.status)
+	return kapi.App{
+		Id: &a.id, Name: &a.name, CreatedAt: &a.created, Status: &status,
+		Domains: []kapi.Domain{{Name: new(f.domain(a.id))}},
+	}
+}
+
+// domain is where the fake's edge serves an app, a host with a path so one server serves all
+func (f *fakeKoyeb) domain(appID string) string {
+	return strings.TrimPrefix(f.exec.URL, "https://") + "/s/" + appID
+}
+
+// addApp places an app directly, as an earlier create that stopped before its service would
+func (f *fakeKoyeb) addApp(name string) *fakeApp {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := &fakeApp{id: f.id("app"), name: name, created: time.Now().UTC(), status: "HEALTHY"}
+	f.apps[a.id] = a
+	return a
+}
+
+func (f *fakeKoyeb) liveApp(name string) *fakeApp {
+	for _, a := range f.apps {
+		if a.name == name && a.status != "DELETED" {
+			return a
+		}
+	}
+	return nil
+}
+
+func (f *fakeKoyeb) createApp(w http.ResponseWriter, r *http.Request) {
+	var req kapi.CreateApp
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "body is not an app")
+		return
+	}
+	name := req.GetName()
+	if !fakeName.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "app name "+name+" is invalid")
+		return
+	}
+	if !req.LifeCycle.GetDeleteWhenEmpty() {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "fake apps must delete when empty")
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.liveApp(name) != nil {
+		status := cmp.Or(f.conflictStatus, http.StatusConflict)
+		writeJSON(w, status, map[string]any{
+			"status": status, "code": "invalid_argument", "message": "Validation error",
+			"fields": []map[string]string{{"field": "name", "description": "already exists"}},
+		})
+		return
+	}
+	a := &fakeApp{id: f.id("app"), name: name, created: time.Now().UTC(), status: "STARTING"}
+	f.apps[a.id] = a
+	writeJSON(w, http.StatusOK, kapi.CreateAppReply{App: new(f.appJSON(a))})
+}
+
+// listApps filters names by substring, so the adapter must pick the exact name itself
+func (f *fakeKoyeb) listApps(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var match []*fakeApp
+	for _, a := range f.apps {
+		if strings.Contains(a.name, q.Get("name")) {
+			match = append(match, a)
+		}
+	}
+	slices.SortFunc(match, func(a, b *fakeApp) int { return strings.Compare(a.id, b.id) })
+	start, end, more := f.page(q, len(match))
+	reply := kapi.ListAppsReply{HasNext: &more}
+	for _, a := range match[start:end] {
+		j := f.appJSON(a)
+		reply.Apps = append(reply.Apps, kapi.AppListItem{
+			Id: j.Id, Name: j.Name, CreatedAt: j.CreatedAt, Status: j.Status, Domains: j.Domains,
+		})
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeKoyeb) page(q map[string][]string, n int) (int, int, bool) {
+	limit := 20
+	if l := first(q["limit"]); l != "" {
+		limit, _ = strconv.Atoi(l)
+	}
+	if f.pageSize > 0 {
+		limit = min(limit, f.pageSize)
+	}
+	start, _ := strconv.Atoi(first(q["offset"]))
+	start = min(start, n)
+	end := min(start+limit, n)
+	return start, end, end < n
+}
+
+func first(vs []string) string {
+	if len(vs) == 0 {
+		return ""
+	}
+	return vs[0]
+}
+
+func (f *fakeKoyeb) getApp(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.apps[r.PathValue("id")]
+	if a == nil {
+		writeError(w, http.StatusNotFound, "unknown_resource", "App not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, kapi.GetAppReply{App: new(f.appJSON(a))})
+}
+
+// deleteApp keeps the app and its services as DELETED records, as Koyeb's soft delete does
+func (f *fakeKoyeb) deleteApp(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.apps[r.PathValue("id")]
+	if a == nil || a.status == "DELETED" {
+		writeError(w, http.StatusNotFound, "unknown_resource", "App not found")
+		return
+	}
+	a.status = "DELETED"
+	for _, s := range f.services {
+		if s.appID == a.id {
+			s.status = "DELETED"
+			f.deployments[s.deployment].status = "STOPPED"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+/* Services and deployments */
+
+var fakeInstanceTypes = []string{
+	"small", "medium", "large", "xlarge", "2xlarge", "3xlarge", "4xlarge", "5xlarge",
+	"gpu-nvidia-rtx-4000-sff-ada", "eco-large",
+}
+
+func (f *fakeKoyeb) createService(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return
+	}
+	var req kapi.CreateService
+	var body map[string]any
+	if json.Unmarshal(raw, &req) != nil || json.Unmarshal(raw, &body) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "body is not a service")
+		return
+	}
+	if msg := checkSandbox(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_argument", msg)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a := f.apps[req.GetAppId()]
+	if a == nil || a.status == "DELETED" {
+		writeError(w, http.StatusNotFound, "unknown_resource", "App not found")
+		return
+	}
+	for _, s := range f.services {
+		if s.appID == a.id && s.name == req.GetName() && s.status != "DELETED" {
+			writeError(w, http.StatusConflict, "invalid_argument", "service name already exists")
+			return
+		}
+	}
+	now := time.Now().UTC()
+	s := &fakeService{
+		id: f.id("svc"), appID: a.id, name: req.GetName(), created: now, status: "STARTING",
+		body: body,
+	}
+	d := &fakeDeployment{
+		id: f.id("dep"), serviceID: s.id, appID: a.id, definition: req.GetDefinition(),
+		status: "PROVISIONING", startPolls: f.startPolls, routingKey: "rk-" + s.id,
+	}
+	s.deployment = d.id
+	f.services[s.id] = s
+	f.deployments[d.id] = d
+	a.status = "HEALTHY"
+	writeJSON(w, http.StatusOK, kapi.CreateServiceReply{Service: new(f.serviceJSON(s))})
+}
+
+// checkSandbox refuses the definitions a Bugnet sandbox must never have
+func checkSandbox(req kapi.CreateService) string {
+	def := req.Definition
+	env := map[string]string{}
+	for _, e := range def.GetEnv() {
+		env[e.GetKey()] = e.GetValue()
+	}
+	life := req.LifeCycle.GetDeleteAfterCreate()
+	switch {
+	case req.GetName() == "" || req.GetAppId() == "" || def == nil:
+		return "a service needs a name, an app and a definition"
+	case def.GetType() != kapi.DEPLOYMENTDEFINITIONTYPE_SANDBOX:
+		return "fake services are sandboxes"
+	case def.Docker.GetImage() != "koyeb/sandbox":
+		return "fake sandboxes run koyeb/sandbox"
+	case !slices.Equal(def.GetRegions(), []string{"fra"}):
+		return "fake sandboxes run in fra"
+	case len(def.GetInstanceTypes()) != 1 ||
+		!slices.Contains(fakeInstanceTypes, def.GetInstanceTypes()[0].GetType()):
+		return "unknown instance type"
+	case len(def.GetScalings()) != 1 || def.GetScalings()[0].GetMin() != 1 ||
+		def.GetScalings()[0].GetMax() != 1 || len(def.GetScalings()[0].GetTargets()) != 0:
+		return "fake sandboxes never scale to zero"
+	case env["SANDBOX_SECRET"] == "":
+		return "a sandbox needs SANDBOX_SECRET"
+	case life < 60 || life > 86400:
+		return "delete_after_create must be 60 s to 24 h"
+	}
+	return ""
+}
+
+func (f *fakeKoyeb) serviceJSON(s *fakeService) kapi.Service {
+	typ, status := kapi.SERVICETYPE_SANDBOX, kapi.ServiceStatus(s.status)
+	return kapi.Service{
+		Id: &s.id, AppId: &s.appID, Name: &s.name, CreatedAt: &s.created, Type: &typ,
+		Status: &status, LatestDeploymentId: &s.deployment, ActiveDeploymentId: &s.deployment,
+	}
+}
+
+// listServices filters like Koyeb and lists deleted services too, so the adapter must skip them
+func (f *fakeKoyeb) listServices(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var match []*fakeService
+	for _, s := range f.services {
+		if (q.Get("app_id") == "" || q.Get("app_id") == s.appID) &&
+			(len(q["types"]) == 0 || slices.Contains(q["types"], "SANDBOX")) &&
+			strings.Contains(s.name, q.Get("name")) {
+			match = append(match, s)
+		}
+	}
+	slices.SortFunc(match, func(a, b *fakeService) int { return strings.Compare(a.id, b.id) })
+	start, end, more := f.page(q, len(match))
+	count := int64(len(match))
+	reply := kapi.ListServicesReply{HasNext: &more, Count: &count}
+	for _, s := range match[start:end] {
+		j := f.serviceJSON(s)
+		reply.Services = append(reply.Services, kapi.ServiceListItem{
+			Id: j.Id, AppId: j.AppId, Name: j.Name, CreatedAt: j.CreatedAt, Type: j.Type,
+			Status: j.Status, LatestDeploymentId: j.LatestDeploymentId,
+		})
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeKoyeb) getService(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.services[r.PathValue("id")]
+	if s == nil {
+		writeError(w, http.StatusNotFound, "unknown_resource", "Service not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, kapi.GetServiceReply{Service: new(f.serviceJSON(s))})
+}
+
+func (f *fakeKoyeb) getDeployment(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d := f.deployments[r.PathValue("id")]
+	if d == nil {
+		writeError(w, http.StatusNotFound, "unknown_resource", "Deployment not found")
+		return
+	}
+	if d.status == "PROVISIONING" {
+		if d.startPolls > 0 {
+			d.startPolls--
+		} else {
+			d.status = "HEALTHY"
+		}
+	}
+	status := kapi.DeploymentStatus(d.status)
+	dep := kapi.Deployment{
+		Id: &d.id, ServiceId: &d.serviceID, AppId: &d.appID, Status: &status,
+		Definition: &d.definition, Messages: []string{"deployment is " + d.status},
+	}
+	if !f.noMetadata {
+		dep.Metadata = &kapi.DeploymentMetadata{Sandbox: &kapi.SandboxMetadata{
+			PublicUrl: new("https://" + f.domain(d.appID)), RoutingKey: &d.routingKey,
+		}}
+	}
+	writeJSON(w, http.StatusOK, kapi.GetDeploymentReply{Deployment: &dep})
+}
+
+// setDeployment changes the deployment of the app's live service
+func (f *fakeKoyeb) setDeployment(appID string, change func(*fakeDeployment)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.services {
+		if s.appID == appID && s.status != "DELETED" {
+			change(f.deployments[s.deployment])
+		}
+	}
+}
+
+// sandbox returns the live service of an app and its deployment
+func (f *fakeKoyeb) sandbox(appID string) (*fakeService, *fakeDeployment) {
+	for _, s := range f.services {
+		if s.appID == appID && s.status != "DELETED" {
+			return s, f.deployments[s.deployment]
+		}
+	}
+	return nil, nil
+}
+
+// box returns copies of the app's live service and deployment
+func (f *fakeKoyeb) box(appID string) (fakeService, fakeDeployment, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, d := f.sandbox(appID)
+	if s == nil {
+		return fakeService{}, fakeDeployment{}, false
+	}
+	return *s, *d, true
+}
+
+func (f *fakeKoyeb) setService(appID string, change func(*fakeService)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, _ := f.sandbox(appID); s != nil {
+		change(s)
+	}
+}
+
+func (f *fakeKoyeb) setHealthDown(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.healthDown = n
+}
+
+// addForeign places a sandbox another tool made, named without the bn- prefix
+func (f *fakeKoyeb) addForeign(name, labels string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now().UTC()
+	a := &fakeApp{id: f.id("app"), name: name, created: now, status: "HEALTHY"}
+	s := &fakeService{id: f.id("svc"), appID: a.id, name: name, created: now, status: "HEALTHY"}
+	d := &fakeDeployment{
+		id: f.id("dep"), serviceID: s.id, appID: a.id, status: "HEALTHY", routingKey: "rk",
+		definition: kapi.DeploymentDefinition{Env: []kapi.DeploymentEnv{
+			{Key: new("SANDBOX_SECRET"), Value: new("s")},
+			{Key: new("BUGNET_LABELS"), Value: &labels},
+		}},
+	}
+	s.deployment = d.id
+	f.apps[a.id], f.services[s.id], f.deployments[d.id] = a, s, d
+}
+
+func (f *fakeKoyeb) counts() (apps, services int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.apps {
+		if a.status != "DELETED" {
+			apps++
+		}
+	}
+	for _, s := range f.services {
+		if s.status != "DELETED" {
+			services++
+		}
+	}
+	return apps, services
+}
+
+func (f *fakeKoyeb) serviceBodies() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, s := range f.services {
+		out = append(out, s.body)
+	}
+	return out
+}
+
+func fakeEnv(d *fakeDeployment) map[string]string {
+	env := map[string]string{}
+	for _, e := range d.definition.GetEnv() {
+		env[e.GetKey()] = e.GetValue()
+	}
+	return env
+}
+
+/* Executor */
+
+// edge routes /s/<app>/koyeb-sandbox/ to the app's executor like Koyeb's load balancer
+func (f *fakeKoyeb) edge(w http.ResponseWriter, r *http.Request) {
+	rest, ok := strings.CutPrefix(r.URL.Path, "/s/")
+	appID, route, _ := strings.Cut(rest, "/")
+	route, under := strings.CutPrefix("/"+route, executorPath)
+	f.mu.Lock()
+	var d *fakeDeployment
+	if a := f.apps[appID]; ok && under && a != nil && a.status != "DELETED" {
+		_, d = f.sandbox(appID)
+	}
+	down := d != nil && route == "/health" && f.healthDown > 0
+	if down {
+		f.healthDown--
+	}
+	goneStatus := cmp.Or(f.goneStatus, http.StatusNotFound)
+	var secret, routingKey string
+	if d != nil {
+		f.protos = append(f.protos, r.Proto)
+		f.routes = append(f.routes, r.Method+" "+route)
+		secret, routingKey = fakeEnv(d)["SANDBOX_SECRET"], d.routingKey
+	}
+	f.mu.Unlock()
+	switch {
+	case d == nil:
+		http.Error(w, http.StatusText(goneStatus), goneStatus)
+		return
+	case !f.noMetadata && r.Header.Get("X-Routing-Key") != routingKey:
+		http.Error(w, "no instance for this routing key", http.StatusNotFound)
+		return
+	case down:
+		http.Error(w, "upstream connect error", http.StatusServiceUnavailable)
+		return
+	case route != "/health" && r.Header.Get("Authorization") != "Bearer "+secret:
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	r.URL.Path = route
+	switch r.Method + " " + route {
+	case "GET /health":
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	case "POST /start_process":
+		f.startProcess(w, r)
+	case "GET /process_logs_streaming":
+		f.streamLogs(w, r)
+	case "GET /files", "HEAD /files":
+		f.download(w, r)
+	case "PUT /files":
+		f.upload(w, r)
+	case "GET /files/list":
+		f.list(w, r)
+	default:
+		f.t.Errorf("adapter called the executor route %s %s", r.Method, route)
+		http.Error(w, "not in the fake", http.StatusNotFound)
+	}
+}
+
+func (f *fakeKoyeb) routesCalled() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.routes)
+}
+
+func (f *fakeKoyeb) lastStart() startCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.starts) == 0 {
+		return startCall{}
+	}
+	return f.starts[len(f.starts)-1]
+}
+
+// replyLogs answers every later log stream with raw and runs no started command
+func (f *fakeKoyeb) replyLogs(raw string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.script = &raw
+}
+
+func (f *fakeKoyeb) startProcess(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Cmd string            `json:"cmd"`
+		Cwd string            `json:"cwd"`
+		Env map[string]string `json:"env"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Cmd == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	if info, err := os.Stat(req.Cwd); req.Cwd != "" && (err != nil || !info.IsDir()) {
+		http.Error(w, "Invalid working directory: "+req.Cwd, http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.starts = append(f.starts, startCall{
+		header: r.Header.Clone(), cmd: req.Cmd, cwd: req.Cwd, env: maps.Clone(req.Env),
+	})
+	id := f.id("proc")
+	proc := &fakeProc{changed: make(chan struct{})}
+	f.procs[id] = proc
+	scripted := f.script != nil
+	f.mu.Unlock()
+	if scripted {
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "pid": 1, "status": "running"})
+		return
+	}
+
+	cmd := exec.Command("sh", "-c", req.Cmd)
+	cmd.Dir = req.Cwd
+	if len(req.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range req.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err1 := cmd.StdoutPipe()
+	stderr, err2 := cmd.StderrPipe()
+	if err := errors.Join(err1, err2); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to start command: " + err.Error(),
+		})
+		return
+	}
+	f.mu.Lock()
+	f.cmds = append(f.cmds, cmd)
+	f.mu.Unlock()
+	go func() {
+		var pipes sync.WaitGroup
+		for stream, pipe := range map[string]io.Reader{"stdout": stdout, "stderr": stderr} {
+			pipes.Go(func() {
+				sc := bufio.NewScanner(pipe)
+				sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+				for sc.Scan() {
+					proc.add(stream, sc.Text())
+				}
+			})
+		}
+		pipes.Wait()
+		_ = cmd.Wait()
+		proc.finish()
+	}()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": id, "pid": cmd.Process.Pid, "status": "running",
+	})
+}
+
+// streamLogs replays the command's lines, then follows it live until it ends
+func (f *fakeKoyeb) streamLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	f.mu.Lock()
+	proc, script := f.procs[id], f.script
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "text/event-stream")
+	flush := http.NewResponseController(w).Flush
+	if script != nil {
+		_, _ = io.WriteString(w, *script)
+		return
+	}
+	if proc == nil {
+		_, _ = fmt.Fprintf(w, "event: error\ndata: {\"error\": \"process not found: %s\"}\n\n", id)
+		return
+	}
+	_, _ = io.WriteString(w, ":keepalive\n\n")
+	_ = flush()
+	sent := 0
+	for {
+		entries, done, changed := proc.since(sent)
+		for _, e := range entries {
+			data, _ := json.Marshal(e)
+			_, _ = fmt.Fprintf(w, "event: log\ndata: %s\n\n", data)
+		}
+		sent += len(entries)
+		_ = flush()
+		if done && len(entries) == 0 {
+			_, _ = io.WriteString(w, "event: complete\ndata: {\"message\": \"stream ended\"}\n\n")
+			return
+		}
+		select {
+		case <-changed:
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+/* Executor files */
+
+func writeFileError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		status = http.StatusNotFound
+	case errors.Is(err, fs.ErrPermission):
+		status = http.StatusForbidden
+	case errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR):
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (f *fakeKoyeb) download(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("path")
+	info, err := os.Stat(name)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": name + " is not a regular file (it is a dir)",
+		})
+		return
+	}
+	file, err := os.Open(name)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	defer func() { _ = file.Close() }()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if info.Size() == 0 {
+		return
+	}
+	http.ServeContent(w, r, "", info.ModTime(), file)
+}
+
+// upload writes like the executor, atomically with the given mode and parents when asked
+func (f *fakeKoyeb) upload(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	name := q.Get("path")
+	mode, err := strconv.ParseUint(q.Get("mode"), 8, 32)
+	if name == "" || err != nil || mode > 0o777 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path and mode required"})
+		return
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return
+	}
+	f.mu.Lock()
+	f.uploads = append(f.uploads, r.Clone(r.Context()))
+	f.mu.Unlock()
+	sum := sha256.Sum256(data)
+	if want := r.Header.Get("X-Content-SHA256"); want != "" && want != hex.EncodeToString(sum[:]) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha256 mismatch"})
+		return
+	}
+	if info, err := os.Stat(name); err == nil && info.IsDir() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "destination is a directory"})
+		return
+	}
+	f.track(name)
+	if q.Get("parents") == "1" {
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			writeFileError(w, err)
+			return
+		}
+	}
+	tmp := filepath.Join(filepath.Dir(name), "."+filepath.Base(name)+".koyeb-tmp-1")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		writeFileError(w, err)
+		return
+	}
+	if err := os.Chmod(tmp, fs.FileMode(mode)); err != nil {
+		writeFileError(w, err)
+		return
+	}
+	if err := os.Rename(tmp, name); err != nil {
+		_ = os.Remove(tmp)
+		writeFileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"size": len(data), "sha256": hex.EncodeToString(sum[:]),
+	})
+}
+
+func (f *fakeKoyeb) lastUpload() *http.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.uploads) == 0 {
+		return nil
+	}
+	return f.uploads[len(f.uploads)-1]
+}
+
+// list answers NDJSON entries relative to the directory, one level unless recursive is 1
+func (f *fakeKoyeb) list(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	root := filepath.Clean(q.Get("path"))
+	info, err := os.Stat(root)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	if !info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": root + " is not a directory",
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	enc := json.NewEncoder(w)
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == root {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		info, err := d.Info()
+		if err != nil {
+			return enc.Encode(map[string]any{"path": rel, "size": 0, "error": err.Error()})
+		}
+		typ := "file"
+		if info.IsDir() {
+			typ = "dir"
+		}
+		_ = enc.Encode(map[string]any{
+			"path": rel, "type": typ, "size": info.Size(),
+			"mode":  fmt.Sprintf("%04o", info.Mode().Perm()),
+			"mtime": info.ModTime().UTC().Format(time.RFC3339Nano),
+		})
+		if d.IsDir() && q.Get("recursive") != "1" {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+}
+
+// track remembers the topmost path a write is about to create so cleanup removes it
+func (f *fakeKoyeb) track(name string) {
+	top := ""
+	for p := name; p != "/" && p != "."; p = filepath.Dir(p) {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		}
+		top = p
+	}
+	if top != "" {
+		f.mu.Lock()
+		f.cleanup = append(f.cleanup, top)
+		f.mu.Unlock()
+	}
+}

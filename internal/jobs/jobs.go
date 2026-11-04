@@ -763,6 +763,7 @@ const (
 	pumpBroken     pumpResult = iota // the runner stream ended early without delivering a frame
 	pumpProgressed                   // the runner stream ended early after delivering frames
 	pumpExists                       // start found the job already started
+	pumpGap                          // the runner stream skipped output before delivering a frame
 	pumpFinished                     // the job ended and is recorded
 	pumpStopped                      // the lease is gone, the service stopped or Valkey failed
 )
@@ -799,6 +800,8 @@ func (o *owner) follow() bool {
 			continue
 		case pumpProgressed:
 			start, failures = false, 0
+		case pumpGap:
+			start = false
 		}
 		if o.ctx.Err() != nil {
 			return false
@@ -856,6 +859,12 @@ func (o *owner) pump(argv []string) pumpResult {
 			continue
 		case f.Kind == frame.KindError && f.Reason == frame.ReasonJobExists:
 			return pumpExists
+		case o.skips(f):
+			// A lossy transport dropped output, so the next follower resumes from the stream's end
+			if result == pumpProgressed {
+				return result
+			}
+			return pumpGap
 		case streams.Terminal(f):
 			return o.end(f)
 		}
@@ -866,6 +875,19 @@ func (o *owner) pump(argv []string) pumpResult {
 	}
 }
 
+// skips reports whether f lies past output the stream lacks
+func (o *owner) skips(f frame.Frame) bool {
+	switch f.Kind {
+	case frame.KindStdout:
+		return f.Offset > o.offsets[0]
+	case frame.KindStderr:
+		return f.Offset > o.offsets[1]
+	case frame.KindHeartbeat, frame.KindExit:
+		return f.Out > o.offsets[0] || f.Err > o.offsets[1]
+	}
+	return false
+}
+
 func (o *owner) append(f frame.Frame) bool {
 	if _, err := o.leaseNow().Append(o.ctx, f); err != nil {
 		if !errors.Is(err, streams.ErrLeaseLost) {
@@ -873,13 +895,12 @@ func (o *owner) append(f frame.Frame) bool {
 		}
 		return false
 	}
+	// Offsets never move back, since a lossy transport may repeat or reorder old frames
 	switch f.Kind {
 	case frame.KindStdout:
-		o.offsets[0] = f.Offset + int64(len(f.Data))
+		o.offsets[0] = max(o.offsets[0], f.Offset+int64(len(f.Data)))
 	case frame.KindStderr:
-		o.offsets[1] = f.Offset + int64(len(f.Data))
-	case frame.KindHeartbeat:
-		o.offsets = [2]int64{f.Out, f.Err}
+		o.offsets[1] = max(o.offsets[1], f.Offset+int64(len(f.Data)))
 	}
 	return true
 }
