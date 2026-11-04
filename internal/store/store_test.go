@@ -550,3 +550,38 @@ func TestExtendDeadlineConcurrentSameOrder(t *testing.T) {
 		t.Fatalf("deadline = %v want %v", got.Deadline, want)
 	}
 }
+
+func TestPlacementForUpdateLocksRow(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	if _, err := s.PlacementForUpdate(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing placement err = %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	locked, err := s.Tx(tx).PlacementForUpdate(ctx, p.ID)
+	if err != nil || locked.ID != p.ID {
+		t.Fatalf("lock %v: %v", locked.ID, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.MarkPlacementTerminating(ctx, p.ID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("update ran while the row was locked: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

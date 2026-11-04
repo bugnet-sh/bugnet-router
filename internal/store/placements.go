@@ -101,6 +101,11 @@ func (s *Store) PlacementByID(ctx context.Context, id uuid.UUID) (Placement, err
 	return s.placementWhere(ctx, "id = $1", id)
 }
 
+// PlacementForUpdate returns the placement and locks its row until the transaction ends
+func (s *Store) PlacementForUpdate(ctx context.Context, id uuid.UUID) (Placement, error) {
+	return s.placementWhere(ctx, "id = $1 for update", id)
+}
+
 // CreatePlacement records the start order and a placing placement in one transaction
 func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement, bool, error) {
 	if p.ID == uuid.Nil {
