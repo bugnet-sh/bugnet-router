@@ -408,6 +408,43 @@ func TestOutboxStopsAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestRedriveOutboxRevivesDeadEvents(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	for _, kind := range []string{"dead", "alive"} {
+		err := s.WithTx(ctx, func(tx pgx.Tx) error { return s.InsertOutbox(ctx, tx, kind, 1) })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	pending, err := s.PendingOutbox(ctx, now, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending %+v, %v", pending, err)
+	}
+	for range store.MaxOutboxAttempts {
+		if err := s.MarkOutboxFailed(ctx, pending[0].ID, "nope", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkOutboxFailed(ctx, pending[1].ID, "nope", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.DeadOutboxCount(ctx); err != nil || n != 1 {
+		t.Fatalf("dead count %d, %v, want 1", n, err)
+	}
+	if n, err := s.RedriveOutbox(ctx); err != nil || n != 1 {
+		t.Fatalf("redrive revived %d, %v, want 1", n, err)
+	}
+	if n, err := s.DeadOutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("dead count after redrive %d, %v, want 0", n, err)
+	}
+	due, err := s.PendingOutbox(ctx, now, 10)
+	if err != nil || len(due) != 1 || due[0].ID != pending[0].ID || due[0].Attempts != 0 {
+		t.Fatalf("due after redrive %+v, %v, want the revived event alone, due at once", due, err)
+	}
+}
+
 func TestPendingOutboxSkipsLockedRows(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	ctx := context.Background()

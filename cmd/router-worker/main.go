@@ -1,5 +1,5 @@
-// Command router-worker works the router's River jobs for placement deadlines, the sweep and
-// the outbox.
+// Command router-worker works the router's River jobs for placement deadlines, the watch, the
+// sweep and the outbox, and with the outbox-redrive argument sends dead outbox events again.
 //
 // It builds every service from the environment, starts the River client and answers /healthz
 // and /readyz over HTTP. On SIGTERM or SIGINT it stops fetching jobs, gives running ones a
@@ -42,17 +42,24 @@ const (
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
-	if err := run(log); err != nil {
+	if err := run(log, os.Args[1:]...); err != nil {
 		log.Error("router-worker failed", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
+func run(log *slog.Logger, args ...string) error {
+	redrive := len(args) == 1 && args[0] == "outbox-redrive"
+	if len(args) > 0 && !redrive {
+		return errors.New("usage: router-worker [outbox-redrive]")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	// A second signal during shutdown kills the process at once
 	context.AfterFunc(ctx, stop)
+	if redrive {
+		return redriveOutbox(ctx, log)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -65,6 +72,25 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	return serve(ctx, log, cfg, ln)
+}
+
+// redriveOutbox reads only BUGNET_DATABASE_URL and gives dead events their attempts back
+func redriveOutbox(ctx context.Context, log *slog.Logger) error {
+	url, err := config.DatabaseURL()
+	if err != nil {
+		return fmt.Errorf("outbox-redrive: %w", err)
+	}
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		return fmt.Errorf("outbox-redrive: open postgres pool: %w", err)
+	}
+	defer pool.Close()
+	n, err := store.New(pool).RedriveOutbox(ctx)
+	if err != nil {
+		return fmt.Errorf("outbox-redrive: %w", err)
+	}
+	log.Info("dead outbox events will be sent again", "events", n)
+	return nil
 }
 
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, ln net.Listener) error {

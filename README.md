@@ -13,7 +13,7 @@ record, Valkey carries output streams and job leases, and River runs durable job
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, sweep and outbox jobs |
+| `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends dead events again |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/saga` | Start, extend and stop of placements |
@@ -151,6 +151,29 @@ Only `router-worker` reads these.
 | `BUGNET_ORDER_PRIVATE_KEY` | empty | Base64 Ed25519 seed the CLI signs order tokens with |
 
 Money is integer micro-USD and times are UTC.
+
+## Events
+
+`router-worker` posts each outbox event to `BUGNET_EVENTS_URL` as JSON `{id, type, created_at,
+payload}`, signed with `BUGNET_EVENT_SIGNING_KEY` in `X-Bugnet-Signature` (base64 Ed25519 over the
+exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
+
+| Field | Meaning |
+| --- | --- |
+| `placement_id` | The placement |
+| `order_id` | The start order of the placement, on every event |
+| `extend_order_id` | On `placement.extended` only, the extension order it settles |
+| `state` | The placement's state after the change |
+| `provider` | The provider that ran the sandbox, empty before one was ready |
+| `deadline` | The paid deadline, null before ready |
+| `billed_seconds` | Seconds from ready to terminated |
+| `refundable` | Whether the order should be refunded |
+| `reason` | A stable code such as `stop`, `deadline`, `no_candidate`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+
+An event is retried with backoff up to 10 times. After that it stays in the `outbox` table as
+dead, the watch logs `outbox holds dead events` at error level with the count, which is the
+signal to alert on, and `router-worker outbox-redrive` (which reads only `BUGNET_DATABASE_URL`)
+sends every dead event again.
 
 ## Providers
 

@@ -63,6 +63,10 @@ type Worker struct {
 	saga     *saga.Saga
 	http     *http.Client
 	noURL    sync.Once
+	deadMu   sync.Mutex
+	dead     int // dead outbox events at the last report
+	// deadReported is when the watch last reported dead events
+	deadReported time.Time
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it

@@ -22,6 +22,8 @@ const (
 	terminatingAfter = 2 * time.Minute
 	// endWorkers bounds how many placements one watch ends at a time
 	endWorkers = 4
+	// deadReportEvery repeats the dead event report while the count stays the same
+	deadReportEvery = 10 * time.Minute
 )
 
 type watchWorker struct {
@@ -48,6 +50,26 @@ func (w *Worker) watchPlacements(ctx context.Context) {
 		w.log.Warn("watch freed slots that ended placements still held", "slots", n)
 	}
 	w.endOverdue(ctx, now)
+	w.reportDead(ctx, now)
+}
+
+// reportDead logs an error whenever the count of dead outbox events changes, for alerting
+func (w *Worker) reportDead(ctx context.Context, now time.Time) {
+	n, err := w.store.DeadOutboxCount(ctx)
+	if err != nil {
+		w.log.Error("watch count dead outbox events", "err", err)
+		return
+	}
+	w.deadMu.Lock()
+	defer w.deadMu.Unlock()
+	if n == w.dead && (n == 0 || now.Sub(w.deadReported) < deadReportEvery) {
+		return
+	}
+	w.dead, w.deadReported = n, now
+	if n > 0 {
+		w.log.Error("outbox holds dead events, router-worker outbox-redrive sends them again",
+			"dead", n)
+	}
 }
 
 func (w *Worker) failStalled(ctx context.Context, now time.Time) {

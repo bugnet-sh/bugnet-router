@@ -1307,6 +1307,25 @@ func TestOutboxRedactsTransportError(t *testing.T) {
 	}
 }
 
+func TestWatchReportsDeadEvents(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, options{log: &logs})
+	id := e.insertEvent(t, "1")
+	_, err := e.pool.Exec(t.Context(), `update outbox set attempts = $2 where id = $1`, id,
+		store.MaxOutboxAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.run(t, jobargs.Watch{})
+	e.run(t, jobargs.Watch{})
+	if n := strings.Count(logs.String(), "outbox holds dead events"); n != 1 ||
+		!strings.Contains(logs.String(), "dead=1") {
+		t.Fatalf("watch logged the dead events %d times, want once with the count\n%s", n,
+			logs.String())
+	}
+}
+
 func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

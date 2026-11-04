@@ -91,3 +91,26 @@ func (s *Store) MarkOutboxFailed(
 	}
 	return nil
 }
+
+// DeadOutboxCount counts the undelivered events that ran out of attempts
+func (s *Store) DeadOutboxCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.q.QueryRow(ctx, `
+		select count(*) from outbox where delivered_at is null and attempts >= $1`,
+		MaxOutboxAttempts).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count dead outbox events: %w", err)
+	}
+	return n, nil
+}
+
+// RedriveOutbox gives every dead event its attempts back so the outbox job sends it again
+func (s *Store) RedriveOutbox(ctx context.Context) (int, error) {
+	tag, err := s.q.Exec(ctx, `
+		update outbox set attempts = 0, next_attempt_at = null
+		where delivered_at is null and attempts >= $1`, MaxOutboxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("redrive outbox: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

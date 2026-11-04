@@ -177,3 +177,35 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 		t.Fatalf("healthz answered %d after shutdown", code)
 	}
 }
+
+func TestRedriveOutboxNeedsOnlyDatabaseURL(t *testing.T) {
+	url := testenv.DatabaseURL(t)
+	if err := store.Migrate(t.Context(), url); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	pool, err := pgxpool.New(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(t.Context(), `insert into outbox (id, event_type, payload, attempts)
+		values ($1, 'placement.failed', '{}', $2)`, uuid.New(), store.MaxOutboxAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_EVENT_SIGNING_KEY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("BUGNET_DATABASE_URL", url)
+	if err := run(discard, "outbox-redrive"); err != nil {
+		t.Fatalf("outbox-redrive: %v", err)
+	}
+	var dead int
+	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where attempts >= $1`,
+		store.MaxOutboxAttempts).Scan(&dead); err != nil || dead != 0 {
+		t.Fatalf("%d dead events after the redrive, %v, want none", dead, err)
+	}
+	if err := run(discard, "nonsense"); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("an unknown argument gave %v, want the usage", err)
+	}
+}
