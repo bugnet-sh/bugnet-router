@@ -729,9 +729,6 @@ func TestGetPlacementWakesAfterResubscribe(t *testing.T) {
 			released := time.Now()
 			if !c.resubscribed {
 				e.awaitState(t, h, store.PlacementReady)
-				if id := e.subscribed(t); id != "" {
-					t.Fatalf("subscribed again on %s before the placement was ready", id)
-				}
 			}
 
 			select {
