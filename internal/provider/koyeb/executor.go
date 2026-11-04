@@ -49,7 +49,7 @@ func newExecutorClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ForceAttemptHTTP2 = false
 	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	return &http.Client{Transport: t}
+	return &http.Client{Transport: t, CheckRedirect: provider.NoRedirect}
 }
 
 // target is how one sandbox's executor is reached

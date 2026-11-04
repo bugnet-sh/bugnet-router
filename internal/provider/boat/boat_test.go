@@ -920,6 +920,22 @@ func TestBoatLargeFiles(t *testing.T) {
 	}
 }
 
+func TestBoatRefusesUploadRedirects(t *testing.T) {
+	agent, reached := contract.Redirector(t)
+	f := newFake(t)
+	f.uploadBase = agent
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	runner := make([]byte, 4<<20)
+	if err := p.WriteFile(t.Context(), ref, fakeDir(t)+"/bin/bugnet-run", runner,
+		0o755); err == nil {
+		t.Error("upload through a redirecting URL succeeded")
+	}
+	if reached.Load() {
+		t.Fatal("the adapter followed an upload redirect")
+	}
+}
+
 func TestBoatReadsAFileThatOutgrewTheCap(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)

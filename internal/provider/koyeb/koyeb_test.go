@@ -1427,3 +1427,22 @@ func runExec(
 	code, err := stream.Wait()
 	return out.Bytes(), code, err
 }
+
+func TestKoyebRefusesExecutorRedirects(t *testing.T) {
+	agent, reached := contract.Redirector(t)
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref := provider.Ref{Provider: "koyeb", ID: "app-1", Meta: map[string]string{
+		metaExecutor: agent, metaSecret: "secret",
+	}}
+	ctx := t.Context()
+	if data, _, err := p.ReadFile(ctx, ref, "/etc/hostname", 0, 64); err == nil {
+		t.Errorf("read through a redirecting executor gave %q, want an error", data)
+	}
+	if err := p.WriteFile(ctx, ref, "/tmp/f", []byte("tenant bytes"), 0o644); err == nil {
+		t.Error("write through a redirecting executor succeeded")
+	}
+	if reached.Load() {
+		t.Fatal("the adapter followed an executor redirect")
+	}
+}

@@ -155,7 +155,7 @@ func New(opts Options) (*Provider, error) {
 	}
 	key := opts.APIKey
 	client, err := api.NewClient(cmp.Or(opts.BaseURL, defaultBaseURL),
-		api.WithHTTPClient(&http.Client{}),
+		api.WithHTTPClient(&http.Client{CheckRedirect: provider.NoRedirect}),
 		api.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("Authorization", "Bearer "+key)
 			req.Header.Set("User-Agent", "bugnet-router")
@@ -165,7 +165,8 @@ func New(opts Options) (*Provider, error) {
 		return nil, fmt.Errorf("boat: %w", err)
 	}
 	return &Provider{
-		api: client, direct: &http.Client{}, sizes: sizes, pollInterval: defaultPoll,
+		api: client, direct: &http.Client{CheckRedirect: provider.NoRedirect}, sizes: sizes,
+		pollInterval: defaultPoll,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 	}, nil
 }

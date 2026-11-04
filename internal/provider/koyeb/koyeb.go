@@ -201,7 +201,7 @@ func New(opts Options) (*Provider, error) {
 		api: &api{
 			base:   strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
 			token:  opts.APIToken,
-			client: &http.Client{},
+			client: &http.Client{CheckRedirect: provider.NoRedirect},
 		},
 		exec:         newExecutorClient(),
 		log:          log,

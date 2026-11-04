@@ -691,6 +691,31 @@ func TestE2BFiles(t *testing.T) {
 	}
 }
 
+func TestE2BRefusesAgentRedirects(t *testing.T) {
+	agent, reached := contract.Redirector(t)
+	f := newFake(t)
+	p, err := New(Options{
+		APIKey: fakeKey, Templates: fakeTemplates, BaseURL: f.rest.URL, EnvdURL: agent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := f.add(nil)
+	ctx := t.Context()
+	if data, _, err := p.ReadFile(ctx, ref, "/etc/hostname", 0, 64); err == nil {
+		t.Errorf("read through a redirecting envd gave %q, want an error", data)
+	}
+	if err := p.WriteFile(ctx, ref, "/tmp/f", []byte("tenant bytes"), 0o644); err == nil {
+		t.Error("write through a redirecting envd succeeded")
+	}
+	if _, err := p.ListFiles(ctx, ref, "/tmp", 1); err == nil {
+		t.Error("list through a redirecting envd succeeded")
+	}
+	if reached.Load() {
+		t.Fatal("the adapter followed an envd redirect")
+	}
+}
+
 func TestE2BWriteFileMode(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)

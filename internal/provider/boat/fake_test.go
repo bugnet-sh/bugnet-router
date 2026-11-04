@@ -160,6 +160,8 @@ type fakeBoat struct {
 	listLimit int
 	// drift writes sandbox and command times in another layout, or as numbers when "types"
 	drift string
+	// uploadBase serves upload URLs from another server instead of the fake itself
+	uploadBase string
 
 	mu        sync.Mutex
 	streams   int
@@ -1296,7 +1298,7 @@ func (f *fakeBoat) uploadURL(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "type": "file.upload_url", "method": "PUT", "path": name,
-		"url":       f.srv.URL + "/upload/" + hex.EncodeToString(token),
+		"url":       cmp.Or(f.uploadBase, f.srv.URL) + "/upload/" + hex.EncodeToString(token),
 		"expiresAt": grant.expires.UTC().Format(time.RFC3339),
 	})
 }

@@ -204,8 +204,11 @@ func New(opts Options) (*Provider, error) {
 	}
 	domain := cmp.Or(opts.Domain, defaultDomain)
 	p := &Provider{
-		rest:         &http.Client{},
-		envd:         &http.Client{Transport: proxyTransport{base: http.DefaultTransport}},
+		rest: &http.Client{CheckRedirect: provider.NoRedirect},
+		envd: &http.Client{
+			Transport:     proxyTransport{base: http.DefaultTransport},
+			CheckRedirect: provider.NoRedirect,
+		},
 		restURL:      cmp.Or(opts.BaseURL, "https://api."+domain),
 		envdURL:      opts.EnvdURL,
 		domain:       domain,
