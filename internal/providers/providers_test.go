@@ -259,11 +259,67 @@ func TestBuildKoyebRejectsBadConfig(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsProvidersWithoutAdapter(t *testing.T) {
-	for _, name := range []string{"boat"} {
-		_, err := providers.Build(config.Config{Providers: []string{name}})
-		if err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("build %s: %v", name, err)
-		}
+func TestBuildBoat(t *testing.T) {
+	t.Setenv("BUGNET_BOAT_TYPES", "")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"boat"},
+		ProviderKeys: map[string]string{"boat": "boat_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := reg.Get("boat")
+	if !ok {
+		t.Fatalf("registry %v lacks boat", reg.Ordered())
+	}
+	caps := p.Capabilities()
+	if !caps.NeedsRunnerUpload || !caps.SSH || caps.GPU || caps.MaxLifetime != 30*24*time.Hour ||
+		p.BillingIncrement() != time.Second {
+		t.Fatalf("boat capabilities %+v, increment %v", caps, p.BillingIncrement())
+	}
+	size, ok := p.SizeFor(provider.Resources{VCPU: 4, MemoryMiB: 8192})
+	if !ok || size.Name != "default" || p.HourlyCostMicros(size) != 36000 {
+		t.Fatalf("size for 4 vCPU: %+v, %v", size, ok)
+	}
+}
+
+func TestBuildBoatTypes(t *testing.T) {
+	t.Setenv("BUGNET_BOAT_TYPES", "cpu2=small,cpu8=large")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"boat"},
+		ProviderKeys: map[string]string{"boat": "boat_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := reg.Get("boat")
+	size, ok := p.SizeFor(provider.Resources{VCPU: 3})
+	if !ok || size.Name != "cpu8" || size.Resources.VCPU != 8 {
+		t.Fatalf("size from BUGNET_BOAT_TYPES: %+v, %v", size, ok)
+	}
+	if s, ok := p.SizeFor(provider.Resources{VCPU: 16}); ok {
+		t.Fatalf("configured sizes offer %+v", s)
+	}
+}
+
+func TestBuildBoatRejectsBadConfig(t *testing.T) {
+	_, err := providers.Build(config.Config{Providers: []string{"boat"}})
+	if err == nil || !strings.Contains(err.Error(), "BOAT_API_KEY") {
+		t.Fatalf("build boat without a key: %v", err)
+	}
+	t.Setenv("BUGNET_BOAT_TYPES", "cpu=tiny")
+	_, err = providers.Build(config.Config{
+		Providers:    []string{"boat"},
+		ProviderKeys: map[string]string{"boat": "boat_test"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "BUGNET_BOAT_TYPES") {
+		t.Fatalf("build boat with an unknown type: %v", err)
+	}
+}
+
+func TestBuildRejectsUnknownProviders(t *testing.T) {
+	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}})
+	if err == nil || !strings.Contains(err.Error(), "nimbus") {
+		t.Fatalf("build nimbus: %v", err)
 	}
 }

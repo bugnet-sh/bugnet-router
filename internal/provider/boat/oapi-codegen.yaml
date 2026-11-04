@@ -1,0 +1,25 @@
+package: api
+output: api/api.gen.go
+generate:
+  models: true
+  client: true
+output-options:
+  resolve-type-name-collisions: true
+  overlay:
+    path: spec/overlay.yaml
+  include-operation-ids:
+    - create
+    - get
+    - sandboxes
+    - update
+    - deleteSandbox
+    - command
+    - attachCommand
+    - stopCommand
+    - readFile
+    - writeFile
+    - listFiles
+    - getFileInfo
+    - createFolder
+    - setFilePermissions
+    - createUploadUrl

@@ -122,6 +122,7 @@ URL.
 | `BUGNET_KOYEB_REGION` | `fra` | Koyeb region every sandbox runs in |
 | `BUGNET_KOYEB_INSTANCE_TYPES` | every fra type | Comma-separated `size=instanceType` sizes to sell |
 | `BOAT_API_KEY` | empty | Boat credentials |
+| `BUGNET_BOAT_TYPES` | every type | Comma-separated `size=type` sizes, types `small` to `xlarge` |
 
 Only `router-api` reads these.
 
@@ -150,9 +151,17 @@ Money is integer micro-USD and times are UTC.
 
 ## Providers
 
+Every provider has an adapter: boxd, E2B, Koyeb and Boat, beside `local` for development. Each
+reads its credentials and settings from the environment table above.
+
 - `local` runs sandboxes as host directories and processes, for tests and development only.
-- `boxd` runs isolated boxd machines.
-- `e2b` runs E2B sandboxes from templates built with `deploy/e2b`. Without
+- `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `BUGNET_BOXD_REGION` and
+  `BUGNET_BOXD_ENDPOINT`.
+- `e2b` runs E2B sandboxes from templates built with `deploy/e2b`, with `E2B_API_KEY`,
+  `BUGNET_E2B_TEMPLATES`, `BUGNET_E2B_DOMAIN` and `BUGNET_E2B_MAX_LIFETIME`. Without
   `BUGNET_E2B_TEMPLATES` it has no sizes and is never chosen.
-- `koyeb` runs Koyeb sandbox services, one app each, with the RTX 4000 SFF Ada for GPU packages.
-- An adapter for Boat arrives next, until then `BUGNET_PROVIDERS` must not name it.
+- `koyeb` runs Koyeb sandbox services, one app each, with the RTX 4000 SFF Ada for GPU packages,
+  with `KOYEB_API_TOKEN`, `BUGNET_KOYEB_REGION` and `BUGNET_KOYEB_INSTANCE_TYPES`.
+- `boat` runs Boat sandboxes in the EU without the account's secrets, snapshots or monitoring,
+  with `BOAT_API_KEY` and `BUGNET_BOAT_TYPES`. `large` needs a first payment and `xlarge` the
+  $100 plan, so `BUGNET_BOAT_TYPES` can leave them out.

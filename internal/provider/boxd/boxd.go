@@ -5,9 +5,9 @@
 // name derives from the IdempotencyKey and a label holds the key's digest. A create that meets
 // the name already taken, or whose reply was lost, adopts the machine when the labels match.
 // Label keys at boxd may not contain underscores, so each underscore travels as a dot and the
-// adapter refuses router keys with dots of their own. Exec takes one shell command string, built
-// here from argv with single-quote escaping, and closing either side of its stream kills the
-// command.
+// adapter refuses router keys with dots of their own. Exec takes one shell command string, which
+// package shell builds from argv with single-quote escaping, and closing either side of its
+// stream kills the command.
 package boxd
 
 import (
@@ -27,7 +27,6 @@ import (
 	"sync"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -38,6 +37,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
+	"github.com/oynozan/bugnet-router/internal/provider/shell"
 )
 
 const (
@@ -79,7 +79,6 @@ func res(vcpu, memGiB int) provider.Resources {
 
 var (
 	routerLabelKey = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$`)
-	envKey         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	rateWord       = regexp.MustCompile(`(?i)\brate(limit\w*)?\b`)
 )
 
@@ -497,7 +496,7 @@ func (p *Provider) Exec(
 	if err != nil {
 		return nil, err
 	}
-	command, err := commandLine(spec)
+	command, err := shell.Command(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -515,53 +514,6 @@ func (p *Provider) Exec(
 		return nil, classify(ctx, err)
 	}
 	return &execStream{ctx: ctx, stream: stream, cancel: cancel}, nil
-}
-
-// commandLine builds the one shell command boxd's Exec takes, quoting every word
-func commandLine(spec provider.ExecSpec) (string, error) {
-	if len(spec.Argv) == 0 {
-		return "", invalid(errors.New("exec needs a command"))
-	}
-	var b strings.Builder
-	if spec.Cwd != "" {
-		b.WriteString("cd " + quote(spec.Cwd) + " && ")
-	}
-	if len(spec.Env) > 0 {
-		// env would read an argv0 holding = as one more variable and one starting with - as a flag
-		if strings.Contains(spec.Argv[0], "=") || strings.HasPrefix(spec.Argv[0], "-") {
-			return "", invalid(fmt.Errorf("command %q cannot follow env", spec.Argv[0]))
-		}
-		keys := make([]string, 0, len(spec.Env))
-		for k := range spec.Env {
-			if !envKey.MatchString(k) {
-				return "", invalid(fmt.Errorf("environment variable name %q", k))
-			}
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		b.WriteString("env")
-		for _, k := range keys {
-			b.WriteString(" " + quote(k+"="+spec.Env[k]))
-		}
-		b.WriteString(" ")
-	}
-	for i, a := range spec.Argv {
-		if i > 0 {
-			b.WriteString(" ")
-		}
-		b.WriteString(quote(a))
-	}
-	b.WriteString(" </dev/null")
-	line := b.String()
-	if strings.ContainsRune(line, 0) || !utf8.ValidString(line) {
-		return "", invalid(errors.New("boxd takes commands as UTF-8 text without NUL bytes"))
-	}
-	return line, nil
-}
-
-// quote wraps s in single quotes, closing them around each single quote it holds
-func quote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 type execStream struct {

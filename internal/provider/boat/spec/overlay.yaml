@@ -1,0 +1,8 @@
+overlay: 1.0.0
+info:
+  title: Boat client without webhooks
+  version: 1.0.0
+actions:
+  - target: $.webhooks
+    description: The webhook payload schemas are pruned with the unused operations
+    remove: true

@@ -12,6 +12,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/boat"
 	"github.com/oynozan/bugnet-router/internal/provider/boxd"
 	"github.com/oynozan/bugnet-router/internal/provider/e2b"
 	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
@@ -68,8 +69,14 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
 			ps = append(ps, p)
+		case "boat":
+			p, err := buildBoat(cfg.ProviderKeys["boat"])
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
 		default:
-			return nil, fmt.Errorf("providers: %s has no adapter yet", name)
+			return nil, fmt.Errorf("providers: %s has no adapter", name)
 		}
 	}
 	return provider.NewRegistry(ps), nil
@@ -116,4 +123,16 @@ func buildKoyeb(token string) (*koyeb.Provider, error) {
 		Region:             cmp.Or(os.Getenv("BUGNET_KOYEB_REGION"), "fra"),
 		InstanceTypeBySize: types,
 	})
+}
+
+// buildBoat reads the Boat settings, every machine type is a size unless some are named
+func buildBoat(key string) (*boat.Provider, error) {
+	if key == "" {
+		return nil, errors.New("boat needs BOAT_API_KEY")
+	}
+	types, err := boat.ParseTypes(os.Getenv("BUGNET_BOAT_TYPES"))
+	if err != nil {
+		return nil, fmt.Errorf("BUGNET_BOAT_TYPES: %w", err)
+	}
+	return boat.New(boat.Options{APIKey: key, TypeBySize: types})
 }
