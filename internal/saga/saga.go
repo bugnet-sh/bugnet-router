@@ -58,6 +58,9 @@ const ReasonNoCandidate = "no_candidate"
 // reasonFull is the failure reason when every candidate provider had no free slot
 const reasonFull = "capacity: every candidate provider is full"
 
+// reasonExhausted is the failure reason when placing ran out of candidates after the pre-check
+const reasonExhausted = "no provider could host the package"
+
 const (
 	maxAttempts      = 3
 	placingBudget    = 30 * time.Second
@@ -241,7 +244,7 @@ func (s *Saga) place(
 	defer cancel()
 	tried := map[string]bool{}
 	var attempted []provider.Provider
-	reason := ReasonNoCandidate
+	reason := reasonExhausted
 	full := false
 	for n := 1; n <= maxAttempts && budget.Err() == nil; {
 		cands, err := s.d.Engine.Candidates(s.inputs(pkg, req, tried))
@@ -567,7 +570,9 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		if err != nil || !applied {
 			return err
 		}
-		if err := prov.SetLifetime(ctx, ref, p.Deadline.Add(lifetimeSlack)); err != nil {
+		lctx, cancel := step(ctx)
+		defer cancel()
+		if err := prov.SetLifetime(lctx, ref, p.Deadline.Add(lifetimeSlack)); err != nil {
 			return fmt.Errorf("set lifetime: %w", err)
 		}
 		if err := s.insertDeadline(ctx, tx, id, *p.Deadline); err != nil {
