@@ -10,6 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// MaxOutboxAttempts is how many failed deliveries an event gets before it is left undelivered
+const MaxOutboxAttempts = 10
+
 // OutboxEvent is an event waiting for delivery
 type OutboxEvent struct {
 	ID        uuid.UUID
@@ -35,11 +38,17 @@ func (s *Store) InsertOutbox(ctx context.Context, tx pgx.Tx, eventType string, p
 	return nil
 }
 
-// PendingOutbox returns up to limit undelivered events, oldest first
-func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]OutboxEvent, error) {
+// PendingOutbox locks up to limit events due at now, oldest first, skipping ones locked elsewhere
+func (s *Store) PendingOutbox(
+	ctx context.Context, now time.Time, limit int,
+) ([]OutboxEvent, error) {
 	rows, err := s.q.Query(ctx, `
 		select id, event_type, payload, created_at, attempts, coalesce(last_error, '')
-		from outbox where delivered_at is null order by created_at, id limit $1`, limit)
+		from outbox
+		where delivered_at is null and attempts < $1
+			and (next_attempt_at is null or next_attempt_at <= $2)
+		order by created_at, id limit $3
+		for update skip locked`, MaxOutboxAttempts, utc(now), limit)
 	if err != nil {
 		return nil, fmt.Errorf("pending outbox: %w", err)
 	}
@@ -70,10 +79,13 @@ func (s *Store) MarkOutboxDelivered(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// MarkOutboxFailed counts a failed delivery attempt and keeps the event pending
-func (s *Store) MarkOutboxFailed(ctx context.Context, id uuid.UUID, msg string) error {
-	_, err := s.q.Exec(ctx,
-		`update outbox set attempts = attempts + 1, last_error = $2 where id = $1`, id, msg)
+// MarkOutboxFailed counts a failed delivery and holds the event back until retryAt
+func (s *Store) MarkOutboxFailed(
+	ctx context.Context, id uuid.UUID, msg string, retryAt time.Time,
+) error {
+	_, err := s.q.Exec(ctx, `
+		update outbox set attempts = attempts + 1, last_error = $2, next_attempt_at = $3
+		where id = $1`, id, msg, utc(retryAt))
 	if err != nil {
 		return fmt.Errorf("mark outbox failed: %w", err)
 	}

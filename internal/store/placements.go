@@ -172,6 +172,58 @@ func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 	return nil
 }
 
+// Attempts returns a placement's attempts in attempt order
+func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt, error) {
+	rows, err := s.q.Query(ctx, `
+		select placement_id, attempt, coalesce(provider, ''), coalesce(idempotency_key, ''),
+			coalesce(state, ''), coalesce(error_code, ''), coalesce(error, '')
+		from placement_attempts where placement_id = $1 order by attempt`, placementID)
+	if err != nil {
+		return nil, fmt.Errorf("select attempts: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Attempt, error) {
+		var a Attempt
+		err := r.Scan(&a.PlacementID, &a.Attempt, &a.Provider, &a.IdempotencyKey, &a.State,
+			&a.ErrorCode, &a.Error)
+		return a, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("select attempts: %w", err)
+	}
+	return out, nil
+}
+
+// ReadyPastDeadline returns the ready placements whose deadline is before now
+func (s *Store) ReadyPastDeadline(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	return s.placementIDs(ctx, "ready past deadline", `
+		select id from placements where state = $1 and deadline < $2 order by deadline`,
+		PlacementReady, utc(now))
+}
+
+// StalledPlacing returns placing placements with no heartbeat since beat, or none since created
+func (s *Store) StalledPlacing(
+	ctx context.Context, beat, created time.Time,
+) ([]uuid.UUID, error) {
+	return s.placementIDs(ctx, "stalled placing", `
+		select id from placements where state = $1 and (saga_heartbeat < $2
+			or (saga_heartbeat is null and created_at < $3))
+		order by created_at`, PlacementPlacing, utc(beat), utc(created))
+}
+
+func (s *Store) placementIDs(
+	ctx context.Context, name, sql string, args ...any,
+) ([]uuid.UUID, error) {
+	rows, err := s.q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return ids, nil
+}
+
 func (s *Store) transition(ctx context.Context, id uuid.UUID, name, sql string, args ...any) error {
 	tag, err := s.q.Exec(ctx, sql, append([]any{id}, args...)...)
 	if err != nil {

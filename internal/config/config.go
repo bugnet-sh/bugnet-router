@@ -18,6 +18,7 @@ type Config struct {
 	ValkeyAddr          string
 	ValkeyPrefix        string
 	ListenAddr          string
+	WorkerListenAddr    string
 	InternalToken       string
 	HandleKey           []byte
 	OrderTokenPublicKey ed25519.PublicKey
@@ -106,6 +107,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	c.ValkeyAddr = get("BUGNET_VALKEY_ADDR", "127.0.0.1:6379")
 	c.ValkeyPrefix = get("BUGNET_VALKEY_PREFIX", "bn:")
 	c.ListenAddr = get("BUGNET_LISTEN_ADDR", ":8080")
+	c.WorkerListenAddr = get("BUGNET_WORKER_LISTEN_ADDR", ":8081")
 	c.EventsURL = get("BUGNET_EVENTS_URL", "")
 	c.RunnerLinuxAMD64 = get("BUGNET_RUNNER_LINUX_AMD64", "")
 	c.RunnerLinuxARM64 = get("BUGNET_RUNNER_LINUX_ARM64", "")

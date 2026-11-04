@@ -7,8 +7,9 @@
 // upload. A create whose outcome is unknown is retried with the same key on the same provider, a
 // known failure that allows it fails over to the next candidate, anything else fails the
 // placement as refundable. Once placing ends, every sandbox labelled for the placement other
-// than the ready one is destroyed. Every state change commits together with its outbox event
-// and, for a deadline, its River job, and is then published on Valkey for live readers.
+// than the ready one is destroyed. FailStuck fails a placement whose placing saga went away in
+// the same way. Every state change commits together with its outbox event and, for a deadline,
+// its River job, and is then published on Valkey for live readers.
 package saga
 
 import (
@@ -54,6 +55,12 @@ const ReasonStop = "stop"
 
 // ReasonNoCandidate is the failure reason when no provider can host the package
 const ReasonNoCandidate = "no_candidate"
+
+// ReasonDeadline is the termination reason when the placement's paid time runs out
+const ReasonDeadline = "deadline"
+
+// ReasonPlacingStalled is the failure reason when the saga placing a placement stopped heartbeating
+const ReasonPlacingStalled = "placing_stalled"
 
 // reasonFull is the failure reason when every candidate provider had no free slot
 const reasonFull = "capacity: every candidate provider is full"
@@ -494,6 +501,58 @@ func (s *Saga) fail(
 		s.publish(ctx, ev)
 	}
 	s.sweep(ctx, p.ID, attempted, nil)
+}
+
+// FailStuck fails a placing placement whose saga went away as placing would, else does nothing
+func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error {
+	var ev Event
+	var held []string
+	failed := false
+	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := s.d.Store.Tx(tx)
+		cur, err := ts.PlacementForUpdate(ctx, id)
+		if err != nil || cur.State != store.PlacementPlacing {
+			return err
+		}
+		if err := ts.MarkPlacementFailed(ctx, id, reason, true); err != nil {
+			return err
+		}
+		attempts, err := ts.Attempts(ctx, id)
+		if err != nil {
+			return err
+		}
+		// An attempt still creating holds the capacity slot its saga never gave back
+		for _, a := range attempts {
+			if a.State != attemptCreating {
+				continue
+			}
+			a.State, a.Error = attemptFailed, reason
+			if err := ts.RecordAttempt(ctx, a); err != nil {
+				return err
+			}
+			held = append(held, a.Provider)
+		}
+		if cur, err = ts.PlacementByID(ctx, id); err != nil {
+			return err
+		}
+		ev = newEvent(cur, reason)
+		failed = true
+		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, ev)
+	})
+	if err != nil {
+		return fmt.Errorf("fail stuck placement: %w", err)
+	}
+	if !failed {
+		return nil
+	}
+	// The failure is committed, so cleanup runs to the end even when the caller gives up
+	ctx = context.WithoutCancel(ctx)
+	s.publish(ctx, ev)
+	s.sweep(ctx, id, s.d.Registry.Ordered(), nil)
+	for _, name := range held {
+		s.release(ctx, name)
+	}
+	return nil
 }
 
 // sweep destroys every sandbox labelled for the placement on provs except keep

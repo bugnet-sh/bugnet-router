@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -348,7 +349,8 @@ func TestOutboxPendingAndDelivered(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 
-	pending, err := s.PendingOutbox(ctx, 10)
+	now := time.Now()
+	pending, err := s.PendingOutbox(ctx, now, 10)
 	if err != nil || len(pending) != 3 {
 		t.Fatalf("pending=%v err=%v", pending, err)
 	}
@@ -359,19 +361,154 @@ func TestOutboxPendingAndDelivered(t *testing.T) {
 	if pending[0].EventType != "a" || len(payload) != 1 || payload["kind"] != "a" {
 		t.Fatalf("first = %+v payload=%v", pending[0], payload)
 	}
-	if limited, _ := s.PendingOutbox(ctx, 2); len(limited) != 2 {
+	if limited, _ := s.PendingOutbox(ctx, now, 2); len(limited) != 2 {
 		t.Fatalf("limited = %v", limited)
 	}
 	if err := s.MarkOutboxDelivered(ctx, pending[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkOutboxFailed(ctx, pending[1].ID, "nope"); err != nil {
+	retryAt := now.Add(time.Minute)
+	if err := s.MarkOutboxFailed(ctx, pending[1].ID, "nope", retryAt); err != nil {
 		t.Fatal(err)
 	}
-	pending, _ = s.PendingOutbox(ctx, 10)
+	pending, _ = s.PendingOutbox(ctx, now, 10)
+	if len(pending) != 1 || pending[0].EventType != "c" {
+		t.Fatalf("pending before the retry is due = %+v, want only c", pending)
+	}
+	pending, _ = s.PendingOutbox(ctx, retryAt, 10)
 	if len(pending) != 2 || pending[0].EventType != "b" || pending[0].Attempts != 1 ||
 		pending[0].LastError != "nope" {
-		t.Fatalf("pending = %+v", pending)
+		t.Fatalf("pending once due = %+v", pending)
+	}
+}
+
+func TestOutboxStopsAfterMaxAttempts(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	err := s.WithTx(ctx, func(tx pgx.Tx) error { return s.InsertOutbox(ctx, tx, "a", 1) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for n := 1; n <= store.MaxOutboxAttempts; n++ {
+		pending, err := s.PendingOutbox(ctx, now, 10)
+		if err != nil || len(pending) != 1 {
+			t.Fatalf("before failure %d pending=%v err=%v", n, pending, err)
+		}
+		if err := s.MarkOutboxFailed(ctx, pending[0].ID, "nope", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pending, _ := s.PendingOutbox(ctx, now.Add(time.Hour), 10); len(pending) != 0 {
+		t.Fatalf("pending after %d failures = %+v", store.MaxOutboxAttempts, pending)
+	}
+}
+
+func TestPendingOutboxSkipsLockedRows(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	for _, kind := range []string{"a", "b"} {
+		err := s.WithTx(ctx, func(tx pgx.Tx) error { return s.InsertOutbox(ctx, tx, kind, 1) })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	held, err := s.Tx(tx).PendingOutbox(ctx, time.Now(), 1)
+	if err != nil || len(held) != 1 || held[0].EventType != "a" {
+		t.Fatalf("held=%+v err=%v", held, err)
+	}
+	other, err := s.PendingOutbox(ctx, time.Now(), 10)
+	if err != nil || len(other) != 1 || other[0].EventType != "b" {
+		t.Fatalf("pending while a is held = %+v err=%v, want only b", other, err)
+	}
+}
+
+func TestReadyPastDeadline(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	overdue := newPlacement(t, s, "overdue")
+	due := newPlacement(t, s, "due")
+	newPlacement(t, s, "placing")
+	ended := newPlacement(t, s, "ended")
+	for p, deadline := range map[uuid.UUID]time.Time{
+		overdue.ID: now.Add(-time.Second), due.ID: now.Add(time.Second),
+		ended.ID: now.Add(-time.Hour),
+	} {
+		err := s.MarkPlacementReady(ctx, p, ref, "s", now.Add(-time.Hour), deadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.MarkPlacementTerminating(ctx, ended.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.ReadyPastDeadline(ctx, now)
+	if err != nil || len(ids) != 1 || ids[0] != overdue.ID {
+		t.Fatalf("ReadyPastDeadline = %v, %v, want only %s", ids, err, overdue.ID)
+	}
+}
+
+func TestStalledPlacing(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	stale := newPlacement(t, s, "stale")
+	fresh := newPlacement(t, s, "fresh")
+	silent := newPlacement(t, s, "silent")
+	young := newPlacement(t, s, "young")
+	failed := newPlacement(t, s, "failed")
+	beats := map[uuid.UUID]time.Time{
+		stale.ID: now.Add(-61 * time.Second), fresh.ID: now.Add(-59 * time.Second),
+		failed.ID: now.Add(-time.Hour),
+	}
+	for id, at := range beats {
+		if err := s.HeartbeatPlacement(ctx, id, "r", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkPlacementFailed(ctx, failed.ID, "x", true); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pool.Exec(ctx, `update placements set created_at = $2 where id = any($1)`,
+		[]uuid.UUID{silent.ID, failed.ID}, now.Add(-3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.StalledPlacing(ctx, now.Add(-time.Minute), now.Add(-2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []uuid.UUID{silent.ID, stale.ID}; !slices.Equal(ids, want) {
+		t.Fatalf("StalledPlacing = %v, want %v oldest first, not fresh %s or young %s", ids, want,
+			fresh.ID, young.ID)
+	}
+}
+
+func TestAttempts(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	other := newPlacement(t, s, "other")
+	want := []store.Attempt{
+		{PlacementID: p.ID, Attempt: 1, Provider: "a", IdempotencyKey: "k1", State: "failed",
+			ErrorCode: "capacity", Error: "full"},
+		{PlacementID: p.ID, Attempt: 2, Provider: "b", IdempotencyKey: "k2", State: "creating"},
+	}
+	for _, a := range []store.Attempt{want[1], want[0], {PlacementID: other.ID, Attempt: 1}} {
+		if err := s.RecordAttempt(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Attempts(ctx, p.ID)
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("Attempts = %+v, %v, want %+v", got, err, want)
 	}
 }
 

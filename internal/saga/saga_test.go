@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -354,7 +355,7 @@ func (e *env) reload(t *testing.T, id uuid.UUID) store.Placement {
 
 func (e *env) events(t *testing.T, eventType string) []saga.Event {
 	t.Helper()
-	pending, err := e.store.PendingOutbox(t.Context(), 100)
+	pending, err := e.store.PendingOutbox(t.Context(), time.Now(), 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +546,7 @@ func TestCreatePlacementReady(t *testing.T) {
 		t.Fatalf("provider lifetime %v, want deadline + 5m", lt)
 	}
 
-	pending, err := e.store.PendingOutbox(t.Context(), 10)
+	pending, err := e.store.PendingOutbox(t.Context(), time.Now(), 10)
 	if err != nil || len(pending) != 1 || pending[0].EventType != saga.EventReady {
 		t.Fatalf("outbox %+v %v", pending, err)
 	}
@@ -996,6 +997,79 @@ func TestSagaDestroysLeftoverAfterFailOver(t *testing.T) {
 	}
 	if ia, ib := e.inUse(t, "a"), e.inUse(t, "b"); ia != 0 || ib != 1 {
 		t.Fatalf("in use a=%d b=%d", ia, ib)
+	}
+}
+
+func TestFailStuckFailsOnlyPlacing(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnv(t, a, b)
+	ctx := t.Context()
+	ready, _ := e.placeReady(t, "order-1")
+	stuck, _, err := e.store.CreatePlacement(ctx, store.NewPlacement{
+		HandleSHA256: []byte("stuck-handle"), OrderID: "order-2", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Its saga failed one attempt on a and went away while creating on b
+	if ok, err := e.store.ReserveCapacity(ctx, "b"); err != nil || !ok {
+		t.Fatalf("reserve: %v %v", ok, err)
+	}
+	for _, rec := range []store.Attempt{
+		{PlacementID: stuck.ID, Attempt: 1, Provider: "a", IdempotencyKey: "k1", State: "failed",
+			ErrorCode: "capacity", Error: "full"},
+		{PlacementID: stuck.ID, Attempt: 2, Provider: "b", IdempotencyKey: "k2", State: "creating"},
+	} {
+		if err := e.store.RecordAttempt(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []provider.Provider{a, b} {
+		_, err := p.Create(ctx, provider.CreateRequest{
+			IdempotencyKey: "left-" + p.Name(), Size: small, Lifetime: time.Hour,
+			Labels: map[string]string{"bugnet": "1", "placement": stuck.ID.String()},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := e.saga.FailStuck(ctx, stuck.ID, saga.ReasonPlacingStalled); err != nil {
+		t.Fatalf("fail stuck: %v", err)
+	}
+	got := e.reload(t, stuck.ID)
+	if got.State != store.PlacementFailed || !got.Refundable ||
+		got.FailureReason != saga.ReasonPlacingStalled {
+		t.Fatalf("stuck placement %+v, want failed refundable placing_stalled", got)
+	}
+	ev := e.oneEvent(t, saga.EventFailed)
+	if ev.PlacementID != stuck.ID || ev.Reason != saga.ReasonPlacingStalled || !ev.Refundable {
+		t.Fatalf("failed event %+v", ev)
+	}
+	if na, nb := len(owned(t, a)), len(owned(t, b)); na+nb != 1 {
+		t.Fatalf("sandboxes a=%d b=%d, want only the ready placement's", na, nb)
+	}
+	if n := e.inUse(t, "b"); n != 0 {
+		t.Fatalf("in use on b %d, want the stuck attempt's slot released", n)
+	}
+	want := []attemptRow{{1, "a", "failed", "capacity"}, {2, "b", "failed", ""}}
+	if got := e.attempts(t, stuck.ID); !slices.Equal(got, want) {
+		t.Fatalf("attempts %+v, want %+v", got, want)
+	}
+
+	if err := e.saga.FailStuck(ctx, stuck.ID, saga.ReasonPlacingStalled); err != nil {
+		t.Fatalf("fail stuck again: %v", err)
+	}
+	if err := e.saga.FailStuck(ctx, ready.ID, saga.ReasonPlacingStalled); err != nil {
+		t.Fatalf("fail stuck on a ready placement: %v", err)
+	}
+	if got := e.reload(t, ready.ID); got.State != store.PlacementReady {
+		t.Fatalf("ready placement is %s after FailStuck, want ready", got.State)
+	}
+	if n := len(e.events(t, saga.EventFailed)); n != 1 || e.inUse(t, "a")+e.inUse(t, "b") != 1 {
+		t.Fatalf("%d failed events and %d slots in use after repeats, want 1 and 1", n,
+			e.inUse(t, "a")+e.inUse(t, "b"))
 	}
 }
 

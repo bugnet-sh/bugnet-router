@@ -49,6 +49,9 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if c.ValkeyAddr != "127.0.0.1:6379" || c.ValkeyPrefix != "bn:" || c.ListenAddr != ":8080" {
 		t.Fatalf("defaults: %+v", c)
 	}
+	if c.WorkerListenAddr != ":8081" {
+		t.Fatalf("worker listen addr %q, want :8081", c.WorkerListenAddr)
+	}
 	if strings.Join(c.Providers, ",") != "koyeb,boat,e2b,boxd" || c.MarginFloor != 0.5 {
 		t.Fatalf("defaults: %+v", c)
 	}
@@ -176,6 +179,7 @@ func TestLoadOptional(t *testing.T) {
 		"BUGNET_REPLICA_ID":            "r1",
 		"BUGNET_VALKEY_ADDR":           "v:1",
 		"BUGNET_LISTEN_ADDR":           ":9",
+		"BUGNET_WORKER_LISTEN_ADDR":    ":10",
 		"BUGNET_VALKEY_PREFIX":         "t:",
 		"BUGNET_LOCAL_RUNNER":          "/r/local",
 		"BUGNET_LOCAL_HOURLY_MICROS":   "1500",
@@ -188,6 +192,9 @@ func TestLoadOptional(t *testing.T) {
 	}
 	if !c.LocalEnabled || c.LocalRoot != "/var/bn" || c.MarginFloor != 2.5 || c.ReplicaID != "r1" {
 		t.Fatalf("%+v", c)
+	}
+	if c.ListenAddr != ":9" || c.WorkerListenAddr != ":10" {
+		t.Fatalf("listen addrs %q and %q", c.ListenAddr, c.WorkerListenAddr)
 	}
 	want := map[string]string{"boxd": "bk", "e2b": "ek", "boat": "ok"}
 	if len(c.ProviderKeys) != 3 {
