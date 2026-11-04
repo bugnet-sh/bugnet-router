@@ -23,6 +23,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,9 @@ const (
 	runnerName        = "bugnet-run"
 	runnerSandboxPath = "/tmp/bugnet/bin/bugnet-run"
 	runnerJobsDir     = "/tmp/bugnet/jobs"
+	jobPidFile        = "pid"
+	jobSpidFile       = "spid"
+	jobExitFile       = "exit"
 	metaFile          = "meta.json"
 	idBytes           = 12
 	stderrLimit       = 64 << 10
@@ -128,8 +132,11 @@ type sandbox struct {
 	meta meta
 }
 
-// Create runs the hook first so a failing hook leaves nothing behind
-func (p *Provider) Create(_ context.Context, req provider.CreateRequest) (provider.Ref, error) {
+// Create runs the hook before touching disk so a failing hook leaves nothing behind
+func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (provider.Ref, error) {
+	if err := ctx.Err(); err != nil {
+		return provider.Ref{}, fmt.Errorf("create a %s sandbox: %w", p.opts.Name, err)
+	}
 	attempt := int(p.attempts.Add(1))
 	if p.opts.CreateHook != nil {
 		if err := p.opts.CreateHook(attempt, req); err != nil {
@@ -144,15 +151,15 @@ func (p *Provider) Create(_ context.Context, req provider.CreateRequest) (provid
 			return ref, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
-			return provider.Ref{}, err
+			return provider.Ref{}, internalErr(err)
 		}
 	}
 	if err := p.build(ref.ID, req); err != nil {
-		return provider.Ref{}, err
+		return provider.Ref{}, internalErr(err)
 	}
 	if req.IdempotencyKey != "" {
 		if err := p.recordKey(ref.ID, req.IdempotencyKey); err != nil {
-			return provider.Ref{}, err
+			return provider.Ref{}, internalErr(err)
 		}
 	}
 	return ref, nil
@@ -255,7 +262,7 @@ func (p *Provider) open(ref provider.Ref) (sandbox, error) {
 		return sandbox{}, notFound(ref)
 	}
 	if err != nil {
-		return sandbox{}, err
+		return sandbox{}, internalErr(err)
 	}
 	if m.Provider != p.opts.Name {
 		return sandbox{}, notFound(ref)
@@ -293,10 +300,10 @@ func (p *Provider) SetLifetime(_ context.Context, ref provider.Ref, until time.T
 	if errors.Is(err, fs.ErrNotExist) {
 		return notFound(ref)
 	}
-	return err
+	return internalErr(err)
 }
 
-// Destroy moves the sandbox out of sight in one rename before deleting it
+// Destroy kills the sandbox's runner jobs, then moves it out of sight in one rename and deletes it
 func (p *Provider) Destroy(_ context.Context, ref provider.Ref) error {
 	s, err := p.open(ref)
 	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
@@ -305,16 +312,77 @@ func (p *Provider) Destroy(_ context.Context, ref provider.Ref) error {
 	if err != nil {
 		return err
 	}
+	if err := killJobs(s.jobsDir()); err != nil {
+		return internalErr(err)
+	}
 	trash, err := p.scratchDir("trash", ref.ID)
 	if err != nil {
-		return err
+		return internalErr(err)
 	}
 	err = os.Rename(s.dir, filepath.Join(trash, "sandbox"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_ = os.RemoveAll(trash)
+		return internalErr(err)
+	}
+	return internalErr(os.RemoveAll(trash))
+}
+
+// killJobs ends runner jobs, whose supervisors left the exec's process group through setsid
+func killJobs(jobs string) error {
+	entries, err := os.ReadDir(jobs)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	return os.RemoveAll(trash)
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(jobs, e.Name())
+		// The supervisor writes exit as its last act, after which its pid may be another process's
+		_, err := os.Lstat(filepath.Join(dir, jobExitFile))
+		spid, ok := readPid(filepath.Join(dir, jobSpidFile))
+		if ok && errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, kill(spid))
+		}
+		if pid, ok := readPid(filepath.Join(dir, jobPidFile)); ok {
+			errs = append(errs, kill(-pid))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// kill sends SIGKILL, and EPERM means the pid now belongs to another user
+func kill(pid int) error {
+	err := syscall.Kill(pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM) {
+		return nil
+	}
+	return err
+}
+
+func readPid(name string) (int, bool) {
+	b, err := os.ReadFile(name)
+	if err != nil {
+		return 0, false
+	}
+	return parsePid(b)
+}
+
+// parsePid accepts only plain decimals above 1 so kill never reaches every process or our group
+func parsePid(b []byte) (int, bool) {
+	s := strings.TrimSpace(string(b))
+	if s == "" || strings.TrimLeft(s, "0123456789") != "" {
+		return 0, false
+	}
+	pid, err := strconv.ParseInt(s, 10, 32)
+	if err != nil || pid <= 1 {
+		return 0, false
+	}
+	return int(pid), true
 }
 
 // ListOwned returns this provider's sandboxes carrying every given label
@@ -326,7 +394,7 @@ func (p *Provider) ListOwned(
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, internalErr(err)
 	}
 	var owned []provider.Summary
 	for _, e := range entries {
@@ -338,7 +406,7 @@ func (p *Provider) ListOwned(
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, internalErr(err)
 		}
 		if m.Provider != p.opts.Name || !hasLabels(m.Labels, labels) {
 			continue
@@ -409,13 +477,19 @@ func (s sandbox) fsDir() string { return filepath.Join(s.dir, "fs") }
 
 func (s sandbox) home() string { return filepath.Join(s.dir, "fs", "root") }
 
+func (s sandbox) jobsDir() string {
+	return filepath.Join(s.fsDir(), filepath.FromSlash(runnerJobsDir))
+}
+
 // hostPath maps a sandbox path under fs, relative paths start at HOME and none may leave fs
-func (s sandbox) hostPath(name string) (string, error) {
-	base := s.home()
+func (s sandbox) hostPath(name string) (string, error) { return s.resolve(s.home(), name) }
+
+// resolve is hostPath with relative paths starting at the host directory dir
+func (s sandbox) resolve(dir, name string) (string, error) {
 	if path.IsAbs(name) {
-		base = s.fsDir()
+		dir = s.fsDir()
 	}
-	host := filepath.Join(base, filepath.FromSlash(name))
+	host := filepath.Join(dir, filepath.FromSlash(name))
 	if host != s.fsDir() && !strings.HasPrefix(host, s.fsDir()+string(filepath.Separator)) {
 		return "", invalid(fmt.Errorf("path %q leaves the sandbox", name))
 	}
@@ -449,14 +523,14 @@ func (p *Provider) ReadFile(
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, false, err
+		return nil, false, fileErr(err)
 	}
 	if info.IsDir() {
 		return nil, false, invalid(fmt.Errorf("%s is a directory", name))
 	}
 	data, err := io.ReadAll(io.NewSectionReader(f, offset, int64(length)))
 	if err != nil {
-		return nil, false, err
+		return nil, false, fileErr(err)
 	}
 	return data, offset+int64(len(data)) >= info.Size(), nil
 }
@@ -550,15 +624,15 @@ func (p *Provider) Exec(
 	if len(spec.Argv) == 0 {
 		return nil, invalid(errors.New("exec needs a command"))
 	}
-	argv, err := p.command(s, spec.Argv)
-	if err != nil {
-		return nil, err
-	}
 	dir := s.home()
 	if spec.Cwd != "" {
 		if dir, err = s.hostPath(spec.Cwd); err != nil {
 			return nil, err
 		}
+	}
+	argv, err := p.command(s, spec.Argv, dir)
+	if err != nil {
+		return nil, err
 	}
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + s.home()}
 	for k, v := range spec.Env {
@@ -570,18 +644,52 @@ func (p *Provider) Exec(
 	return startStream(ctx, argv, dir, env)
 }
 
-// command points the runner at RunnerPath and its job subcommands at this sandbox's jobs directory
-func (p *Provider) command(s sandbox, argv []string) ([]string, error) {
+// command points the runner at RunnerPath, its cwd at the host and its jobs at this sandbox
+func (p *Provider) command(s sandbox, argv []string, dir string) ([]string, error) {
 	if argv[0] != runnerName && argv[0] != runnerSandboxPath {
 		return argv, nil
 	}
 	if p.opts.RunnerPath == "" {
 		return nil, invalid(errors.New("bugnet-run has no RunnerPath on this provider"))
 	}
-	out := append([]string{p.opts.RunnerPath}, argv[1:]...)
-	if len(argv) > 1 && slices.Contains(jobCommands, argv[1]) && !hasDirFlag(argv[2:]) {
-		jobs := filepath.Join(s.fsDir(), filepath.FromSlash(runnerJobsDir))
-		out = slices.Insert(out, 2, "--dir", jobs)
+	args, err := s.runnerCwd(argv[1:], dir)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string{p.opts.RunnerPath}, args...)
+	if len(args) > 0 && slices.Contains(jobCommands, args[0]) && !hasDirFlag(args[1:]) {
+		out = slices.Insert(out, 2, "--dir", s.jobsDir())
+	}
+	return out, nil
+}
+
+// runnerCwd maps the runner's own cwd flags, which end at "--", as Exec maps a cwd from dir
+func (s sandbox) runnerCwd(args []string, dir string) ([]string, error) {
+	out := slices.Clone(args)
+	for i := 0; i < len(out) && out[i] != "--"; i++ {
+		name, value, inline := strings.Cut(out[i], "=")
+		if name != "-cwd" && name != "--cwd" {
+			continue
+		}
+		at := i
+		if !inline {
+			if i+1 == len(out) {
+				break
+			}
+			i++
+			at, value = i, out[i]
+		}
+		if value == "" {
+			continue
+		}
+		host, err := s.resolve(dir, value)
+		if err != nil {
+			return nil, err
+		}
+		if inline {
+			host = name + "=" + host
+		}
+		out[at] = host
 	}
 	return out, nil
 }
@@ -601,6 +709,7 @@ func hasDirFlag(args []string) bool {
 
 type execStream struct {
 	stdout    *os.File
+	pgid      int
 	cancel    context.CancelFunc
 	done      chan struct{}
 	code      int
@@ -633,7 +742,7 @@ func startStream(ctx context.Context, argv []string, dir string, env []string) (
 	r, w, err := os.Pipe()
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, internalErr(err)
 	}
 	cmd.Stdout = w
 	err = cmd.Start()
@@ -644,7 +753,7 @@ func startStream(ctx context.Context, argv []string, dir string, env []string) (
 		return nil, invalid(err)
 	}
 
-	s := &execStream{stdout: r, cancel: cancel, done: make(chan struct{})}
+	s := &execStream{stdout: r, pgid: cmd.Process.Pid, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		waitErr := cmd.Wait()
 		s.code, s.err = exitStatus(cmd.ProcessState, waitErr, ctx.Err(), argv[0], stderr.buf)
@@ -680,6 +789,8 @@ func (s *execStream) Wait() (int, error) {
 func (s *execStream) Close() error {
 	s.closeOnce.Do(func() {
 		s.cancel()
+		// The leader may have exited while children it left behind still hold stdout
+		_ = kill(-s.pgid)
 		<-s.done
 		s.closeErr = s.stdout.Close()
 	})
@@ -712,10 +823,21 @@ func invalid(err error) error {
 	return &provider.Error{Code: provider.CodeInvalid, Err: err}
 }
 
-// fileErr turns a missing file into not_found
+// internalErr classifies an unexpected host failure and keeps errors already classified
+func internalErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := provider.AsError(err); ok {
+		return err
+	}
+	return &provider.Error{Code: provider.CodeInternal, Err: err}
+}
+
+// fileErr turns a missing file into not_found and any other failure into internal
 func fileErr(err error) error {
 	if errors.Is(err, fs.ErrNotExist) {
 		return &provider.Error{Code: provider.CodeNotFound, Err: err}
 	}
-	return err
+	return internalErr(err)
 }

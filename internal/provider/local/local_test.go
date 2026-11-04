@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -356,34 +357,80 @@ func TestLocalRunnerArgv(t *testing.T) {
 	root := t.TempDir()
 	p := newLocal(t, local.Options{Root: root, RunnerPath: runner})
 	ref := createReady(t, p, nil)
-	jobs := filepath.Join(root, ref.ID, "fs", "tmp", "bugnet", "jobs")
+	fsDir := filepath.Join(root, ref.ID, "fs")
+	jobs := filepath.Join(fsDir, "tmp", "bugnet", "jobs")
+	if err := p.WriteFile(t.Context(), ref, "/srv/.keep", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		argv []string
+		cwd  string
 		want []string
 	}{
-		{[]string{"bugnet-run", "ls"}, []string{"ls", "--dir", jobs}},
+		{[]string{"bugnet-run", "ls"}, "", []string{"ls", "--dir", jobs}},
 		{
 			[]string{"/tmp/bugnet/bin/bugnet-run", "start", "--job", "j", "--", "sh", "--dir", "x"},
+			"",
 			[]string{"start", "--dir", jobs, "--job", "j", "--", "sh", "--dir", "x"},
 		},
 		{
 			[]string{"bugnet-run", "attach", "--job", "j1", "--dir=/elsewhere"},
+			"",
 			[]string{"attach", "--job", "j1", "--dir=/elsewhere"},
 		},
 		{
 			[]string{"bugnet-run", "cancel", "-dir", "/elsewhere", "--job", "j1"},
+			"",
 			[]string{"cancel", "-dir", "/elsewhere", "--job", "j1"},
 		},
-		{[]string{"bugnet-run", "ping"}, []string{"ping"}},
+		{[]string{"bugnet-run", "ping"}, "", []string{"ping"}},
+		{
+			[]string{
+				"bugnet-run", "start", "--job", "j", "--cwd", "/srv/app", "--", "sh", "--cwd", "/a",
+			},
+			"",
+			[]string{
+				"start", "--dir", jobs, "--job", "j", "--cwd", filepath.Join(fsDir, "srv", "app"),
+				"--", "sh", "--cwd", "/a",
+			},
+		},
+		{
+			[]string{"bugnet-run", "start", "--cwd=app", "--job", "j"},
+			"",
+			[]string{
+				"start", "--dir", jobs,
+				"--cwd=" + filepath.Join(fsDir, "root", "app"), "--job", "j",
+			},
+		},
+		{
+			[]string{"bugnet-run", "start", "-cwd", "app", "--job", "j"},
+			"/srv",
+			[]string{
+				"start", "--dir", jobs, "-cwd", filepath.Join(fsDir, "srv", "app"), "--job", "j",
+			},
+		},
+		{
+			[]string{"bugnet-run", "start", "--cwd=", "--job", "j"},
+			"",
+			[]string{"start", "--dir", jobs, "--cwd=", "--job", "j"},
+		},
 	}
 	for _, c := range cases {
-		out, code, err := execOut(t, p, ref, provider.ExecSpec{Argv: c.argv})
+		out, code, err := execOut(t, p, ref, provider.ExecSpec{Argv: c.argv, Cwd: c.cwd})
 		want := strings.Join(c.want, "\n") + "\n"
 		if err != nil || code != 0 || out != want {
-			t.Errorf("argv %q reached the runner as %q (exit %d, %v), want %q",
-				c.argv, out, code, err, want)
+			t.Errorf("argv %q in %q reached the runner as %q (exit %d, %v), want %q",
+				c.argv, c.cwd, out, code, err, want)
 		}
+	}
+	for _, argv := range [][]string{
+		{"bugnet-run", "start", "--cwd=/../escape", "--", "true"},
+		{"bugnet-run", "start", "--cwd", "../../escape", "--", "true"},
+		{"bugnet-run", "start", "-cwd", "../..", "--", "true"},
+	} {
+		_, err := p.Exec(t.Context(), ref, provider.ExecSpec{Argv: argv})
+		requireCode(t, "Exec of "+strings.Join(argv, " "), err, provider.CodeInvalid)
 	}
 
 	bare := newLocal(t, local.Options{Root: root})
@@ -454,6 +501,36 @@ func TestLocalExecStream(t *testing.T) {
 		}
 		requireGone(t, pid)
 	})
+
+	t.Run("close kills a child the exited leader left behind", func(t *testing.T) {
+		spec := provider.ExecSpec{Argv: []string{"sh", "-c", "sleep 30 & echo $!"}}
+		stream, err := p.Exec(t.Context(), ref, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid := readPID(t, stream)
+		if code, err := stream.Wait(); code != 0 || err != nil {
+			t.Fatalf("Wait gave %d, %v, want the leader's exit 0", code, err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		requireGone(t, pid)
+	})
+
+	t.Run("stderr written after the leader exits", func(t *testing.T) {
+		spec := provider.ExecSpec{
+			Argv: []string{"sh", "-c", "(while :; do echo e >&2; sleep 0.01; done) & exit 0"},
+		}
+		stream, err := p.Exec(t.Context(), ref, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		if code, err := stream.Wait(); code != 0 || err != nil {
+			t.Fatalf("Wait gave %d, %v, want the leader's exit 0", code, err)
+		}
+	})
 }
 
 // sleeper starts a background child that holds stdout open, so only a group kill ends the stream
@@ -482,6 +559,152 @@ func requireGone(t *testing.T, pid int) {
 			t.Fatalf("background process %d still runs", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestLocalDestroyKillsRunnerJobs(t *testing.T) {
+	p := newLocal(t, local.Options{})
+	ref := createReady(t, p, nil)
+
+	group := startHost(t, "sh", "-c", "sleep 30 & echo $!; wait")
+	child := readPID(t, group.stdout)
+	supervisor := startHost(t, "sleep", "30")
+	bystander := startHost(t, "sleep", "30")
+	files := map[string]string{
+		"/tmp/bugnet/jobs/j1/pid":  strconv.Itoa(group.pid) + "\n",
+		"/tmp/bugnet/jobs/j1/spid": strconv.Itoa(supervisor.pid) + "\n",
+		"/tmp/bugnet/jobs/j2/spid": strconv.Itoa(bystander.pid) + "\n",
+		"/tmp/bugnet/jobs/j2/exit": "0\n",
+		"/tmp/bugnet/jobs/j3/pid":  "not-a-pid\n",
+		"/tmp/bugnet/jobs/j3/spid": "\n",
+	}
+	for name, data := range files {
+		if err := p.WriteFile(t.Context(), ref, name, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.Destroy(t.Context(), ref); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	group.requireKilled(t)
+	supervisor.requireKilled(t)
+	requireGone(t, child)
+	select {
+	case <-bystander.done:
+		t.Fatal("Destroy killed the pid in the spid file of a job that had already exited")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// hostProcess is a process the test starts in its own group, standing in for a runner job
+type hostProcess struct {
+	pid    int
+	stdout io.Reader
+	done   chan struct{}
+	err    error
+}
+
+func startHost(t *testing.T, argv ...string) *hostProcess {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdout = w
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	err = cmd.Start()
+	_ = w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &hostProcess{pid: cmd.Process.Pid, stdout: r, done: make(chan struct{})}
+	go func() {
+		h.err = cmd.Wait()
+		close(h.done)
+	}()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-h.pid, syscall.SIGKILL)
+		<-h.done
+		_ = r.Close()
+	})
+	return h
+}
+
+func (h *hostProcess) requireKilled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("process %d still runs", h.pid)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(h.err, &exitErr) {
+		t.Fatalf("process %d ended with %v, want a SIGKILL", h.pid, h.err)
+	}
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); !ok || ws.Signal() != syscall.SIGKILL {
+		t.Fatalf("process %d ended with %v, want a SIGKILL", h.pid, h.err)
+	}
+}
+
+func TestLocalIOErrorsAreClassified(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, map[string]string{"t": "io"})
+	ctx := t.Context()
+
+	if err := p.WriteFile(ctx, ref, "/locked/f", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(root, ref.ID, "fs", "locked")
+	lock(t, locked, 0o755)
+	_, _, err := p.ReadFile(ctx, ref, "/locked/f", 0, 1)
+	requireCode(t, "ReadFile in an unreadable directory", err, provider.CodeInternal)
+	err = p.WriteFile(ctx, ref, "/locked/g", []byte("y"), 0o644)
+	requireCode(t, "WriteFile in an unwritable directory", err, provider.CodeInternal)
+	_, err = p.ListFiles(ctx, ref, "/locked", 1)
+	requireCode(t, "ListFiles of an unreadable directory", err, provider.CodeInternal)
+
+	lock(t, filepath.Join(root, ref.ID, "meta.json"), 0o644)
+	requireCode(t, "WaitReady with unreadable metadata", p.WaitReady(ctx, ref),
+		provider.CodeInternal)
+	_, err = p.ListOwned(ctx, map[string]string{"t": "io"})
+	requireCode(t, "ListOwned with unreadable metadata", err, provider.CodeInternal)
+}
+
+// lock removes every permission from name until the test ends
+func lock(t *testing.T, name string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(name, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(name, mode) })
+}
+
+func TestLocalCreateWithDoneContext(t *testing.T) {
+	hooked := false
+	p := newLocal(t, local.Options{
+		CreateHook: func(int, provider.CreateRequest) error {
+			hooked = true
+			return nil
+		},
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := provider.CreateRequest{IdempotencyKey: "k", Labels: map[string]string{"t": "done"}}
+	if _, err := p.Create(ctx, req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create with a cancelled context gave %v, want context.Canceled", err)
+	}
+	if hooked {
+		t.Fatal("Create with a cancelled context ran the hook")
+	}
+	owned, err := p.ListOwned(t.Context(), req.Labels)
+	if err != nil || len(owned) != 0 {
+		t.Fatalf("after a cancelled Create ListOwned gave %+v, %v, want nothing", owned, err)
 	}
 }
 
