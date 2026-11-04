@@ -7,7 +7,9 @@
 // sandbox. Commands run detached and their output is followed on the attach stream, which the
 // adapter reopens from the delivered offsets whenever it ends early. File calls are JSON with a
 // 5 MiB cap, so a larger upload goes through a signed upload URL and a larger read through tail
-// in the sandbox. The client in ./api is generated from the vendored OpenAPI document.
+// in the sandbox. StartCostMicros prices the next start from GET /limits, read at most every
+// 10 s, or from this process's own count of starts when the key cannot read it. The client in
+// ./api is generated from the vendored OpenAPI document.
 package boat
 
 import (
@@ -133,15 +135,20 @@ type Options struct {
 	BaseURL    string
 }
 
-// Provider places sandboxes on Boat, it keeps no state beyond its configuration
+// Provider places sandboxes on Boat, keeping only what it knows about the next start's fee
 type Provider struct {
-	api *api.Client
+	api     *api.Client
+	control *http.Client
+	baseURL string
+	key     string
 	// direct sends uploads to signed URLs, which take no Authorization header
 	direct       *http.Client
 	sizes        []size
 	pollInterval time.Duration
 	reattachWait time.Duration
 	idleTimeout  time.Duration
+	limitsTTL    time.Duration
+	fees         fees
 }
 
 // New checks the options and makes no call to Boat
@@ -154,8 +161,9 @@ func New(opts Options) (*Provider, error) {
 		return nil, err
 	}
 	key := opts.APIKey
-	client, err := api.NewClient(cmp.Or(opts.BaseURL, defaultBaseURL),
-		api.WithHTTPClient(&http.Client{CheckRedirect: provider.NoRedirect}),
+	base := strings.TrimSuffix(cmp.Or(opts.BaseURL, defaultBaseURL), "/")
+	control := &http.Client{CheckRedirect: provider.NoRedirect}
+	client, err := api.NewClient(base, api.WithHTTPClient(control),
 		api.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("Authorization", "Bearer "+key)
 			req.Header.Set("User-Agent", "bugnet-router")
@@ -165,8 +173,9 @@ func New(opts Options) (*Provider, error) {
 		return nil, fmt.Errorf("boat: %w", err)
 	}
 	return &Provider{
-		api: client, direct: &http.Client{CheckRedirect: provider.NoRedirect}, sizes: sizes,
-		pollInterval: defaultPoll,
+		api: client, control: control, baseURL: base, key: key,
+		direct: &http.Client{CheckRedirect: provider.NoRedirect}, sizes: sizes,
+		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 	}, nil
 }
@@ -251,6 +260,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if err != nil {
 		return provider.Ref{}, err
 	}
+	p.fees.started(time.Now())
 	var reply sandboxReply
 	if err := decode(raw, &reply); err != nil || reply.Sandbox.ID == "" {
 		return provider.Ref{}, unknown(fmt.Errorf("boat create reply names no sandbox: %.200s",

@@ -163,27 +163,31 @@ type fakeBoat struct {
 	// uploadBase serves upload URLs from another server instead of the fake itself
 	uploadBase string
 
-	mu        sync.Mutex
-	streams   int
-	grow      map[string][]byte
-	sandboxes map[string]*fakeSandbox
-	order     []string
-	keys      map[string]keyRecord
-	faults    map[string]*fault
-	calls     map[string]int
-	creates   []createCall
-	commands  []commandCall
-	attaches  []attachCall
-	listed    []url.Values
-	kills     []int
-	uploads   []http.Header
-	bodies    map[string][]int
-	perms     []string
-	grants    map[string]uploadGrant
-	nextPID   int
-	requests  atomic.Int64
-	cleanup   []string
-	cmds      []*exec.Cmd
+	mu sync.Mutex
+	// limits is the GET /limits reply, limitsStatus its status when not 200
+	limits       string
+	limitsStatus int
+	limitsCalls  int
+	streams      int
+	grow         map[string][]byte
+	sandboxes    map[string]*fakeSandbox
+	order        []string
+	keys         map[string]keyRecord
+	faults       map[string]*fault
+	calls        map[string]int
+	creates      []createCall
+	commands     []commandCall
+	attaches     []attachCall
+	listed       []url.Values
+	kills        []int
+	uploads      []http.Header
+	bodies       map[string][]int
+	perms        []string
+	grants       map[string]uploadGrant
+	nextPID      int
+	requests     atomic.Int64
+	cleanup      []string
+	cmds         []*exec.Cmd
 }
 
 func newFake(t *testing.T) *fakeBoat {
@@ -215,6 +219,7 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/files/folder":         f.folder,
 		"POST " + sb + "/files/permissions":    f.permissions,
 		"POST " + sb + "/files/upload-url":     f.uploadURL,
+		"GET /api/v1/limits":                   f.readLimits,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -1359,4 +1364,23 @@ func fakeDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+func (f *fakeBoat) setLimits(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.limitsStatus, f.limits = status, body
+}
+
+func (f *fakeBoat) readLimits(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	status, body := f.limitsStatus, f.limits
+	f.limitsCalls++
+	f.mu.Unlock()
+	if status != 0 && status != http.StatusOK {
+		f.fail(w, status, "forbidden", "the key lacks account.read", nil, nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, body)
 }

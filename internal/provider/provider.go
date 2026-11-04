@@ -98,3 +98,9 @@ type Provider interface {
 	// ListOwned finds the sandboxes carrying every given label
 	ListOwned(ctx context.Context, labels map[string]string) ([]Summary, error)
 }
+
+// StartCoster is a provider that charges a fee per sandbox start beside its hourly price
+type StartCoster interface {
+	// StartCostMicros is what the next start of size costs, false when it would be refused
+	StartCostMicros(size Size) (int64, bool)
+}

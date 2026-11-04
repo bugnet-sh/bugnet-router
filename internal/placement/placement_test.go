@@ -115,6 +115,35 @@ func TestCandidatesDropBelowMarginFloor(t *testing.T) {
 	}
 }
 
+// startFee charges a fixed fee per start, or refuses every start when refused is set
+type startFee struct {
+	*local.Provider
+	fee     int64
+	refused bool
+}
+
+func (s startFee) StartCostMicros(provider.Size) (int64, bool) { return s.fee, !s.refused }
+
+func TestCandidatesCountTheStartFee(t *testing.T) {
+	// 10 minutes of a small machine cost 3,000, a 30,000 start fee drops the margin to 34%
+	fee := startFee{Provider: newLocal(t, "fee", 18000, time.Second), fee: 30000}
+	free := startFee{Provider: newLocal(t, "free", 18000, time.Second)}
+	refused := startFee{Provider: newLocal(t, "refused", 1, time.Second), refused: true}
+	e := engine(fakeHealth{}, fee, free, refused)
+	got, err := e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"free"}) || got[0].CostMicros != 3000 {
+		t.Fatalf("got %v costing %d, want free alone at 3000", names(got), got[0].CostMicros)
+	}
+	got, err = e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.3})
+	if err != nil || !slices.Equal(names(got), []string{"fee", "free"}) ||
+		got[0].CostMicros != 33000 {
+		t.Fatalf("got %v, %v, want fee at 33000 then free", got, err)
+	}
+}
+
 func TestCandidatesZeroPrice(t *testing.T) {
 	free := newLocal(t, "free", 0, time.Second)
 	paid := newLocal(t, "paid", 100, time.Second)

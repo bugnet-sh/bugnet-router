@@ -23,7 +23,7 @@ const (
 type Candidate struct {
 	Provider       provider.Provider
 	Size           provider.Size
-	CostMicros     int64 // for the package's minutes, rounded up to the billing increment
+	CostMicros     int64 // the package's minutes in whole billing increments plus any start fee
 	MarginFraction float64
 }
 
@@ -80,6 +80,13 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 			continue
 		}
 		cost := costMicros(p.HourlyCostMicros(size), pk.Minutes, p.BillingIncrement())
+		if sc, ok := p.(provider.StartCoster); ok {
+			fee, ok := sc.StartCostMicros(size)
+			if !ok {
+				continue
+			}
+			cost += fee
+		}
 		margin := 0.0
 		if pk.PriceMicros == 0 {
 			if cost != 0 {

@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1352,4 +1353,72 @@ func listAll(
 	l := provider.NewListing(10000)
 	err := p.ListFiles(ctx, ref, dir, depth, l)
 	return l.Entries, err
+}
+
+// startCost waits until the adapter prices the next start of size as want
+func startCost(t *testing.T, p *Provider, size provider.Size, fee int64, ok bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, gotOK := p.StartCostMicros(size)
+		if got == fee && gotOK == ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("start cost %d, %v, want %d, %v", got, gotOK, fee, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestBoatStartCostFollowsLimits(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	p.limitsTTL = 0
+	small := smallSize(t, p)
+	types := `"machineTypes": [{"type": "small", "available": %s}]`
+	for _, tc := range []struct {
+		body string
+		fee  int64
+		ok   bool
+	}{
+		{`{"ok": true, "canStart": true, "nextStartDollars": 0, ` +
+			fmt.Sprintf(types, "true") + `}`, 0, true},
+		{`{"ok": true, "canStart": true, "nextStartDollars": 0.03, ` +
+			fmt.Sprintf(types, "true") + `}`, 30000, true},
+		{`{"ok": true, "canStart": false, "nextStartDollars": null}`, 0, false},
+		{`{"ok": true, "canStart": true, "nextStartDollars": 0, ` +
+			fmt.Sprintf(types, "false") + `}`, 0, false},
+	} {
+		f.setLimits(http.StatusOK, tc.body)
+		startCost(t, p, small, tc.fee, tc.ok)
+	}
+}
+
+func TestBoatStartCostCountsStartsWithoutLimits(t *testing.T) {
+	f := newFake(t)
+	f.setLimits(http.StatusForbidden, "")
+	p := f.provider(t, fakeKey)
+	small := smallSize(t, p)
+	// The $20 plan includes 12 starts a minute, then charges by how far past them a start lies
+	for n, want := range map[int]int64{12: 30000, 18: 50000, 24: 70000} {
+		g := newFake(t)
+		g.setLimits(http.StatusForbidden, "")
+		q := g.provider(t, fakeKey)
+		for i := range n {
+			createSmall(t, q, fmt.Sprintf("key-%d", i))
+		}
+		if fee, ok := q.StartCostMicros(small); fee != want || !ok {
+			t.Errorf("start after %d starts costs %d, %v, want %d", n, fee, ok, want)
+		}
+	}
+	if fee, ok := p.StartCostMicros(small); fee != 0 || !ok {
+		t.Fatalf("first start costs %d, %v, want an included start", fee, ok)
+	}
+	for i := range 36 {
+		createSmall(t, p, fmt.Sprintf("key-%d", i))
+	}
+	if fee, ok := p.StartCostMicros(small); ok {
+		t.Fatalf("start past three times the minute's starts costs %d, want it refused", fee)
+	}
 }
