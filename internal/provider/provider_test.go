@@ -71,3 +71,28 @@ func TestRegistryRejectsDuplicateNames(t *testing.T) {
 	two := local.New(local.Options{Name: "same", Root: t.TempDir()})
 	provider.NewRegistry([]provider.Provider{one, two})
 }
+
+func TestListingStopsAtItsLimits(t *testing.T) {
+	l := provider.NewListing(2)
+	if !l.Visit() || !l.Add(provider.FileEntry{Path: "/a"}) ||
+		!l.Add(provider.FileEntry{Path: "/b"}) {
+		t.Fatal("a listing refused entries within its limit")
+	}
+	if l.Truncated || !l.Full() || l.Room() != 0 {
+		t.Fatalf("a listing at its limit is truncated %v full %v room %d", l.Truncated, l.Full(),
+			l.Room())
+	}
+	if l.Add(provider.FileEntry{Path: "/c"}) || !l.Truncated || len(l.Entries) != 2 {
+		t.Fatalf("a full listing took another entry, %+v", l)
+	}
+
+	dirs := provider.NewListing(1 << 20)
+	for i := range provider.MaxListDirs {
+		if !dirs.Visit() {
+			t.Fatalf("visit %d refused below the directory limit", i)
+		}
+	}
+	if dirs.Visit() || !dirs.Truncated {
+		t.Fatal("a walk read more directories than the limit")
+	}
+}

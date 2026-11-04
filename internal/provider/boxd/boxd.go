@@ -611,7 +611,10 @@ func (p *Provider) ReadFile(
 	if offset < 0 || length < 0 {
 		return nil, false, invalid(fmt.Errorf("read of %d bytes at offset %d", length, offset))
 	}
-	stream, err := p.api.FsRead(ctx, &boxdpb.FsReadRequest{
+	// The host may send more than asked, so reading stops at length and cancels the rest
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := p.api.FsRead(sctx, &boxdpb.FsReadRequest{
 		VmId: vmID, Path: []byte(name), Offset: uint64(offset),
 		Length: proto.Uint64(uint64(length)),
 	})
@@ -620,7 +623,7 @@ func (p *Provider) ReadFile(
 	}
 	var data []byte
 	size := int64(-1)
-	for {
+	for first := true; first || len(data) < length; first = false {
 		c, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			break
@@ -631,9 +634,8 @@ func (p *Provider) ReadFile(
 		if e := c.GetEntry(); e != nil {
 			size = int64(e.GetSize())
 		}
-		data = append(data, c.GetData()...)
+		data = append(data, c.GetData()[:min(len(c.GetData()), length-len(data))]...)
 	}
-	data = data[:min(len(data), length)]
 	if size < 0 {
 		return data, len(data) < length, nil
 	}
@@ -680,31 +682,33 @@ func (p *Provider) WriteFile(
 
 // ListFiles lists one directory per call and recurses into directories, never into symlinks
 func (p *Provider) ListFiles(
-	ctx context.Context, ref provider.Ref, name string, depth int,
-) ([]provider.FileEntry, error) {
+	ctx context.Context, ref provider.Ref, name string, depth int, into *provider.Listing,
+) error {
 	vmID, err := machineID(ref)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if depth < 1 {
-		return nil, invalid(fmt.Errorf("depth %d is below 1", depth))
+		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
-	var out []provider.FileEntry
-	if err := p.list(ctx, vmID, name, depth, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return p.list(ctx, vmID, name, depth, into)
 }
 
 func (p *Provider) list(
-	ctx context.Context, vmID, dir string, depth int, out *[]provider.FileEntry,
+	ctx context.Context, vmID, dir string, depth int, into *provider.Listing,
 ) error {
-	stream, err := p.api.FsList(ctx, &boxdpb.FsListRequest{VmId: vmID, Path: []byte(dir)})
+	if !into.Visit() {
+		return nil
+	}
+	// A full listing stops reading, and cancelling ends the server's stream
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := p.api.FsList(sctx, &boxdpb.FsListRequest{VmId: vmID, Path: []byte(dir)})
 	if err != nil {
 		return classify(ctx, err)
 	}
 	var subdirs []string
-	for {
+	for !into.Full() {
 		c, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			break
@@ -714,14 +718,20 @@ func (p *Provider) list(
 		}
 		for _, e := range c.GetEntries() {
 			entry := fileEntry(dir, e)
-			*out = append(*out, entry)
+			if !into.Add(entry) {
+				break
+			}
 			if entry.IsDir && depth > 1 {
 				subdirs = append(subdirs, entry.Path)
 			}
 		}
 	}
+	cancel()
 	for _, sub := range subdirs {
-		err := p.list(ctx, vmID, sub, depth-1, out)
+		if into.Full() {
+			return nil
+		}
+		err := p.list(ctx, vmID, sub, depth-1, into)
 		// Commands in the sandbox may delete a directory while the listing runs
 		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
 			continue

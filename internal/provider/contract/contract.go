@@ -133,11 +133,11 @@ func (c check) files(t *testing.T) {
 		t.Errorf("script written with mode 0755 gave %q, exit %d, %v", out, code, err)
 	}
 
-	entries, err := c.p.ListFiles(ctx, c.ref, dir, 1)
-	if err != nil {
+	listing := provider.NewListing(1000)
+	if err := c.p.ListFiles(ctx, c.ref, dir, 1, listing); err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
-	for _, e := range entries {
+	for _, e := range listing.Entries {
 		if e.Path == path {
 			if e.IsDir || e.Size != int64(len(data)) {
 				t.Errorf("ListFiles entry %+v, want a file of %d bytes", e, len(data))
@@ -145,7 +145,7 @@ func (c check) files(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("ListFiles of %s lacks %s: %+v", dir, path, entries)
+	t.Errorf("ListFiles of %s lacks %s: %+v", dir, path, listing.Entries)
 }
 
 func (c check) listOwned(t *testing.T) {
@@ -203,7 +203,7 @@ func (c check) notFound(t *testing.T) {
 	_, _, err = c.p.ReadFile(ctx, c.ref, path, 0, 16)
 	requireNotFound(t, "ReadFile", err)
 	requireNotFound(t, "WriteFile", c.p.WriteFile(ctx, c.ref, path, []byte("x"), 0o644))
-	_, err = c.p.ListFiles(ctx, c.ref, "/tmp", 1)
+	err = c.p.ListFiles(ctx, c.ref, "/tmp", 1, provider.NewListing(1000))
 	requireNotFound(t, "ListFiles", err)
 }
 

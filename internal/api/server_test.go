@@ -1165,6 +1165,23 @@ func TestFileRoundTripAndLimits(t *testing.T) {
 		t.Fatalf("read of the rest: %d bytes, eof %v, %v", len(data), eof, err)
 	}
 
+	if made := e.exec(t, sh(h, "mkdir many && cd many && seq 10001 | xargs touch")); made.
+		GetExitCode() != 0 {
+		t.Fatalf("make a wide directory: %v", made)
+	}
+	wide, err := e.client.ListFiles(ctx, connect.NewRequest(&routerv1.ListFilesRequest{
+		Handle: h, Path: "/root/many", Depth: 1,
+	}))
+	if err != nil || len(wide.Msg.GetEntries()) != 10000 || !wide.Msg.GetTruncated() {
+		t.Fatalf("listing of 10001 files gave %d entries truncated %v, %v, want 10000 truncated",
+			len(wide.Msg.GetEntries()), wide.Msg.GetTruncated(), err)
+	}
+	if whole, err := e.client.ListFiles(ctx, connect.NewRequest(&routerv1.ListFilesRequest{
+		Handle: h, Path: "/root/dir", Depth: 5,
+	})); err != nil || whole.Msg.GetTruncated() {
+		t.Fatalf("listing within the limit gave truncated %v, %v", whole.Msg.GetTruncated(), err)
+	}
+
 	e.stop(t, h)
 	_, _, err = read("/root/dir/a.txt", 0, 0)
 	wantCode(t, err, connect.CodeFailedPrecondition)

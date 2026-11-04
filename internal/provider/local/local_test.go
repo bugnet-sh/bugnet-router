@@ -210,7 +210,7 @@ func TestLocalStateSharedAcrossInstances(t *testing.T) {
 	if err := b.Destroy(t.Context(), ref); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
-	_, err = a.ListFiles(t.Context(), ref, "/", 1)
+	_, err = listAll(t.Context(), a, ref, "/", 1)
 	requireCode(t, "ListFiles after Destroy through the other instance", err, provider.CodeNotFound)
 	if _, err := os.Stat(filepath.Join(root, ref.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("sandbox directory still there after Destroy: %v", err)
@@ -219,7 +219,7 @@ func TestLocalStateSharedAcrossInstances(t *testing.T) {
 	if err != nil || again.ID != ref.ID {
 		t.Fatalf("Create after Destroy with the same key gave %+v, %v, want %s", again, err, ref.ID)
 	}
-	_, err = a.ListFiles(t.Context(), again, "/", 1)
+	_, err = listAll(t.Context(), a, again, "/", 1)
 	requireCode(t, "ListFiles after a used key was reused", err, provider.CodeNotFound)
 }
 
@@ -279,7 +279,7 @@ func TestLocalSandboxPaths(t *testing.T) {
 			provider.CodeInvalid)
 		_, _, err := p.ReadFile(ctx, ref, bad, 0, 1)
 		requireCode(t, "ReadFile "+bad, err, provider.CodeInvalid)
-		_, err = p.ListFiles(ctx, ref, bad, 1)
+		_, err = listAll(ctx, p, ref, bad, 1)
 		requireCode(t, "ListFiles "+bad, err, provider.CodeInvalid)
 		_, _, err = execOut(t, p, ref, provider.ExecSpec{Argv: []string{"true"}, Cwd: bad})
 		requireCode(t, "Exec in "+bad, err, provider.CodeInvalid)
@@ -291,7 +291,7 @@ func TestLocalSandboxPaths(t *testing.T) {
 		}
 	}
 
-	entries, err := p.ListFiles(ctx, ref, "/", 2)
+	entries, err := listAll(ctx, p, ref, "/", 2)
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestLocalSandboxPaths(t *testing.T) {
 			t.Errorf("ListFiles(/, 2) lacks %s: %+v", want, entries)
 		}
 	}
-	shallow, err := p.ListFiles(ctx, ref, "/etc", 1)
+	shallow, err := listAll(ctx, p, ref, "/etc", 1)
 	if err != nil || len(shallow) != 1 || shallow[0].Path != "/etc/app.conf" {
 		t.Errorf("ListFiles(/etc, 1) gave %+v, %v", shallow, err)
 	}
@@ -666,7 +666,7 @@ func TestLocalIOErrorsAreClassified(t *testing.T) {
 	requireCode(t, "ReadFile in an unreadable directory", err, provider.CodeInternal)
 	err = p.WriteFile(ctx, ref, "/locked/g", []byte("y"), 0o644)
 	requireCode(t, "WriteFile in an unwritable directory", err, provider.CodeInternal)
-	_, err = p.ListFiles(ctx, ref, "/locked", 1)
+	_, err = listAll(ctx, p, ref, "/locked", 1)
 	requireCode(t, "ListFiles of an unreadable directory", err, provider.CodeInternal)
 
 	lock(t, filepath.Join(root, ref.ID, "meta.json"), 0o644)
@@ -771,4 +771,18 @@ func TestLocalSizesAndPricing(t *testing.T) {
 	if p.Name() != "local" {
 		t.Errorf("Name gave %q", p.Name())
 	}
+}
+
+// listAll lists through ListFiles with room for every entry a test makes
+func listAll(
+	ctx context.Context, p *local.Provider, ref provider.Ref, dir string, depth int,
+) ([]provider.FileEntry, error) {
+	l := provider.NewListing(10000)
+	err := p.ListFiles(ctx, ref, dir, depth, l)
+	return l.Entries, err
+}
+
+func TestLocalListFilesStopsAtTheLimit(t *testing.T) {
+	p := newLocal(t, local.Options{})
+	contract.ListLimit(t, p, createReady(t, p, nil), "/root/many")
 }

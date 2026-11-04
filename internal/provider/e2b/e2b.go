@@ -58,9 +58,11 @@ const (
 	idempotencyKeyChars = 32
 	listPageSize        = 100
 	maxBodyBytes        = 16 << 20
-	maxErrorBytes       = 64 << 10
-	maxAttempts         = 4
-	defaultRetryBase    = 100 * time.Millisecond
+	// maxMessage bounds one envd message, as boxd's gRPC receive limit does
+	maxMessage       = 16 << 20
+	maxErrorBytes    = 64 << 10
+	maxAttempts      = 4
+	defaultRetryBase = 100 * time.Millisecond
 	// maxRetryWait is the longest wait spent on a retry, a longer one goes back to the router
 	maxRetryWait      = 2 * time.Second
 	defaultRetryAfter = time.Second
@@ -174,6 +176,7 @@ type Options struct {
 	BinaryCodec bool
 	BaseURL     string
 	EnvdURL     string
+	maxMessage  int // replaces maxMessage in tests
 }
 
 // Provider places sandboxes on E2B, it keeps no state beyond its configuration
@@ -217,8 +220,10 @@ func New(opts Options) (*Provider, error) {
 		pollInterval: defaultPoll,
 		retryBase:    defaultRetryBase,
 	}
+	// envd runs in the sandbox, so every message it sends is bounded, decompressed size too
+	p.codec = []connect.ClientOption{connect.WithReadMaxBytes(cmp.Or(opts.maxMessage, maxMessage))}
 	if !opts.BinaryCodec {
-		p.codec = []connect.ClientOption{connect.WithProtoJSON()}
+		p.codec = append(p.codec, connect.WithProtoJSON())
 	}
 	key := opts.APIKey
 	client, err := api.NewClient(p.restURL, api.WithHTTPClient(p.rest),
@@ -1011,13 +1016,13 @@ func (p *Provider) chmod(
 
 // ListFiles asks envd to walk the directory down to depth levels in one call
 func (p *Provider) ListFiles(
-	ctx context.Context, ref provider.Ref, name string, depth int,
-) ([]provider.FileEntry, error) {
+	ctx context.Context, ref provider.Ref, name string, depth int, into *provider.Listing,
+) error {
 	if _, err := sandboxID(ref); err != nil {
-		return nil, err
+		return err
 	}
 	if depth < 1 {
-		return nil, invalid(fmt.Errorf("depth %d is below 1", depth))
+		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
 	req := connect.NewRequest(&filesystempb.ListDirRequest{Path: name, Depth: uint32(depth)})
 	envdHeaders(req.Header(), ref)
@@ -1025,13 +1030,14 @@ func (p *Provider) ListFiles(
 	client := filesystemconnect.NewFilesystemClient(p.envd, p.envdBase(ref), p.codec...)
 	resp, err := client.ListDir(ctx, req)
 	if err != nil {
-		return nil, envdError(err)
+		return envdError(err)
 	}
-	out := make([]provider.FileEntry, 0, len(resp.Msg.GetEntries()))
 	for _, e := range resp.Msg.GetEntries() {
-		out = append(out, fileEntry(name, e))
+		if !into.Add(fileEntry(name, e)) {
+			break
+		}
 	}
-	return out, nil
+	return nil
 }
 
 func fileEntry(dir string, e *filesystempb.EntryInfo) provider.FileEntry {

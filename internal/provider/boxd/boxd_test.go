@@ -607,7 +607,7 @@ func TestBoxdListFiles(t *testing.T) {
 
 	paths := func(depth int) []string {
 		t.Helper()
-		entries, err := p.ListFiles(ctx, ref, root, depth)
+		entries, err := listAll(ctx, p, ref, root, depth)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,11 +635,11 @@ func TestBoxdListFiles(t *testing.T) {
 		t.Errorf("depth 2 lists %v, want %v", got, want)
 	}
 
-	_, err := p.ListFiles(ctx, ref, root, 0)
+	_, err := listAll(ctx, p, ref, root, 0)
 	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeInvalid {
 		t.Errorf("depth 0 gave %v, want invalid", err)
 	}
-	_, err = p.ListFiles(ctx, ref, filepath.Join(root, "nope"), 1)
+	_, err = listAll(ctx, p, ref, filepath.Join(root, "nope"), 1)
 	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeNotFound {
 		t.Errorf("listing a missing directory gave %v, want not_found", err)
 	}
@@ -784,4 +784,37 @@ func runExec(
 func isCode(err error, code provider.Code) bool {
 	e, ok := provider.AsError(err)
 	return ok && e.Code == code
+}
+
+// listAll lists through ListFiles with room for every entry a test makes
+func listAll(
+	ctx context.Context, p *Provider, ref provider.Ref, dir string, depth int,
+) ([]provider.FileEntry, error) {
+	l := provider.NewListing(10000)
+	err := p.ListFiles(ctx, ref, dir, depth, l)
+	return l.Entries, err
+}
+
+func TestBoxdListFilesStopsAtTheLimit(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	contract.ListLimit(t, p, readyMachine(t, f), t.TempDir())
+}
+
+func TestBoxdReadFileKeepsToTheLength(t *testing.T) {
+	f := newFake(t)
+	f.ignoreLength = true
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	name := filepath.Join(t.TempDir(), "big")
+	data := make([]byte, 4<<20)
+	_, _ = rand.Read(data)
+	if err := os.WriteFile(name, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, eof, err := p.ReadFile(t.Context(), ref, name, 10, 100)
+	if err != nil || !bytes.Equal(got, data[10:110]) || eof {
+		t.Fatalf("read of 100 bytes from a host sending the whole file gave %d bytes eof %v, %v",
+			len(got), eof, err)
+	}
 }

@@ -41,6 +41,7 @@ const (
 	maxPollWait     = 25 * time.Second
 	maxFileBytes    = 256 << 10
 	maxListDepth    = 5
+	maxListEntries  = 10000
 	defaultFileMode = 0o644
 	maxRequestBytes = 4 << 20
 	readyTimeout    = 2 * time.Second
@@ -521,7 +522,7 @@ func (s *Server) WriteFile(
 	return connect.NewResponse(&routerv1.WriteFileResponse{Size: uint64(len(m.GetData()))}), nil
 }
 
-// ListFiles lists a directory down to depth levels, 1 when depth is 0 and at most 5
+// ListFiles lists at most 10,000 entries down to depth levels, 1 when depth is 0 and at most 5
 func (s *Server) ListFiles(
 	ctx context.Context, req *connect.Request[routerv1.ListFilesRequest],
 ) (*connect.Response[routerv1.ListFilesResponse], error) {
@@ -534,12 +535,12 @@ func (s *Server) ListFiles(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	entries, err := prov.ListFiles(ctx, *p.ProviderRef, m.GetPath(), int(depth))
-	if err != nil {
+	listing := provider.NewListing(maxListEntries)
+	if err := prov.ListFiles(ctx, *p.ProviderRef, m.GetPath(), int(depth), listing); err != nil {
 		return nil, s.fileStatus(err)
 	}
-	out := make([]*routerv1.FileEntry, 0, len(entries))
-	for _, e := range entries {
+	out := make([]*routerv1.FileEntry, 0, len(listing.Entries))
+	for _, e := range listing.Entries {
 		out = append(out, &routerv1.FileEntry{
 			Path:       e.Path,
 			Size:       uint64(max(e.Size, 0)),
@@ -548,7 +549,9 @@ func (s *Server) ListFiles(
 			ModifiedAt: timestamppb.New(e.Modified),
 		})
 	}
-	return connect.NewResponse(&routerv1.ListFilesResponse{Entries: out}), nil
+	return connect.NewResponse(&routerv1.ListFilesResponse{
+		Entries: out, Truncated: listing.Truncated,
+	}), nil
 }
 
 /* Messages */

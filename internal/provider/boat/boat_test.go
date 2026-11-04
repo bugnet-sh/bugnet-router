@@ -1001,7 +1001,7 @@ func TestBoatListFiles(t *testing.T) {
 
 	paths := func(depth int) []string {
 		t.Helper()
-		entries, err := p.ListFiles(ctx, ref, root, depth)
+		entries, err := listAll(ctx, p, ref, root, depth)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1040,15 +1040,15 @@ func TestBoatListFiles(t *testing.T) {
 		t.Fatalf("depth 3 gave %v, want %v", got, want)
 	}
 
-	if _, err := p.ListFiles(ctx, ref, root, 0); !isCode(err, provider.CodeInvalid) {
+	if _, err := listAll(ctx, p, ref, root, 0); !isCode(err, provider.CodeInvalid) {
 		t.Errorf("depth 0 gave %v, want invalid", err)
 	}
-	if _, err := p.ListFiles(ctx, ref, root+"/missing", 1); !isCode(err, provider.CodeNotFound) {
+	if _, err := listAll(ctx, p, ref, root+"/missing", 1); !isCode(err, provider.CodeNotFound) {
 		t.Errorf("missing directory gave %v, want not_found", err)
 	}
 }
 
-func TestBoatListFilesRefusesATruncatedListing(t *testing.T) {
+func TestBoatListFilesMarksATruncatedListing(t *testing.T) {
 	f := newFake(t)
 	f.listLimit = 2
 	p := f.provider(t, fakeKey)
@@ -1063,20 +1063,29 @@ func TestBoatListFilesRefusesATruncatedListing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if entries, err := p.ListFiles(ctx, ref, root, 1); err != nil || len(entries) != 1 {
-		t.Fatalf("listing within the limit gave %v, %v, want the one directory", entries, err)
+	within := provider.NewListing(100)
+	if err := p.ListFiles(ctx, ref, root, 1, within); err != nil ||
+		len(within.Entries) != 1 || within.Truncated {
+		t.Fatalf("listing within Boat's limit gave %+v, %v, want the one directory", within, err)
 	}
 	for _, depth := range []int{1, 2} {
 		dir := root
 		if depth == 1 {
 			dir = filepath.Join(root, "wide")
 		}
-		entries, err := p.ListFiles(ctx, ref, dir, depth)
-		if !isCode(err, provider.CodeInternal) || !strings.Contains(err.Error(), "truncated") {
-			t.Errorf("listing %s to depth %d past Boat's limit gave %v, %v, want internal "+
-				"naming the truncation", dir, depth, entries, err)
+		l := provider.NewListing(100)
+		if err := p.ListFiles(ctx, ref, dir, depth, l); err != nil || !l.Truncated ||
+			len(l.Entries) != depth+1 {
+			t.Errorf("listing %s to depth %d past Boat's limit gave %+v, %v, want the entries "+
+				"Boat sent marked truncated", dir, depth, l, err)
 		}
 	}
+}
+
+func TestBoatListFilesStopsAtTheLimit(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	contract.ListLimit(t, p, readySandbox(t, f), fakeDir(t))
 }
 
 func TestBoatReadsDriftedReplies(t *testing.T) {
@@ -1117,6 +1126,21 @@ func TestBoatReadsDriftedReplies(t *testing.T) {
 			if err != nil || string(out) != "x\n" || code != 0 {
 				t.Fatalf("exec with a drifted start reply gave %q exit %d, %v", out, code, err)
 			}
+
+			dir := fakeDir(t)
+			name := dir + "/drift.txt"
+			if err := p.WriteFile(ctx, ref, name, []byte("drifted"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			data, eof, err := p.ReadFile(ctx, ref, name, 0, 64)
+			if err != nil || string(data) != "drifted" || !eof {
+				t.Fatalf("read with drifted file replies gave %q eof %v, %v", data, eof, err)
+			}
+			entries, err := listAll(ctx, p, ref, dir, 1)
+			if err != nil || len(entries) != 1 || entries[0].Size != 7 ||
+				entries[0].Modified.IsZero() != (drift == "types") {
+				t.Fatalf("list with drifted file replies gave %+v, %v", entries, err)
+			}
 		})
 	}
 }
@@ -1127,7 +1151,7 @@ func TestBoatForeignRefIsNotFound(t *testing.T) {
 	ref := provider.Ref{Provider: "e2b", ID: "bx_23456789"}
 	ctx := t.Context()
 	_, execErr := p.Exec(ctx, ref, provider.ExecSpec{Argv: []string{"true"}})
-	_, listErr := p.ListFiles(ctx, ref, "/tmp", 1)
+	_, listErr := listAll(ctx, p, ref, "/tmp", 1)
 	for name, err := range map[string]error{
 		"WaitReady":   p.WaitReady(ctx, ref),
 		"SetLifetime": p.SetLifetime(ctx, ref, time.Now().Add(time.Hour)),
@@ -1319,4 +1343,13 @@ func waitFor(t *testing.T, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// listAll lists through ListFiles with room for every entry a test makes
+func listAll(
+	ctx context.Context, p *Provider, ref provider.Ref, dir string, depth int,
+) ([]provider.FileEntry, error) {
+	l := provider.NewListing(10000)
+	err := p.ListFiles(ctx, ref, dir, depth, l)
+	return l.Entries, err
 }

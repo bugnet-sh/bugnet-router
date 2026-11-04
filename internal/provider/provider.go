@@ -87,8 +87,8 @@ type Provider interface {
 	) ([]byte, bool, error)
 	// WriteFile replaces a file with data, creating missing parent directories
 	WriteFile(ctx context.Context, ref Ref, path string, data []byte, mode fs.FileMode) error
-	// ListFiles lists what lies under a directory down to depth levels, one being its children
-	ListFiles(ctx context.Context, ref Ref, path string, depth int) ([]FileEntry, error)
+	// ListFiles lists a directory down to depth levels, one being its children, into a Listing
+	ListFiles(ctx context.Context, ref Ref, path string, depth int, into *Listing) error
 	// ListOwned finds the sandboxes carrying every given label
 	ListOwned(ctx context.Context, labels map[string]string) ([]Summary, error)
 }

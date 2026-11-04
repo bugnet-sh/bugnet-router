@@ -708,7 +708,7 @@ func TestE2BRefusesAgentRedirects(t *testing.T) {
 	if err := p.WriteFile(ctx, ref, "/tmp/f", []byte("tenant bytes"), 0o644); err == nil {
 		t.Error("write through a redirecting envd succeeded")
 	}
-	if _, err := p.ListFiles(ctx, ref, "/tmp", 1); err == nil {
+	if _, err := listAll(ctx, p, ref, "/tmp", 1); err == nil {
 		t.Error("list through a redirecting envd succeeded")
 	}
 	if reached.Load() {
@@ -755,7 +755,7 @@ func TestE2BListFiles(t *testing.T) {
 
 	paths := func(depth int) []string {
 		t.Helper()
-		entries, err := p.ListFiles(ctx, ref, root, depth)
+		entries, err := listAll(ctx, p, ref, root, depth)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -783,10 +783,10 @@ func TestE2BListFiles(t *testing.T) {
 		t.Errorf("depth 2 lists %v, want %v", got, want)
 	}
 
-	if _, err := p.ListFiles(ctx, ref, root, 0); !isCode(err, provider.CodeInvalid) {
+	if _, err := listAll(ctx, p, ref, root, 0); !isCode(err, provider.CodeInvalid) {
 		t.Errorf("depth 0 gave %v, want invalid", err)
 	}
-	_, err := p.ListFiles(ctx, ref, filepath.Join(root, "nope"), 1)
+	_, err := listAll(ctx, p, ref, filepath.Join(root, "nope"), 1)
 	if !isCode(err, provider.CodeNotFound) {
 		t.Errorf("listing a missing directory gave %v, want not_found", err)
 	}
@@ -1037,4 +1037,41 @@ func runExec(
 func isCode(err error, code provider.Code) bool {
 	e, ok := provider.AsError(err)
 	return ok && e.Code == code
+}
+
+// listAll lists through ListFiles with room for every entry a test makes
+func listAll(
+	ctx context.Context, p *Provider, ref provider.Ref, dir string, depth int,
+) ([]provider.FileEntry, error) {
+	l := provider.NewListing(10000)
+	err := p.ListFiles(ctx, ref, dir, depth, l)
+	return l.Entries, err
+}
+
+func TestE2BListFilesStopsAtTheLimit(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	contract.ListLimit(t, p, f.add(nil), t.TempDir())
+}
+
+func TestE2BBoundsEnvdMessages(t *testing.T) {
+	f := newFake(t)
+	p, err := New(Options{
+		APIKey: fakeKey, Templates: fakeTemplates, BaseURL: f.rest.URL, EnvdURL: f.envd.URL,
+		maxMessage: 512,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := f.add(nil)
+	dir := t.TempDir()
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("file-%02d", i)), nil,
+			0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if entries, err := listAll(t.Context(), p, ref, dir, 1); err == nil {
+		t.Fatalf("a listing over the message cap gave %d entries, want an error", len(entries))
+	}
 }

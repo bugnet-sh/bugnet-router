@@ -555,30 +555,32 @@ func (p *Provider) WriteFile(
 
 // ListFiles returns sandbox paths without following symlinks
 func (p *Provider) ListFiles(
-	_ context.Context, ref provider.Ref, name string, depth int,
-) ([]provider.FileEntry, error) {
+	_ context.Context, ref provider.Ref, name string, depth int, into *provider.Listing,
+) error {
 	s, err := p.open(ref)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if depth < 1 {
-		return nil, invalid(fmt.Errorf("depth %d is below 1", depth))
+		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
 	root, err := s.hostPath(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		return nil, fileErr(err)
+		return fileErr(err)
 	}
 	if !info.IsDir() {
-		return nil, invalid(fmt.Errorf("%s is not a directory", name))
+		return invalid(fmt.Errorf("%s is not a directory", name))
 	}
 
-	var entries []provider.FileEntry
 	err = filepath.WalkDir(root, func(host string, d fs.DirEntry, err error) error {
 		if host == root {
+			if err == nil && !into.Visit() {
+				return filepath.SkipAll
+			}
 			return err
 		}
 		var info fs.FileInfo
@@ -592,23 +594,25 @@ func (p *Provider) ListFiles(
 		if err != nil {
 			return err
 		}
-		entries = append(entries, provider.FileEntry{
+		if !into.Add(provider.FileEntry{
 			Path:     s.sandboxPath(host),
 			Size:     info.Size(),
 			IsDir:    d.IsDir(),
 			Mode:     info.Mode(),
 			Modified: info.ModTime().UTC(),
-		})
+		}) {
+			return filepath.SkipAll
+		}
 		rel, _ := filepath.Rel(root, host)
 		if d.IsDir() && strings.Count(rel, string(filepath.Separator))+1 >= depth {
 			return filepath.SkipDir
 		}
+		if d.IsDir() && !into.Visit() {
+			return filepath.SkipAll
+		}
 		return nil
 	})
-	if err != nil {
-		return nil, fileErr(err)
-	}
-	return entries, nil
+	return fileErr(err)
 }
 
 /* Exec */

@@ -1052,7 +1052,7 @@ func TestKoyebListFiles(t *testing.T) {
 	}
 	paths := func(depth int) []string {
 		t.Helper()
-		entries, err := p.ListFiles(ctx, ref, root, depth)
+		entries, err := listAll(ctx, p, ref, root, depth)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1082,14 +1082,14 @@ func TestKoyebListFiles(t *testing.T) {
 	if got := paths(5); len(got) != 6 {
 		t.Errorf("depth 5 lists %v, want everything", got)
 	}
-	if _, err := p.ListFiles(ctx, ref, root, 0); !isCode(err, provider.CodeInvalid) {
+	if _, err := listAll(ctx, p, ref, root, 0); !isCode(err, provider.CodeInvalid) {
 		t.Errorf("depth 0 gave %v, want invalid", err)
 	}
-	_, err := p.ListFiles(ctx, ref, filepath.Join(root, "nope"), 1)
+	_, err := listAll(ctx, p, ref, filepath.Join(root, "nope"), 1)
 	if !isCode(err, provider.CodeNotFound) {
 		t.Errorf("listing a missing directory gave %v, want not_found", err)
 	}
-	_, err = p.ListFiles(ctx, ref, filepath.Join(root, "a.txt"), 1)
+	_, err = listAll(ctx, p, ref, filepath.Join(root, "a.txt"), 1)
 	if !isCode(err, provider.CodeInvalid) {
 		t.Errorf("listing a file gave %v, want invalid", err)
 	}
@@ -1444,5 +1444,30 @@ func TestKoyebRefusesExecutorRedirects(t *testing.T) {
 	}
 	if reached.Load() {
 		t.Fatal("the adapter followed an executor redirect")
+	}
+}
+
+// listAll lists through ListFiles with room for every entry a test makes
+func listAll(
+	ctx context.Context, p *Provider, ref provider.Ref, dir string, depth int,
+) ([]provider.FileEntry, error) {
+	l := provider.NewListing(10000)
+	err := p.ListFiles(ctx, ref, dir, depth, l)
+	return l.Entries, err
+}
+
+func TestKoyebListFilesStopsAtTheLimit(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	contract.ListLimit(t, p, ready(t, p, "key-list-limit"), t.TempDir())
+}
+
+func TestKoyebRefusesAnEndlessEvent(t *testing.T) {
+	line := "data: " + strings.Repeat("x", 1<<20) + "\n"
+	r := strings.NewReader(strings.Repeat(line, 9))
+	s := &execStream{lines: bufio.NewScanner(r)}
+	s.lines.Buffer(make([]byte, 64<<10), maxEventLine)
+	if _, data, err := s.event(); err == nil {
+		t.Fatalf("an event of 9 MiB of data lines gave %d bytes, want an error", len(data))
 	}
 }

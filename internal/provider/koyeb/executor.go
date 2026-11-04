@@ -34,8 +34,10 @@ const (
 	exitNameBytes  = 8
 	maxExitBytes   = 64
 	maxErrorBytes  = 64 << 10
-	// maxEventLine fits one 1 MiB log line after JSON escaping
+	// maxEventLine fits one 1 MiB log line after JSON escaping, and bounds a whole event too
 	maxEventLine = 8 << 20
+	// maxListBytes bounds one directory listing reply
+	maxListBytes = 16 << 20
 	// healthTimeout bounds one health probe as the SDK does, so a hung probe is retried
 	healthTimeout = 5 * time.Second
 	killTimeout   = 5 * time.Second
@@ -366,8 +368,13 @@ func (s *execStream) event() (string, string, error) {
 	var name string
 	var data []string
 	seen := false
+	size := 0
 	for s.lines.Scan() {
 		line := s.lines.Text()
+		// The stream comes from inside the sandbox, so an event of endless lines is refused
+		if size += len(line) + 1; size > maxEventLine {
+			return "", "", fmt.Errorf("koyeb log event is over %d bytes", maxEventLine)
+		}
 		if line == "" {
 			if seen {
 				return name, strings.Join(data, "\n"), nil
@@ -567,34 +574,38 @@ func (p *Provider) WriteFile(
 
 // ListFiles lists the directory one level per call, descending into subdirectories to depth
 func (p *Provider) ListFiles(
-	ctx context.Context, ref provider.Ref, name string, depth int,
-) ([]provider.FileEntry, error) {
+	ctx context.Context, ref provider.Ref, name string, depth int, into *provider.Listing,
+) error {
 	if _, err := appID(ref); err != nil {
-		return nil, err
+		return err
 	}
 	if depth < 1 {
-		return nil, invalid(fmt.Errorf("depth %d is below 1", depth))
+		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
 	t, err := p.target(ctx, ref)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var out []provider.FileEntry
 	dirs := []string{name}
 	for level := 1; level <= depth && len(dirs) > 0; level++ {
 		var next []string
 		for _, dir := range dirs {
-			entries, err := p.list(ctx, ref, t, dir)
+			if !into.Visit() {
+				return nil
+			}
+			entries, err := p.list(ctx, ref, t, dir, into)
 			if err != nil {
 				// A subdirectory may vanish or refuse listing while the walk goes on
 				if level > 1 && (isCode(err, provider.CodeNotFound) ||
 					isCode(err, provider.CodeInvalid)) {
 					continue
 				}
-				return nil, err
+				return err
 			}
 			for _, e := range entries {
-				out = append(out, e)
+				if !into.Add(e) {
+					return nil
+				}
 				if e.IsDir {
 					next = append(next, e.Path)
 				}
@@ -602,12 +613,12 @@ func (p *Provider) ListFiles(
 		}
 		dirs = next
 	}
-	return out, nil
+	return nil
 }
 
 // list reads one level of a directory, skipping entries the executor could not read
 func (p *Provider) list(
-	ctx context.Context, ref provider.Ref, t target, dir string,
+	ctx context.Context, ref provider.Ref, t target, dir string, into *provider.Listing,
 ) ([]provider.FileEntry, error) {
 	req, err := t.request(ctx, http.MethodGet, "/files/list", url.Values{"path": {dir}}, nil)
 	if err != nil {
@@ -619,7 +630,9 @@ func (p *Provider) list(
 	}
 	defer drainClose(resp)
 	var out []provider.FileEntry
-	dec := json.NewDecoder(resp.Body)
+	// The executor runs in the sandbox, so a reply is cut at a size and at the room left
+	body := &cappedReader{r: resp.Body, left: maxListBytes}
+	dec := json.NewDecoder(body)
 	for {
 		var e struct {
 			Path  string `json:"path"`
@@ -629,18 +642,42 @@ func (p *Provider) list(
 			MTime string `json:"mtime"`
 			Error string `json:"error"`
 		}
-		err := dec.Decode(&e)
-		if errors.Is(err, io.EOF) {
-			return out, nil
-		}
-		if err != nil {
+		if err := dec.Decode(&e); err != nil {
+			if body.cut {
+				into.Truncated = true
+				return out, nil
+			}
+			if errors.Is(err, io.EOF) {
+				return out, nil
+			}
 			return nil, internal(fmt.Errorf("koyeb file list of %s: %w", dir, err))
 		}
 		if e.Error != "" || e.Path == "" {
 			continue
 		}
+		if len(out) >= into.Room() {
+			into.Truncated = true
+			return out, nil
+		}
 		out = append(out, fileEntry(dir, e.Path, e.Type, e.Size, e.Mode, e.MTime))
 	}
+}
+
+// cappedReader ends a body after left bytes and records that it cut the body short
+type cappedReader struct {
+	r    io.Reader
+	left int64
+	cut  bool
+}
+
+func (c *cappedReader) Read(b []byte) (int, error) {
+	if c.left <= 0 {
+		c.cut = true
+		return 0, io.EOF
+	}
+	n, err := c.r.Read(b[:min(int64(len(b)), c.left)])
+	c.left -= int64(n)
+	return n, err
 }
 
 func fileEntry(dir, rel, typ string, size int64, mode, mtime string) provider.FileEntry {

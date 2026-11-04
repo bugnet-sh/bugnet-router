@@ -1036,13 +1036,20 @@ func (f *fakeBoat) liveFile(w http.ResponseWriter, r *http.Request, name string)
 	return f.resolve(w, name)
 }
 
-func entryJSON(name string, info fs.FileInfo) map[string]any {
-	return map[string]any{
+func (f *fakeBoat) entryJSON(name string, info fs.FileInfo) map[string]any {
+	e := map[string]any{
 		"name": path.Base(name), "path": name, "isDir": info.IsDir(),
 		"isSymlink": info.Mode()&fs.ModeSymlink != 0, "size": info.Size(),
 		"mode":       fmt.Sprintf("%04o", info.Mode().Perm()),
 		"modifiedAt": info.ModTime().UTC().Format(time.RFC3339Nano),
 	}
+	switch f.drift {
+	case "types":
+		e["modifiedAt"], e["type"] = info.ModTime().Unix(), 3
+	case "layout":
+		e["modifiedAt"] = info.ModTime().UTC().Format("2006-01-02 15:04:05.999999999Z07:00")
+	}
+	return e
 }
 
 func (f *fakeBoat) readFile(w http.ResponseWriter, r *http.Request) {
@@ -1073,10 +1080,14 @@ func (f *fakeBoat) readFile(w http.ResponseWriter, r *http.Request) {
 	if q.Get("encoding") == "base64" {
 		enc, content = "base64", base64.StdEncoding.EncodeToString(data)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	reply := map[string]any{
 		"ok": true, "type": "file.read", "success": true, "path": name, "encoding": enc,
 		"size": len(data), "content": content,
-	})
+	}
+	if f.drift == "types" {
+		reply["type"], reply["success"], reply["size"] = 5, "yes", float64(len(data))+0.5
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // replace writes data next to name and renames it over, leaving the 0644 of a new file
@@ -1157,7 +1168,7 @@ func (f *fakeBoat) listFiles(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		files = append(files, entryJSON(path.Join(name, d.Name()), info))
+		files = append(files, f.entryJSON(path.Join(name, d.Name()), info))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "type": "file.list", "success": true, "path": name, "files": files,
@@ -1196,7 +1207,7 @@ func (f *fakeBoat) fileInfo(w http.ResponseWriter, r *http.Request) {
 			f.t.Errorf("growing %s: %v", name, err)
 		}
 	}
-	body := entryJSON(name, info)
+	body := f.entryJSON(name, info)
 	body["ok"], body["type"], body["success"] = true, "file.info", true
 	writeJSON(w, http.StatusOK, body)
 }
@@ -1221,7 +1232,7 @@ func (f *fakeBoat) folder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, _ := os.Lstat(name)
-	body := entryJSON(name, info)
+	body := f.entryJSON(name, info)
 	body["ok"], body["type"], body["success"] = true, "folder.created", true
 	writeJSON(w, http.StatusOK, body)
 }
@@ -1248,7 +1259,7 @@ func (f *fakeBoat) permissions(w http.ResponseWriter, r *http.Request) {
 	f.perms = append(f.perms, name+" "+req.Mode)
 	f.mu.Unlock()
 	info, _ := os.Lstat(name)
-	body := entryJSON(name, info)
+	body := f.entryJSON(name, info)
 	body["ok"], body["type"], body["success"] = true, "file.permissions_set", true
 	writeJSON(w, http.StatusOK, body)
 }

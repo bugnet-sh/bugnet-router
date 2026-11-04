@@ -71,17 +71,48 @@ func (p *Provider) ReadFile(
 	return data[offset:end], end >= int64(len(data)), nil
 }
 
-func (p *Provider) info(ctx context.Context, id, name string) (api.FileInfoResponse, error) {
+// fileInfo is the part of a file info reply the adapter reads
+type fileInfo struct {
+	IsDir bool  `json:"isDir"`
+	Size  int64 `json:"size"`
+}
+
+// fileItem is one entry of a directory listing reply as the adapter reads it
+type fileItem struct {
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	IsDir      bool   `json:"isDir"`
+	IsSymlink  bool   `json:"isSymlink"`
+	Mode       string `json:"mode"`
+	Size       int64  `json:"size"`
+	ModifiedAt string `json:"modifiedAt"`
+}
+
+type fileListing struct {
+	Files     []fileItem `json:"files"`
+	Truncated bool       `json:"truncated"`
+}
+
+type fileContent struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+}
+
+type uploadReply struct {
+	URL string `json:"url"`
+}
+
+func (p *Provider) info(ctx context.Context, id, name string) (fileInfo, error) {
 	params := &api.GetFileInfoParams{Path: name}
 	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.GetFileInfo(ctx, id, params)
 	})
 	if err != nil {
-		return api.FileInfoResponse{}, err
+		return fileInfo{}, err
 	}
-	var info api.FileInfoResponse
-	if err := json.Unmarshal(raw, &info); err != nil {
-		return api.FileInfoResponse{}, internal(fmt.Errorf("boat file info of %s: %w", name, err))
+	var info fileInfo
+	if err := decode(raw, &info); err != nil {
+		return fileInfo{}, internal(fmt.Errorf("boat file info of %s: %w", name, err))
 	}
 	return info, nil
 }
@@ -94,11 +125,11 @@ func (p *Provider) readWhole(ctx context.Context, id, name string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	var reply api.FileReadResponse
-	if err := json.Unmarshal(raw, &reply); err != nil {
+	var reply fileContent
+	if err := decode(raw, &reply); err != nil {
 		return nil, internal(fmt.Errorf("boat read of %s: %w", name, err))
 	}
-	if reply.Encoding == api.FileReadResponseEncodingUtf8 {
+	if reply.Encoding == string(api.FileReadResponseEncodingUtf8) {
 		return []byte(reply.Content), nil
 	}
 	data, err := base64.StdEncoding.DecodeString(reply.Content)
@@ -192,11 +223,11 @@ func (p *Provider) upload(ctx context.Context, id, name string, data []byte) err
 	if err != nil {
 		return err
 	}
-	var grant api.FileUrlResponse
-	if err := json.Unmarshal(raw, &grant); err != nil || grant.Url == "" {
+	var grant uploadReply
+	if err := decode(raw, &grant); err != nil || grant.URL == "" {
 		return internal(fmt.Errorf("boat upload URL reply for %s holds no URL", name))
 	}
-	put, err := http.NewRequestWithContext(ctx, http.MethodPut, grant.Url, bytes.NewReader(data))
+	put, err := http.NewRequestWithContext(ctx, http.MethodPut, grant.URL, bytes.NewReader(data))
 	if err != nil {
 		return internal(fmt.Errorf("boat upload URL for %s does not parse", name))
 	}
@@ -224,31 +255,35 @@ func redact(err error) error {
 
 // ListFiles lists one directory per call and descends into directories, never symlinks, to depth
 func (p *Provider) ListFiles(
-	ctx context.Context, ref provider.Ref, name string, depth int,
-) ([]provider.FileEntry, error) {
+	ctx context.Context, ref provider.Ref, name string, depth int, into *provider.Listing,
+) error {
 	id, err := sandboxID(ref)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if depth < 1 {
-		return nil, invalid(fmt.Errorf("depth %d is below 1", depth))
+		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
-	var out []provider.FileEntry
 	dirs := []string{name}
 	for level := 1; level <= depth && len(dirs) > 0; level++ {
 		var next []string
 		for _, dir := range dirs {
-			entries, err := p.list(ctx, id, dir)
+			if !into.Visit() {
+				return nil
+			}
+			entries, err := p.list(ctx, id, dir, into)
 			if err != nil {
 				// Commands in the sandbox may delete a directory while the listing runs
 				if level > 1 && (isCode(err, provider.CodeNotFound) ||
 					isCode(err, provider.CodeInvalid)) {
 					continue
 				}
-				return nil, err
+				return err
 			}
 			for _, e := range entries {
-				out = append(out, e)
+				if !into.Add(e) {
+					return nil
+				}
 				if e.IsDir {
 					next = append(next, e.Path)
 				}
@@ -256,10 +291,13 @@ func (p *Provider) ListFiles(
 		}
 		dirs = next
 	}
-	return out, nil
+	return nil
 }
 
-func (p *Provider) list(ctx context.Context, id, dir string) ([]provider.FileEntry, error) {
+// list reads one directory, marking the listing truncated when Boat cut it at 10,000 entries
+func (p *Provider) list(
+	ctx context.Context, id, dir string, into *provider.Listing,
+) ([]provider.FileEntry, error) {
 	params := &api.ListFilesParams{Path: new(dir)}
 	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.ListFiles(ctx, id, params)
@@ -267,13 +305,12 @@ func (p *Provider) list(ctx context.Context, id, dir string) ([]provider.FileEnt
 	if err != nil {
 		return nil, err
 	}
-	var reply api.FileListResponse
-	if err := json.Unmarshal(raw, &reply); err != nil {
+	var reply fileListing
+	if err := decode(raw, &reply); err != nil {
 		return nil, internal(fmt.Errorf("boat listing of %s: %w", dir, err))
 	}
 	if reply.Truncated {
-		return nil, internal(fmt.Errorf("boat listing of %s was truncated at Boat's limit of "+
-			"10,000 entries", dir))
+		into.Truncated = true
 	}
 	out := make([]provider.FileEntry, 0, len(reply.Files))
 	for _, e := range reply.Files {
@@ -282,7 +319,7 @@ func (p *Provider) list(ctx context.Context, id, dir string) ([]provider.FileEnt
 	return out, nil
 }
 
-func fileEntry(dir string, e api.FileEntry) provider.FileEntry {
+func fileEntry(dir string, e fileItem) provider.FileEntry {
 	perm, _ := strconv.ParseUint(e.Mode, 8, 32)
 	mode := fs.FileMode(perm).Perm()
 	switch {
@@ -295,8 +332,9 @@ func fileEntry(dir string, e api.FileEntry) provider.FileEntry {
 	if name == "" {
 		name = path.Join(dir, e.Name)
 	}
+	// A time in a form parseTime does not know leaves the entry without one
+	modified, _ := parseTime(e.ModifiedAt)
 	return provider.FileEntry{
-		Path: name, Size: int64(e.Size), IsDir: mode.IsDir(), Mode: mode,
-		Modified: e.ModifiedAt.UTC(),
+		Path: name, Size: e.Size, IsDir: mode.IsDir(), Mode: mode, Modified: modified,
 	}
 }

@@ -67,6 +67,8 @@ type fakeBoxd struct {
 
 	// omitMachine answers CreateVm like a server that predates the machine and timer fields
 	omitMachine bool
+	// ignoreLength sends the rest of a file on FsRead whatever length was asked
+	ignoreLength bool
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
@@ -581,7 +583,7 @@ func (f *fakeBoxd) FsRead(
 		return status.Error(codes.FailedPrecondition, "is_a_directory: "+name)
 	}
 	left := info.Size() - int64(req.GetOffset())
-	if req.Length != nil {
+	if req.Length != nil && !f.ignoreLength {
 		left = min(left, int64(req.GetLength()))
 	}
 	r := io.NewSectionReader(file, int64(req.GetOffset()), max(left, 0))
