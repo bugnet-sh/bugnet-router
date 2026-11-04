@@ -36,7 +36,10 @@ type Config struct {
 	LocalHourlyMicros   int64
 }
 
-const minHandleKeyBytes = 32
+const (
+	minHandleKeyBytes = 32
+	databaseURLEnv    = "BUGNET_DATABASE_URL"
+)
 
 var providerKeyVars = []struct{ name, env string }{
 	{"boxd", "BOXD_API_KEY"},
@@ -71,7 +74,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		}
 		return v
 	}
-	c.DatabaseURL = require("BUGNET_DATABASE_URL")
+	c.DatabaseURL = require(databaseURLEnv)
 	c.InternalToken = require("BUGNET_INTERNAL_TOKEN")
 	pubRaw := require("BUGNET_ORDER_TOKEN_PUBLIC_KEY")
 	c.PackagesFile = require("BUGNET_PACKAGES_FILE")
@@ -151,6 +154,19 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// DatabaseURL reads only BUGNET_DATABASE_URL from the process environment
+func DatabaseURL() (string, error) {
+	return DatabaseURLFrom(os.LookupEnv)
+}
+
+// DatabaseURLFrom reads only BUGNET_DATABASE_URL through a lookup function
+func DatabaseURLFrom(getenv func(string) (string, bool)) (string, error) {
+	if v, ok := getenv(databaseURLEnv); ok && v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("config: %s is required", databaseURLEnv)
 }
 
 func decodeKey(name, raw string, size int) ([]byte, error) {

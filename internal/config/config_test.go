@@ -216,3 +216,28 @@ func TestLoadUsesProcessEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDatabaseURLNeedsNothingElse(t *testing.T) {
+	only := func(k string) (string, bool) {
+		if k == "BUGNET_DATABASE_URL" {
+			return "postgres://localhost/x", true
+		}
+		return "", false
+	}
+	if url, err := DatabaseURLFrom(only); err != nil || url != "postgres://localhost/x" {
+		t.Fatalf("database url %q, %v", url, err)
+	}
+	for name, getenv := range map[string]func(string) (string, bool){
+		"unset": func(string) (string, bool) { return "", false },
+		"empty": func(string) (string, bool) { return "", true },
+	} {
+		url, err := DatabaseURLFrom(getenv)
+		if err == nil || url != "" || !strings.Contains(err.Error(), "BUGNET_DATABASE_URL") {
+			t.Errorf("%s: %q, %v, want an error naming BUGNET_DATABASE_URL", name, url, err)
+		}
+	}
+	t.Setenv("BUGNET_DATABASE_URL", "postgres://localhost/y")
+	if url, err := DatabaseURL(); err != nil || url != "postgres://localhost/y" {
+		t.Fatalf("database url from the process %q, %v", url, err)
+	}
+}

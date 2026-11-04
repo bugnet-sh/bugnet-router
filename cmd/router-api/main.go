@@ -54,18 +54,27 @@ func run(log *slog.Logger, args []string) error {
 	if len(args) > 0 && !migrate {
 		return errors.New("usage: router-api [migrate]")
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	// A second signal during shutdown kills the process at once
 	context.AfterFunc(ctx, stop)
-	if !migrate {
-		return serve(ctx, log, cfg)
+	if migrate {
+		return migrateDatabase(ctx, log)
 	}
-	if err := store.Migrate(ctx, cfg.DatabaseURL); err != nil {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	return serve(ctx, log, cfg)
+}
+
+// migrateDatabase reads only BUGNET_DATABASE_URL, so a migration job needs no serving settings
+func migrateDatabase(ctx context.Context, log *slog.Logger) error {
+	url, err := config.DatabaseURL()
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	if err := store.Migrate(ctx, url); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	log.Info("migrations applied")

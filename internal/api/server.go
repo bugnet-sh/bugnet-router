@@ -188,7 +188,7 @@ func (s *Server) CreatePlacement(
 	}), nil
 }
 
-// GetPlacement waits up to wait_ms, at most 25 s, while the placement is still in known_state
+// GetPlacement waits up to wait_ms, at most 25 s, while a placement not yet ended is in known_state
 func (s *Server) GetPlacement(
 	ctx context.Context, req *connect.Request[routerv1.GetPlacementRequest],
 ) (*connect.Response[routerv1.GetPlacementResponse], error) {
@@ -199,7 +199,7 @@ func (s *Server) GetPlacement(
 	known := req.Msg.GetKnownState()
 	wait := min(time.Duration(req.Msg.GetWaitMs())*time.Millisecond, maxPollWait)
 	if known != routerv1.PlacementState_PLACEMENT_STATE_UNSPECIFIED &&
-		placementState(p.State) == known && wait > 0 {
+		placementState(p.State) == known && !ended(p.State) && wait > 0 {
 		if p, err = s.awaitChange(ctx, p, known, wait); err != nil {
 			return nil, s.status(err)
 		}
@@ -260,7 +260,7 @@ func (s *Server) WatchPlacement(
 			}
 			sent = msg
 		}
-		if cur.State == store.PlacementTerminated || cur.State == store.PlacementFailed {
+		if ended(cur.State) {
 			return nil
 		}
 		select {
@@ -294,6 +294,11 @@ func (s *Server) StopPlacement(
 		return nil, s.status(err)
 	}
 	return connect.NewResponse(&routerv1.StopPlacementResponse{Placement: placementMsg(p)}), nil
+}
+
+// ended reports whether a placement is terminated or failed, which no transition leaves
+func ended(state string) bool {
+	return state == store.PlacementTerminated || state == store.PlacementFailed
 }
 
 // placement looks a handle up, reporting a malformed one as not found like an unknown one

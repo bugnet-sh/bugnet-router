@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -103,8 +104,22 @@ var small = provider.Size{
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// faulty fails reads of /fault/<code> with that provider error code
-type faulty struct{ *local.Provider }
+// faulty fails reads of /fault/<code> with that provider error code and can hold readiness
+type faulty struct {
+	*local.Provider
+	hold <-chan struct{} // WaitReady waits for it to close, when set
+}
+
+func (f faulty) WaitReady(ctx context.Context, ref provider.Ref) error {
+	if f.hold != nil {
+		select {
+		case <-f.hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return f.Provider.WaitReady(ctx, ref)
+}
 
 func (f faulty) ReadFile(
 	ctx context.Context, ref provider.Ref, path string, offset int64, length int,
@@ -117,21 +132,24 @@ func (f faulty) ReadFile(
 
 type options struct {
 	readyDelay time.Duration
+	holdReady  <-chan struct{}
 }
 
 type env struct {
-	api    *api.Server
-	client routerv1connect.SandboxRouterServiceClient
-	url    string
-	dbURL  string
-	store  *store.Store
-	jobs   *jobs.Service
-	vk     valkey.Client
-	prefix string
-	root   string
-	priv   ed25519.PrivateKey
-	proto  atomic.Value
-	orders atomic.Int64
+	api       *api.Server
+	client    routerv1connect.SandboxRouterServiceClient
+	url       string
+	dbURL     string
+	store     *store.Store
+	jobs      *jobs.Service
+	vk        valkey.Client
+	apiVKName string // client name of the API server's own Valkey connections
+	prefix    string
+	root      string
+	priv      ed25519.PrivateKey
+	handleKey []byte
+	proto     atomic.Value
+	orders    atomic.Int64
 }
 
 func newEnv(t *testing.T, opts options) *env {
@@ -174,7 +192,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Increment: time.Second, RunnerPath: runnerPath, ReadyDelay: opts.readyDelay,
 	})
 	t.Cleanup(func() { destroyAll(t, prov) })
-	reg := provider.NewRegistry([]provider.Provider{faulty{prov}})
+	reg := provider.NewRegistry([]provider.Provider{faulty{Provider: prov, hold: opts.holdReady}})
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	st := store.New(pool)
@@ -193,15 +211,23 @@ func newEnv(t *testing.T, opts options) *env {
 		defer cancel()
 		js.Shutdown(ctx)
 	})
+	apiName := "bugnet-api-test-" + rand.Text()
+	apiVK, err := valkey.NewClient(valkey.ClientOption{
+		InitAddress: []string{valkeyAddr()}, ClientName: apiName,
+	})
+	if err != nil {
+		t.Fatalf("connect to valkey: %v", err)
+	}
+	t.Cleanup(apiVK.Close)
 	srv := api.New(api.Deps{
 		Store: st, Saga: sg, Jobs: js, Engine: engine, Catalog: cat, Registry: reg,
-		Valkey: vk, Prefix: prefix, MarginFloor: 0.5, Log: discard,
+		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: discard,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, dbURL: dbURL, store: st, jobs: js, vk: vk, prefix: prefix, root: root,
-		priv: priv,
+		api: srv, dbURL: dbURL, store: st, jobs: js, vk: vk, apiVKName: apiName, prefix: prefix,
+		root: root, priv: priv, handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv, internalToken)
@@ -219,6 +245,13 @@ func newEnv(t *testing.T, opts options) *env {
 	e.url = hs.URL
 	e.client = e.clientWith(t, "Bearer "+internalToken, true)
 	return e
+}
+
+func valkeyAddr() string {
+	if addr := os.Getenv("BUGNET_TEST_VALKEY_ADDR"); addr != "" {
+		return addr
+	}
+	return "localhost:6379"
 }
 
 func destroyAll(t *testing.T, p *local.Provider) {
@@ -284,8 +317,15 @@ func (e *env) token(t *testing.T, c ordertoken.Claims) string {
 
 func (e *env) startToken(t *testing.T, pkg string, amount int64) string {
 	t.Helper()
+	_, tok := e.startOrder(t, pkg, amount)
+	return tok
+}
+
+// startOrder returns a new start order's ID and its signed token
+func (e *env) startOrder(t *testing.T, pkg string, amount int64) (string, string) {
+	t.Helper()
 	order := fmt.Sprintf("order-%d", e.orders.Add(1))
-	return e.token(t, ordertoken.Claims{
+	return order, e.token(t, ordertoken.Claims{
 		OrderID: order, Kind: ordertoken.KindStart, PackageID: pkg, AmountMicros: amount,
 	})
 }
@@ -587,6 +627,148 @@ func TestGetPlacementWithoutChange(t *testing.T) {
 		took < 300*time.Millisecond || took > 2*time.Second {
 		t.Fatalf("unchanged placement: %v after %v, want ready after 300ms", p, took)
 	}
+}
+
+func TestGetPlacementEndedReturnsAtOnce(t *testing.T) {
+	e := newEnv(t, options{})
+	stopped, _ := e.readyPlacement(t)
+	e.stop(t, stopped)
+	order, tok := e.startOrder(t, gpuPkg, gpuPrice)
+	_, err := e.createWith(t, tok)
+	wantCode(t, err, connect.CodeResourceExhausted)
+	failed, _ := handle.Derive(e.handleKey, order)
+	for name, c := range map[string]struct {
+		handle string
+		state  routerv1.PlacementState
+	}{
+		"terminated": {stopped, routerv1.PlacementState_PLACEMENT_STATE_TERMINATED},
+		"failed":     {failed, routerv1.PlacementState_PLACEMENT_STATE_FAILED},
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := time.Now()
+			p := e.get(t, c.handle, c.state, 5000)
+			if took := time.Since(start); took > time.Second || p.GetState() != c.state {
+				t.Fatalf("known state %v: %v after %v, want it at once", c.state, p, took)
+			}
+		})
+	}
+}
+
+// subscription waits for the API server's pattern subscription on a connection other than not
+func (e *env) subscription(t *testing.T, not string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if id := e.subscribed(t); id != "" && id != not {
+			return id
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no pattern subscription from %s besides %q", e.apiVKName, not)
+	return ""
+}
+
+// subscribed returns the ID of the API server's connection holding a pattern subscription
+func (e *env) subscribed(t *testing.T) string {
+	t.Helper()
+	list, err := e.vk.Do(t.Context(), e.vk.B().ClientList().Build()).ToString()
+	if err != nil {
+		t.Fatalf("client list: %v", err)
+	}
+	for line := range strings.Lines(list) {
+		f := map[string]string{}
+		for _, kv := range strings.Fields(line) {
+			k, v, _ := strings.Cut(kv, "=")
+			f[k] = v
+		}
+		if f["name"] == e.apiVKName && f["psub"] != "" && f["psub"] != "0" {
+			return f["id"]
+		}
+	}
+	return ""
+}
+
+func TestGetPlacementWakesAfterResubscribe(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		resubscribed bool
+	}{
+		{"ready while unsubscribed", false},
+		{"ready after resubscribing", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hold := make(chan struct{})
+			release := sync.OnceFunc(func() { close(hold) })
+			e := newEnv(t, options{holdReady: hold})
+			t.Cleanup(release)
+			old := e.subscription(t, "")
+			h, _ := e.create(t)
+			polled := make(chan *routerv1.Placement, 1)
+			go func() {
+				resp, err := e.client.GetPlacement(t.Context(), connect.NewRequest(
+					&routerv1.GetPlacementRequest{
+						Handle: h, KnownState: routerv1.PlacementState_PLACEMENT_STATE_PLACING,
+						WaitMs: 20000,
+					}))
+				if err != nil {
+					polled <- nil
+					return
+				}
+				polled <- resp.Msg.GetPlacement()
+			}()
+			time.Sleep(300 * time.Millisecond)
+
+			kill := e.vk.B().Arbitrary("CLIENT", "KILL").Args("ID", old).Build()
+			if n, err := e.vk.Do(t.Context(), kill).AsInt64(); err != nil || n != 1 {
+				t.Fatalf("kill subscription connection %s: %d %v", old, n, err)
+			}
+			if c.resubscribed {
+				e.subscription(t, old)
+			}
+			release()
+			released := time.Now()
+			if !c.resubscribed {
+				e.awaitState(t, h, store.PlacementReady)
+				if id := e.subscribed(t); id != "" {
+					t.Fatalf("subscribed again on %s before the placement was ready", id)
+				}
+			}
+
+			select {
+			case p := <-polled:
+				if p.GetState() != routerv1.PlacementState_PLACEMENT_STATE_READY {
+					t.Fatalf("long poll returned %v, want ready", p)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("long poll still waiting %v after the placement was released",
+					time.Since(released))
+			}
+			if id := e.subscribed(t); id == "" || id == old {
+				t.Fatalf("subscription is on %q after the poll, want a new connection", id)
+			}
+		})
+	}
+}
+
+// awaitState reads the store until the placement behind h is in state
+func (e *env) awaitState(t *testing.T, h, state string) {
+	t.Helper()
+	sha, err := handle.Hash(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		p, err := e.store.PlacementByHandle(t.Context(), sha)
+		if err != nil {
+			t.Fatalf("read placement: %v", err)
+		}
+		if p.State == state {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("placement never reached %s", state)
 }
 
 func TestWatchPlacementStreamsChanges(t *testing.T) {
@@ -1246,11 +1428,7 @@ func TestHealthAndReady(t *testing.T) {
 		t.Fatalf("readyz: %d %s", code, body)
 	}
 
-	addr := os.Getenv("BUGNET_TEST_VALKEY_ADDR")
-	if addr == "" {
-		addr = "localhost:6379"
-	}
-	closedVK, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{addr}})
+	closedVK, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{valkeyAddr()}})
 	if err != nil {
 		t.Fatal(err)
 	}
