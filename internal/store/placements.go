@@ -33,12 +33,13 @@ type Placement struct {
 	SagaHeartbeat *time.Time
 }
 
-// NewPlacement describes a placement to create in the placing state
+// NewPlacement describes a placement to create, placing unless it has a FailureReason
 type NewPlacement struct {
-	ID           uuid.UUID
-	HandleSHA256 []byte
-	OrderID      string
-	PackageID    string
+	ID            uuid.UUID
+	HandleSHA256  []byte
+	OrderID       string
+	PackageID     string
+	FailureReason string // creates the placement already failed and refundable
 }
 
 // Attempt is one try at creating a sandbox on a provider
@@ -106,7 +107,7 @@ func (s *Store) PlacementForUpdate(ctx context.Context, id uuid.UUID) (Placement
 	return s.placementWhere(ctx, "id = $1 for update", id)
 }
 
-// CreatePlacement records the start order and a placing placement in one transaction
+// CreatePlacement records the start order and its placement in one transaction
 func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement, bool, error) {
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
@@ -131,10 +132,16 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 			out, err = ts.PlacementByID(ctx, id)
 			return err
 		}
+		state := PlacementPlacing
+		if p.FailureReason != "" {
+			state = PlacementFailed
+		}
 		_, err = tx.Exec(ctx, `
-			insert into placements (id, handle_sha256, order_id, package_id, state)
-			values ($1, $2, $3, $4, $5)`,
-			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, PlacementPlacing)
+			insert into placements
+				(id, handle_sha256, order_id, package_id, state, failure_reason, refundable)
+			values ($1, $2, $3, $4, $5, $6, $7)`,
+			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
+			p.FailureReason != "")
 		if err != nil {
 			return fmt.Errorf("insert placement: %w", err)
 		}
@@ -211,12 +218,11 @@ func (s *Store) MarkPlacementTerminating(ctx context.Context, id uuid.UUID) (boo
 	return tag.RowsAffected() == 1, nil
 }
 
-// MarkPlacementTerminated moves a terminating placement to terminated and stamps the time.
-// A placement that is already terminated is left alone; any other state is ErrStateConflict.
-func (s *Store) MarkPlacementTerminated(ctx context.Context, id uuid.UUID) error {
+// MarkPlacementTerminated ends a terminating placement at the given time, a repeat changes nothing
+func (s *Store) MarkPlacementTerminated(ctx context.Context, id uuid.UUID, at time.Time) error {
 	tag, err := s.q.Exec(ctx, `
-		update placements set state = $2, terminated_at = now()
-		where id = $1 and state = $3`, id, PlacementTerminated, PlacementTerminating)
+		update placements set state = $2, terminated_at = $4
+		where id = $1 and state = $3`, id, PlacementTerminated, PlacementTerminating, utc(at))
 	if err != nil {
 		return fmt.Errorf("mark terminated: %w", err)
 	}
@@ -231,6 +237,30 @@ func (s *Store) MarkPlacementTerminated(ctx context.Context, id uuid.UUID) error
 		return nil
 	}
 	return fmt.Errorf("mark terminated %s in state %s: %w", id, cur.State, ErrStateConflict)
+}
+
+// HeartbeatPlacement records which saga owns a placing placement and when it last showed life
+func (s *Store) HeartbeatPlacement(
+	ctx context.Context, id uuid.UUID, owner string, at time.Time,
+) error {
+	return s.transition(ctx, id, "heartbeat", `
+		update placements set saga_owner = $2, saga_heartbeat = $3
+		where id = $1 and state = $4`, nullIfEmpty(owner), utc(at), PlacementPlacing)
+}
+
+// HasExtendOrder reports whether orderID is recorded as an extend order for this placement
+func (s *Store) HasExtendOrder(
+	ctx context.Context, orderID string, placementID uuid.UUID,
+) (bool, error) {
+	var found bool
+	err := s.q.QueryRow(ctx, `
+		select exists (select 1 from orders
+			where order_id = $1 and kind = $2 and placement_id = $3)`,
+		orderID, orderExtend, placementID).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("select extend order: %w", err)
+	}
+	return found, nil
 }
 
 // ExtendDeadline pushes a ready placement's deadline out once per extend order

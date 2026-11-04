@@ -109,6 +109,110 @@ func (s slowDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
 	return s.Provider.Destroy(ctx, ref)
 }
 
+// leaky never becomes ready and fails its first destroy, leaving a sandbox behind
+type leaky struct {
+	*local.Provider
+	destroys *atomic.Int64
+}
+
+func (leaky) WaitReady(context.Context, provider.Ref) error {
+	return &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
+}
+
+func (l leaky) Destroy(ctx context.Context, ref provider.Ref) error {
+	if l.destroys.Add(1) == 1 {
+		return &provider.Error{Code: provider.CodeInternal, Err: errors.New("destroy failed")}
+	}
+	return l.Provider.Destroy(ctx, ref)
+}
+
+// stuckDestroy never becomes ready and its destroy hangs until the caller gives up
+type stuckDestroy struct {
+	*local.Provider
+	unblock chan struct{}
+}
+
+func (stuckDestroy) WaitReady(context.Context, provider.Ref) error {
+	return &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
+}
+
+func (s stuckDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.unblock:
+		return s.Provider.Destroy(ctx, ref)
+	}
+}
+
+// gatedReady holds WaitReady until the test opens the gate
+type gatedReady struct {
+	*local.Provider
+	waiting chan struct{}
+	gate    chan struct{}
+}
+
+func (g gatedReady) WaitReady(ctx context.Context, ref provider.Ref) error {
+	close(g.waiting)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-g.gate:
+	}
+	return g.Provider.WaitReady(ctx, ref)
+}
+
+// lifetimeProbe counts SetLifetime calls and fails them while fail is set
+type lifetimeProbe struct {
+	*local.Provider
+	fail  *atomic.Bool
+	calls *atomic.Int64
+}
+
+func (l lifetimeProbe) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
+	l.calls.Add(1)
+	if l.fail.Load() {
+		return &provider.Error{Code: provider.CodeInternal, Err: errors.New("lifetime refused")}
+	}
+	return l.Provider.SetLifetime(ctx, ref, until)
+}
+
+// clock is wall time shifted by an offset the test can move forward
+type clock struct {
+	mu     sync.Mutex
+	offset time.Duration
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offset += d
+}
+
+// syncBuffer collects log output written from several goroutines
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 type env struct {
 	saga      *saga.Saga
 	store     *store.Store
@@ -125,7 +229,8 @@ func newEnv(t *testing.T, ps ...provider.Provider) *env {
 	return newEnvWith(t, nil, ps...)
 }
 
-func newEnvWith(t *testing.T, runners map[string]string, ps ...provider.Provider) *env {
+// newEnvWith lets a test adjust the saga's dependencies before the saga is built
+func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) *env {
 	t.Helper()
 	ctx := context.Background()
 	url := testenv.DatabaseURL(t)
@@ -161,7 +266,7 @@ func newEnvWith(t *testing.T, runners map[string]string, ps ...provider.Provider
 	reg := provider.NewRegistry(ps)
 	tracker := placement.NewTracker(time.Now)
 	st := store.New(pool)
-	s := saga.New(saga.Deps{
+	deps := saga.Deps{
 		Store:       st,
 		Engine:      placement.New(reg, tracker),
 		Registry:    reg,
@@ -173,9 +278,13 @@ func newEnvWith(t *testing.T, runners map[string]string, ps ...provider.Provider
 		HandleKey:   hk,
 		MarginFloor: 0.5,
 		Tracker:     tracker,
-		Runners:     runners,
+		ReplicaID:   "replica-test",
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	if adjust != nil {
+		adjust(&deps)
+	}
+	s := saga.New(deps)
 	t.Cleanup(s.Wait)
 	return &env{
 		saga: s, store: st, pool: pool, river: rc, vk: vk, prefix: prefix, priv: priv,
@@ -462,9 +571,11 @@ func TestCreatePlacementReady(t *testing.T) {
 		t.Fatalf("deadline jobs %+v", jobs)
 	}
 	res, err := e.river.JobList(t.Context(), river.NewJobListParams().Kinds("deadline"))
-	if err != nil || !near(res.Jobs[0].ScheduledAt, *got.Deadline) {
-		t.Fatalf("deadline job scheduled at %v, want %v (%v)", res.Jobs[0].ScheduledAt,
-			got.Deadline, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Jobs) != 1 || !near(res.Jobs[0].ScheduledAt, *got.Deadline) {
+		t.Fatalf("deadline jobs %+v, want one scheduled at %v", res.Jobs, got.Deadline)
 	}
 
 	channel, pub := receive(t, msgs)
@@ -574,6 +685,109 @@ func TestCreateRejectsAmountBelowPrice(t *testing.T) {
 	}
 	if n := e.placementCount(t); n != 0 {
 		t.Fatalf("%d placements recorded", n)
+	}
+}
+
+func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
+	msgs := e.subscribe(t)
+	tok := e.startToken(t, "order-1")
+	wantH, _ := handle.Derive(e.handleKey, "order-1")
+
+	p, h, err := e.saga.Create(t.Context(), tok, placement.Requirements{GPU: true})
+	if !errors.Is(err, placement.ErrNoCandidate) {
+		t.Fatalf("err %v, want ErrNoCandidate", err)
+	}
+	if h != wantH || p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != saga.ReasonNoCandidate {
+		t.Fatalf("placement %+v, handle %q", p, h)
+	}
+	ev := e.oneEvent(t, saga.EventFailed)
+	if ev.PlacementID != p.ID || ev.OrderID != "order-1" || ev.State != store.PlacementFailed ||
+		!ev.Refundable || ev.Reason != saga.ReasonNoCandidate || ev.BilledSeconds != 0 {
+		t.Fatalf("failed event %+v", ev)
+	}
+	if channel, pub := receive(t, msgs); channel != saga.Channel(e.prefix, p.ID) ||
+		pub.State != store.PlacementFailed {
+		t.Fatalf("published %+v on %s", pub, channel)
+	}
+
+	// A repeat finds the failed placement even once a candidate exists
+	again, h2, err := e.saga.Create(t.Context(), tok, placement.Requirements{})
+	if !errors.Is(err, placement.ErrNoCandidate) || again.ID != p.ID || h2 != wantH ||
+		again.State != store.PlacementFailed {
+		t.Fatalf("repeat %+v %q %v", again, h2, err)
+	}
+	e.saga.Wait()
+	if n := e.placementCount(t); n != 1 {
+		t.Fatalf("%d placements", n)
+	}
+	if evs := e.events(t, saga.EventFailed); len(evs) != 1 {
+		t.Fatalf("%d failed events", len(evs))
+	}
+	if rows := e.attempts(t, p.ID); len(rows) != 0 {
+		t.Fatalf("attempts %+v", rows)
+	}
+	if n := len(owned(t, a)); n != 0 {
+		t.Fatalf("%d sandboxes", n)
+	}
+}
+
+func TestPlacingHeartbeats(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a", ReadyDelay: time.Second})
+	e := newEnvWith(t, func(d *saga.Deps) { d.HeartbeatInterval = 50 * time.Millisecond }, a)
+	p, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"), placement.Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beats := map[time.Time]bool{}
+	for len(beats) < 3 {
+		got := e.reload(t, p.ID)
+		if got.State != store.PlacementPlacing {
+			t.Fatalf("placement %s after %d heartbeats, want 3 while placing", got.State,
+				len(beats))
+		}
+		if got.SagaHeartbeat != nil {
+			if got.SagaOwner != "replica-test" {
+				t.Fatalf("saga owner %q", got.SagaOwner)
+			}
+			beats[*got.SagaHeartbeat] = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	e.saga.Wait()
+	if got := e.reload(t, p.ID); got.State != store.PlacementReady {
+		t.Fatalf("state %s (%s)", got.State, got.FailureReason)
+	}
+}
+
+func TestPublishFailureDoesNotFailSaga(t *testing.T) {
+	addr := os.Getenv("BUGNET_TEST_VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	broken, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{addr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken.Close()
+	logs := &syncBuffer{}
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnvWith(t, func(d *saga.Deps) {
+		d.Valkey = broken
+		d.Log = slog.New(slog.NewTextHandler(logs, nil))
+	}, a)
+
+	p, h := e.placeReady(t, "order-1")
+	got, err := e.saga.Stop(t.Context(), h)
+	if err != nil || got.State != store.PlacementTerminated {
+		t.Fatalf("stop %+v, %v", got, err)
+	}
+	e.oneEvent(t, saga.EventReady)
+	e.oneEvent(t, saga.EventTerminated)
+	if n := strings.Count(logs.String(), "publish placement event"); n != 2 {
+		t.Fatalf("%d publish failures logged for %s, want 2\n%s", n, p.ID, logs)
 	}
 }
 
@@ -746,6 +960,118 @@ func TestSagaSkipsFullProvider(t *testing.T) {
 	}
 }
 
+func TestSagaAllFullFailsWithCapacityReason(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnv(t, a, b)
+	for _, name := range []string{"a", "b"} {
+		if err := e.store.SetCapacity(t.Context(), name, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, _ := e.place(t, "order-1")
+	if p.State != store.PlacementFailed || !p.Refundable ||
+		!strings.Contains(p.FailureReason, "capacity") {
+		t.Fatalf("placement %+v, want a capacity failure", p)
+	}
+	if ev := e.oneEvent(t, saga.EventFailed); ev.Reason != p.FailureReason {
+		t.Fatalf("failed event %+v", ev)
+	}
+	if rows := e.attempts(t, p.ID); len(rows) != 0 {
+		t.Fatalf("attempts %+v", rows)
+	}
+}
+
+func TestSagaDestroysLeftoverAfterFailOver(t *testing.T) {
+	var destroys atomic.Int64
+	a := leaky{newLocal(t, local.Options{Name: "a"}), &destroys}
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnv(t, a, b)
+	p, _ := e.placeReady(t, "order-1")
+	if p.Provider != "b" {
+		t.Fatalf("placed on %q, want b", p.Provider)
+	}
+	if na, nb := len(owned(t, a)), len(owned(t, b)); na != 0 || nb != 1 {
+		t.Fatalf("sandboxes a=%d b=%d after %d destroys on a", na, nb, destroys.Load())
+	}
+	if ia, ib := e.inUse(t, "a"), e.inUse(t, "b"); ia != 0 || ib != 1 {
+		t.Fatalf("in use a=%d b=%d", ia, ib)
+	}
+}
+
+func TestStuckDestroyDoesNotHangPlacing(t *testing.T) {
+	saga.SetCleanupTimeout(t, 200*time.Millisecond)
+	a := stuckDestroy{newLocal(t, local.Options{Name: "a"}), make(chan struct{})}
+	e := newEnv(t, a)
+	t.Cleanup(func() { close(a.unblock) })
+	p, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"), placement.Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.saga.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("placing hangs on a destroy that never returns")
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementFailed || !got.Refundable {
+		t.Fatalf("placement %+v", got)
+	}
+	if n := e.inUse(t, "a"); n != 0 {
+		t.Fatalf("in use %d", n)
+	}
+}
+
+func TestReadyAfterPlacementLeftPlacing(t *testing.T) {
+	a := gatedReady{newLocal(t, local.Options{Name: "a"}), make(chan struct{}),
+		make(chan struct{})}
+	e := newEnv(t, a)
+	msgs := e.subscribe(t)
+	p, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"), placement.Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-a.waiting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("placing never waited for ready")
+	}
+	if err := e.store.MarkPlacementFailed(t.Context(), p.ID, "stuck", true); err != nil {
+		t.Fatal(err)
+	}
+	close(a.gate)
+	e.saga.Wait()
+
+	if got := e.reload(t, p.ID); got.State != store.PlacementFailed ||
+		got.FailureReason != "stuck" {
+		t.Fatalf("placement %+v", got)
+	}
+	if n := len(owned(t, a)); n != 0 {
+		t.Fatalf("%d sandboxes left", n)
+	}
+	if n := e.inUse(t, "a"); n != 0 {
+		t.Fatalf("in use %d", n)
+	}
+	if evs := e.events(t, saga.EventReady); len(evs) != 0 {
+		t.Fatalf("ready events %+v", evs)
+	}
+	if jobs := e.deadlineJobs(t); len(jobs) != 0 {
+		t.Fatalf("deadline jobs %+v", jobs)
+	}
+	if got := e.attempts(t, p.ID); len(got) != 1 || got[0].state != "failed" {
+		t.Fatalf("attempts %+v", got)
+	}
+	select {
+	case m := <-msgs:
+		t.Fatalf("published %s on %s", m.Message, m.Channel)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 /* Runner upload */
 
 func writeFile(t *testing.T, dir, name, content string, mode os.FileMode) string {
@@ -767,7 +1093,7 @@ func TestCreateUploadsRunnerForArch(t *testing.T) {
 	}
 	root := t.TempDir()
 	u := uploader{newLocal(t, local.Options{Name: "u", Root: root, RunnerPath: fake}), "arm64"}
-	e := newEnvWith(t, runners, u)
+	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, u)
 	p, _ := e.placeReady(t, "order-1")
 
 	bin := filepath.Join(root, p.ProviderRef.ID, "fs", "tmp", "bugnet", "bin", "bugnet-run")
@@ -789,7 +1115,7 @@ func TestCreateWithoutRunnerBuildFailsWithoutFailOver(t *testing.T) {
 	runners := map[string]string{"arm64": writeFile(t, dir, "arm64", "arm64 build", 0o644)}
 	u := uploader{Provider: newLocal(t, local.Options{Name: "u"})}
 	b := newLocal(t, local.Options{Name: "b"})
-	e := newEnvWith(t, runners, u, b)
+	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, u, b)
 	p, _ := e.place(t, "order-1")
 	if p.State != store.PlacementFailed || !p.Refundable {
 		t.Fatalf("placement %+v", p)
@@ -898,6 +1224,73 @@ func TestExtendRejectsOtherPackageUnderpaymentAndUnready(t *testing.T) {
 	}
 }
 
+func TestExtendSetLifetimeFailureRollsBack(t *testing.T) {
+	var fail atomic.Bool
+	var calls atomic.Int64
+	root := t.TempDir()
+	a := lifetimeProbe{newLocal(t, local.Options{Name: "a", Root: root}), &fail, &calls}
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	tok := e.extendToken(t, "ext-1", morePkg, morePrice, h)
+
+	fail.Store(true)
+	_, err := e.saga.Extend(t.Context(), h, tok)
+	if _, ok := provider.AsError(err); !ok {
+		t.Fatalf("err %v, want the provider error", err)
+	}
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(*p.Deadline) {
+		t.Fatalf("deadline moved from %v to %v", p.Deadline, got.Deadline)
+	}
+	if evs := e.events(t, saga.EventExtended); len(evs) != 0 {
+		t.Fatalf("extended events %+v", evs)
+	}
+	if jobs := e.deadlineJobs(t); len(jobs) != 1 {
+		t.Fatalf("deadline jobs %+v, want only the first", jobs)
+	}
+
+	fail.Store(false)
+	want := p.Deadline.Add(10 * time.Minute)
+	got, err := e.saga.Extend(t.Context(), h, tok)
+	if err != nil || !got.Deadline.Equal(want) {
+		t.Fatalf("retry %v, %v, want deadline %v", got.Deadline, err, want)
+	}
+	if lt := lifetime(t, root, p.ProviderRef); !near(lt, want.Add(5*time.Minute)) {
+		t.Fatalf("provider lifetime %v, want %v", lt, want.Add(5*time.Minute))
+	}
+	e.oneEvent(t, saga.EventExtended)
+}
+
+func TestExtendReplayAfterStop(t *testing.T) {
+	var fail atomic.Bool
+	var calls atomic.Int64
+	a := lifetimeProbe{newLocal(t, local.Options{Name: "a"}), &fail, &calls}
+	e := newEnv(t, a)
+	_, h := e.placeReady(t, "order-1")
+	tok := e.extendToken(t, "ext-1", morePkg, morePrice, h)
+	extended, err := e.saga.Extend(t.Context(), h, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.saga.Stop(t.Context(), h); err != nil {
+		t.Fatal(err)
+	}
+
+	before := calls.Load()
+	got, err := e.saga.Extend(t.Context(), h, tok)
+	if err != nil || got.State != store.PlacementTerminated ||
+		!got.Deadline.Equal(*extended.Deadline) {
+		t.Fatalf("replay %+v, %v", got, err)
+	}
+	if n := calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls on a terminated placement", n)
+	}
+	e.oneEvent(t, saga.EventExtended)
+	fresh := e.extendToken(t, "ext-2", morePkg, morePrice, h)
+	if _, err := e.saga.Extend(t.Context(), h, fresh); !errors.Is(err, saga.ErrNotReady) {
+		t.Fatalf("new order err %v, want ErrNotReady", err)
+	}
+}
+
 /* Stop and Terminate */
 
 func TestStopDestroysAndReleases(t *testing.T) {
@@ -991,5 +1384,23 @@ func TestStopConcurrentReleasesOnce(t *testing.T) {
 	}
 	if evs := e.events(t, saga.EventTerminated); len(evs) != 1 {
 		t.Fatalf("%d terminated events", len(evs))
+	}
+}
+
+func TestBilledSecondsUseSagaClock(t *testing.T) {
+	clk := &clock{}
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnvWith(t, func(d *saga.Deps) { d.Now = clk.Now }, a)
+	p, h := e.placeReady(t, "order-1")
+	clk.Advance(42 * time.Second)
+	got, err := e.saga.Stop(t.Context(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := got.TerminatedAt.Sub(*p.ReadyAt); d < 42*time.Second || d >= 43*time.Second {
+		t.Fatalf("ready at %v, terminated at %v", p.ReadyAt, got.TerminatedAt)
+	}
+	if ev := e.oneEvent(t, saga.EventTerminated); ev.BilledSeconds != 42 {
+		t.Fatalf("terminated event %+v, want 42 billed seconds", ev)
 	}
 }

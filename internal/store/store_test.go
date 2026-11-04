@@ -141,12 +141,14 @@ func TestPlacementLifecycle(t *testing.T) {
 	if err != nil || moved {
 		t.Fatalf("second terminating moved=%v err=%v", moved, err)
 	}
-	if err := s.MarkPlacementTerminated(ctx, p.ID); err != nil {
+	endedAt := now.Add(42 * time.Second)
+	if err := s.MarkPlacementTerminated(ctx, p.ID, endedAt); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = s.PlacementByID(ctx, p.ID)
-	if got.State != store.PlacementTerminated || got.TerminatedAt == nil {
-		t.Fatalf("placement = %+v", got)
+	if got.State != store.PlacementTerminated || got.TerminatedAt == nil ||
+		!got.TerminatedAt.Equal(endedAt) {
+		t.Fatalf("placement = %+v, want terminated at %v", got, endedAt)
 	}
 
 	q := newPlacement(t, s, "o2")
@@ -383,20 +385,21 @@ func TestMarkPlacementTerminatedGuards(t *testing.T) {
 	if err := s.MarkPlacementReady(ctx, ready.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkPlacementTerminated(ctx, ready.ID); !errors.Is(err, store.ErrStateConflict) {
+	if err := s.MarkPlacementTerminated(ctx, ready.ID, now); !errors.Is(
+		err, store.ErrStateConflict) {
 		t.Fatalf("terminate ready err = %v", err)
 	}
 	if moved, err := s.MarkPlacementTerminating(ctx, ready.ID); err != nil || !moved {
 		t.Fatalf("terminating moved=%v err=%v", moved, err)
 	}
-	if err := s.MarkPlacementTerminated(ctx, ready.ID); err != nil {
+	if err := s.MarkPlacementTerminated(ctx, ready.ID, now); err != nil {
 		t.Fatal(err)
 	}
 	first, err := s.PlacementByID(ctx, ready.ID)
 	if err != nil || first.State != store.PlacementTerminated || first.TerminatedAt == nil {
 		t.Fatalf("placement = %+v err=%v", first, err)
 	}
-	if err := s.MarkPlacementTerminated(ctx, ready.ID); err != nil {
+	if err := s.MarkPlacementTerminated(ctx, ready.ID, now.Add(time.Hour)); err != nil {
 		t.Fatalf("repeat err = %v", err)
 	}
 	again, _ := s.PlacementByID(ctx, ready.ID)
@@ -405,20 +408,22 @@ func TestMarkPlacementTerminatedGuards(t *testing.T) {
 	}
 
 	placing := newPlacement(t, s, "term-placing")
-	if err := s.MarkPlacementTerminated(ctx, placing.ID); !errors.Is(err, store.ErrStateConflict) {
+	err = s.MarkPlacementTerminated(ctx, placing.ID, now)
+	if !errors.Is(err, store.ErrStateConflict) {
 		t.Fatalf("terminate placing err = %v", err)
 	}
 	failed := newPlacement(t, s, "term-failed")
 	if err := s.MarkPlacementFailed(ctx, failed.ID, "boom", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkPlacementTerminated(ctx, failed.ID); !errors.Is(err, store.ErrStateConflict) {
+	err = s.MarkPlacementTerminated(ctx, failed.ID, now)
+	if !errors.Is(err, store.ErrStateConflict) {
 		t.Fatalf("terminate failed err = %v", err)
 	}
 	if got, _ := s.PlacementByID(ctx, failed.ID); got.State != store.PlacementFailed {
 		t.Fatalf("state = %q", got.State)
 	}
-	if err := s.MarkPlacementTerminated(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+	if err := s.MarkPlacementTerminated(ctx, uuid.New(), now); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing err = %v", err)
 	}
 }
@@ -583,5 +588,95 @@ func TestPlacementForUpdateLocksRow(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCreatePlacementInitiallyFailed(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	np := store.NewPlacement{
+		OrderID: "o", HandleSHA256: []byte("o-handle"), PackageID: "pkg",
+		FailureReason: "no_candidate",
+	}
+	p, created, err := s.CreatePlacement(ctx, np)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if p.State != store.PlacementFailed || p.FailureReason != "no_candidate" || !p.Refundable {
+		t.Fatalf("placement = %+v", p)
+	}
+	again, created, err := s.CreatePlacement(ctx, store.NewPlacement{
+		OrderID: "o", HandleSHA256: []byte("o-handle"), PackageID: "pkg",
+	})
+	if err != nil || created || again.ID != p.ID || again.State != store.PlacementFailed {
+		t.Fatalf("repeat created=%v err=%v placement=%+v", created, err, again)
+	}
+	placing := newPlacement(t, s, "o2")
+	if placing.FailureReason != "" || placing.Refundable {
+		t.Fatalf("placing placement = %+v", placing)
+	}
+}
+
+func TestHeartbeatPlacement(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	if p.SagaOwner != "" || p.SagaHeartbeat != nil {
+		t.Fatalf("new placement = %+v", p)
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for _, beat := range []time.Time{at, at.Add(10 * time.Second)} {
+		if err := s.HeartbeatPlacement(ctx, p.ID, "replica-1", beat); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.PlacementByID(ctx, p.ID)
+		if got.SagaOwner != "replica-1" || got.SagaHeartbeat == nil ||
+			!got.SagaHeartbeat.Equal(beat) {
+			t.Fatalf("placement = %+v, want heartbeat %v", got, beat)
+		}
+	}
+
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", at, at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	err := s.HeartbeatPlacement(ctx, p.ID, "replica-2", at.Add(time.Minute))
+	if !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("heartbeat on ready err = %v", err)
+	}
+	if got, _ := s.PlacementByID(ctx, p.ID); got.SagaOwner != "replica-1" ||
+		!got.SagaHeartbeat.Equal(at.Add(10*time.Second)) {
+		t.Fatalf("ready placement = %+v", got)
+	}
+}
+
+func TestHasExtendOrder(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	a := newPlacement(t, s, "start-a")
+	b := newPlacement(t, s, "start-b")
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, a.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ExtendDeadline(ctx, "ext-a", a.ID, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		order string
+		id    uuid.UUID
+		want  bool
+	}{
+		{"ext-a", a.ID, true},
+		{"ext-a", b.ID, false},
+		{"start-a", a.ID, false},
+		{"never", a.ID, false},
+	}
+	for _, c := range cases {
+		got, err := s.HasExtendOrder(ctx, c.order, c.id)
+		if err != nil || got != c.want {
+			t.Errorf("HasExtendOrder(%s, %s) = %v, %v, want %v", c.order, c.id, got, err, c.want)
+		}
 	}
 }

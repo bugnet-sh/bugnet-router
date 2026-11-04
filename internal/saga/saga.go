@@ -1,12 +1,14 @@
 // Package saga places paid sandboxes on providers, extends their deadlines and tears them down.
 //
-// Create records the order and a placing placement, then places it in a goroutine. Each
-// candidate gets a capacity slot, a create under an idempotency key derived from the order,
-// attempt and provider, a wait for ready and, where needed, the runner upload. A create whose
-// outcome is unknown is retried with the same key on the same provider, a known failure that
-// allows it fails over to the next candidate, anything else fails the placement as refundable.
-// Every state change commits together with its outbox event and, for a deadline, its River job,
-// and is then published on Valkey for live readers.
+// Create records the order and a placing placement, then places it in a goroutine that
+// heartbeats the placement while it runs. A package no provider can host is recorded as failed
+// and refundable at once. Each candidate gets a capacity slot, a create under an idempotency key
+// derived from the order, attempt and provider, a wait for ready and, where needed, the runner
+// upload. A create whose outcome is unknown is retried with the same key on the same provider, a
+// known failure that allows it fails over to the next candidate, anything else fails the
+// placement as refundable. Once placing ends, every sandbox labelled for the placement other
+// than the ready one is destroyed. Every state change commits together with its outbox event
+// and, for a deadline, its River job, and is then published on Valkey for live readers.
 package saga
 
 import (
@@ -50,12 +52,22 @@ var (
 // ReasonStop is the termination reason when the placement's owner stops it
 const ReasonStop = "stop"
 
+// ReasonNoCandidate is the failure reason when no provider can host the package
+const ReasonNoCandidate = "no_candidate"
+
+// reasonFull is the failure reason when every candidate provider had no free slot
+const reasonFull = "capacity: every candidate provider is full"
+
 const (
 	maxAttempts      = 3
 	placingBudget    = 30 * time.Second
 	lifetimeSlack    = 5 * time.Minute
 	terminateTimeout = 60 * time.Second
+	heartbeatEvery   = 10 * time.Second
 )
+
+// cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
+var cleanupTimeout = 30 * time.Second
 
 // Delays before each retry of a create whose outcome is unknown
 var unknownBackoff = []time.Duration{
@@ -71,20 +83,22 @@ const (
 
 // Deps are the services and settings a Saga works with
 type Deps struct {
-	Store       *store.Store
-	Engine      *placement.Engine
-	Registry    *provider.Registry
-	Catalog     *catalog.Catalog
-	River       *river.Client[pgx.Tx] // insert only
-	Valkey      valkey.Client
-	Prefix      string
-	OrderKey    ed25519.PublicKey
-	HandleKey   []byte
-	MarginFloor float64
-	Tracker     *placement.Tracker
-	Runners     map[string]string // architecture to the host path of its bugnet-run build
-	Now         func() time.Time  // time.Now when nil
-	Log         *slog.Logger      // slog.Default when nil
+	Store             *store.Store
+	Engine            *placement.Engine
+	Registry          *provider.Registry
+	Catalog           *catalog.Catalog
+	River             *river.Client[pgx.Tx] // insert only
+	Valkey            valkey.Client
+	Prefix            string
+	OrderKey          ed25519.PublicKey
+	HandleKey         []byte
+	MarginFloor       float64
+	Tracker           *placement.Tracker
+	ReplicaID         string            // recorded as the saga owner of the placements it places
+	HeartbeatInterval time.Duration     // 10 s when zero
+	Runners           map[string]string // architecture to the host path of its bugnet-run build
+	Now               func() time.Time  // time.Now when nil
+	Log               *slog.Logger      // slog.Default when nil
 }
 
 // Saga runs placements from order to teardown
@@ -101,6 +115,9 @@ func New(deps Deps) *Saga {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
 	}
+	if deps.HeartbeatInterval <= 0 {
+		deps.HeartbeatInterval = heartbeatEvery
+	}
 	return &Saga{d: deps}
 }
 
@@ -111,7 +128,7 @@ func (s *Saga) now() time.Time { return s.d.Now().UTC() }
 
 /* Create */
 
-// Create verifies a start token, records the order and placement, and starts placing it
+// Create records a verified start order and places it, failing at once with ErrNoCandidate
 func (s *Saga) Create(
 	ctx context.Context, token string, req placement.Requirements,
 ) (store.Placement, string, error) {
@@ -124,15 +141,27 @@ func (s *Saga) Create(
 		return store.Placement{}, "", err
 	}
 	h, sha := handle.Derive(s.d.HandleKey, c.OrderID)
-	p, created, err := s.d.Store.CreatePlacement(ctx, store.NewPlacement{
-		HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID,
-	})
+	np := store.NewPlacement{HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID}
+	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
+	switch {
+	case errors.Is(err, placement.ErrNoCandidate):
+		np.FailureReason = ReasonNoCandidate
+	case err != nil:
+		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
+	}
+	p, created, err := s.record(ctx, np)
 	if err != nil {
 		return store.Placement{}, "", fmt.Errorf("record placement: %w", err)
 	}
 	if !bytes.Equal(p.HandleSHA256, sha) {
 		return store.Placement{}, "", fmt.Errorf(
 			"%w: order %s belongs to another placement", ErrBadToken, c.OrderID)
+	}
+	if p.State == store.PlacementFailed && p.FailureReason == ReasonNoCandidate {
+		if created {
+			s.publish(ctx, newEvent(p, ReasonNoCandidate))
+		}
+		return p, h, fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
 	}
 	if created {
 		s.wg.Add(1)
@@ -142,6 +171,29 @@ func (s *Saga) Create(
 		}()
 	}
 	return p, h, nil
+}
+
+// record stores the order and its placement, with the failed event when it starts out failed
+func (s *Saga) record(ctx context.Context, np store.NewPlacement) (store.Placement, bool, error) {
+	var p store.Placement
+	var created bool
+	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		p, created, err = s.d.Store.Tx(tx).CreatePlacement(ctx, np)
+		if err != nil || !created || np.FailureReason == "" {
+			return err
+		}
+		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, newEvent(p, np.FailureReason))
+	})
+	return p, created, err
+}
+
+func (s *Saga) inputs(
+	pkg catalog.Package, req placement.Requirements, tried map[string]bool,
+) placement.Inputs {
+	return placement.Inputs{
+		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
+	}
 }
 
 func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, error) {
@@ -173,7 +225,8 @@ func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
 
 // outcome is how one attempt ended
 type outcome struct {
-	done     bool // the placement left placing, so placing stops
+	done     bool          // the placement left placing, so placing stops
+	kept     *provider.Ref // the sandbox the placement became ready on
 	failOver bool
 	reason   string
 }
@@ -182,32 +235,40 @@ type outcome struct {
 func (s *Saga) place(
 	ctx context.Context, p store.Placement, pkg catalog.Package, req placement.Requirements,
 ) {
+	stopHeartbeat := s.heartbeat(ctx, p.ID)
+	defer stopHeartbeat()
 	budget, cancel := context.WithTimeout(ctx, placingBudget)
 	defer cancel()
 	tried := map[string]bool{}
 	var attempted []provider.Provider
-	reason := "no provider can host the package"
+	reason := ReasonNoCandidate
+	full := false
 	for n := 1; n <= maxAttempts && budget.Err() == nil; {
-		cands, err := s.d.Engine.Candidates(placement.Inputs{
-			Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
-		})
+		cands, err := s.d.Engine.Candidates(s.inputs(pkg, req, tried))
 		if err != nil {
+			if !errors.Is(err, placement.ErrNoCandidate) {
+				reason = fmt.Sprintf("find candidates: %v", err)
+			} else if n == 1 && full {
+				reason = reasonFull
+			}
 			break
 		}
 		c := cands[0]
 		name := c.Provider.Name()
 		tried[name] = true
-		reserved, err := s.d.Store.ReserveCapacity(ctx, name)
+		reserved, err := s.reserve(ctx, name)
 		if err != nil {
 			reason = err.Error()
 			break
 		}
 		if !reserved {
+			full = true
 			continue
 		}
 		attempted = append(attempted, c.Provider)
 		out := s.attempt(ctx, budget, p, pkg, c, n)
 		if out.done {
+			s.sweep(ctx, p.ID, attempted, out.kept)
 			return
 		}
 		reason = out.reason
@@ -217,6 +278,44 @@ func (s *Saga) place(
 		n++
 	}
 	s.fail(ctx, p, reason, attempted)
+}
+
+// heartbeat shows the placement is still being placed by this replica until stop is called
+func (s *Saga) heartbeat(ctx context.Context, id uuid.UUID) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	beat := func() {
+		bctx, bcancel := step(ctx)
+		defer bcancel()
+		err := s.d.Store.HeartbeatPlacement(bctx, id, s.d.ReplicaID, s.now())
+		if err != nil && !errors.Is(err, store.ErrStateConflict) && ctx.Err() == nil {
+			s.d.Log.Warn("placing heartbeat", "placement", id, "err", err)
+		}
+	}
+	beat()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(s.d.HeartbeatInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				beat()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func (s *Saga) reserve(ctx context.Context, providerName string) (bool, error) {
+	ctx, cancel := step(ctx)
+	defer cancel()
+	return s.d.Store.ReserveCapacity(ctx, providerName)
 }
 
 // attempt holds a capacity slot on c's provider and gives it back unless the sandbox is ready
@@ -233,7 +332,7 @@ func (s *Saga) attempt(
 		IdempotencyKey: idempotencyKey(p.OrderID, n, name),
 		State:          attemptCreating,
 	}
-	if err := s.d.Store.RecordAttempt(ctx, rec); err != nil {
+	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.release(ctx, name)
 		return outcome{reason: err.Error()}
 	}
@@ -299,32 +398,37 @@ func (s *Saga) commitReady(
 	readyAt := s.now()
 	s.d.Tracker.RecordReady(prov.Name(), readyAt.Sub(started))
 	deadline := readyAt.Add(time.Duration(pkg.Minutes) * time.Minute)
-	if err := prov.SetLifetime(ctx, ref, deadline.Add(lifetimeSlack)); err != nil {
+	lctx, cancel := step(ctx)
+	err := prov.SetLifetime(lctx, ref, deadline.Add(lifetimeSlack))
+	cancel()
+	if err != nil {
 		// The lifetime set at create still outlasts the deadline unless ready took the full slack
 		s.d.Log.Warn("set lifetime at ready", "placement", p.ID, "provider", prov.Name(),
 			"err", err)
 	}
 	var ev Event
-	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+	tctx, cancel := step(ctx)
+	defer cancel()
+	err = s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
 		ts := s.d.Store.Tx(tx)
-		err := ts.MarkPlacementReady(ctx, p.ID, ref, c.Size.Name, readyAt, deadline)
+		err := ts.MarkPlacementReady(tctx, p.ID, ref, c.Size.Name, readyAt, deadline)
 		if err != nil {
 			return err
 		}
 		ready := rec
 		ready.State = attemptReady
-		if err := ts.RecordAttempt(ctx, ready); err != nil {
+		if err := ts.RecordAttempt(tctx, ready); err != nil {
 			return err
 		}
-		if err := s.insertDeadline(ctx, tx, p.ID, deadline); err != nil {
+		if err := s.insertDeadline(tctx, tx, p.ID, deadline); err != nil {
 			return err
 		}
-		cur, err := ts.PlacementByID(ctx, p.ID)
+		cur, err := ts.PlacementByID(tctx, p.ID)
 		if err != nil {
 			return err
 		}
 		ev = newEvent(cur, "")
-		return s.d.Store.InsertOutbox(ctx, tx, EventReady, ev)
+		return s.d.Store.InsertOutbox(tctx, tx, EventReady, ev)
 	})
 	if err != nil {
 		s.abandon(ctx, prov, rec, &ref, err)
@@ -335,7 +439,7 @@ func (s *Saga) commitReady(
 		return outcome{reason: fmt.Sprintf("commit ready: %v", err)}
 	}
 	s.publish(ctx, ev)
-	return outcome{done: true}
+	return outcome{done: true, kept: &ref}
 }
 
 // abandon destroys an attempt's sandbox if it has one, records the failure and frees the slot
@@ -350,10 +454,16 @@ func (s *Saga) abandon(
 	if e, ok := provider.AsError(err); ok {
 		rec.ErrorCode = string(e.Code)
 	}
-	if err := s.d.Store.RecordAttempt(ctx, rec); err != nil {
+	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.d.Log.Error("record failed attempt", "placement", rec.PlacementID, "err", err)
 	}
 	s.release(ctx, prov.Name())
+}
+
+func (s *Saga) recordAttempt(ctx context.Context, rec store.Attempt) error {
+	ctx, cancel := step(ctx)
+	defer cancel()
+	return s.d.Store.RecordAttempt(ctx, rec)
 }
 
 // fail records a refundable failure and destroys whatever this placement left on any provider
@@ -361,34 +471,47 @@ func (s *Saga) fail(
 	ctx context.Context, p store.Placement, reason string, attempted []provider.Provider,
 ) {
 	var ev Event
-	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+	tctx, cancel := step(ctx)
+	err := s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
 		ts := s.d.Store.Tx(tx)
-		if err := ts.MarkPlacementFailed(ctx, p.ID, reason, true); err != nil {
+		if err := ts.MarkPlacementFailed(tctx, p.ID, reason, true); err != nil {
 			return err
 		}
-		cur, err := ts.PlacementByID(ctx, p.ID)
+		cur, err := ts.PlacementByID(tctx, p.ID)
 		if err != nil {
 			return err
 		}
 		ev = newEvent(cur, reason)
-		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, ev)
+		return s.d.Store.InsertOutbox(tctx, tx, EventFailed, ev)
 	})
+	cancel()
 	if err != nil {
 		s.d.Log.Error("mark placement failed", "placement", p.ID, "reason", reason, "err", err)
+	} else {
+		s.publish(ctx, ev)
 	}
-	for _, prov := range attempted {
-		owned, err := prov.ListOwned(ctx, labels(p.ID))
+	s.sweep(ctx, p.ID, attempted, nil)
+}
+
+// sweep destroys every sandbox labelled for the placement on provs except keep
+func (s *Saga) sweep(
+	ctx context.Context, id uuid.UUID, provs []provider.Provider, keep *provider.Ref,
+) {
+	for _, prov := range provs {
+		lctx, cancel := step(ctx)
+		owned, err := prov.ListOwned(lctx, labels(id))
+		cancel()
 		if err != nil {
-			s.d.Log.Error("list sandboxes to destroy", "placement", p.ID,
+			s.d.Log.Error("list sandboxes to destroy", "placement", id,
 				"provider", prov.Name(), "err", err)
 			continue
 		}
 		for _, o := range owned {
+			if keep != nil && prov.Name() == keep.Provider && o.Ref.ID == keep.ID {
+				continue
+			}
 			s.destroy(ctx, prov, o.Ref)
 		}
-	}
-	if err == nil {
-		s.publish(ctx, ev)
 	}
 }
 
@@ -418,19 +541,34 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if pkg.ID != p.PackageID && pkg.ExtensionOf != p.PackageID {
 		return store.Placement{}, fmt.Errorf("%w: %s on %s", ErrNotExtension, pkg.ID, p.PackageID)
 	}
+	replay, err := s.d.Store.HasExtendOrder(ctx, c.OrderID, p.ID)
+	if err != nil {
+		return store.Placement{}, err
+	}
+	if replay {
+		return s.replayExtend(ctx, p), nil
+	}
 	if p.State != store.PlacementReady {
 		return store.Placement{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
+	}
+	prov, ref, err := s.home(p)
+	if err != nil {
+		return store.Placement{}, err
 	}
 
 	var applied bool
 	var ev Event
 	id := p.ID
+	// The lifetime is set inside the transaction so a refusal also takes back the extension
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		p, applied, err = s.d.Store.Tx(tx).ExtendDeadline(ctx, c.OrderID, id,
 			time.Duration(pkg.Minutes)*time.Minute)
 		if err != nil || !applied {
 			return err
+		}
+		if err := prov.SetLifetime(ctx, ref, p.Deadline.Add(lifetimeSlack)); err != nil {
+			return fmt.Errorf("set lifetime: %w", err)
 		}
 		if err := s.insertDeadline(ctx, tx, id, *p.Deadline); err != nil {
 			return err
@@ -448,21 +586,26 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if err != nil {
 		return store.Placement{}, fmt.Errorf("extend deadline: %w", err)
 	}
-	if applied {
-		s.publish(ctx, ev)
+	if !applied {
+		return s.replayExtend(ctx, p), nil
 	}
+	s.publish(ctx, ev)
+	return p, nil
+}
+
+// replayExtend answers a repeated extend order with the placement as it is now
+func (s *Saga) replayExtend(ctx context.Context, p store.Placement) store.Placement {
 	if p.State != store.PlacementReady {
-		return p, nil
+		return p
 	}
-	// A repeated order sets the lifetime again so a retry repairs a failed earlier call
 	prov, ref, err := s.home(p)
 	if err == nil {
 		err = prov.SetLifetime(ctx, ref, p.Deadline.Add(lifetimeSlack))
 	}
 	if err != nil {
-		return store.Placement{}, fmt.Errorf("set lifetime: %w", err)
+		s.d.Log.Warn("set lifetime on a repeated extend", "placement", p.ID, "err", err)
 	}
-	return p, nil
+	return p
 }
 
 /* Stop and terminate */
@@ -480,7 +623,7 @@ func (s *Saga) Stop(ctx context.Context, h string) (store.Placement, error) {
 	return s.terminate(ctx, p, ReasonStop)
 }
 
-// Terminate ends a placement for reason and does nothing when it has already ended
+// Terminate ends a ready or terminating placement, leaves a terminated one alone, else ErrNotReady
 func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, reason string) error {
 	p, err := s.d.Store.PlacementByID(ctx, placementID)
 	if err != nil {
@@ -536,7 +679,7 @@ func (s *Saga) terminate(
 			ended, already = cur, true
 			return nil
 		}
-		if err := ts.MarkPlacementTerminated(ctx, p.ID); err != nil {
+		if err := ts.MarkPlacementTerminated(ctx, p.ID, s.now()); err != nil {
 			return err
 		}
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {
@@ -607,13 +750,22 @@ func destroyRef(ctx context.Context, prov provider.Provider, ref provider.Ref) e
 }
 
 func (s *Saga) destroy(ctx context.Context, prov provider.Provider, ref provider.Ref) {
+	ctx, cancel := step(ctx)
+	defer cancel()
 	if err := destroyRef(ctx, prov, ref); err != nil {
 		s.d.Log.Error("destroy sandbox", "provider", prov.Name(), "sandbox", ref.ID, "err", err)
 	}
 }
 
 func (s *Saga) release(ctx context.Context, providerName string) {
+	ctx, cancel := step(ctx)
+	defer cancel()
 	if err := s.d.Store.ReleaseCapacity(ctx, providerName); err != nil {
 		s.d.Log.Error("release capacity", "provider", providerName, "err", err)
 	}
+}
+
+// step bounds one store or provider call so a stuck dependency cannot hold placing forever
+func step(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, cleanupTimeout)
 }
