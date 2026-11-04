@@ -2,6 +2,7 @@
 package handle
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
@@ -33,4 +34,13 @@ func Hash(h string) ([]byte, error) {
 	}
 	sum := sha256.Sum256([]byte(h))
 	return sum[:], nil
+}
+
+// Derive returns the handle for an order, the same on every call for the same key and order
+func Derive(key []byte, orderID string) (string, []byte) {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte("bugnet-handle-v1|" + orderID))
+	h := "sbx_" + strings.ToLower(enc.EncodeToString(m.Sum(nil)))[:26]
+	sum := sha256.Sum256([]byte(h))
+	return h, sum[:]
 }

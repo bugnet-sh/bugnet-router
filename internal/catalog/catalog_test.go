@@ -46,6 +46,20 @@ func TestCatalogRejects(t *testing.T) {
 		"bad memory":  strings.Replace(pkg("a", ""), `"memory_mib":512`, `"memory_mib":0`, 1),
 		"neg price":   strings.Replace(pkg("a", ""), `"price_micros":10`, `"price_micros":-1`, 1),
 		"unknown ext": pkg("a", `,"extension_of":"zzz"`),
+		"neg disk":    strings.Replace(pkg("a", ""), `"disk_gib":1`, `"disk_gib":-1`, 1),
+		"neg gpu": strings.Replace(
+			pkg("a", ""), `"disk_gib":1`, `"disk_gib":1,"gpu_count":-1`, 1),
+		"neg gpu mem": strings.Replace(
+			pkg("a", ""), `"disk_gib":1`, `"disk_gib":1,"gpu_memory_gib":-1`, 1),
+		"gpu mem without gpu": strings.Replace(
+			pkg("a", ""), `"disk_gib":1`, `"disk_gib":1,"gpu_memory_gib":8`, 1),
+		"self ext": pkg("a", `,"extension_of":"a"`),
+		"ext of ext": pkg("a", "") + "," + pkg("b", `,"extension_of":"a"`) + "," +
+			pkg("c", `,"extension_of":"b"`),
+		"ext resizes": pkg("a", "") + "," + strings.Replace(
+			pkg("b", `,"extension_of":"a"`), `"vcpu":1`, `"vcpu":2`, 1),
+		"ext differs in gpu": pkg("a", "") + "," + strings.Replace(
+			pkg("b", `,"extension_of":"a"`), `"disk_gib":1`, `"disk_gib":1,"gpu_count":1`, 1),
 	}
 	for name, body := range cases {
 		p := filepath.Join(t.TempDir(), "p.json")

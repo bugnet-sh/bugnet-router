@@ -12,6 +12,8 @@ import (
 
 const secretToken = "0123456789abcdef0123456789abcdef"
 
+var handleKeyB64 = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+
 func pubB64(t *testing.T) string {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -27,6 +29,7 @@ func env(t *testing.T, over map[string]string) func(string) (string, bool) {
 		"BUGNET_INTERNAL_TOKEN":         secretToken,
 		"BUGNET_ORDER_TOKEN_PUBLIC_KEY": pubB64(t),
 		"BUGNET_PACKAGES_FILE":          "/etc/packages.json",
+		"BUGNET_HANDLE_KEY":             handleKeyB64,
 	}
 	for k, v := range over {
 		if v == "-" {
@@ -59,12 +62,15 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if c.LocalRoot != filepath.Join(os.TempDir(), "bugnet-local") {
 		t.Fatalf("local root %q", c.LocalRoot)
 	}
+	if string(c.HandleKey) != "0123456789abcdef0123456789abcdef" {
+		t.Fatal("handle key not parsed")
+	}
 	if len(c.OrderTokenPublicKey) != ed25519.PublicKeySize {
 		t.Fatal("public key not parsed")
 	}
 	for _, name := range []string{
 		"BUGNET_DATABASE_URL", "BUGNET_INTERNAL_TOKEN",
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY", "BUGNET_PACKAGES_FILE",
+		"BUGNET_ORDER_TOKEN_PUBLIC_KEY", "BUGNET_PACKAGES_FILE", "BUGNET_HANDLE_KEY",
 	} {
 		_, err := LoadFrom(env(t, map[string]string{name: "-"}))
 		if err == nil || !strings.Contains(err.Error(), name) {
@@ -79,28 +85,65 @@ func TestLoadValidation(t *testing.T) {
 	bad := map[string]map[string]string{
 		short:                           {short: "tooshort-secret"},
 		"BUGNET_ORDER_TOKEN_PUBLIC_KEY": {"BUGNET_ORDER_TOKEN_PUBLIC_KEY": shortKey},
+		"BUGNET_HANDLE_KEY":             {"BUGNET_HANDLE_KEY": shortKey},
+		"handle key not base64":         {"BUGNET_HANDLE_KEY": "!!not-base64!!"},
 		"BUGNET_MARGIN_FLOOR":           {"BUGNET_MARGIN_FLOOR": "11"},
+		"negative margin":               {"BUGNET_MARGIN_FLOOR": "-0.1"},
+		"non-numeric margin":            {"BUGNET_MARGIN_FLOOR": "abc"},
+		"NaN margin":                    {"BUGNET_MARGIN_FLOOR": "NaN"},
+		"+Inf margin":                   {"BUGNET_MARGIN_FLOOR": "+Inf"},
+		"-Inf margin":                   {"BUGNET_MARGIN_FLOOR": "-Inf"},
 		"BUGNET_EVENT_SIGNING_KEY":      {"BUGNET_EVENT_SIGNING_KEY": "AAAA"},
 		"BUGNET_PROVIDERS":              {"BUGNET_PROVIDERS": "koyeb,nope"},
+		"duplicate providers":           {"BUGNET_PROVIDERS": "boat,e2b,boat"},
+		"trailing comma":                {"BUGNET_PROVIDERS": "boat,"},
+		"empty entry":                   {"BUGNET_PROVIDERS": "boat,,e2b"},
 		"local":                         {"BUGNET_PROVIDERS": "boat,local"},
 	}
+	secrets := map[string]string{
+		"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
+		"BUGNET_INTERNAL_TOKEN": secretToken,
+		"BUGNET_HANDLE_KEY":     handleKeyB64,
+		"BOXD_API_KEY":          "bk",
+		"E2B_API_KEY":           "ek",
+		"KOYEB_API_TOKEN":       "kt",
+		"BOAT_API_KEY":          "ok",
+	}
 	for name, over := range bad {
-		_, err := LoadFrom(env(t, over))
+		all := map[string]string{}
+		for k, v := range secrets {
+			all[k] = v
+		}
+		for k, v := range over {
+			all[k] = v
+		}
+		_, err := LoadFrom(env(t, all))
 		if err == nil {
 			t.Errorf("%s: expected error", name)
 			continue
 		}
-		for _, v := range over {
-			if strings.Contains(err.Error(), v) && len(v) > 8 {
-				t.Errorf("%s: error echoes value: %v", name, err)
+		for k, v := range all {
+			if strings.Contains(err.Error(), v) {
+				t.Errorf("%s: error echoes value of %s: %v", name, k, err)
 			}
 		}
 	}
-	if _, err := LoadFrom(env(t, map[string]string{"BUGNET_MARGIN_FLOOR": "-0.1"})); err == nil {
-		t.Error("negative margin accepted")
-	}
-	if _, err := LoadFrom(env(t, map[string]string{"BUGNET_MARGIN_FLOOR": "abc"})); err == nil {
-		t.Error("non-numeric margin accepted")
+	for _, miss := range []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY"} {
+		over := map[string]string{miss: "-"}
+		for k, v := range secrets {
+			if k != miss {
+				over[k] = v
+			}
+		}
+		_, err := LoadFrom(env(t, over))
+		if err == nil {
+			t.Fatalf("missing %s accepted", miss)
+		}
+		for _, v := range secrets {
+			if strings.Contains(err.Error(), v) {
+				t.Errorf("missing %s: error echoes a secret: %v", miss, err)
+			}
+		}
 	}
 }
 
@@ -152,6 +195,7 @@ func TestLoadUsesProcessEnv(t *testing.T) {
 	t.Setenv("BUGNET_INTERNAL_TOKEN", secretToken)
 	t.Setenv("BUGNET_ORDER_TOKEN_PUBLIC_KEY", pubB64(t))
 	t.Setenv("BUGNET_PACKAGES_FILE", "/p.json")
+	t.Setenv("BUGNET_HANDLE_KEY", handleKeyB64)
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
 	}

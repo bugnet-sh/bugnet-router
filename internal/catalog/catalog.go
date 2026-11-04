@@ -79,9 +79,20 @@ func Load(path string) (*Catalog, error) {
 		c.all = append(c.all, p)
 	}
 	for _, p := range c.all {
-		if _, ok := c.byID[p.ExtensionOf]; p.ExtensionOf != "" && !ok {
+		if p.ExtensionOf == "" {
+			continue
+		}
+		target, ok := c.byID[p.ExtensionOf]
+		switch {
+		case !ok:
 			return nil, fmt.Errorf(
 				"catalog: package %q extends unknown package %q", p.ID, p.ExtensionOf)
+		case target.ExtensionOf != "":
+			return nil, fmt.Errorf(
+				"catalog: package %q extends %q, which is itself an extension", p.ID, target.ID)
+		case target.Resources != p.Resources:
+			return nil, fmt.Errorf(
+				"catalog: package %q has different resources than %q it extends", p.ID, target.ID)
 		}
 	}
 	sort.Slice(c.all, func(i, j int) bool {
@@ -101,6 +112,12 @@ func validate(p Package) error {
 		return fmt.Errorf("catalog: package %q needs positive minutes", p.ID)
 	case p.Resources.VCPU <= 0 || p.Resources.MemoryMiB <= 0:
 		return fmt.Errorf("catalog: package %q needs positive vcpu and memory", p.ID)
+	case p.Resources.DiskGiB < 0 || p.Resources.GPUCount < 0 || p.Resources.GPUMemoryGiB < 0:
+		return fmt.Errorf("catalog: package %q has negative disk or gpu resources", p.ID)
+	case p.Resources.GPUMemoryGiB > 0 && p.Resources.GPUCount == 0:
+		return fmt.Errorf("catalog: package %q has gpu memory but no gpu", p.ID)
+	case p.ExtensionOf == p.ID && p.ExtensionOf != "":
+		return fmt.Errorf("catalog: package %q extends itself", p.ID)
 	case p.PriceMicros < 0:
 		return fmt.Errorf("catalog: package %q has a negative price", p.ID)
 	}

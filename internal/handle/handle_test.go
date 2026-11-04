@@ -1,6 +1,7 @@
 package handle
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"regexp"
 	"testing"
@@ -32,5 +33,27 @@ func TestHandleShapeAndHash(t *testing.T) {
 	}
 	if _, err := Hash("sbx_bad"); err == nil {
 		t.Fatal("expected error for malformed handle")
+	}
+}
+
+func TestDerive(t *testing.T) {
+	re := regexp.MustCompile(`^sbx_[a-z2-7]{26}$`)
+	k1 := bytes.Repeat([]byte{1}, 32)
+	k2 := bytes.Repeat([]byte{2}, 32)
+	h, sum := Derive(k1, "order-1")
+	if !re.MatchString(h) {
+		t.Fatalf("bad handle %q", h)
+	}
+	if got, err := Hash(h); err != nil || !bytes.Equal(got, sum) {
+		t.Fatalf("hash mismatch: %v", err)
+	}
+	if h2, sum2 := Derive(k1, "order-1"); h2 != h || !bytes.Equal(sum, sum2) {
+		t.Fatal("not deterministic")
+	}
+	if h2, _ := Derive(k1, "order-2"); h2 == h {
+		t.Fatal("same handle for different orders")
+	}
+	if h2, _ := Derive(k2, "order-1"); h2 == h {
+		t.Fatal("same handle for different keys")
 	}
 }

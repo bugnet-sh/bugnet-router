@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,7 @@ type Config struct {
 	ValkeyPrefix        string
 	ListenAddr          string
 	InternalToken       string
+	HandleKey           []byte
 	OrderTokenPublicKey ed25519.PublicKey
 	EventSigningKey     ed25519.PrivateKey // nil when unset
 	EventsURL           string
@@ -31,6 +33,8 @@ type Config struct {
 	LocalEnabled        bool
 	LocalRoot           string
 }
+
+const minHandleKeyBytes = 32
 
 var providerKeyVars = []struct{ name, env string }{
 	{"boxd", "BOXD_API_KEY"},
@@ -69,6 +73,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	c.InternalToken = require("BUGNET_INTERNAL_TOKEN")
 	pubRaw := require("BUGNET_ORDER_TOKEN_PUBLIC_KEY")
 	c.PackagesFile = require("BUGNET_PACKAGES_FILE")
+	handleRaw := require("BUGNET_HANDLE_KEY")
 	if err != nil {
 		return Config{}, err
 	}
@@ -80,6 +85,12 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	c.OrderTokenPublicKey = ed25519.PublicKey(pub)
+	hk, derr := base64.StdEncoding.DecodeString(handleRaw)
+	if derr != nil || len(hk) < minHandleKeyBytes {
+		return Config{}, fmt.Errorf(
+			"config: BUGNET_HANDLE_KEY must be base64 of at least %d bytes", minHandleKeyBytes)
+	}
+	c.HandleKey = hk
 	if raw := get("BUGNET_EVENT_SIGNING_KEY", ""); raw != "" {
 		seed, err := decodeKey("BUGNET_EVENT_SIGNING_KEY", raw, ed25519.SeedSize)
 		if err != nil {
@@ -97,11 +108,21 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	c.LocalEnabled = get("BUGNET_ENABLE_LOCAL_PROVIDER", "") == "1"
 	c.LocalRoot = get("BUGNET_LOCAL_ROOT", filepath.Join(os.TempDir(), "bugnet-local"))
 	c.MarginFloor, err = strconv.ParseFloat(get("BUGNET_MARGIN_FLOOR", "0.5"), 64)
-	if err != nil || c.MarginFloor < 0 || c.MarginFloor > 10 {
-		return Config{}, fmt.Errorf("config: BUGNET_MARGIN_FLOOR must be a number from 0 to 10")
+	if err != nil || math.IsNaN(c.MarginFloor) || math.IsInf(c.MarginFloor, 0) ||
+		c.MarginFloor < 0 || c.MarginFloor > 10 {
+		return Config{}, fmt.Errorf(
+			"config: BUGNET_MARGIN_FLOOR must be a finite number from 0 to 10")
 	}
+	seen := map[string]bool{}
 	for _, name := range strings.Split(get("BUGNET_PROVIDERS", "koyeb,boat,e2b,boxd"), ",") {
 		name = strings.TrimSpace(name)
+		if name == "" {
+			return Config{}, fmt.Errorf("config: BUGNET_PROVIDERS has an empty entry")
+		}
+		if seen[name] {
+			return Config{}, fmt.Errorf("config: BUGNET_PROVIDERS lists %q more than once", name)
+		}
+		seen[name] = true
 		if !knownProviders[name] {
 			return Config{}, fmt.Errorf("config: BUGNET_PROVIDERS has unknown provider %q", name)
 		}
