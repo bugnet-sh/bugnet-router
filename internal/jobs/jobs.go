@@ -55,6 +55,9 @@ const (
 	retryAfter    = 5 * time.Second
 )
 
+// idleAfter gives up a runner stream that sent nothing, not even a heartbeat, for three beats
+var idleAfter = 30 * time.Second
+
 // reasonCancelled marks the exit frame of a job that ended after a cancel was asked for
 const reasonCancelled = "cancelled"
 
@@ -838,7 +841,12 @@ func (o *owner) attachArgv() []string {
 
 // pump runs one bugnet-run follower and appends its frames until it ends
 func (o *owner) pump(argv []string) pumpResult {
-	es, err := o.prov.Exec(o.ctx, *o.place.ProviderRef, provider.ExecSpec{Argv: argv})
+	// Cancelling the call ends its stream in every adapter, which Close may not do mid-read
+	pctx, pcancel := context.WithCancel(o.ctx)
+	defer pcancel()
+	idle := time.AfterFunc(idleAfter, pcancel)
+	defer idle.Stop()
+	es, err := o.prov.Exec(pctx, *o.place.ProviderRef, provider.ExecSpec{Argv: argv})
 	if err != nil {
 		o.warn("run bugnet-run", err)
 		return pumpBroken
@@ -849,11 +857,15 @@ func (o *owner) pump(argv []string) pumpResult {
 	for {
 		f, err := dec.Next()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			switch {
+			case pctx.Err() != nil && o.ctx.Err() == nil:
+				o.warn("bugnet-run went silent, following it again", err)
+			case !errors.Is(err, io.EOF):
 				o.warn("decode bugnet-run frames", err)
 			}
 			return result
 		}
+		idle.Reset(idleAfter)
 		switch {
 		case f.Kind == frame.KindPong:
 			continue

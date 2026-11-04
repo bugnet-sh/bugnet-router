@@ -750,6 +750,59 @@ func TestOwnerReattachesAfterStreamDrops(t *testing.T) {
 	}
 }
 
+// silentStream lets the first runner stream deliver limit bytes and then go quiet but stay open
+type silentStream struct {
+	*local.Provider
+	limit int
+	execs atomic.Int64
+}
+
+func (c *silentStream) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	es, err := c.Provider.Exec(ctx, ref, spec)
+	if err != nil || c.execs.Add(1) > 1 {
+		return es, err
+	}
+	return &silentReader{ExecStream: es, left: c.limit, ctx: ctx}, nil
+}
+
+type silentReader struct {
+	provider.ExecStream
+	left int
+	ctx  context.Context
+}
+
+func (r *silentReader) Read(p []byte) (int, error) {
+	if r.left <= 0 {
+		<-r.ctx.Done()
+		return 0, r.ctx.Err()
+	}
+	n, err := r.ExecStream.Read(p[:min(len(p), r.left)])
+	r.left -= n
+	return n, err
+}
+
+func TestOwnerReattachesASilentStream(t *testing.T) {
+	jobs.SetIdleAfter(t, 2*time.Second)
+	var silent *silentStream
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		silent = &silentStream{Provider: p, limit: 30}
+		return silent
+	})
+	s := e.service(t, "r1")
+	res := e.exec(t, s, []string{"sh", "-c", "echo hello; sleep 1; echo bye"}, "",
+		time.Second, jobs.Until{})
+	job := waitFinished(t, e.store, res.JobID)
+	if job.State != store.JobExited || silent.execs.Load() < 2 {
+		t.Fatalf("job %s after %d runner streams, want exited after giving up the silent one",
+			job.State, silent.execs.Load())
+	}
+	if got := output(t, e.streamed(t, res.JobID), frame.KindStdout); got != "hello\nbye\n" {
+		t.Fatalf("output across the silent stream is %q", got)
+	}
+}
+
 // lossyStream drops one line of the first runner stream as Koyeb's executor may, noting attaches
 type lossyStream struct {
 	*local.Provider

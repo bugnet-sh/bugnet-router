@@ -1,6 +1,10 @@
 package jobs
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // StopRenewing keeps s from renewing its lease on the job, so the lease expires while s streams
 func StopRenewing(s *Service, jobID string) bool {
@@ -18,3 +22,10 @@ func Owns(s *Service, jobID string) bool { return s.owns(jobID) }
 
 // JobIDFor returns the id Exec gives the job the key starts in the placement
 func JobIDFor(placementID uuid.UUID, key string) string { return newJobID(placementID, key) }
+
+// SetIdleAfter shortens how long an owner waits on a silent runner stream until the test ends
+func SetIdleAfter(t interface{ Cleanup(func()) }, d time.Duration) {
+	old := idleAfter
+	idleAfter = d
+	t.Cleanup(func() { idleAfter = old })
+}
