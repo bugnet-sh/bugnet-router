@@ -73,14 +73,14 @@ func (s *Store) JobByID(ctx context.Context, id string) (Job, error) {
 	return j, err
 }
 
-// FinishJob records the outcome of a running job
+// FinishJob records the outcome of a running job, a lost job keeping no exit code
 func (s *Store) FinishJob(
 	ctx context.Context, id, state string, code int, outBytes, errBytes int64,
 ) error {
 	tag, err := s.q.Exec(ctx, `
-		update jobs set state = $2, exit_code = $3, stdout_bytes = $4, stderr_bytes = $5,
-			finished_at = now()
-		where id = $1 and state = $6`, id, state, code, outBytes, errBytes, JobRunning)
+		update jobs set state = $2, exit_code = case when $2 = $7 then null else $3::int end,
+			stdout_bytes = $4, stderr_bytes = $5, finished_at = now()
+		where id = $1 and state = $6`, id, state, code, outBytes, errBytes, JobRunning, JobLost)
 	if err != nil {
 		return fmt.Errorf("finish job: %w", err)
 	}

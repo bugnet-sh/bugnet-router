@@ -306,6 +306,26 @@ func TestCreateJobConflict(t *testing.T) {
 	}
 }
 
+func TestFinishLostJobHasNoExitCode(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	if _, _, err := s.CreateJob(ctx, store.NewJob{ID: "j1", PlacementID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishJob(ctx, "j1", store.JobLost, 0, 7, 0); err != nil {
+		t.Fatal(err)
+	}
+	j, err := s.JobByID(ctx, "j1")
+	if err != nil || j.State != store.JobLost || j.ExitCode != nil || j.StdoutBytes != 7 {
+		t.Fatalf("job=%+v err=%v", j, err)
+	}
+	err = s.FinishJob(ctx, "j1", store.JobExited, 0, 7, 0)
+	if !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("finish of a lost job: %v, want ErrStateConflict", err)
+	}
+}
+
 func TestOutboxPendingAndDelivered(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

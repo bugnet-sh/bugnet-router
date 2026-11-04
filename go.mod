@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/oynozan/bugnet-run v0.1.1
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.51.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.0
@@ -25,3 +26,5 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
+
+replace github.com/oynozan/bugnet-run => ../bugnet-run
