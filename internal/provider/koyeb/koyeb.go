@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -53,6 +54,8 @@ const (
 	secretBytes = 32
 	// pageLimit is the largest page Koyeb's list calls serve
 	pageLimit = "100"
+	// pageRetries is how often one rate limited page is asked again
+	pageRetries = 3
 	// arch is assumed because Koyeb reports no architecture and runs its fleet on amd64
 	arch              = "amd64"
 	defaultPoll       = time.Second
@@ -173,7 +176,7 @@ type Options struct {
 	Log                *slog.Logger // slog.Default when nil
 }
 
-// Provider places sandboxes on Koyeb, it keeps no state beyond its configuration
+// Provider places sandboxes on Koyeb, keeping only the labels it already read per service
 type Provider struct {
 	api          *api
 	exec         *http.Client
@@ -182,6 +185,14 @@ type Provider struct {
 	sizes        []size
 	pollInterval time.Duration
 	exitDir      string
+	mu           sync.Mutex
+	known        map[string]knownService // by service id, labels never change after create
+}
+
+// knownService is what ListOwned read from one deployment of a service
+type knownService struct {
+	deployment string
+	summary    provider.Summary
 }
 
 // New checks the options and makes no call to Koyeb
@@ -209,17 +220,18 @@ func New(opts Options) (*Provider, error) {
 		sizes:        sizes,
 		pollInterval: defaultPoll,
 		exitDir:      defaultExitDir,
+		known:        map[string]knownService{},
 	}, nil
 }
 
 // Name returns "koyeb"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports previews, egress rules, the lifetime cap and a GPU when one is sold
+// Capabilities reports previews, egress rules, the cap, a GPU when sold and one sandbox per key
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		Preview: true, GPU: slices.ContainsFunc(p.sizes, size.gpu), EgressControl: true,
-		NeedsRunnerUpload: true, MaxLifetime: maxLifetime,
+		NeedsRunnerUpload: true, MaxLifetime: maxLifetime, OneSandboxPerKey: true,
 	}
 }
 
@@ -513,8 +525,16 @@ func (p *Provider) findService(
 func (p *Provider) eachService(
 	ctx context.Context, appID string, fn func(serviceRecord) bool,
 ) error {
-	for offset := 0; ; {
+	for offset, retries := 0, 0; ; {
 		page, err := p.api.listServices(ctx, appID, offset)
+		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited &&
+			retries < pageRetries && fits(ctx, e.RetryAfter) {
+			if !sleep(ctx, e.RetryAfter) {
+				return ctx.Err()
+			}
+			retries++
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -529,6 +549,12 @@ func (p *Provider) eachService(
 			return nil
 		}
 	}
+}
+
+// fits reports whether a wait ends before the context's deadline, which a retry needs to have
+func fits(ctx context.Context, wait time.Duration) bool {
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) > wait
 }
 
 func (p *Provider) deployment(ctx context.Context, id string) (deploymentRecord, error) {
@@ -573,7 +599,18 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	}
 	var last error
 	for {
-		t, err := p.readyTarget(ctx, ref, svc)
+		var t target
+		err := error(nil)
+		if svc.LatestDeploymentID == "" {
+			// A service just created may not name its deployment yet, so it is read again
+			svc, err = p.service(ctx, ref)
+			if err == nil && svc.LatestDeploymentID == "" {
+				err = internal(errors.New("koyeb service has no deployment yet"))
+			}
+		}
+		if err == nil {
+			t, err = p.readyTarget(ctx, ref, svc)
+		}
 		if e, ok := provider.AsError(err); ok && (e.Code == provider.CodeNotFound ||
 			e.Code == provider.CodeAuth || e.Code == provider.CodeCapacity ||
 			e.Code == provider.CodeInvalid) {
@@ -681,54 +718,92 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	return err
 }
 
-// ListOwned reads the labels of every bn- sandbox service and keeps those carrying all of them
+// ListOwned keeps the bn- sandboxes carrying every label, and what it found when it is cut short
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
 ) ([]provider.Summary, error) {
 	var items []serviceRecord
-	err := p.eachService(ctx, "", func(s serviceRecord) bool {
+	listErr := p.eachService(ctx, "", func(s serviceRecord) bool {
 		// A service still being created has no deployment to read labels from yet
 		if strings.HasPrefix(s.Name, namePrefix) && s.LatestDeploymentID != "" {
 			items = append(items, s)
 		}
 		return true
 	})
-	if err != nil {
-		return nil, err
-	}
 	var owned []provider.Summary
 	var wait time.Duration
 	for _, s := range items {
-		if wait > 0 && !sleep(ctx, wait) {
-			return nil, ctx.Err()
-		}
-		dep, err := p.deployment(ctx, s.LatestDeploymentID)
-		wait = 0
-		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
-			wait = e.RetryAfter
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if err != nil {
-			// One unreadable sandbox must not stop the sweep, the next sweep reads it again
-			if !isCode(err, provider.CodeNotFound) {
-				p.log.Warn("koyeb sweep skips a sandbox it cannot read", "app", s.AppID,
-					"service", s.ID, "err", err)
+		sum, ok := p.knownSummary(s)
+		if !ok {
+			if wait > 0 && !sleep(ctx, wait) {
+				return owned, errors.Join(listErr, ctx.Err())
 			}
-			continue
+			dep, err := p.deployment(ctx, s.LatestDeploymentID)
+			wait = 0
+			if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
+				wait = e.RetryAfter
+			}
+			if ctx.Err() != nil {
+				return owned, errors.Join(listErr, ctx.Err())
+			}
+			if err != nil {
+				// One unreadable sandbox must not stop the sweep, the next sweep reads it again
+				if !isCode(err, provider.CodeNotFound) {
+					p.log.Warn("koyeb sweep skips a sandbox it cannot read", "app", s.AppID,
+						"service", s.ID, "err", err)
+				}
+				continue
+			}
+			var have map[string]string
+			_ = json.Unmarshal([]byte(envOf(dep)[labelsEnv]), &have)
+			sum = provider.Summary{
+				Ref:       refFor(s.AppID, s.ID, s.CreatedAt, dep),
+				Labels:    have,
+				CreatedAt: s.CreatedAt.UTC(),
+			}
+			p.remember(s, sum)
 		}
-		var have map[string]string
-		if json.Unmarshal([]byte(envOf(dep)[labelsEnv]), &have) != nil || !hasLabels(have, labels) {
-			continue
+		if hasLabels(sum.Labels, labels) {
+			owned = append(owned, sum)
 		}
-		owned = append(owned, provider.Summary{
-			Ref:       refFor(s.AppID, s.ID, s.CreatedAt, dep),
-			Labels:    have,
-			CreatedAt: s.CreatedAt.UTC(),
-		})
 	}
-	return owned, nil
+	if listErr == nil {
+		p.forgetAllBut(items)
+	}
+	return owned, listErr
+}
+
+// knownSummary returns a copy of what an earlier listing read from the service's deployment
+func (p *Provider) knownSummary(s serviceRecord) (provider.Summary, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	k, ok := p.known[s.ID]
+	if !ok || k.deployment != s.LatestDeploymentID {
+		return provider.Summary{}, false
+	}
+	sum := k.summary
+	sum.Ref.Meta = maps.Clone(sum.Ref.Meta)
+	sum.Labels = maps.Clone(sum.Labels)
+	return sum, true
+}
+
+func (p *Provider) remember(s serviceRecord, sum provider.Summary) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sum.Ref.Meta = maps.Clone(sum.Ref.Meta)
+	sum.Labels = maps.Clone(sum.Labels)
+	p.known[s.ID] = knownService{deployment: s.LatestDeploymentID, summary: sum}
+}
+
+// forgetAllBut drops what it knew of services a whole listing no longer holds
+func (p *Provider) forgetAllBut(items []serviceRecord) {
+	live := map[string]bool{}
+	for _, s := range items {
+		live[s.ID] = true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	maps.DeleteFunc(p.known, func(id string, _ knownService) bool { return !live[id] })
 }
 
 func hasLabels(have, want map[string]string) bool {

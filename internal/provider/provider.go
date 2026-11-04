@@ -23,6 +23,8 @@ type Capabilities struct {
 	MaxLifetime                                         time.Duration
 	// Arch is the CPU architecture of the provider's sandboxes, amd64 when empty
 	Arch string
+	// OneSandboxPerKey means a create repeated under one idempotency key never makes a second
+	OneSandboxPerKey bool
 }
 
 // RunnerArch names the bugnet-run build the provider's sandboxes run

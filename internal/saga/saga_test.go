@@ -1052,6 +1052,36 @@ func TestSagaAllFullFailsWithCapacityReason(t *testing.T) {
 	}
 }
 
+// keyed counts ListOwned calls and says whether its creates are keyed to one sandbox
+type keyed struct {
+	*local.Provider
+	once  bool
+	lists *atomic.Int64
+}
+
+func (k keyed) Capabilities() provider.Capabilities {
+	c := k.Provider.Capabilities()
+	c.OneSandboxPerKey = k.once
+	return c
+}
+
+func (k keyed) ListOwned(ctx context.Context, l map[string]string) ([]provider.Summary, error) {
+	k.lists.Add(1)
+	return k.Provider.ListOwned(ctx, l)
+}
+
+func TestReadyOnKeyedProviderSkipsTheSweep(t *testing.T) {
+	for _, once := range []bool{true, false} {
+		var lists atomic.Int64
+		e := newEnv(t, keyed{newLocal(t, local.Options{Name: "a"}), once, &lists})
+		e.placeReady(t, "order-1")
+		if want := map[bool]int64{true: 0, false: 1}[once]; lists.Load() != want {
+			t.Errorf("one sandbox per key %v listed %d times after ready, want %d", once,
+				lists.Load(), want)
+		}
+	}
+}
+
 func TestSagaDestroysLeftoverAfterFailOver(t *testing.T) {
 	var destroys atomic.Int64
 	a := leaky{newLocal(t, local.Options{Name: "a"}), &destroys}

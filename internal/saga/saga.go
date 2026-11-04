@@ -304,7 +304,11 @@ func (s *Saga) place(
 		attempted = append(attempted, c.Provider)
 		out := s.attempt(ctx, budget, p, pkg, c, n)
 		if out.done {
-			s.sweep(ctx, p.ID, attempted, out.kept)
+			// One attempt on a provider that keys its creates left no sandbox beside the kept one
+			if out.kept == nil || len(attempted) > 1 ||
+				!c.Provider.Capabilities().OneSandboxPerKey {
+				s.sweep(ctx, p.ID, attempted, out.kept)
+			}
 			return
 		}
 		reason, detail = out.reason, out.detail
@@ -611,9 +615,9 @@ func (s *Saga) sweep(
 		owned, err := prov.ListOwned(lctx, s.labels(id))
 		cancel()
 		if err != nil {
+			// A listing cut short still names sandboxes to destroy
 			s.d.Log.Error("list sandboxes to destroy", "placement", id,
-				"provider", prov.Name(), "err", err)
-			continue
+				"provider", prov.Name(), "listed", len(owned), "err", err)
 		}
 		for _, o := range owned {
 			if keep != nil && prov.Name() == keep.Provider && o.Ref.ID == keep.ID {

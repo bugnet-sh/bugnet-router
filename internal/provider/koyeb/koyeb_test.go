@@ -333,10 +333,13 @@ func TestKoyebExecCloseKillsTheCommand(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.killed()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if kills := f.killed(); len(kills) != 1 || !strings.HasPrefix(kills[0], "proc-") {
 		t.Fatalf("kill_process calls %q, want one for the started process", kills)
 	}
-	deadline := time.Now().Add(5 * time.Second)
 	for syscall.Kill(pid, 0) == nil {
 		if time.Now().After(deadline) {
 			t.Fatalf("command %d still runs 5 s after Close", pid)
@@ -603,6 +606,8 @@ func TestKoyebCreateWhoseLookupFailsIsUnknown(t *testing.T) {
 		prepare func(f *fakeKoyeb, appID string)
 	}{
 		{"repeated key and the service list rate limited", true, func(f *fakeKoyeb, _ string) {
+			// Every retry of the page is refused too
+			limited.times = 0
 			f.inject("GET /v1/services", limited)
 		}},
 		{"repeated key and the deployment read failing", true, func(f *fakeKoyeb, _ string) {
@@ -1221,7 +1226,7 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 	}
 	want := provider.Capabilities{
 		Preview: true, GPU: true, EgressControl: true, NeedsRunnerUpload: true,
-		MaxLifetime: 24*time.Hour - 10*time.Minute,
+		MaxLifetime: 24*time.Hour - 10*time.Minute, OneSandboxPerKey: true,
 	}
 	if caps := p.Capabilities(); caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)
@@ -1469,5 +1474,146 @@ func TestKoyebRefusesAnEndlessEvent(t *testing.T) {
 	s.lines.Buffer(make([]byte, 64<<10), maxEventLine)
 	if _, data, err := s.event(); err == nil {
 		t.Fatalf("an event of 9 MiB of data lines gave %d bytes, want an error", len(data))
+	}
+}
+
+func TestKoyebWaitReadyRereadsAServiceWithoutDeployment(t *testing.T) {
+	f := newFake(t)
+	f.hideDeployment = 3
+	p := f.provider(t, fakeToken)
+	ref, err := createKey(t, p, "key-late-deployment", map[string]string{"bugnet": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := p.WaitReady(ctx, ref); err != nil {
+		t.Fatalf("wait for a service whose deployment showed up late: %v", err)
+	}
+}
+
+func TestKoyebExecKillsTheProcessWhenItsLogsFail(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref := ready(t, p, "key-logs-fail")
+	f.mu.Lock()
+	f.failLogs = true
+	f.mu.Unlock()
+	if _, err := p.Exec(t.Context(), ref, provider.ExecSpec{Argv: []string{"sleep", "30"}}); err ==
+		nil {
+		t.Fatal("exec without a log stream succeeded")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.killed()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the started process was never killed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestKoyebCloseDoesNotWaitForTheKill(t *testing.T) {
+	f := newFake(t)
+	f.killDelay = 2 * time.Second
+	p := f.provider(t, fakeToken)
+	ref := ready(t, p, "key-close-fast")
+	es, err := p.Exec(t.Context(), ref, provider.ExecSpec{Argv: []string{"sleep", "30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_ = es.Close()
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("close waited %v for a slow kill_process", took)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.killed()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the closed command was never killed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestKoyebListOwnedKeepsWhatItGatheredWhenCutShort(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	labels := map[string]string{"bugnet": "1"}
+	for i := range 3 {
+		if _, err := createKey(t, p, fmt.Sprintf("key-cut-%d", i), labels); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	last := ""
+	for _, d := range f.deployments {
+		last = max(last, d.id)
+	}
+	f.slowDeployment = last
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	owned, err := p.ListOwned(ctx, labels)
+	if err == nil || len(owned) != 2 {
+		t.Fatalf("a listing cut short gave %d sandboxes, %v, want the 2 read and an error",
+			len(owned), err)
+	}
+}
+
+func TestKoyebListOwnedRetriesARateLimitedPage(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	labels := map[string]string{"bugnet": "1"}
+	if _, err := createKey(t, p, "key-page-429", labels); err != nil {
+		t.Fatal(err)
+	}
+	f.inject("GET /v1/services", fault{status: 429, code: "rate_limit_error",
+		message: "slow down", header: map[string]string{"Retry-After": "1"}, times: 1})
+	sweep, done := context.WithTimeout(t.Context(), 10*time.Second)
+	defer done()
+	owned, err := p.ListOwned(sweep, labels)
+	if err != nil || len(owned) != 1 {
+		t.Fatalf("a listing whose page was rate limited once gave %d sandboxes, %v", len(owned),
+			err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	f.inject("GET /v1/services", fault{status: 429, code: "rate_limit_error",
+		message: "slow down", header: map[string]string{"Retry-After": "5"}, times: 1})
+	if _, err := p.ListOwned(ctx, labels); !isCode(err, provider.CodeRateLimited) {
+		t.Fatalf("a wait past the deadline gave %v, want rate_limited at once", err)
+	}
+}
+
+func TestKoyebListOwnedReadsEachServiceOnce(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	labels := map[string]string{"bugnet": "1"}
+	for i := range 3 {
+		if _, err := createKey(t, p, fmt.Sprintf("key-cache-%d", i), labels); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if owned, err := p.ListOwned(t.Context(), labels); err != nil || len(owned) != 3 {
+			t.Fatalf("listing gave %d sandboxes, %v, want 3", len(owned), err)
+		}
+	}
+	if n := len(f.callTimes("GET /v1/deployments/{id}")); n != 3 {
+		t.Fatalf("two listings read %d deployments, want each sandbox's once", n)
+	}
+}
+
+func TestKoyebExecOfACommandThatEndedBeforeItsStream(t *testing.T) {
+	f := newFake(t)
+	f.logsDelay = 300 * time.Millisecond
+	p := f.provider(t, fakeToken)
+	ref := ready(t, p, "key-ended-first")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	out, code, err := runExec(ctx, p, ref, provider.ExecSpec{Argv: []string{"/no/such/command"}})
+	if err != nil || code != 127 || len(out) != 0 {
+		t.Fatalf("exec of a command that ended before its stream gave %q exit %d, %v", out, code,
+			err)
 	}
 }

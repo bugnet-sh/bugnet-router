@@ -255,6 +255,8 @@ func (p *Provider) Exec(
 	}
 	if err != nil {
 		cancel()
+		// The process runs on without anyone reading it, so it is stopped best effort
+		go p.kill(ctx, t, started.ID)
 		return nil, err
 	}
 	lines := bufio.NewScanner(resp.Body)
@@ -428,13 +430,13 @@ func (s *execStream) Wait() (int, error) {
 	return code, nil
 }
 
-// Close stops reading and kills a command that has not finished
+// Close stops reading and kills a command that has not finished without waiting for the kill
 func (s *execStream) Close() error {
 	s.closed.Do(func() {
 		s.cancel()
 		_ = s.body.Close()
 		if !s.complete.Load() {
-			s.p.kill(s.ctx, s.t, s.process)
+			go s.p.kill(s.ctx, s.t, s.process)
 		}
 	})
 	return nil

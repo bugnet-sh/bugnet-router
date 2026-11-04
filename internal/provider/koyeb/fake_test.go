@@ -55,6 +55,8 @@ type fakeService struct {
 	status          string
 	deployment      string
 	body            map[string]any
+	// hiddenReads is how many more reads show the service without its deployment
+	hiddenReads int
 }
 
 type fakeDeployment struct {
@@ -146,8 +148,18 @@ type fakeKoyeb struct {
 	kills       []string
 	stamps      map[string][]time.Time
 	healthDown  int
-	script      *string
-	cleanup     []string
+	// hideDeployment is how many reads of a new service show no deployment yet
+	hideDeployment int
+	// failLogs answers every log stream with a 503
+	failLogs bool
+	// logsDelay holds every log stream this long before it answers
+	logsDelay time.Duration
+	// killDelay holds every kill_process answer this long
+	killDelay time.Duration
+	// slowDeployment is a deployment whose reads wait until the caller gives up
+	slowDeployment string
+	script         *string
+	cleanup        []string
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -504,6 +516,7 @@ func (f *fakeKoyeb) createService(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	s := &fakeService{
 		id: f.id("svc"), appID: a.id, name: name, created: now, status: "STARTING", body: body,
+		hiddenReads: f.hideDeployment,
 	}
 	d := &fakeDeployment{
 		id: f.id("dep"), serviceID: s.id, appID: a.id,
@@ -607,10 +620,23 @@ func (f *fakeKoyeb) getService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_resource", "Service not found")
 		return
 	}
+	if s.hiddenReads > 0 {
+		s.hiddenReads--
+		hidden := *s
+		hidden.deployment = ""
+		s = &hidden
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"service": f.serviceJSON(s)})
 }
 
 func (f *fakeKoyeb) getDeployment(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	slow := f.slowDeployment != "" && f.slowDeployment == r.PathValue("id")
+	f.mu.Unlock()
+	if slow {
+		<-r.Context().Done()
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.deployments[r.PathValue("id")]
@@ -897,8 +923,9 @@ func (f *fakeKoyeb) killProcess(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.kills = append(f.kills, req.ID)
-	proc := f.procs[req.ID]
+	proc, delay := f.procs[req.ID], f.killDelay
 	f.mu.Unlock()
+	time.Sleep(delay)
 	if proc == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false, "error": "process not found: " + req.ID,
@@ -933,8 +960,13 @@ func (f *fakeKoyeb) killed() []string {
 func (f *fakeKoyeb) streamLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	f.mu.Lock()
-	proc, script := f.procs[id], f.script
+	proc, script, fail, delay := f.procs[id], f.script, f.failLogs, f.logsDelay
 	f.mu.Unlock()
+	time.Sleep(delay)
+	if fail {
+		http.Error(w, "log streaming is down", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	flush := http.NewResponseController(w).Flush
 	if script != nil {
@@ -956,7 +988,8 @@ func (f *fakeKoyeb) streamLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		sent += len(entries)
 		_ = flush()
-		if done && len(entries) == 0 {
+		// Every line is in before done is set, so the lines sent with it were the last ones
+		if done {
 			_, _ = io.WriteString(w, "event: complete\ndata: {\"message\": \"stream ended\"}\n\n")
 			return
 		}
