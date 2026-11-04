@@ -1,12 +1,14 @@
-// Package worker runs the router's River jobs for placement deadlines, the sweep and the outbox.
+// Package worker runs the router's River jobs for placement deadlines, the watch, the sweep and the
+// outbox.
 //
-// New builds one River client that works all three kinds and a saga that inserts its deadline
-// jobs through that client. A deadline job ends a placement once its paid time is up. The sweep
-// runs every minute over this deployment's sandboxes, destroys the ones no placement needs, ends
-// ready and terminating placements past their deadline and fails placements whose placing saga
-// went away. The outbox job runs every second and posts each due event, signed, to the
-// configured events URL. A periodic job a crashed worker left running is rescued after a few
-// minutes, so it holds back the next run of its kind only that long.
+// New builds one River client that works every kind and a saga that inserts its deadline jobs
+// through that client. A deadline job ends a placement once its paid time is up. The watch runs
+// every 30 s on a budget of its own, fails placements whose placing saga went away, frees slots
+// ended placements still hold, ends placements past their deadline and finishes stops that broke
+// off. The sweep runs every minute over this deployment's sandboxes on every provider at once and
+// destroys the ones no placement needs. The outbox job runs every second and posts each due
+// event, signed, to the configured events URL. A periodic job a crashed worker left running is
+// rescued after a few minutes, so it holds back the next run of its kind only that long.
 package worker
 
 import (
@@ -30,10 +32,14 @@ import (
 )
 
 const (
-	maxWorkers    = 10
-	jobTimeout    = 60 * time.Second
-	rescueAfter   = 3 * time.Minute // a crashed worker's running job blocks its kind until rescued
-	sweepEvery    = 60 * time.Second
+	maxWorkers  = 10
+	jobTimeout  = 60 * time.Second
+	rescueAfter = 3 * time.Minute // a crashed worker's running job blocks its kind until rescued
+	sweepEvery  = 60 * time.Second
+	watchEvery  = 30 * time.Second
+	// The sweep and the watch stop well before a rescue could start a second run beside them
+	sweepTimeout  = 2 * time.Minute
+	watchTimeout  = 2 * time.Minute
 	outboxEvery   = time.Second
 	postTimeout   = 10 * time.Second
 	callTimeout   = 30 * time.Second
@@ -86,6 +92,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &deadlineWorker{w: w})
 	river.AddWorker(workers, &sweepWorker{w: w})
+	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues: map[string]river.QueueConfig{
@@ -114,12 +121,15 @@ func (w *Worker) Saga() *saga.Saga { return w.saga }
 
 func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
-// periodicJobs runs the sweep and the outbox at start and on their intervals, one of each at a time
+// periodicJobs runs the sweep, watch and outbox at start and on their intervals, one at a time
 func periodicJobs() []*river.PeriodicJob {
 	single := singleRun()
 	return []*river.PeriodicJob{
 		river.NewPeriodicJob(river.PeriodicInterval(sweepEvery),
 			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Sweep{}, single },
+			&river.PeriodicJobOpts{RunOnStart: true}),
+		river.NewPeriodicJob(river.PeriodicInterval(watchEvery),
+			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Watch{}, single },
 			&river.PeriodicJobOpts{RunOnStart: true}),
 		river.NewPeriodicJob(river.PeriodicInterval(outboxEvery),
 			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Outbox{}, single },

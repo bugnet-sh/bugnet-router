@@ -213,6 +213,19 @@ func (c capped) SetLifetime(ctx context.Context, ref provider.Ref, until time.Ti
 	return c.Provider.SetLifetime(ctx, ref, until)
 }
 
+// failingDestroy refuses every destroy while fail is set
+type failingDestroy struct {
+	*local.Provider
+	fail atomic.Bool
+}
+
+func (f *failingDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
+	if f.fail.Load() {
+		return &provider.Error{Code: provider.CodeInternal, Err: errors.New("destroy refused")}
+	}
+	return f.Provider.Destroy(ctx, ref)
+}
+
 // clock is wall time shifted by an offset the test can move forward
 type clock struct {
 	mu     sync.Mutex
@@ -944,12 +957,14 @@ func TestSagaAllFailRefundable(t *testing.T) {
 	e := newEnv(t, a, b)
 	msgs := e.subscribe(t)
 	p, _ := e.place(t, "order-1")
-	if p.State != store.PlacementFailed || !p.Refundable || p.FailureReason == "" {
-		t.Fatalf("placement %+v", p)
+	// The reason is a stable code that names no provider, the attempts keep the details
+	if p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != "provider_capacity" {
+		t.Fatalf("placement %+v, want failed refundable for provider_capacity", p)
 	}
 	ev := e.oneEvent(t, saga.EventFailed)
 	if ev.PlacementID != p.ID || ev.State != store.PlacementFailed || !ev.Refundable ||
-		ev.BilledSeconds != 0 || ev.Reason == "" {
+		ev.BilledSeconds != 0 || ev.Reason != p.FailureReason {
 		t.Fatalf("failed event %+v", ev)
 	}
 	if _, pub := receive(t, msgs); pub.State != store.PlacementFailed {
@@ -1094,6 +1109,11 @@ func TestFailStuckFailsOnlyPlacing(t *testing.T) {
 	if err := e.saga.FailStuck(ctx, stuck.ID, saga.ReasonPlacingStalled); err != nil {
 		t.Fatalf("fail stuck: %v", err)
 	}
+	// The failure and its slot commit at once, the sandboxes go in the background
+	if n := e.inUse(t, "b"); n != 0 {
+		t.Fatalf("in use on b %d right after FailStuck, want the slot released", n)
+	}
+	e.saga.Wait()
 	got := e.reload(t, stuck.ID)
 	if got.State != store.PlacementFailed || !got.Refundable ||
 		got.FailureReason != saga.ReasonPlacingStalled {
@@ -1296,8 +1316,9 @@ func TestCreateWithoutRunnerBuildFailsWithoutFailOver(t *testing.T) {
 	b := newLocal(t, local.Options{Name: "b"})
 	e := newEnvWith(t, func(d *saga.Deps) { d.Runners = runners }, u, b)
 	p, _ := e.place(t, "order-1")
-	if p.State != store.PlacementFailed || !p.Refundable {
-		t.Fatalf("placement %+v", p)
+	if p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != "runner_unavailable" {
+		t.Fatalf("placement %+v, want failed refundable for runner_unavailable", p)
 	}
 	if nu, nb := len(owned(t, u)), len(owned(t, b)); nu != 0 || nb != 0 {
 		t.Fatalf("sandboxes u=%d b=%d, want none", nu, nb)
@@ -1331,7 +1352,8 @@ func TestExtendOncePerOrder(t *testing.T) {
 		t.Fatalf("stored deadline %v, want %v", got.Deadline, want)
 	}
 	ev := e.oneEvent(t, saga.EventExtended)
-	if ev.State != store.PlacementReady || ev.Deadline == nil || !ev.Deadline.Equal(want) {
+	if ev.State != store.PlacementReady || ev.Deadline == nil || !ev.Deadline.Equal(want) ||
+		ev.OrderID != "order-1" || ev.ExtendOrderID != "ext-1" {
 		t.Fatalf("extended event %+v", ev)
 	}
 	if _, pub := receive(t, msgs); pub.Deadline == nil || !pub.Deadline.Equal(want) {
@@ -1636,7 +1658,7 @@ func TestTerminateRecordsReason(t *testing.T) {
 	e := newEnv(t, a)
 	p, _ := e.placeReady(t, "order-1")
 	for range 2 {
-		if err := e.saga.Terminate(t.Context(), p.ID, "deadline"); err != nil {
+		if err := e.saga.Terminate(t.Context(), p.ID, *p.Deadline); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1648,6 +1670,90 @@ func TestTerminateRecordsReason(t *testing.T) {
 	}
 	if n := len(owned(t, a)); n != 0 {
 		t.Fatalf("%d sandboxes left", n)
+	}
+}
+
+func TestTerminateLeavesPlacementBeforeItsDeadline(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
+	p, _ := e.placeReady(t, "order-1")
+	err := e.saga.Terminate(t.Context(), p.ID, p.Deadline.Add(-time.Minute))
+	if !errors.Is(err, saga.ErrNotDue) {
+		t.Fatalf("terminate before the deadline gave %v, want ErrNotDue", err)
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementReady {
+		t.Fatalf("placement is %s, want ready", got.State)
+	}
+	if n := len(owned(t, a)); n != 1 {
+		t.Fatalf("%d sandboxes, want the placement's one kept", n)
+	}
+}
+
+func TestExtendInFlightAtDeadlineWins(t *testing.T) {
+	a := newCapped(t, t.TempDir(), 0)
+	clk := &clock{offset: -(10*time.Minute + 5*time.Second)}
+	e := newEnvWith(t, func(d *saga.Deps) { d.Now = clk.Now }, a)
+	p, h := e.placeReady(t, "order-1")
+	tok := e.extendToken(t, "ext-1", morePkg, morePrice, h)
+	free := sync.OnceFunc(func() { close(a.release) })
+	t.Cleanup(free)
+	a.hold.Store(true)
+
+	extended := make(chan error, 1)
+	go func() {
+		_, err := e.saga.Extend(t.Context(), h, tok)
+		extended <- err
+	}()
+	select {
+	case <-a.held:
+	case err := <-extended:
+		t.Fatalf("extension ended before setting the lifetime: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("extension never set the lifetime")
+	}
+	terminated := make(chan error, 1)
+	go func() { terminated <- e.saga.Terminate(t.Context(), p.ID, time.Now()) }()
+	e.waitForLockWait(t)
+	free()
+
+	if err := <-extended; err != nil {
+		t.Fatalf("extension: %v", err)
+	}
+	if err := <-terminated; !errors.Is(err, saga.ErrNotDue) {
+		t.Fatalf("terminate gave %v, want ErrNotDue", err)
+	}
+	want := p.Deadline.Add(10 * time.Minute)
+	if got := e.reload(t, p.ID); got.State != store.PlacementReady || !got.Deadline.Equal(want) {
+		t.Fatalf("placement %s until %v, want ready until %v", got.State, got.Deadline, want)
+	}
+	e.oneEvent(t, saga.EventExtended)
+	if evs := e.events(t, saga.EventTerminated); len(evs) != 0 {
+		t.Fatalf("terminated events %+v after the extension won", evs)
+	}
+	if n := len(owned(t, a)); n != 1 {
+		t.Fatalf("%d sandboxes, want the extended placement's one kept", n)
+	}
+}
+
+func TestStopFinishedLaterKeepsStopReason(t *testing.T) {
+	prov := &failingDestroy{Provider: newLocal(t, local.Options{Name: "a"})}
+	e := newEnv(t, prov)
+	p, h := e.placeReady(t, "order-1")
+	prov.fail.Store(true)
+	if _, err := e.saga.Stop(t.Context(), h); err == nil {
+		t.Fatal("stop succeeded with a failing destroy")
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementTerminating ||
+		got.TerminationReason != saga.ReasonStop {
+		t.Fatalf("placement %s for %q, want terminating for stop", got.State,
+			got.TerminationReason)
+	}
+	prov.fail.Store(false)
+	if err := e.saga.Terminate(t.Context(), p.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if ev := e.oneEvent(t, saga.EventTerminated); ev.Reason != saga.ReasonStop {
+		t.Fatalf("terminated event %+v, want reason stop", ev)
 	}
 }
 

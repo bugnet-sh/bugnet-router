@@ -33,6 +33,9 @@ type Placement struct {
 	SagaHeartbeat *time.Time
 	// CapacityProvider is the provider whose capacity slot the placement holds, empty for none
 	CapacityProvider string
+	// TerminationReason is why the placement moved to terminating, empty before it did
+	TerminationReason string
+	TerminatingAt     *time.Time
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -58,14 +61,15 @@ type Attempt struct {
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
 	provider_ref, coalesce(size_name, ''), deadline, created_at, ready_at, terminated_at,
 	coalesce(failure_reason, ''), refundable, coalesce(saga_owner, ''), saga_heartbeat,
-	coalesce(capacity_provider, '')`
+	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at`
 
 func scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var ref []byte
 	err := row.Scan(&p.ID, &p.HandleSHA256, &p.OrderID, &p.PackageID, &p.State, &p.Provider,
 		&ref, &p.SizeName, &p.Deadline, &p.CreatedAt, &p.ReadyAt, &p.TerminatedAt,
-		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider)
+		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
+		&p.TerminationReason, &p.TerminatingAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -83,6 +87,7 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 	p.ReadyAt = utcPtr(p.ReadyAt)
 	p.TerminatedAt = utcPtr(p.TerminatedAt)
 	p.SagaHeartbeat = utcPtr(p.SagaHeartbeat)
+	p.TerminatingAt = utcPtr(p.TerminatingAt)
 	return p, nil
 }
 
@@ -205,6 +210,14 @@ func (s *Store) ReadyOrTerminatingPastDeadline(
 		PlacementReady, PlacementTerminating, utc(now))
 }
 
+// TerminatingSince returns terminating placements that moved there before, oldest first
+func (s *Store) TerminatingSince(ctx context.Context, before time.Time) ([]uuid.UUID, error) {
+	return s.placementIDs(ctx, "terminating since", `
+		select id from placements
+		where state = $1 and (terminating_at is null or terminating_at < $2)
+		order by terminating_at nulls first`, PlacementTerminating, utc(before))
+}
+
 // StalledPlacing returns placing placements with no heartbeat since beat, or none since created
 func (s *Store) StalledPlacing(
 	ctx context.Context, beat, created time.Time,
@@ -265,12 +278,30 @@ func (s *Store) MarkPlacementFailed(
 }
 
 // MarkPlacementTerminating reports whether it moved a placing or ready placement to terminating
-func (s *Store) MarkPlacementTerminating(ctx context.Context, id uuid.UUID) (bool, error) {
+func (s *Store) MarkPlacementTerminating(
+	ctx context.Context, id uuid.UUID, reason string, at time.Time,
+) (bool, error) {
 	tag, err := s.q.Exec(ctx, `
-		update placements set state = $2 where id = $1 and state in ($3, $4)`,
-		id, PlacementTerminating, PlacementPlacing, PlacementReady)
+		update placements set state = $2, termination_reason = $3, terminating_at = $4
+		where id = $1 and state in ($5, $6)`,
+		id, PlacementTerminating, nullIfEmpty(reason), utc(at), PlacementPlacing, PlacementReady)
 	if err != nil {
 		return false, fmt.Errorf("mark terminating: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkPlacementDue reports whether it moved a ready placement whose deadline is not after due
+func (s *Store) MarkPlacementDue(
+	ctx context.Context, id uuid.UUID, reason string, due, at time.Time,
+) (bool, error) {
+	// The deadline is checked under the row lock, so an extension committed first is honoured
+	tag, err := s.q.Exec(ctx, `
+		update placements set state = $2, termination_reason = $3, terminating_at = $4
+		where id = $1 and state = $5 and deadline <= $6`,
+		id, PlacementTerminating, nullIfEmpty(reason), utc(at), PlacementReady, utc(due))
+	if err != nil {
+		return false, fmt.Errorf("mark due: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
 }

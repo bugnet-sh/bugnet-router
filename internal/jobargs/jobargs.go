@@ -11,11 +11,17 @@ type Deadline struct {
 // Kind returns the River job kind
 func (Deadline) Kind() string { return "deadline" }
 
-// Sweep asks the worker to destroy leftover sandboxes and settle overdue or stalled placements
+// Sweep asks the worker to destroy the sandboxes no placement needs
 type Sweep struct{}
 
 // Kind returns the River job kind
 func (Sweep) Kind() string { return "sweep" }
+
+// Watch asks the worker to fail stalled placing placements and end overdue ones
+type Watch struct{}
+
+// Kind returns the River job kind
+func (Watch) Kind() string { return "watch" }
 
 // Outbox asks the worker to deliver the outbox events that are due
 type Outbox struct{}

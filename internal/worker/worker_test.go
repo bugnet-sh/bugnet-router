@@ -73,6 +73,7 @@ func newLocal(t *testing.T, name string) *local.Provider {
 type flaky struct {
 	*local.Provider
 	listFails    bool
+	listHangs    bool         // a sweep's listing of the whole deployment waits for its context
 	zeroAge      bool         // lists every sandbox with a zero creation time
 	failID       string       // the sandbox whose every destroy fails
 	failDestroys atomic.Int32 // how many of the next destroys fail
@@ -81,6 +82,10 @@ type flaky struct {
 func (f *flaky) ListOwned(ctx context.Context, l map[string]string) ([]provider.Summary, error) {
 	if f.listFails {
 		return nil, &provider.Error{Code: provider.CodeInternal, Err: errors.New("list refused")}
+	}
+	if _, one := l["placement"]; f.listHangs && !one {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	owned, err := f.Provider.ListOwned(ctx, l)
 	for i := range owned {
@@ -632,10 +637,11 @@ func TestSweepDestroysExpiredAfterDowntime(t *testing.T) {
 		now.Add(-10*time.Second))
 	e.start(t)
 	e.finished(t, "sweep")
+	e.finished(t, "watch")
 
 	for _, id := range []uuid.UUID{p.ID, late.ID} {
 		if got := e.reload(t, id); got.State != store.PlacementTerminated {
-			t.Fatalf("placement is %s after the first sweep, want terminated", got.State)
+			t.Fatalf("placement is %s after the first sweep and watch, want terminated", got.State)
 		}
 	}
 	evs := e.pendingEvents(t, saga.EventTerminated)
@@ -672,7 +678,7 @@ func TestSweepDestroysOrphans(t *testing.T) {
 	}
 	failedBox := e.sandbox(t, a, e.labelsFor(failed.ID))
 	ended, endedBox := e.readyPlacement(t, b, now, now.Add(time.Hour))
-	if _, err := e.store.MarkPlacementTerminating(ctx, ended.ID); err != nil {
+	if _, err := e.store.MarkPlacementTerminating(ctx, ended.ID, "stop", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.store.MarkPlacementTerminated(ctx, ended.ID, now); err != nil {
@@ -734,7 +740,7 @@ func TestSweepFinishesTerminating(t *testing.T) {
 	// Its stop broke off after destroying the sandbox, so only the overdue pass can finish it
 	stopped, stoppedBox := e.readyPlacement(t, prov, now.Add(-10*time.Minute),
 		now.Add(-10*time.Second))
-	if _, err := e.store.MarkPlacementTerminating(ctx, stopped.ID); err != nil {
+	if _, err := e.store.MarkPlacementTerminating(ctx, stopped.ID, "stop", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := prov.Provider.Destroy(ctx, stoppedBox); err != nil {
@@ -744,6 +750,7 @@ func TestSweepFinishesTerminating(t *testing.T) {
 	e.start(t)
 
 	e.run(t, jobargs.Sweep{})
+	e.run(t, jobargs.Watch{})
 	for _, id := range []uuid.UUID{expired.ID, stopped.ID} {
 		if got := e.reload(t, id); got.State != store.PlacementTerminated ||
 			got.CapacityProvider != "" {
@@ -755,10 +762,88 @@ func TestSweepFinishesTerminating(t *testing.T) {
 			exists(t, prov, expiredBox), e.inUse(t, "local"))
 	}
 	e.run(t, jobargs.Sweep{})
+	e.run(t, jobargs.Watch{})
 	e.run(t, jobargs.Deadline{PlacementID: expired.ID})
+	reasons := map[uuid.UUID]string{}
+	for _, ev := range e.pendingEvents(t, saga.EventTerminated) {
+		if _, dup := reasons[ev.PlacementID]; dup {
+			t.Fatalf("placement %s ended twice", ev.PlacementID)
+		}
+		reasons[ev.PlacementID] = ev.Reason
+	}
+	if len(reasons) != 2 || reasons[expired.ID] != saga.ReasonDeadline ||
+		reasons[stopped.ID] != saga.ReasonStop {
+		t.Fatalf("terminated reasons %v, want deadline for the expired and stop for the stopped",
+			reasons)
+	}
+}
+
+func TestWatchFinishesStopLeftTerminating(t *testing.T) {
+	e := newEnv(t, options{})
+	ctx := t.Context()
+	now := time.Now()
+	stuck, stuckBox := e.readyPlacement(t, e.local, now.Add(-5*time.Minute), now.Add(time.Hour))
+	busy, busyBox := e.readyPlacement(t, e.local, now.Add(-5*time.Minute), now.Add(time.Hour))
+	// One stop broke off three minutes ago, the other is still destroying its sandbox
+	if _, err := e.store.MarkPlacementTerminating(ctx, stuck.ID, "stop",
+		now.Add(-3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.MarkPlacementTerminating(ctx, busy.ID, "stop",
+		now.Add(-30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.run(t, jobargs.Watch{})
+	e.run(t, jobargs.Sweep{})
+
+	if got := e.reload(t, stuck.ID); got.State != store.PlacementTerminated {
+		t.Fatalf("stuck stop is %s, want terminated", got.State)
+	}
+	if exists(t, e.local, stuckBox) {
+		t.Fatal("the stuck stop's sandbox survived")
+	}
 	evs := e.pendingEvents(t, saga.EventTerminated)
-	if len(evs) != 2 || evs[0].Reason != "deadline" || evs[1].Reason != "deadline" {
-		t.Fatalf("terminated events %+v, want one with reason deadline for each placement", evs)
+	if len(evs) != 1 || evs[0].PlacementID != stuck.ID || evs[0].Reason != saga.ReasonStop {
+		t.Fatalf("terminated events %+v, want one for the stuck stop with reason stop", evs)
+	}
+	if got := e.reload(t, busy.ID); got.State != store.PlacementTerminating ||
+		!exists(t, e.local, busyBox) {
+		t.Fatalf("recent stop is %s, want it left to its owner", got.State)
+	}
+}
+
+func TestWatchReleasesSlotsOfEndedPlacements(t *testing.T) {
+	e := newEnv(t, options{})
+	ctx := t.Context()
+	p := e.placing(t)
+	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, "local"); err != nil || !ok {
+		t.Fatalf("reserve: %v %v", ok, err)
+	}
+	// The release after the failure never ran, so the slot outlived the placement
+	if err := e.store.MarkPlacementFailed(ctx, p.ID, "boom", true); err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.run(t, jobargs.Watch{})
+	if n := e.inUse(t, "local"); n != 0 {
+		t.Fatalf("in use %d after the watch, want the failed placement's slot freed", n)
+	}
+}
+
+func TestWatchRunsWhileSweepListingHangs(t *testing.T) {
+	prov := &flaky{Provider: newLocal(t, "local"), listHangs: true}
+	e := newEnv(t, options{periodic: true, providers: []provider.Provider{prov}})
+	ctx := t.Context()
+	stale := e.placing(t)
+	if err := e.store.HeartbeatPlacement(ctx, stale.ID, "gone",
+		time.Now().Add(-90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.finished(t, "watch")
+	if got := e.reload(t, stale.ID); got.State != store.PlacementFailed {
+		t.Fatalf("stalled placement is %s while the sweep hangs, want failed", got.State)
 	}
 }
 
@@ -846,7 +931,8 @@ func TestSweepFailsStuckPlacing(t *testing.T) {
 	staleBox := e.sandbox(t, e.local, e.labelsFor(stale.ID))
 	freshBox := e.sandbox(t, e.local, e.labelsFor(fresh.ID))
 	e.start(t)
-	e.run(t, jobargs.Sweep{})
+	e.run(t, jobargs.Watch{})
+	e.saga.Wait()
 
 	for _, id := range []uuid.UUID{stale.ID, silent.ID} {
 		got := e.reload(t, id)

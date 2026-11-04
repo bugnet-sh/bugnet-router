@@ -23,8 +23,10 @@ const publishTimeout = 5 * time.Second
 
 // Event is a placement change as the outbox delivers it and Valkey publishes it
 type Event struct {
-	PlacementID   uuid.UUID  `json:"placement_id"`
-	OrderID       string     `json:"order_id"`
+	PlacementID uuid.UUID `json:"placement_id"`
+	OrderID     string    `json:"order_id"`
+	// ExtendOrderID is the extension order a placement.extended event settles, beside the start one
+	ExtendOrderID string     `json:"extend_order_id,omitempty"`
 	State         string     `json:"state"`
 	Provider      string     `json:"provider"`
 	Deadline      *time.Time `json:"deadline"`

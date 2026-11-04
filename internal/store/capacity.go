@@ -109,3 +109,36 @@ func (s *Store) ReleasePlacementCapacity(ctx context.Context, id uuid.UUID) (boo
 	}
 	return released, nil
 }
+
+// ReleaseEndedCapacity frees every slot still held by a failed or terminated placement
+func (s *Store) ReleaseEndedCapacity(ctx context.Context) (int, error) {
+	released := 0
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			with held as (
+				select id, capacity_provider from placements
+				where state in ($1, $2) and capacity_provider is not null
+				for update skip locked)
+			update placements p set capacity_provider = null from held
+			where p.id = held.id
+			returning held.capacity_provider`, PlacementFailed, PlacementTerminated)
+		if err != nil {
+			return fmt.Errorf("clear ended capacity: %w", err)
+		}
+		providers, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("clear ended capacity: %w", err)
+		}
+		for _, provider := range providers {
+			if err := s.Tx(tx).ReleaseCapacity(ctx, provider); err != nil {
+				return err
+			}
+		}
+		released = len(providers)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return released, nil
+}

@@ -16,6 +16,7 @@ package saga
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -51,6 +52,8 @@ var (
 	ErrHandleMismatch  = errors.New("saga: order token is for another handle")
 	ErrNotExtension    = errors.New("saga: package does not extend this placement")
 	ErrExceedsLifetime = errors.New("saga: extension outlasts the provider's maximum lifetime")
+	// ErrNotDue means a deadline termination found the deadline moved past the time it was due
+	ErrNotDue = errors.New("saga: placement deadline is not due")
 )
 
 // ReasonStop is the termination reason when the placement's owner stops it
@@ -65,11 +68,15 @@ const ReasonDeadline = "deadline"
 // ReasonPlacingStalled is the failure reason when the saga placing a placement stopped heartbeating
 const ReasonPlacingStalled = "placing_stalled"
 
-// reasonFull is the failure reason when every candidate provider had no free slot
-const reasonFull = "capacity: every candidate provider is full"
-
-// reasonExhausted is the failure reason when placing ran out of candidates after the pre-check
-const reasonExhausted = "no provider could host the package"
+// Failure reasons are stable codes the gateway may show, the attempts and logs keep the details
+const (
+	reasonFull       = "capacity_full"        // every candidate provider had no free slot
+	reasonExhausted  = "candidates_exhausted" // placing ran out of candidates after the pre-check
+	reasonBootFailed = "boot_failed"
+	reasonNoRunner   = "runner_unavailable"
+	reasonInternal   = "internal_error"
+	reasonCreate     = "create_failed" // a create failed without a provider error code
+)
 
 // defaultDeployment labels the sandboxes of a saga whose Deps name no deployment
 const defaultDeployment = "main"
@@ -249,6 +256,7 @@ type outcome struct {
 	kept     *provider.Ref // the sandbox the placement became ready on
 	failOver bool
 	reason   string
+	detail   string
 }
 
 // place tries candidates until one is ready or the attempt or time budget runs out
@@ -261,13 +269,13 @@ func (s *Saga) place(
 	defer cancel()
 	tried := map[string]bool{}
 	var attempted []provider.Provider
-	reason := reasonExhausted
+	reason, detail := reasonExhausted, ""
 	full := false
 	for n := 1; n <= maxAttempts && budget.Err() == nil; {
 		cands, err := s.d.Engine.Candidates(s.inputs(pkg, req, tried))
 		if err != nil {
 			if !errors.Is(err, placement.ErrNoCandidate) {
-				reason = fmt.Sprintf("find candidates: %v", err)
+				reason, detail = reasonInternal, fmt.Sprintf("find candidates: %v", err)
 			} else if n == 1 && full {
 				reason = reasonFull
 			}
@@ -278,7 +286,7 @@ func (s *Saga) place(
 		tried[name] = true
 		reserved, err := s.reserve(ctx, p.ID, name)
 		if err != nil {
-			reason = err.Error()
+			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
 			break
 		}
 		if !reserved {
@@ -291,13 +299,13 @@ func (s *Saga) place(
 			s.sweep(ctx, p.ID, attempted, out.kept)
 			return
 		}
-		reason = out.reason
+		reason, detail = out.reason, out.detail
 		if !out.failOver {
 			break
 		}
 		n++
 	}
-	s.fail(ctx, p, reason, attempted)
+	s.fail(ctx, p, reason, detail, attempted)
 }
 
 // heartbeat shows the placement is still being placed by this replica until stop is called
@@ -354,7 +362,7 @@ func (s *Saga) attempt(
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.release(ctx, p.ID)
-		return outcome{reason: err.Error()}
+		return outcome{reason: reasonInternal, detail: err.Error()}
 	}
 	started := s.now()
 	ref, err := s.create(budget, prov, provider.CreateRequest{
@@ -367,16 +375,21 @@ func (s *Saga) attempt(
 		s.d.Tracker.RecordFailure(name)
 		s.abandon(ctx, prov, rec, nil, err)
 		return outcome{
-			failOver: canFailOver(err), reason: fmt.Sprintf("create on %s: %v", name, err),
+			failOver: canFailOver(err), reason: createReason(err),
+			detail: fmt.Sprintf("create on %s: %v", name, err),
 		}
 	}
 	if err := s.boot(ctx, prov, ref); err != nil {
 		noBuild := errors.Is(err, errNoRunnerBuild)
+		reason := reasonNoRunner
 		if !noBuild {
+			reason = reasonBootFailed
 			s.d.Tracker.RecordFailure(name)
 		}
 		s.abandon(ctx, prov, rec, &ref, err)
-		return outcome{failOver: !noBuild, reason: fmt.Sprintf("boot on %s: %v", name, err)}
+		return outcome{
+			failOver: !noBuild, reason: reason, detail: fmt.Sprintf("boot on %s: %v", name, err),
+		}
 	}
 	return s.commitReady(ctx, p, pkg, c, rec, ref, started)
 }
@@ -401,6 +414,14 @@ func (s *Saga) create(
 		case <-timer.C:
 		}
 	}
+}
+
+// createReason names a failed create by its provider code, which carries no provider name
+func createReason(err error) string {
+	if e, ok := provider.AsError(err); ok {
+		return "provider_" + string(e.Code)
+	}
+	return reasonCreate
 }
 
 // canFailOver never allows an unknown outcome, since the first sandbox may still boot and bill
@@ -456,7 +477,7 @@ func (s *Saga) commitReady(
 			s.d.Log.Info("placement left placing before it was ready", "placement", p.ID)
 			return outcome{done: true}
 		}
-		return outcome{reason: fmt.Sprintf("commit ready: %v", err)}
+		return outcome{reason: reasonInternal, detail: fmt.Sprintf("commit ready: %v", err)}
 	}
 	s.publish(ctx, ev)
 	return outcome{done: true, kept: &ref}
@@ -488,13 +509,18 @@ func (s *Saga) recordAttempt(ctx context.Context, rec store.Attempt) error {
 
 // fail records a refundable failure and destroys whatever this placement left on any provider
 func (s *Saga) fail(
-	ctx context.Context, p store.Placement, reason string, attempted []provider.Provider,
+	ctx context.Context, p store.Placement, reason, detail string, attempted []provider.Provider,
 ) {
+	s.d.Log.Warn("placement failed", "placement", p.ID, "reason", reason, "detail", detail)
 	var ev Event
 	tctx, cancel := step(ctx)
 	err := s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
 		var err error
-		ev, err = s.recordFailed(tctx, tx, p.ID, reason)
+		if ev, err = s.recordFailed(tctx, tx, p.ID, reason); err != nil {
+			return err
+		}
+		// The slot goes with the failure, so a failed release leaves the placement to FailStuck
+		_, err = s.d.Store.Tx(tx).ReleasePlacementCapacity(tctx, p.ID)
 		return err
 	})
 	cancel()
@@ -504,7 +530,6 @@ func (s *Saga) fail(
 		s.publish(ctx, ev)
 	}
 	s.sweep(ctx, p.ID, attempted, nil)
-	s.release(ctx, p.ID)
 }
 
 // FailStuck fails a placing placement whose saga went away as placing would, else does nothing
@@ -546,10 +571,10 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 	if !failed {
 		return nil
 	}
-	// The failure is committed, so cleanup runs to the end even when the caller gives up
+	// The failure is committed, so cleanup runs to the end without holding up the caller
 	ctx = context.WithoutCancel(ctx)
 	s.publish(ctx, ev)
-	s.sweep(ctx, id, s.d.Registry.Ordered(), nil)
+	s.wg.Go(func() { s.sweep(ctx, id, s.d.Registry.Ordered(), nil) })
 	return nil
 }
 
@@ -659,6 +684,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 			return err
 		}
 		ev = newEvent(p, "")
+		ev.ExtendOrderID = c.OrderID
 		return s.d.Store.InsertOutbox(ctx, tx, EventExtended, ev)
 	})
 	if errors.Is(err, store.ErrStateConflict) {
@@ -682,8 +708,8 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
 	limit := prov.Capabilities().MaxLifetime
 	if life := deadline.Add(lifetimeSlack).Sub(p.CreatedAt); limit > 0 && life > limit {
-		return fmt.Errorf("%w: %v from creation, %s allows %v", ErrExceedsLifetime,
-			life.Round(time.Second), prov.Name(), limit)
+		return fmt.Errorf("%w: %v from creation, the limit is %v", ErrExceedsLifetime,
+			life.Round(time.Second), limit)
 	}
 	return nil
 }
@@ -715,22 +741,26 @@ func (s *Saga) Stop(ctx context.Context, h string) (store.Placement, error) {
 	if err != nil {
 		return store.Placement{}, err
 	}
-	return s.terminate(ctx, p, ReasonStop)
+	return s.terminate(ctx, p, func(ctx context.Context) (bool, error) {
+		return s.d.Store.MarkPlacementTerminating(ctx, p.ID, ReasonStop, s.now())
+	})
 }
 
-// Terminate ends a ready or terminating placement, leaves a terminated one alone, else ErrNotReady
-func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, reason string) error {
+// Terminate ends a ready placement whose deadline is not after due and finishes a terminating one
+func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, due time.Time) error {
 	p, err := s.d.Store.PlacementByID(ctx, placementID)
 	if err != nil {
 		return err
 	}
-	_, err = s.terminate(ctx, p, reason)
+	_, err = s.terminate(ctx, p, func(ctx context.Context) (bool, error) {
+		return s.d.Store.MarkPlacementDue(ctx, p.ID, ReasonDeadline, due, s.now())
+	})
 	return err
 }
 
 // terminate destroys the sandbox, then marks the placement terminated and frees its slot once
 func (s *Saga) terminate(
-	ctx context.Context, p store.Placement, reason string,
+	ctx context.Context, p store.Placement, mark func(context.Context) (bool, error),
 ) (store.Placement, error) {
 	switch p.State {
 	case store.PlacementTerminated:
@@ -741,7 +771,7 @@ func (s *Saga) terminate(
 	// A caller hanging up halfway must not leave the sandbox running
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminateTimeout)
 	defer cancel()
-	moved, err := s.d.Store.MarkPlacementTerminating(ctx, p.ID)
+	moved, err := mark(ctx)
 	if err != nil {
 		return store.Placement{}, err
 	}
@@ -749,8 +779,13 @@ func (s *Saga) terminate(
 		if p, err = s.d.Store.PlacementByID(ctx, p.ID); err != nil {
 			return store.Placement{}, err
 		}
-		if p.State == store.PlacementTerminated {
+		switch p.State {
+		case store.PlacementTerminated:
 			return p, nil
+		case store.PlacementReady:
+			return store.Placement{}, fmt.Errorf("%w: deadline %v", ErrNotDue, p.Deadline)
+		case store.PlacementPlacing, store.PlacementFailed:
+			return store.Placement{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
 		}
 	}
 	prov, ref, err := s.home(p)
@@ -783,7 +818,8 @@ func (s *Saga) terminate(
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {
 			return err
 		}
-		ev = newEvent(ended, reason)
+		// The transition to terminating recorded why, whoever finishes the placement
+		ev = newEvent(ended, cmp.Or(ended.TerminationReason, ReasonDeadline))
 		return s.d.Store.InsertOutbox(ctx, tx, EventTerminated, ev)
 	})
 	if err != nil {

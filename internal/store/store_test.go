@@ -138,11 +138,11 @@ func TestPlacementLifecycle(t *testing.T) {
 		got.Deadline == nil || !got.Deadline.Equal(deadline) {
 		t.Fatalf("placement = %+v", got)
 	}
-	moved, err := s.MarkPlacementTerminating(ctx, p.ID)
+	moved, err := s.MarkPlacementTerminating(ctx, p.ID, "stop", time.Now())
 	if err != nil || !moved {
 		t.Fatalf("terminating moved=%v err=%v", moved, err)
 	}
-	moved, err = s.MarkPlacementTerminating(ctx, p.ID)
+	moved, err = s.MarkPlacementTerminating(ctx, p.ID, "stop", time.Now())
 	if err != nil || moved {
 		t.Fatalf("second terminating moved=%v err=%v", moved, err)
 	}
@@ -452,7 +452,7 @@ func TestReadyOrTerminatingPastDeadline(t *testing.T) {
 		}
 	}
 	for _, id := range []uuid.UUID{ending.ID, ended.ID} {
-		if _, err := s.MarkPlacementTerminating(ctx, id); err != nil {
+		if _, err := s.MarkPlacementTerminating(ctx, id, "stop", now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -463,6 +463,130 @@ func TestReadyOrTerminatingPastDeadline(t *testing.T) {
 	if want := []uuid.UUID{ending.ID, overdue.ID}; err != nil || !slices.Equal(ids, want) {
 		t.Fatalf("ReadyOrTerminatingPastDeadline = %v, %v, want %v oldest deadline first", ids,
 			err, want)
+	}
+}
+
+func TestMarkPlacementTerminatingRecordsReason(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p := newPlacement(t, s, "reason")
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := s.MarkPlacementTerminating(ctx, p.ID, "stop", now); err != nil || !moved {
+		t.Fatalf("terminating moved=%v err=%v", moved, err)
+	}
+	later := now.Add(time.Minute)
+	if moved, err := s.MarkPlacementTerminating(ctx, p.ID, "deadline", later); err != nil ||
+		moved {
+		t.Fatalf("second terminating moved=%v err=%v", moved, err)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil || got.TerminationReason != "stop" || got.TerminatingAt == nil ||
+		!got.TerminatingAt.Equal(now) {
+		t.Fatalf("placement = %+v err=%v, want reason stop terminating at %v", got, err, now)
+	}
+}
+
+func TestMarkPlacementDueHonoursDeadline(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deadline := now.Add(time.Minute)
+	p := newPlacement(t, s, "due")
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline); err != nil {
+		t.Fatal(err)
+	}
+	early := deadline.Add(-time.Second)
+	if moved, err := s.MarkPlacementDue(ctx, p.ID, "deadline", early, now); err != nil || moved {
+		t.Fatalf("before the deadline moved=%v err=%v", moved, err)
+	}
+	if got, _ := s.PlacementByID(ctx, p.ID); got.State != store.PlacementReady {
+		t.Fatalf("state %s before the deadline, want ready", got.State)
+	}
+	if moved, err := s.MarkPlacementDue(ctx, p.ID, "deadline", deadline, now); err != nil ||
+		!moved {
+		t.Fatalf("at the deadline moved=%v err=%v", moved, err)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil || got.State != store.PlacementTerminating ||
+		got.TerminationReason != "deadline" {
+		t.Fatalf("placement = %+v err=%v, want terminating for deadline", got, err)
+	}
+	if moved, err := s.MarkPlacementDue(ctx, p.ID, "deadline", deadline, now); err != nil ||
+		moved {
+		t.Fatalf("terminating moved=%v err=%v, want left alone", moved, err)
+	}
+}
+
+func TestTerminatingSince(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	old := newPlacement(t, s, "old")
+	unknown := newPlacement(t, s, "unknown")
+	recent := newPlacement(t, s, "recent")
+	ready := newPlacement(t, s, "ready")
+	for _, p := range []store.Placement{old, unknown, recent, ready} {
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, at := range map[uuid.UUID]time.Time{
+		old.ID: now.Add(-5 * time.Minute), unknown.ID: now, recent.ID: now.Add(-time.Second),
+	} {
+		if _, err := s.MarkPlacementTerminating(ctx, p, "stop", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A placement left terminating before the column existed has no time
+	if _, err := pool.Exec(ctx, `update placements set terminating_at = null where id = $1`,
+		unknown.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.TerminatingSince(ctx, now.Add(-2*time.Minute))
+	if want := []uuid.UUID{unknown.ID, old.ID}; err != nil || !slices.Equal(ids, want) {
+		t.Fatalf("TerminatingSince = %v, %v, want %v", ids, err, want)
+	}
+}
+
+func TestReleaseEndedCapacity(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	held := map[string]store.Placement{}
+	for _, name := range []string{"failed", "terminated", "placing", "ready"} {
+		p := newPlacement(t, s, name)
+		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "local"); err != nil || !ok {
+			t.Fatalf("reserve %s: %v %v", name, ok, err)
+		}
+		held[name] = p
+	}
+	// A release that failed after the state change left these two holding their slots
+	_, err := pool.Exec(ctx, `update placements set state = $2 where id = $1`,
+		held["failed"].ID, store.PlacementFailed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `update placements set state = $2 where id = $1`,
+		held["terminated"].ID, store.PlacementTerminated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ReleaseEndedCapacity(ctx); err != nil || n != 2 {
+		t.Fatalf("ReleaseEndedCapacity = %d, %v, want 2", n, err)
+	}
+	var inUse int
+	err = pool.QueryRow(ctx,
+		`select in_use from provider_capacity where provider = 'local'`).Scan(&inUse)
+	if err != nil || inUse != 2 {
+		t.Fatalf("in use %d, %v, want the placing and ready slots left", inUse, err)
+	}
+	if n, err := s.ReleaseEndedCapacity(ctx); err != nil || n != 0 {
+		t.Fatalf("second ReleaseEndedCapacity = %d, %v, want 0", n, err)
 	}
 }
 
@@ -557,7 +681,8 @@ func TestMarkPlacementTerminatedGuards(t *testing.T) {
 		err, store.ErrStateConflict) {
 		t.Fatalf("terminate ready err = %v", err)
 	}
-	if moved, err := s.MarkPlacementTerminating(ctx, ready.ID); err != nil || !moved {
+	moved, err := s.MarkPlacementTerminating(ctx, ready.ID, "stop", now)
+	if err != nil || !moved {
 		t.Fatalf("terminating moved=%v err=%v", moved, err)
 	}
 	if err := s.MarkPlacementTerminated(ctx, ready.ID, now); err != nil {
@@ -743,7 +868,7 @@ func TestPlacementForUpdateLocksRow(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.MarkPlacementTerminating(ctx, p.ID)
+		_, err := s.MarkPlacementTerminating(ctx, p.ID, "stop", time.Now())
 		done <- err
 	}()
 	select {
