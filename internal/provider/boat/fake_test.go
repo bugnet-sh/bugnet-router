@@ -156,8 +156,14 @@ type fakeBoat struct {
 	heartbeat time.Duration
 	// script answers every attach stream with these lines and runs no command
 	script *string
+	// listLimit cuts a directory listing to so many entries and marks it truncated
+	listLimit int
+	// drift writes sandbox and command times in another layout, or as numbers when "types"
+	drift string
 
 	mu        sync.Mutex
+	streams   int
+	grow      map[string][]byte
 	sandboxes map[string]*fakeSandbox
 	order     []string
 	keys      map[string]keyRecord
@@ -187,7 +193,7 @@ func newFake(t *testing.T) *fakeBoat {
 	f := &fakeBoat{
 		t: t, tmp: tmp, sandboxes: map[string]*fakeSandbox{}, keys: map[string]keyRecord{},
 		faults: map[string]*fault{}, calls: map[string]int{}, bodies: map[string][]int{},
-		grants: map[string]uploadGrant{},
+		grants: map[string]uploadGrant{}, grow: map[string][]byte{},
 	}
 	mux := http.NewServeMux()
 	const sb = "/api/v1/sandboxes/{id}"
@@ -346,16 +352,31 @@ func randomText(n int) string {
 
 func (f *fakeBoat) sandboxJSON(s *fakeSandbox) map[string]any {
 	shape := fakeTypes[s.typ]
-	return map[string]any{
+	sb := map[string]any{
 		"id": s.id, "name": "Sandbox " + s.created.Format("2006-01-02 15:04"), "state": s.state,
 		"labels": s.labels, "type": s.typ, "vcpu": shape[0], "memoryGB": shape[1],
 		"billingMultiplier": 1, "machineProvider": "baremetal", "url": nil, "ip": nil,
-		"createdAt": s.created.Format(time.RFC3339), "updatedAt": s.created.Format(time.RFC3339),
-		"archiveAfter": s.archiveAfter.Format(time.RFC3339), "ttlSeconds": s.ttl,
+		"createdAt": f.when(s.created), "updatedAt": f.when(s.created),
+		"archiveAfter": f.when(s.archiveAfter), "ttlSeconds": s.ttl,
 		"desktopAvailable": false, "snapshotAvailable": false, "snapshots": false,
 		"monitoring": false, "hydration": nil, "team": nil, "access": "owner",
 		"health": "ok", "lastReboot": nil, "futureField": map[string]any{"nested": []any{1}},
 	}
+	if f.drift == "types" {
+		sb["error"] = map[string]any{"reason": "none"}
+	}
+	return sb
+}
+
+// when writes a time as Boat documents it, or as the drift knob says
+func (f *fakeBoat) when(t time.Time) any {
+	switch f.drift {
+	case "types":
+		return t.Unix()
+	case "":
+		return t.Format(time.RFC3339)
+	}
+	return t.Format("2006-01-02 15:04:05Z07:00")
 }
 
 // live returns the sandbox the request names unless it is gone, answering 404 for it
@@ -701,8 +722,11 @@ func (f *fakeBoat) command(w http.ResponseWriter, r *http.Request) {
 
 	started := map[string]any{
 		"ok": true, "type": "command.started", "success": true, "processId": pid, "pid": 4000 + pid,
-		"command": line, "startedAt": time.Now().UTC().Format(time.RFC3339),
+		"command": line, "startedAt": f.when(time.Now().UTC()),
 		"logPath": fmt.Sprintf("/home/user/.ascii/processes/%d.log", pid),
+	}
+	if f.drift == "types" {
+		started["pid"], started["commandId"] = strconv.Itoa(4000+pid), pid
 	}
 	if scripted {
 		writeJSON(w, http.StatusOK, started)
@@ -757,6 +781,12 @@ var signalNames = map[syscall.Signal]string{
 	syscall.SIGHUP: "SIGHUP", syscall.SIGSEGV: "SIGSEGV",
 }
 
+func (f *fakeBoat) commandCalls() []commandCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.commands)
+}
+
 func (f *fakeBoat) lastCommand() map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -794,7 +824,13 @@ func (f *fakeBoat) attach(w http.ResponseWriter, r *http.Request) {
 	f.attaches = append(f.attaches, attachCall{process: pid, stdout: so, stderr: se})
 	script, chunk := f.script, f.chunkBytes
 	reconnectEvery, dropEvery, rewind, beat := f.reconnectEvery, f.dropEvery, f.rewind, f.heartbeat
+	f.streams++
 	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.streams--
+		f.mu.Unlock()
+	}()
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	rc := http.NewResponseController(w)
@@ -904,6 +940,13 @@ func (f *fakeBoat) attachCalls() []attachCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.attaches)
+}
+
+// openStreams counts the attach streams the fake is still serving
+func (f *fakeBoat) openStreams() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.streams
 }
 
 // running counts the host commands that have not exited
@@ -1099,6 +1142,13 @@ func (f *fakeBoat) listFiles(w http.ResponseWriter, r *http.Request) {
 		f.fileError(w, err)
 		return
 	}
+	f.mu.Lock()
+	limit := f.listLimit
+	f.mu.Unlock()
+	truncated := limit > 0 && len(dirents) > limit
+	if truncated {
+		dirents = dirents[:limit]
+	}
 	files := []map[string]any{}
 	for _, d := range dirents {
 		info, err := os.Lstat(filepath.Join(name, d.Name()))
@@ -1109,8 +1159,15 @@ func (f *fakeBoat) listFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "type": "file.list", "success": true, "path": name, "files": files,
-		"truncated": false,
+		"truncated": truncated,
 	})
+}
+
+// growAfterInfo appends extra to a file once its next info is taken, as a writer in the sandbox
+func (f *fakeBoat) growAfterInfo(name string, extra []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grow[name] = extra
 }
 
 func (f *fakeBoat) fileInfo(w http.ResponseWriter, r *http.Request) {
@@ -1122,6 +1179,20 @@ func (f *fakeBoat) fileInfo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		f.fileError(w, err)
 		return
+	}
+	f.mu.Lock()
+	extra, grows := f.grow[name]
+	delete(f.grow, name)
+	f.mu.Unlock()
+	if grows {
+		file, err := os.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0)
+		if err == nil {
+			_, err = file.Write(extra)
+			err = errors.Join(err, file.Close())
+		}
+		if err != nil {
+			f.t.Errorf("growing %s: %v", name, err)
+		}
 	}
 	body := entryJSON(name, info)
 	body["ok"], body["type"], body["success"] = true, "file.info", true

@@ -52,9 +52,15 @@ func (p *Provider) ReadFile(
 		return nil, true, nil
 	}
 	if size > fileCap {
-		return p.readTail(ctx, ref, name, offset, min(int64(length), size-offset), size)
+		return p.readTail(ctx, ref, name, offset, length)
 	}
 	data, err := p.readWhole(ctx, id, name)
+	if isCode(err, provider.CodeInvalid) {
+		// Boat refuses a whole read past 5 MiB, which a file still being written can reach
+		if now, ierr := p.info(ctx, id, name); ierr == nil && now.Size > fileCap {
+			return p.readTail(ctx, ref, name, offset, length)
+		}
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -67,7 +73,7 @@ func (p *Provider) ReadFile(
 
 func (p *Provider) info(ctx context.Context, id, name string) (api.FileInfoResponse, error) {
 	params := &api.GetFileInfoParams{Path: name}
-	raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.GetFileInfo(ctx, id, params)
 	})
 	if err != nil {
@@ -82,7 +88,7 @@ func (p *Provider) info(ctx context.Context, id, name string) (api.FileInfoRespo
 
 func (p *Provider) readWhole(ctx context.Context, id, name string) ([]byte, error) {
 	params := &api.ReadFileParams{Path: name, Encoding: new(api.ReadFileParamsEncodingBase64)}
-	raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.ReadFile(ctx, id, params)
 	})
 	if err != nil {
@@ -102,13 +108,14 @@ func (p *Provider) readWhole(ctx context.Context, id, name string) ([]byte, erro
 	return data, nil
 }
 
-// readTail cuts n bytes at offset in the sandbox, base64 keeping them whole on the UTF-8 stream
+// readTail cuts length bytes at offset in the sandbox, base64 keeping them whole on the stream
 func (p *Provider) readTail(
-	ctx context.Context, ref provider.Ref, name string, offset, n, size int64,
+	ctx context.Context, ref provider.Ref, name string, offset int64, length int,
 ) ([]byte, bool, error) {
+	// One byte past length tells the end of file apart without a size that may be stale
 	stream, err := p.Exec(ctx, ref, provider.ExecSpec{Argv: []string{
 		"sh", "-c", `tail -c +"$1" -- "$2" | head -c "$3" | base64`, "sh",
-		strconv.FormatInt(offset+1, 10), name, strconv.FormatInt(n, 10),
+		strconv.FormatInt(offset+1, 10), name, strconv.FormatInt(int64(length)+1, 10),
 	}})
 	if err != nil {
 		return nil, false, err
@@ -129,7 +136,10 @@ func (p *Provider) readTail(
 	if err != nil {
 		return nil, false, internal(fmt.Errorf("boat read of %s: %w", name, err))
 	}
-	return data, offset+int64(len(data)) >= size, nil
+	if len(data) > length {
+		return data[:length], false, nil
+	}
+	return data, true, nil
 }
 
 // WriteFile makes the parent, writes in one JSON call or through an upload URL, then sets mode
@@ -142,7 +152,7 @@ func (p *Provider) WriteFile(
 	}
 	if dir := path.Dir(name); !standing[dir] {
 		folder := api.FileFolderRequest{Path: dir}
-		_, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		_, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 			return p.api.CreateFolder(ctx, id, folder)
 		})
 		if err != nil {
@@ -157,7 +167,7 @@ func (p *Provider) WriteFile(
 		return invalid(err)
 	}
 	if len(body) <= fileCap {
-		_, err = p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 			return p.api.WriteFileWithBody(ctx, id, "application/json", bytes.NewReader(body))
 		})
 	} else {
@@ -167,7 +177,7 @@ func (p *Provider) WriteFile(
 		return err
 	}
 	perm := api.FilePermissionsRequest{Path: name, Mode: fmt.Sprintf("%03o", mode.Perm())}
-	_, err = p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.SetFilePermissions(ctx, id, perm)
 	})
 	return err
@@ -176,7 +186,7 @@ func (p *Provider) WriteFile(
 // upload PUTs data to a URL the sandbox serves itself, which has no size cap and takes no key
 func (p *Provider) upload(ctx context.Context, id, name string, data []byte) error {
 	req := api.FileUrlRequest{Path: name, TtlSeconds: new(uploadTTLSeconds)}
-	raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.CreateUploadUrl(ctx, id, req)
 	})
 	if err != nil {
@@ -198,7 +208,7 @@ func (p *Provider) upload(ctx context.Context, id, name string, data []byte) err
 	defer func() { _ = resp.Body.Close() }()
 	reply, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return apiError(resp.StatusCode, resp.Header, reply, false)
+		return apiError(resp.StatusCode, resp.Header, reply, noEffect)
 	}
 	return nil
 }
@@ -251,7 +261,7 @@ func (p *Provider) ListFiles(
 
 func (p *Provider) list(ctx context.Context, id, dir string) ([]provider.FileEntry, error) {
 	params := &api.ListFilesParams{Path: new(dir)}
-	raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.ListFiles(ctx, id, params)
 	})
 	if err != nil {
@@ -260,6 +270,10 @@ func (p *Provider) list(ctx context.Context, id, dir string) ([]provider.FileEnt
 	var reply api.FileListResponse
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		return nil, internal(fmt.Errorf("boat listing of %s: %w", dir, err))
+	}
+	if reply.Truncated {
+		return nil, internal(fmt.Errorf("boat listing of %s was truncated at Boat's limit of "+
+			"10,000 entries", dir))
 	}
 	out := make([]provider.FileEntry, 0, len(reply.Files))
 	for _, e := range reply.Files {

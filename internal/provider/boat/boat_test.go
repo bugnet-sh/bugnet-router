@@ -33,6 +33,7 @@ const (
 	routeDelete  = "DELETE /api/v1/sandboxes/{id}"
 	routeCommand = "POST /api/v1/sandboxes/{id}/commands"
 	routeAttach  = "GET /api/v1/sandboxes/{id}/commands/{pid}/stream"
+	routeRead    = "GET /api/v1/sandboxes/{id}/files"
 	routeWrite   = "PUT /api/v1/sandboxes/{id}/files"
 	routeInfo    = "GET /api/v1/sandboxes/{id}/files/info"
 )
@@ -234,6 +235,17 @@ func TestBoatErrorMapping(t *testing.T) {
 			code: provider.CodeOutcomeUnknown,
 		},
 		{
+			name: "unavailable on create", route: routeCreate, op: create,
+			ft:   fault{status: 503, code: "service_unavailable", message: "Try again"},
+			code: provider.CodeOutcomeUnknown,
+		},
+		{
+			name: "direct failure on create", route: routeCreate, op: create,
+			ft: fault{status: 502, code: "sandbox_direct_failed", message: "sandbox_restoring",
+				details: map[string]any{"retryable": true}},
+			code: provider.CodeOutcomeUnknown,
+		},
+		{
 			name: "server error outside create", route: routeUpdate, op: setLifetime,
 			ft:   fault{status: 500, code: "http_500", message: "Internal error"},
 			code: provider.CodeInternal,
@@ -264,6 +276,37 @@ func TestBoatErrorMapping(t *testing.T) {
 			ft: fault{status: 502, code: "sandbox_direct_failed", message: "sandbox_restoring",
 				details: map[string]any{"retryable": true}},
 			code: provider.CodeInternal,
+		},
+		{
+			name: "command did not run with the boat code", route: routeCommand, op: execTrue,
+			ft: fault{status: 502, code: "boat_direct_failed", message: "sandbox_restoring",
+				details: map[string]any{"retryable": true}},
+			code: provider.CodeInternal,
+		},
+		{
+			name: "command may have run without details", route: routeCommand, op: execTrue,
+			ft:   fault{status: 502, code: "box_direct_failed", message: "machine went away"},
+			code: provider.CodeOutcomeUnknown,
+		},
+		{
+			name: "server error on command start", route: routeCommand, op: execTrue,
+			ft:   fault{status: 500, code: "http_500", message: "Internal error"},
+			code: provider.CodeInternal,
+		},
+		{
+			name: "bad gateway on command start", route: routeCommand, op: execTrue,
+			ft:   fault{status: 502, code: "bad_gateway", message: "Upstream failed"},
+			code: provider.CodeInternal,
+		},
+		{
+			name: "unavailable on command start", route: routeCommand, op: execTrue,
+			ft:   fault{status: 503, code: "service_unavailable", message: "Try again"},
+			code: provider.CodeInternal,
+		},
+		{
+			name: "reply lost on command start", route: routeCommand, op: execTrue,
+			ft:   fault{drop: true, after: true},
+			code: provider.CodeOutcomeUnknown,
 		},
 		{
 			name: "sandbox starting", route: routeInfo, op: readFile,
@@ -571,15 +614,16 @@ func TestBoatExecReattachesAQuietStream(t *testing.T) {
 			f := newFake(t)
 			f.heartbeat = beat
 			p := f.provider(t, fakeKey)
-			p.idleTimeout = 50 * time.Millisecond
+			// 40 heartbeats fit in one idle timeout and a second of quiet holds five
+			p.idleTimeout = 200 * time.Millisecond
 			ref := readySandbox(t, f)
 			out, code, err := runExec(t.Context(), p, ref,
-				provider.ExecSpec{Argv: []string{"sh", "-c", "sleep 0.3; echo x"}})
+				provider.ExecSpec{Argv: []string{"sh", "-c", "sleep 1; echo x"}})
 			if err != nil || string(out) != "x\n" || code != 0 {
 				t.Fatalf("quiet command gave %q exit %d, %v", out, code, err)
 			}
 			n := len(f.attachCalls())
-			if beat == 0 && n < 3 {
+			if beat == 0 && n < 2 {
 				t.Fatalf("a stream without heartbeats was attached %d times, want reattaches", n)
 			}
 			if beat > 0 && n != 1 {
@@ -684,7 +728,7 @@ func TestBoatExecLastLines(t *testing.T) {
 	}
 }
 
-func TestBoatExecCloseKillsCommand(t *testing.T) {
+func TestBoatExecCloseOnlyStopsFollowing(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
 	ref := readySandbox(t, f)
@@ -692,24 +736,35 @@ func TestBoatExecCloseKillsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return f.running() == 1 })
+	waitFor(t, func() bool { return f.running() == 1 && f.openStreams() == 1 })
+	read := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, stream)
+		read <- err
+	}()
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return f.running() == 0 })
-	if killed := f.killed(); !slices.Equal(killed, []int{1}) {
-		t.Fatalf("stopped commands %v, want the one that ran", killed)
+	if killed := f.killed(); len(killed) != 0 {
+		t.Fatalf("Close stopped commands %v, want it only to stop following", killed)
+	}
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Fatal("a Read cut short by Close reported the end of the output")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not end a Read waiting on the stream")
+	}
+	waitFor(t, func() bool { return f.openStreams() == 0 })
+	if n := f.running(); n != 1 {
+		t.Fatalf("%d commands run after Close, want the one it stopped following", n)
 	}
 	if _, err := stream.Wait(); err == nil {
 		t.Fatal("Wait after Close reported a clean exit")
 	}
-
-	_, _, err = runExec(t.Context(), p, ref, provider.ExecSpec{Argv: []string{"true"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if killed := f.killed(); len(killed) != 1 {
-		t.Fatalf("Close after the exit stopped commands %v, want none more", killed)
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }
 
@@ -729,9 +784,9 @@ func TestBoatExecAttachFailures(t *testing.T) {
 	if !isCode(err, provider.CodeAuth) {
 		t.Fatalf("exec whose attach is refused gave %v, want auth", err)
 	}
-	waitFor(t, func() bool { return f.running() == 0 })
-	if killed := f.killed(); !slices.Equal(killed, []int{2}) {
-		t.Fatalf("stopped commands %v, want the one whose attach failed", killed)
+	if killed, n := f.killed(), f.running(); len(killed) != 0 || n != 1 {
+		t.Fatalf("a refused attach stopped commands %v leaving %d running, want it left running",
+			killed, n)
 	}
 }
 
@@ -865,6 +920,49 @@ func TestBoatLargeFiles(t *testing.T) {
 	}
 }
 
+func TestBoatReadsAFileThatOutgrewTheCap(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	name := fakeDir(t) + "/growing.log"
+	data := make([]byte, fileCap+2000)
+	_, _ = rand.Read(data)
+	reads := []struct {
+		offset int64
+		length int
+		eof    bool
+	}{
+		{fileCap - 150, 100, false},
+		{fileCap - 150, 1 << 20, true},
+	}
+	for _, r := range reads {
+		if err := os.WriteFile(name, data[:fileCap-100], 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f.growAfterInfo(name, data[fileCap-100:])
+		got, eof, err := p.ReadFile(t.Context(), ref, name, r.offset, r.length)
+		end := min(r.offset+int64(r.length), int64(len(data)))
+		if err != nil || !bytes.Equal(got, data[r.offset:end]) || eof != r.eof {
+			t.Fatalf("read at %d for %d of a file grown past 5 MiB gave %d bytes eof %v, %v, "+
+				"want %d bytes eof %v", r.offset, r.length, len(got), eof, err, end-r.offset, r.eof)
+		}
+		if cmd, _ := f.lastCommand()["command"].(string); !strings.Contains(cmd, "tail") {
+			t.Fatalf("read of a grown file ran %q, want a tail of the file", cmd)
+		}
+	}
+
+	small := fakeDir(t) + "/small.txt"
+	if err := os.WriteFile(small, []byte("small"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commands := len(f.commandCalls())
+	f.inject(routeRead, fault{status: 400, code: "invalid_encoding", message: "Bad encoding"})
+	if err := readErr(t.Context(), p, ref, small, 0); !isCode(err, provider.CodeInvalid) ||
+		len(f.commandCalls()) != commands {
+		t.Fatalf("a refused read of a small file gave %v, want invalid without a tail", err)
+	}
+}
+
 func TestBoatListFiles(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
@@ -931,6 +1029,79 @@ func TestBoatListFiles(t *testing.T) {
 	}
 	if _, err := p.ListFiles(ctx, ref, root+"/missing", 1); !isCode(err, provider.CodeNotFound) {
 		t.Errorf("missing directory gave %v, want not_found", err)
+	}
+}
+
+func TestBoatListFilesRefusesATruncatedListing(t *testing.T) {
+	f := newFake(t)
+	f.listLimit = 2
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	ctx := t.Context()
+	root := fakeDir(t)
+	if err := os.Mkdir(filepath.Join(root, "wide"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"1", "2", "3"} {
+		if err := os.WriteFile(filepath.Join(root, "wide", name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if entries, err := p.ListFiles(ctx, ref, root, 1); err != nil || len(entries) != 1 {
+		t.Fatalf("listing within the limit gave %v, %v, want the one directory", entries, err)
+	}
+	for _, depth := range []int{1, 2} {
+		dir := root
+		if depth == 1 {
+			dir = filepath.Join(root, "wide")
+		}
+		entries, err := p.ListFiles(ctx, ref, dir, depth)
+		if !isCode(err, provider.CodeInternal) || !strings.Contains(err.Error(), "truncated") {
+			t.Errorf("listing %s to depth %d past Boat's limit gave %v, %v, want internal "+
+				"naming the truncation", dir, depth, entries, err)
+		}
+	}
+}
+
+func TestBoatReadsDriftedReplies(t *testing.T) {
+	for _, drift := range []string{"layout", "types"} {
+		t.Run(drift, func(t *testing.T) {
+			f := newFake(t)
+			f.drift = drift
+			p := f.provider(t, fakeKey)
+			ctx := t.Context()
+			labels := map[string]string{"bugnet": "1", "placement": "p-drift"}
+			before := time.Now().UTC().Truncate(time.Second)
+			ref, err := p.Create(ctx, provider.CreateRequest{
+				IdempotencyKey: "key-drift", Size: smallSize(t, p), Lifetime: time.Hour,
+				Labels: labels,
+			})
+			if err != nil {
+				t.Fatalf("create with a drifted reply: %v", err)
+			}
+			s, _ := f.sandbox(ref.ID)
+			created, err := time.Parse(time.RFC3339, ref.Meta["created_at"])
+			if err != nil || drift == "layout" && !created.Equal(s.created) ||
+				drift == "types" && (created.Before(before) || created.After(time.Now())) {
+				t.Errorf("created_at %q, want %v or the local clock", ref.Meta["created_at"],
+					s.created)
+			}
+			if err := p.WaitReady(ctx, ref); err != nil {
+				t.Fatalf("wait with drifted replies: %v", err)
+			}
+			owned, err := p.ListOwned(ctx, labels)
+			if err != nil || len(owned) != 1 || owned[0].Ref.ID != ref.ID {
+				t.Fatalf("list with drifted replies gave %+v, %v, want %s", owned, err, ref.ID)
+			}
+			if drift == "layout" && !owned[0].CreatedAt.Equal(s.created) ||
+				drift == "types" && !owned[0].CreatedAt.IsZero() {
+				t.Errorf("listed creation time %v, want %v or none", owned[0].CreatedAt, s.created)
+			}
+			out, code, err := runExec(ctx, p, ref, provider.ExecSpec{Argv: []string{"echo", "x"}})
+			if err != nil || string(out) != "x\n" || code != 0 {
+				t.Fatalf("exec with a drifted start reply gave %q exit %d, %v", out, code, err)
+			}
+		})
 	}
 }
 

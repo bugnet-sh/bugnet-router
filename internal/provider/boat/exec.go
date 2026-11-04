@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -26,7 +25,6 @@ const (
 	maxLineBytes = 16 << 20
 	// defaultIdle is four missed heartbeats, which Boat sends after 15 s without output
 	defaultIdle = time.Minute
-	killTimeout = 10 * time.Second
 )
 
 // linuxSignals numbers signals by name as Linux does, since every Boat machine runs Linux
@@ -52,20 +50,21 @@ func (p *Provider) Exec(
 	}
 	// A detached command has no time limit, while a waited or streamed one stops at 600 s
 	body := api.CommandRequest{Command: line, Detached: new(true)}
-	raw, err := p.send(ctx, true, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, startsCommand, func(ctx context.Context) (*http.Response, error) {
 		return p.api.Command(ctx, id, body)
 	})
 	if err != nil {
 		return nil, err
 	}
-	var started api.CommandStartedResponse
-	if err := json.Unmarshal(raw, &started); err != nil || started.ProcessId < 1 {
+	// Only the process id is read, so the command is followed whatever else the reply holds
+	var started struct {
+		ProcessID int `json:"processId"`
+	}
+	if err := decode(raw, &started); err != nil || started.ProcessID < 1 {
 		return nil, unknown(fmt.Errorf("boat command reply names no process: %.200s", raw))
 	}
 	sctx, cancel := context.WithCancel(ctx)
-	s := &execStream{
-		p: p, ctx: ctx, sctx: sctx, cancel: cancel, sandbox: id, process: started.ProcessId,
-	}
+	s := &execStream{p: p, sctx: sctx, cancel: cancel, sandbox: id, process: started.ProcessID}
 	if err := s.reopen(); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -75,15 +74,16 @@ func (p *Provider) Exec(
 
 // execStream follows one detached command, reattaching from the offsets it has delivered
 type execStream struct {
-	p   *Provider
-	ctx context.Context
+	p *Provider
 	// sctx ends with Close and carries every attach of the stream
 	sctx    context.Context
 	cancel  context.CancelFunc
 	sandbox string
 	process int
-	body    io.ReadCloser
-	lines   *bufio.Scanner
+	// mu guards body, which Close shuts while a Read may be waiting on it
+	mu    sync.Mutex
+	body  io.ReadCloser
+	lines *bufio.Scanner
 	// idle ends the current attach through stop when no line comes for a while
 	idle *time.Timer
 	stop context.CancelFunc
@@ -91,11 +91,9 @@ type execStream struct {
 	stdout, stderr int
 	failures       int
 	pending        []byte
-	exited         atomic.Bool
 	done           bool
 	code           int
 	err            error
-	closed         sync.Once
 }
 
 func (s *execStream) Read(p []byte) (int, error) {
@@ -185,7 +183,6 @@ func (s *execStream) exit(f api.CommandAttachFrame) {
 		s.finish(unknown(fmt.Errorf("boat command %d is %s, its exit is unknown", s.process,
 			status)))
 	case f.ExitCode != nil:
-		s.exited.Store(true)
 		s.code = *f.ExitCode
 		s.finish(nil)
 	case signal != "":
@@ -195,7 +192,6 @@ func (s *execStream) exit(f api.CommandAttachFrame) {
 				signal)))
 			return
 		}
-		s.exited.Store(true)
 		s.code = 128 + n
 		s.finish(nil)
 	default:
@@ -238,7 +234,7 @@ func (s *execStream) attach() error {
 	params := &api.AttachCommandParams{StdoutOffset: new(s.stdout), StderrOffset: new(s.stderr)}
 	actx, stop := context.WithCancel(s.sctx)
 	idle := time.AfterFunc(s.p.idleTimeout, stop)
-	resp, err := s.p.open(actx, false, func(ctx context.Context) (*http.Response, error) {
+	resp, err := s.p.open(actx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return s.p.api.AttachCommand(ctx, s.sandbox, s.process, params,
 			func(_ context.Context, req *http.Request) error {
 				req.Header.Set("Accept", "application/x-ndjson")
@@ -250,19 +246,33 @@ func (s *execStream) attach() error {
 		stop()
 		return err
 	}
-	s.body, s.idle, s.stop = resp.Body, idle, stop
+	s.mu.Lock()
+	s.body = resp.Body
+	s.mu.Unlock()
+	s.idle, s.stop = idle, stop
 	s.lines = bufio.NewScanner(resp.Body)
 	s.lines.Buffer(make([]byte, 0, 64<<10), maxLineBytes)
 	return nil
 }
 
 func (s *execStream) drop() {
-	if s.body != nil {
+	if s.lines != nil {
 		s.idle.Stop()
 		s.stop()
-		_ = s.body.Close()
 	}
-	s.body, s.lines, s.idle, s.stop = nil, nil, nil, nil
+	s.shut()
+	s.lines, s.idle, s.stop = nil, nil, nil
+}
+
+// shut closes the current attach body once, whether the reader or Close gets there first
+func (s *execStream) shut() {
+	s.mu.Lock()
+	body := s.body
+	s.body = nil
+	s.mu.Unlock()
+	if body != nil {
+		_ = body.Close()
+	}
 }
 
 // ended is the error of a stream whose context ended, by Close or by the caller's deadline
@@ -289,26 +299,10 @@ func (s *execStream) Wait() (int, error) {
 	return s.code, nil
 }
 
-// Close stops following and stops a command that has not exited
+// Close stops following the command and leaves it running, safe while another goroutine reads
 func (s *execStream) Close() error {
-	s.closed.Do(func() {
-		s.cancel()
-		if !s.exited.Load() {
-			s.p.kill(s.ctx, s.sandbox, s.process)
-		}
-	})
+	// Boat's command kill has an unverified scope and bugnet-run's detached supervisor must survive
+	s.cancel()
+	s.shut()
 	return nil
-}
-
-// kill stops a detached command, best effort since the sandbox may already be gone
-func (p *Provider) kill(ctx context.Context, sandbox string, process int) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), killTimeout)
-	defer cancel()
-	_, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
-		return p.api.StopCommand(ctx, sandbox, process)
-	})
-	if err != nil && !isCode(err, provider.CodeNotFound) {
-		p.log.Warn("boat could not stop a command whose stream closed early", "sandbox", sandbox,
-			"process", process, "err", err)
-	}
 }

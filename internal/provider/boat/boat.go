@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptrace"
@@ -132,7 +131,6 @@ type Options struct {
 	// TypeBySize maps each size sold to its machine type, every type by name when empty
 	TypeBySize map[string]string
 	BaseURL    string
-	Log        *slog.Logger // slog.Default when nil
 }
 
 // Provider places sandboxes on Boat, it keeps no state beyond its configuration
@@ -140,7 +138,6 @@ type Provider struct {
 	api *api.Client
 	// direct sends uploads to signed URLs, which take no Authorization header
 	direct       *http.Client
-	log          *slog.Logger
 	sizes        []size
 	pollInterval time.Duration
 	reattachWait time.Duration
@@ -168,9 +165,8 @@ func New(opts Options) (*Provider, error) {
 		return nil, fmt.Errorf("boat: %w", err)
 	}
 	return &Provider{
-		api: client, direct: &http.Client{}, log: cmp.Or(opts.Log, slog.Default()),
-		sizes: sizes, pollInterval: defaultPoll, reattachWait: defaultReattach,
-		idleTimeout: defaultIdle,
+		api: client, direct: &http.Client{}, sizes: sizes, pollInterval: defaultPoll,
+		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 	}, nil
 }
 
@@ -248,14 +244,14 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		params.IdempotencyKey = new(idempotencyKey(req.IdempotencyKey))
 	}
 	created := time.Now().UTC()
-	raw, err := p.send(ctx, true, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.send(ctx, createsSandbox, func(ctx context.Context) (*http.Response, error) {
 		return p.api.Create(ctx, params, body)
 	})
 	if err != nil {
 		return provider.Ref{}, err
 	}
-	var reply api.CreateSandboxResponse
-	if err := json.Unmarshal(raw, &reply); err != nil || reply.Sandbox.Id == "" {
+	var reply sandboxReply
+	if err := decode(raw, &reply); err != nil || reply.Sandbox.ID == "" {
 		return provider.Ref{}, unknown(fmt.Errorf("boat create reply names no sandbox: %.200s",
 			raw))
 	}
@@ -263,10 +259,58 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if sb.State == api.SandboxStateCancelled {
 		return provider.Ref{}, noMachine(sb)
 	}
-	if sb.CreatedAt != nil {
-		created = *sb.CreatedAt
+	if at, ok := parseTime(sb.CreatedAt); ok {
+		created = at
 	}
-	return newRef(sb.Id, created), nil
+	return newRef(sb.ID, created), nil
+}
+
+// sandbox holds the fields of Boat's sandbox the adapter reads, so drift in the rest is harmless
+type sandbox struct {
+	ID        string            `json:"id"`
+	State     api.SandboxState  `json:"state"`
+	Error     string            `json:"error"`
+	CreatedAt string            `json:"createdAt"`
+	Labels    map[string]string `json:"labels"`
+}
+
+type sandboxReply struct {
+	Sandbox sandbox `json:"sandbox"`
+}
+
+type sandboxPage struct {
+	Sandboxes []sandbox `json:"sandboxes"`
+	PageInfo  struct {
+		HasMore    bool   `json:"hasMore"`
+		NextCursor string `json:"nextCursor"`
+	} `json:"pageInfo"`
+}
+
+// decode reads a reply into the fields the adapter needs, one of another type staying unset
+func decode(raw []byte, v any) error {
+	err := json.Unmarshal(raw, v)
+	// Unmarshal fills every other field before it reports a value of the wrong type
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return nil
+	}
+	return err
+}
+
+// timeLayouts are the forms a Boat time is read in, RFC 3339 first
+var timeLayouts = []string{
+	time.RFC3339Nano, "2006-01-02 15:04:05.999999999Z07:00", "2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999",
+}
+
+// parseTime reads a Boat time in any of the layouts, a time without a zone being UTC
+func parseTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	for _, layout := range timeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // checkLabels holds labels to Boat's limits, which refuses the whole create otherwise
@@ -314,24 +358,23 @@ func sandboxID(ref provider.Ref) (string, error) {
 	return ref.ID, nil
 }
 
-func noMachine(sb api.Sandbox) error {
+func noMachine(sb sandbox) error {
 	return &provider.Error{
 		Code: provider.CodeCapacity, CanFailOver: true,
-		Err: fmt.Errorf("boat cancelled sandbox %s without a machine: %s", sb.Id,
-			deref(sb.Error)),
+		Err: fmt.Errorf("boat cancelled sandbox %s without a machine: %s", sb.ID, sb.Error),
 	}
 }
 
-func (p *Provider) get(ctx context.Context, id string) (api.Sandbox, error) {
-	raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+func (p *Provider) get(ctx context.Context, id string) (sandbox, error) {
+	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.Get(ctx, id)
 	})
 	if err != nil {
-		return api.Sandbox{}, err
+		return sandbox{}, err
 	}
-	var reply api.SandboxInfoResponse
-	if err := json.Unmarshal(raw, &reply); err != nil {
-		return api.Sandbox{}, internal(fmt.Errorf("boat sandbox %s reply: %w", id, err))
+	var reply sandboxReply
+	if err := decode(raw, &reply); err != nil {
+		return sandbox{}, internal(fmt.Errorf("boat sandbox %s reply: %w", id, err))
 	}
 	return reply.Sandbox, nil
 }
@@ -354,7 +397,7 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 			case api.SandboxStateError, api.SandboxStateArchiving, api.SandboxStateArchived:
 				return &provider.Error{
 					Code: provider.CodeInternal, CanFailOver: true,
-					Err: fmt.Errorf("boat sandbox %s is %s: %s", id, sb.State, deref(sb.Error)),
+					Err: fmt.Errorf("boat sandbox %s is %s: %s", id, sb.State, sb.Error),
 				}
 			}
 			// The other states, and any Boat adds later, are waited on like provisioning
@@ -392,7 +435,7 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 			left.Round(time.Second), maxTTL))
 	}
 	body := api.UpdateSandboxRequest{TtlSeconds: new(wholeSeconds(left))}
-	_, err = p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.Update(ctx, id, body)
 	})
 	return err
@@ -405,7 +448,7 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 		return nil
 	}
 	params := &api.DeleteSandboxParams{XAsciiConfirmDelete: id}
-	_, err = p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+	_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 		return p.api.DeleteSandbox(ctx, id, params)
 	})
 	if isCode(err, provider.CodeNotFound) {
@@ -429,36 +472,34 @@ func (p *Provider) ListOwned(
 	}
 	var owned []provider.Summary
 	for {
-		raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
 			return p.api.Sandboxes(ctx, params)
 		})
 		if err != nil {
 			return nil, err
 		}
-		var page api.SandboxListResponse
-		if err := json.Unmarshal(raw, &page); err != nil {
+		var page sandboxPage
+		if err := decode(raw, &page); err != nil {
 			return nil, internal(fmt.Errorf("boat sandbox list reply: %w", err))
 		}
 		for _, sb := range page.Sandboxes {
-			have := map[string]string{}
-			if sb.Labels != nil {
-				have = *sb.Labels
+			have := sb.Labels
+			if have == nil {
+				have = map[string]string{}
 			}
-			if !hasLabels(have, labels) {
+			if sb.ID == "" || !hasLabels(have, labels) {
 				continue
 			}
 			s := provider.Summary{Labels: have}
-			if sb.CreatedAt != nil {
-				s.CreatedAt = sb.CreatedAt.UTC()
-			}
-			s.Ref = newRef(sb.Id, s.CreatedAt)
+			s.CreatedAt, _ = parseTime(sb.CreatedAt)
+			s.Ref = newRef(sb.ID, s.CreatedAt)
 			owned = append(owned, s)
 		}
-		info := page.PageInfo
-		if info == nil || !info.HasMore || info.NextCursor == nil || *info.NextCursor == "" {
+		next := page.PageInfo.NextCursor
+		if !page.PageInfo.HasMore || next == "" {
 			return owned, nil
 		}
-		params.Cursor = info.NextCursor
+		params.Cursor = &next
 	}
 }
 
@@ -473,46 +514,58 @@ func hasLabels(have, want map[string]string) bool {
 
 /* Requests */
 
-// send makes one call and reads a 2xx reply, create marks calls that start something billable
+// effect is what a call may set going, which decides how an unclear answer is read
+type effect int
+
+const (
+	// noEffect marks a call that starts nothing billable
+	noEffect effect = iota
+	// createsSandbox marks a create, which Boat replays for the same idempotency key
+	createsSandbox
+	// startsCommand marks a command start, which Boat never replays
+	startsCommand
+)
+
+// send makes one call and reads a 2xx reply
 func (p *Provider) send(
-	ctx context.Context, create bool, call func(context.Context) (*http.Response, error),
+	ctx context.Context, eff effect, call func(context.Context) (*http.Response, error),
 ) ([]byte, error) {
-	resp, err := p.open(ctx, create, call)
+	resp, err := p.open(ctx, eff, call)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReplyBytes))
 	if err != nil {
-		return nil, transportError(fmt.Errorf("boat reply: %w", err), true, create)
+		return nil, transportError(fmt.Errorf("boat reply: %w", err), true, eff)
 	}
 	return raw, nil
 }
 
 // open makes one call and returns a 2xx response with its body unread
 func (p *Provider) open(
-	ctx context.Context, create bool, call func(context.Context) (*http.Response, error),
+	ctx context.Context, eff effect, call func(context.Context) (*http.Response, error),
 ) (*http.Response, error) {
 	var sent atomic.Bool
 	trace := &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }}
 	resp, err := call(httptrace.WithClientTrace(ctx, trace))
 	if err != nil {
-		return nil, transportError(fmt.Errorf("boat: %w", err), sent.Load(), create)
+		return nil, transportError(fmt.Errorf("boat: %w", err), sent.Load(), eff)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 	_ = resp.Body.Close()
-	return nil, apiError(resp.StatusCode, resp.Header, raw, create)
+	return nil, apiError(resp.StatusCode, resp.Header, raw, eff)
 }
 
 /* Errors */
 
-// transportError classifies a call that got no answer, a create that was sent may have run
-func transportError(err error, sent, create bool) error {
+// transportError classifies a call with no answer, a create or start that was sent may have run
+func transportError(err error, sent bool, eff effect) error {
 	switch {
-	case sent && create:
+	case sent && eff != noEffect:
 		return unknown(err)
 	case sent:
 		return internal(err)
@@ -531,7 +584,7 @@ func canonical(code string) string {
 }
 
 // apiError classifies an error envelope by its code, then its status
-func apiError(status int, h http.Header, raw []byte, create bool) error {
+func apiError(status int, h http.Header, raw []byte, eff effect) error {
 	var top map[string]any
 	_ = json.Unmarshal(raw, &top)
 	inner, _ := top["error"].(map[string]any)
@@ -577,10 +630,12 @@ func apiError(status int, h http.Header, raw []byte, create bool) error {
 		e.Code = provider.CodeInvalid
 	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
 		e.Code = provider.CodeInvalid
-	case code == "sandbox_direct_failed" && details["retryable"] == true:
-		// The command provably never ran, so the caller may send it again
-	case status >= 500 && create:
-		// Boat replays a create of the same key and a command may have started, so both are unsure
+	case status >= 500 && eff == createsSandbox:
+		// A retry with the same key returns whatever the first create made
+		e.Code = provider.CodeOutcomeUnknown
+	case eff == startsCommand && status == http.StatusBadGateway &&
+		code == "sandbox_direct_failed" && details["retryable"] != true:
+		// Boat could not tell whether the command started, and retryable true means it did not
 		e.Code = provider.CodeOutcomeUnknown
 	}
 	return e
