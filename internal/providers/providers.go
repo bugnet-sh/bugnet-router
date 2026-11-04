@@ -3,7 +3,9 @@ package providers
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/boxd"
+	"github.com/oynozan/bugnet-router/internal/provider/e2b"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
 )
 
@@ -52,9 +55,42 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
 			ps = append(ps, p)
+		case "e2b":
+			p, err := buildE2B(cfg.ProviderKeys["e2b"])
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
 		default:
 			return nil, fmt.Errorf("providers: %s has no adapter yet", name)
 		}
 	}
 	return provider.NewRegistry(ps), nil
+}
+
+// buildE2B reads the E2B settings, an adapter without templates is built but never a candidate
+func buildE2B(key string) (*e2b.Provider, error) {
+	if key == "" {
+		return nil, errors.New("e2b needs E2B_API_KEY")
+	}
+	templates, err := e2b.ParseTemplates(os.Getenv("BUGNET_E2B_TEMPLATES"))
+	if err != nil {
+		return nil, fmt.Errorf("BUGNET_E2B_TEMPLATES: %w", err)
+	}
+	var lifetime time.Duration
+	if v := os.Getenv("BUGNET_E2B_MAX_LIFETIME"); v != "" {
+		lifetime, err = time.ParseDuration(v)
+		if err != nil || lifetime <= 0 {
+			return nil, fmt.Errorf("BUGNET_E2B_MAX_LIFETIME %q is not a positive duration", v)
+		}
+	}
+	if len(templates) == 0 {
+		slog.Warn("e2b has no templates and is never a candidate, set BUGNET_E2B_TEMPLATES")
+	}
+	return e2b.New(e2b.Options{
+		APIKey:      key,
+		Domain:      os.Getenv("BUGNET_E2B_DOMAIN"),
+		Templates:   templates,
+		MaxLifetime: lifetime,
+	})
 }

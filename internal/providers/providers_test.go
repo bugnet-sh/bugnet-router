@@ -1,8 +1,10 @@
 package providers_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -114,8 +116,90 @@ func TestBuildBoxdNeedsKey(t *testing.T) {
 	}
 }
 
+func TestBuildE2B(t *testing.T) {
+	t.Setenv("BUGNET_E2B_TEMPLATES", "2x2=bugnet-2x2:2:2048:10,4x8=bugnet-4x8:4:8192:10")
+	t.Setenv("BUGNET_E2B_DOMAIN", "e2b-juliett.dev")
+	t.Setenv("BUGNET_E2B_MAX_LIFETIME", "24h")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"e2b"},
+		ProviderKeys: map[string]string{"e2b": "e2b_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := reg.Get("e2b")
+	if !ok {
+		t.Fatalf("registry %v lacks e2b", reg.Ordered())
+	}
+	caps := p.Capabilities()
+	if !caps.NeedsRunnerUpload || caps.MaxLifetime != 24*time.Hour ||
+		p.BillingIncrement() != time.Second {
+		t.Fatalf("e2b capabilities %+v, increment %v", caps, p.BillingIncrement())
+	}
+	size, ok := p.SizeFor(provider.Resources{VCPU: 4})
+	if !ok || size.Name != "4x8" || p.HourlyCostMicros(size) != 331200 {
+		t.Fatalf("size for 4 vCPU: %+v, %v", size, ok)
+	}
+}
+
+func TestBuildE2BDefaults(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	for _, env := range []string{
+		"BUGNET_E2B_TEMPLATES", "BUGNET_E2B_DOMAIN", "BUGNET_E2B_MAX_LIFETIME",
+	} {
+		t.Setenv(env, "")
+	}
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"e2b"},
+		ProviderKeys: map[string]string{"e2b": "e2b_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := reg.Get("e2b")
+	if p.Capabilities().MaxLifetime != time.Hour {
+		t.Errorf("max lifetime %v, want the Hobby plan's hour", p.Capabilities().MaxLifetime)
+	}
+	if s, ok := p.SizeFor(provider.Resources{}); ok {
+		t.Errorf("e2b without templates offers %+v", s)
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") ||
+		!strings.Contains(got, "BUGNET_E2B_TEMPLATES") {
+		t.Errorf("log %q, want a warning naming BUGNET_E2B_TEMPLATES", got)
+	}
+}
+
+func TestBuildE2BRejectsBadConfig(t *testing.T) {
+	cases := []struct {
+		name, env, value string
+	}{
+		{"no key", "", ""},
+		{"bad templates", "BUGNET_E2B_TEMPLATES", "2x2=bugnet-2x2:2:2048"},
+		{"bad lifetime", "BUGNET_E2B_MAX_LIFETIME", "an hour"},
+		{"negative lifetime", "BUGNET_E2B_MAX_LIFETIME", "-1h"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			keys := map[string]string{"e2b": "e2b_test"}
+			want := c.env
+			if c.env == "" {
+				keys, want = nil, "E2B_API_KEY"
+			} else {
+				t.Setenv(c.env, c.value)
+			}
+			_, err := providers.Build(config.Config{Providers: []string{"e2b"}, ProviderKeys: keys})
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("build gave %v, want an error naming %s", err, want)
+			}
+		})
+	}
+}
+
 func TestBuildRejectsProvidersWithoutAdapter(t *testing.T) {
-	for _, name := range []string{"koyeb", "boat", "e2b"} {
+	for _, name := range []string{"koyeb", "boat"} {
 		_, err := providers.Build(config.Config{Providers: []string{name}})
 		if err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("build %s: %v", name, err)

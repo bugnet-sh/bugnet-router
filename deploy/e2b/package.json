@@ -1,0 +1,17 @@
+{
+    "name": "bugnet-e2b-templates",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "tsx build.ts"
+    },
+    "engines": {
+        "node": ">=22.19.0"
+    },
+    "dependencies": {
+        "e2b": "2.57.0"
+    },
+    "devDependencies": {
+        "tsx": "4.23.15"
+    }
+}

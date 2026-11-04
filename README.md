@@ -26,6 +26,7 @@ record, Valkey carries output streams and job leases, and River runs durable job
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
 | `test/e2e` | End-to-end tests over the built binaries |
 | `scripts` | `dev-up.sh` and the development catalog |
+| `deploy/e2b` | E2B template definitions, one template per size |
 
 ## Prerequisites
 
@@ -114,6 +115,9 @@ URL.
 | `BUGNET_BOXD_REGION` | `fra` | boxd region, served at `<region>.boxd.sh:9443` outside `fra` |
 | `BUGNET_BOXD_ENDPOINT` | `boxd.sh:9443` in `fra` | boxd gRPC address, overrides the region |
 | `E2B_API_KEY` | empty | E2B credentials |
+| `BUGNET_E2B_TEMPLATES` | empty | Comma-separated E2B sizes, `deploy/e2b` gives the format |
+| `BUGNET_E2B_DOMAIN` | `e2b.app` | E2B region domain, `e2b-juliett.dev` for EU-West-1 |
+| `BUGNET_E2B_MAX_LIFETIME` | `1h` | Longest lifetime the E2B plan allows, `24h` on Pro |
 | `KOYEB_API_TOKEN` | empty | Koyeb credentials |
 | `BOAT_API_KEY` | empty | Boat credentials |
 
@@ -145,5 +149,7 @@ Money is integer micro-USD and times are UTC.
 ## Providers
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
-- Adapters for boxd, E2B, Koyeb and Boat arrive next. Until then `BUGNET_PROVIDERS` must name
-  only `local`.
+- `boxd` runs isolated boxd machines.
+- `e2b` runs E2B sandboxes from templates built with `deploy/e2b`. Without
+  `BUGNET_E2B_TEMPLATES` it has no sizes and is never chosen.
+- Adapters for Koyeb and Boat arrive next, until then `BUGNET_PROVIDERS` must not name them.
