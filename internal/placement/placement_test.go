@@ -2,6 +2,7 @@ package placement
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -56,18 +57,6 @@ func names(cs []Candidate) []string {
 	return out
 }
 
-func eq(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func engine(h Health, ps ...provider.Provider) *Engine {
 	return New(provider.NewRegistry(ps), h)
 }
@@ -81,7 +70,7 @@ func TestCandidatesRespectPreferenceOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !eq(names(got), []string{"a", "b", "c"}) {
+	if !slices.Equal(names(got), []string{"a", "b", "c"}) {
 		t.Fatalf("order = %v", names(got))
 	}
 	if got[0].CostMicros != 100000 || got[0].Size.Name != "small" {
@@ -99,7 +88,7 @@ func TestCandidatesDemoteSlowReadyStably(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !eq(names(got), []string{"b", "c", "d", "a"}) {
+	if !slices.Equal(names(got), []string{"b", "c", "d", "a"}) {
 		t.Fatalf("order = %v", names(got))
 	}
 }
@@ -113,7 +102,7 @@ func TestCandidatesDropBelowMarginFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !eq(names(got), []string{"cheap"}) {
+	if !slices.Equal(names(got), []string{"cheap"}) {
 		t.Fatalf("got %v", names(got))
 	}
 	if m := got[0].MarginFraction; m < 0.59 || m > 0.61 {
@@ -133,7 +122,7 @@ func TestCandidatesZeroPrice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !eq(names(got), []string{"free"}) || got[0].MarginFraction != 0 {
+	if !slices.Equal(names(got), []string{"free"}) || got[0].MarginFraction != 0 {
 		t.Fatalf("got %v", names(got))
 	}
 }
@@ -160,14 +149,14 @@ func TestCandidatesNeedGPU(t *testing.T) {
 	got, err := e.Candidates(Inputs{
 		Package: pkg(10, 100000), Requirements: Requirements{GPU: true},
 	})
-	if err != nil || !eq(names(got), []string{"gpu"}) {
+	if err != nil || !slices.Equal(names(got), []string{"gpu"}) {
 		t.Fatalf("got %v, %v", names(got), err)
 	}
 
 	gpuPkg := pkg(10, 100000)
 	gpuPkg.Resources.GPUCount = 1
 	got, err = e.Candidates(Inputs{Package: gpuPkg})
-	if err != nil || !eq(names(got), []string{"gpu"}) {
+	if err != nil || !slices.Equal(names(got), []string{"gpu"}) {
 		t.Fatalf("got %v, %v", names(got), err)
 	}
 }
@@ -182,7 +171,7 @@ func TestCandidatesCapabilitiesAndLifetime(t *testing.T) {
 	got, err := e.Candidates(Inputs{
 		Package: pkg(30, 100000), Requirements: Requirements{SSH: true, Preview: true},
 	})
-	if err != nil || !eq(names(got), []string{"ssh"}) {
+	if err != nil || !slices.Equal(names(got), []string{"ssh"}) {
 		t.Fatalf("got %v, %v", names(got), err)
 	}
 	// 56 minutes plus the 5 minute margin exceeds the one hour cap
@@ -211,7 +200,7 @@ func TestCandidatesSkipUnhealthyAndExcluded(t *testing.T) {
 	got, err := engine(h, a, b, c).Candidates(Inputs{
 		Package: pkg(10, 1000000), Exclude: map[string]bool{"b": true},
 	})
-	if err != nil || !eq(names(got), []string{"c"}) {
+	if err != nil || !slices.Equal(names(got), []string{"c"}) {
 		t.Fatalf("got %v, %v", names(got), err)
 	}
 	_, err = engine(h, a, b).Candidates(Inputs{
