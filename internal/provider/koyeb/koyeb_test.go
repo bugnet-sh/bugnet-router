@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -19,7 +20,9 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -158,20 +161,21 @@ func TestKoyebStreamsLogsFromStartProcess(t *testing.T) {
 	}
 
 	start := f.lastStart()
-	wrapper := regexp.MustCompile(`^mkdir -p (\S+) && sh -c '"\$@"; echo \$\? > (\S+)' sh (.*)$`)
+	wrapper := regexp.MustCompile(
+		`^mkdir -p (\S+) && \{ sh -c 'exec "\$@"' sh (.*); echo \$\? > (\S+); \}$`)
 	m := wrapper.FindStringSubmatch(start.cmd)
 	if m == nil {
 		t.Fatalf("start_process cmd %q is not the exit file wrapper", start.cmd)
 	}
 	if m[1] != p.exitDir || !regexp.MustCompile(`^[0-9a-f]{16}\.exit$`).MatchString(
-		strings.TrimPrefix(m[2], p.exitDir+"/")) {
-		t.Errorf("wrapper makes %s and writes %s, want a random .exit file in %s", m[1], m[2],
+		strings.TrimPrefix(m[3], p.exitDir+"/")) {
+		t.Errorf("wrapper makes %s and writes %s, want a random .exit file in %s", m[1], m[3],
 			p.exitDir)
 	}
 	words := `sh -c '` + strings.ReplaceAll(script, `'`, `'\''`) + `' argv0 ` + gate +
 		` 'it'\''s; $(echo no)'`
-	if m[3] != words {
-		t.Errorf("wrapper passes argv as\n%s\nwant\n%s", m[3], words)
+	if m[2] != words {
+		t.Errorf("wrapper passes argv as\n%s\nwant\n%s", m[2], words)
 	}
 	if start.cwd != dir || !maps.Equal(start.env, spec.Env) {
 		t.Errorf("start_process cwd %q env %v, want %q and %v", start.cwd, start.env, dir,
@@ -183,6 +187,9 @@ func TestKoyebStreamsLogsFromStartProcess(t *testing.T) {
 	}
 	if got := start.header.Get("X-Routing-Key"); got != dep.routingKey {
 		t.Errorf("X-Routing-Key %q, want %q", got, dep.routingKey)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
 	}
 	routes := f.routesCalled()
 	want := []string{
@@ -242,7 +249,7 @@ func TestKoyebExecEvents(t *testing.T) {
 			}
 			defer func() { _ = stream.Close() }()
 			if c.exit != "" {
-				exitFile := regexp.MustCompile(`> (\S+)'`).FindStringSubmatch(f.lastStart().cmd)
+				exitFile := regexp.MustCompile(`> (\S+); \}$`).FindStringSubmatch(f.lastStart().cmd)
 				if err := os.MkdirAll(filepath.Dir(exitFile[1]), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -298,6 +305,47 @@ func TestKoyebExecCloseStopsReading(t *testing.T) {
 	}
 	if _, err := stream.Wait(); err == nil {
 		t.Fatal("Wait after Close reported a clean exit")
+	}
+}
+
+func TestKoyebExecCloseKillsTheCommand(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref := ready(t, p, "key-kill")
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	stream, err := p.Exec(t.Context(), ref, provider.ExecSpec{Argv: []string{
+		"sh", "-c", `echo $$ > "$0"; while :; do echo tick; sleep 0.05; done`, pidFile,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(stream).ReadString('\n'); err != nil || line != "tick\n" {
+		t.Fatalf("first line %q, %v", line, err)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if kills := f.killed(); len(kills) != 1 || !strings.HasPrefix(kills[0], "proc-") {
+		t.Fatalf("kill_process calls %q, want one for the started process", kills)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("command %d still runs 5 s after Close", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := stream.Close(); err != nil || len(f.killed()) != 1 {
+		t.Fatalf("a second Close gave %v after %d kills, want nothing more", err,
+			len(f.killed()))
 	}
 }
 
@@ -363,6 +411,18 @@ func TestKoyebErrorMapping(t *testing.T) {
 			fault: fault{status: 403, code: "authorization_required",
 				message: "You don't have the requested permission"},
 			op: create, code: provider.CodeAuth, failOver: true,
+		},
+		{
+			name: "instance type refused", route: "POST /v1/services",
+			fault: fault{status: 400, code: "invalid_argument",
+				message: "Instance type gpu-nvidia-rtx-4000-sff-ada is not available in fra"},
+			op: create, code: provider.CodeCapacity, failOver: true,
+		},
+		{
+			name: "no instance left", route: "POST /v1/services",
+			fault: fault{status: 422, code: "invalid_argument",
+				message: "no instance of type small can be allocated right now"},
+			op: create, code: provider.CodeCapacity, failOver: true,
 		},
 		{
 			name: "invalid definition", route: "POST /v1/services",
@@ -534,6 +594,77 @@ func TestKoyebCreateRemovesAppOfFailedService(t *testing.T) {
 	}
 }
 
+func TestKoyebCreateWhoseLookupFailsIsUnknown(t *testing.T) {
+	limited := fault{status: 429, code: "rate_limit_error", message: "slow down", times: 1,
+		header: map[string]string{"Retry-After": "0"}}
+	cases := []struct {
+		name    string
+		earlier bool
+		prepare func(f *fakeKoyeb, appID string)
+	}{
+		{"repeated key and the service list rate limited", true, func(f *fakeKoyeb, _ string) {
+			f.inject("GET /v1/services", limited)
+		}},
+		{"repeated key and the deployment read failing", true, func(f *fakeKoyeb, _ string) {
+			f.inject("GET /v1/deployments/{id}", fault{status: 500, message: "oops", times: 1})
+		}},
+		{"repeated key and the lookup connection dropped", true, func(f *fakeKoyeb, _ string) {
+			// Twice, since the transport retries an idempotent call once on a reused connection
+			f.inject("GET /v1/services", fault{drop: true, times: 2})
+		}},
+		{"repeated key refused with 400 and the app list unavailable", true,
+			func(f *fakeKoyeb, _ string) {
+				f.conflictStatus = 400
+				f.inject("GET /v1/apps", fault{status: 503, message: "busy", times: 1})
+			}},
+		{"repeated key and a service with no deployment yet", true,
+			func(f *fakeKoyeb, appID string) {
+				f.setService(appID, func(s *fakeService) { s.deployment = "" })
+			}},
+		{"service reply lost and its lookup refused", false, func(f *fakeKoyeb, _ string) {
+			f.inject("POST /v1/services", fault{drop: true, after: true, times: 1})
+			f.inject("GET /v1/services", fault{status: 403, code: "authorization_required",
+				message: "forbidden", times: 1})
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeToken)
+			labels := map[string]string{"bugnet": "1"}
+			var first provider.Ref
+			if c.earlier {
+				var err error
+				if first, err = createKey(t, p, "key-unsettled", labels); err != nil {
+					t.Fatal(err)
+				}
+			}
+			kept, _, _ := f.box(first.ID)
+			c.prepare(f, first.ID)
+			_, err := createKey(t, p, "key-unsettled", labels)
+			e, ok := provider.AsError(err)
+			if !ok || e.Code != provider.CodeOutcomeUnknown || e.CanFailOver {
+				t.Fatalf("create whose lookup failed gave %v, want outcome_unknown, no fail over",
+					err)
+			}
+			if apps, services := f.counts(); apps != 1 || services != 1 {
+				t.Fatalf("%d apps and %d services, want the one sandbox kept", apps, services)
+			}
+			f.clearFaults()
+			if c.earlier {
+				f.setService(first.ID, func(s *fakeService) { s.deployment = kept.deployment })
+			}
+			again, err := createKey(t, p, "key-unsettled", labels)
+			svc, _, ok := f.box(again.ID)
+			if err != nil || !ok || again.Meta["service_id"] != svc.id ||
+				(c.earlier && again.ID != first.ID) {
+				t.Fatalf("retry once the lookup works gave %+v, %v, want the one sandbox", again,
+					err)
+			}
+		})
+	}
+}
+
 func TestKoyebCreateRejectsBadInput(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeToken)
@@ -542,8 +673,8 @@ func TestKoyebCreateRejectsBadInput(t *testing.T) {
 		"unknown size": {IdempotencyKey: "k", Size: provider.Size{Name: "nano"},
 			Lifetime: time.Minute},
 		"no lifetime": {IdempotencyKey: "k", Size: size},
-		"lifetime over a day": {IdempotencyKey: "k", Size: size,
-			Lifetime: 24*time.Hour + time.Second},
+		"lifetime over the cap": {IdempotencyKey: "k", Size: size,
+			Lifetime: 24*time.Hour - 10*time.Minute + time.Second},
 	}
 	for name, req := range reqs {
 		if _, err := p.Create(t.Context(), req); !isCode(err, provider.CodeInvalid) {
@@ -554,10 +685,10 @@ func TestKoyebCreateRejectsBadInput(t *testing.T) {
 		t.Fatalf("rejected creates reached Koyeb %d times", n)
 	}
 	ref, err := p.Create(t.Context(), provider.CreateRequest{
-		IdempotencyKey: "k", Size: size, Lifetime: 24 * time.Hour,
+		IdempotencyKey: "k", Size: size, Lifetime: 24*time.Hour - 10*time.Minute,
 	})
 	if err != nil {
-		t.Fatalf("create of a day: %v", err)
+		t.Fatalf("create at the cap: %v", err)
 	}
 	_, dep, _ := f.box(ref.ID)
 	if got := fakeEnv(&dep)["BUGNET_LABELS"]; got != "{}" {
@@ -608,6 +739,45 @@ func TestKoyebWaitReady(t *testing.T) {
 	}
 }
 
+func TestKoyebWaitReadyHonoursRateLimits(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref, err := createKey(t, p, "key-wait-limited", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.inject("GET /v1/deployments/{id}", fault{status: 429, code: "rate_limit_error",
+		message: "slow down", header: map[string]string{"Retry-After": "1"}, times: 1})
+	if err := p.WaitReady(t.Context(), ref); err != nil {
+		t.Fatalf("wait through a rate limit: %v", err)
+	}
+	reads := f.callTimes("GET /v1/deployments/{id}")
+	if len(reads) < 2 || reads[1].Sub(reads[0]) < time.Second {
+		t.Fatalf("deployment reads at %v, want the second a full Retry-After after the first",
+			reads)
+	}
+}
+
+func TestKoyebWaitReadyWaitsOnUnknownStatuses(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref, err := createKey(t, p, "key-wait-unknown", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.setDeployment(ref.ID, func(d *fakeDeployment) { d.status = "WARMING_UP_SOMEHOW" })
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	err = p.WaitReady(ctx, ref)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "WARMING") {
+		t.Fatalf("wait on a status Koyeb added later gave %v, want it waited on", err)
+	}
+	f.setDeployment(ref.ID, func(d *fakeDeployment) { d.status = "HEALTHY" })
+	if err := p.WaitReady(t.Context(), ref); err != nil {
+		t.Fatalf("wait once healthy: %v", err)
+	}
+}
+
 func TestKoyebReachesExecutorByAppDomain(t *testing.T) {
 	f := newFake(t)
 	f.noMetadata = true
@@ -649,16 +819,17 @@ func TestKoyebSetLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	capped := p.Capabilities().MaxLifetime
 	before := f.callCount("GET /v1/services/{id}")
-	if err := p.SetLifetime(ctx, ref, created.Add(24*time.Hour)); err != nil {
-		t.Fatalf("lifetime of a day: %v", err)
+	if err := p.SetLifetime(ctx, ref, created.Add(capped)); err != nil {
+		t.Fatalf("lifetime at the cap: %v", err)
 	}
 	if n := f.callCount("GET /v1/services/{id}") - before; n != 1 {
 		t.Fatalf("%d service reads, want one to check the sandbox exists", n)
 	}
-	err = p.SetLifetime(ctx, ref, created.Add(24*time.Hour+time.Second))
+	err = p.SetLifetime(ctx, ref, created.Add(capped+time.Second))
 	if !isCode(err, provider.CodeInvalid) {
-		t.Fatalf("lifetime past a day gave %v, want invalid", err)
+		t.Fatalf("lifetime past the cap gave %v, want invalid", err)
 	}
 	if n := f.callCount("GET /v1/services/{id}") - before; n != 1 {
 		t.Fatalf("a lifetime past the cap read the service, %d reads", n)
@@ -669,9 +840,9 @@ func TestKoyebSetLifetime(t *testing.T) {
 	if err := p.SetLifetime(ctx, ref, time.Now().Add(30*time.Minute)); err != nil {
 		t.Fatalf("lifetime within a day of the service's creation: %v", err)
 	}
-	err = p.SetLifetime(ctx, ref, time.Now().Add(2*time.Hour))
+	err = p.SetLifetime(ctx, ref, time.Now().Add(55*time.Minute))
 	if !isCode(err, provider.CodeInvalid) {
-		t.Fatalf("lifetime past a day of the service's creation gave %v, want invalid", err)
+		t.Fatalf("lifetime inside the backstop but past the cap gave %v, want invalid", err)
 	}
 }
 
@@ -750,6 +921,50 @@ func TestKoyebListOwned(t *testing.T) {
 	}
 	if n := f.callCount("GET /v1/services"); n != 4 {
 		t.Fatalf("%d list pages fetched, want 4", n)
+	}
+}
+
+func TestKoyebListOwnedSkipsSandboxesItCannotRead(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ctx := t.Context()
+	labels := map[string]string{"bugnet": "1"}
+	var ids []string
+	for i := range 4 {
+		ref, err := createKey(t, p, fmt.Sprintf("key-sweep-%d", i), labels)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, ref.ID)
+	}
+	f.setService(ids[3], func(s *fakeService) { s.deployment = "" })
+	f.inject("GET /v1/deployments/{id}", fault{status: 429, code: "rate_limit_error",
+		message: "slow down", header: map[string]string{"Retry-After": "1"}, times: 1})
+	var logged bytes.Buffer
+	p.log = slog.New(slog.NewTextHandler(&logged, nil))
+	before := len(f.callTimes("GET /v1/deployments/{id}"))
+	owned, err := p.ListOwned(ctx, labels)
+	if err != nil {
+		t.Fatalf("one rate limited read and one sandbox still being created stopped the sweep: %v",
+			err)
+	}
+	reads := f.callTimes("GET /v1/deployments/{id}")[before:]
+	if len(owned) != 2 || len(reads) != 3 {
+		t.Fatalf("sweep listed %d sandboxes after %d deployment reads, want 2 after 3", len(owned),
+			len(reads))
+	}
+	for _, s := range owned {
+		if s.Ref.ID == ids[3] {
+			t.Fatalf("sweep listed %s, which has no deployment yet", s.Ref.ID)
+		}
+	}
+	if reads[1].Sub(reads[0]) < time.Second {
+		t.Fatalf("deployment reads at %v, want a full Retry-After after the rate limit", reads)
+	}
+	if n := strings.Count(logged.String(), "skips"); n != 1 ||
+		!strings.Contains(logged.String(), "rate_limited") {
+		t.Fatalf("sweep logged %q, want one warning for the rate limited read alone",
+			logged.String())
 	}
 }
 
@@ -1006,7 +1221,7 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 	}
 	want := provider.Capabilities{
 		Preview: true, GPU: true, EgressControl: true, NeedsRunnerUpload: true,
-		MaxLifetime: 24 * time.Hour,
+		MaxLifetime: 24*time.Hour - 10*time.Minute,
 	}
 	if caps := p.Capabilities(); caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)

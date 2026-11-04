@@ -894,6 +894,228 @@ func TestOwnerReattachesWhenTheStreamSkipsOutput(t *testing.T) {
 	}
 }
 
+// editedStream rewrites the frame lines of the first runner stream as Koyeb's log stream may
+type editedStream struct {
+	*local.Provider
+	edit     func(f frame.Frame, line []byte, emit func([]byte)) bool
+	execs    atomic.Int64
+	edited   atomic.Bool
+	mu       sync.Mutex
+	attaches [][]string
+}
+
+func (s *editedStream) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	n := s.execs.Add(1)
+	if len(spec.Argv) > 1 && spec.Argv[1] == "attach" {
+		s.mu.Lock()
+		s.attaches = append(s.attaches, slices.Clone(spec.Argv))
+		s.mu.Unlock()
+	}
+	// Frequent heartbeats put one between every two lines of slowLines
+	spec.Env = map[string]string{"BUGNET_RUN_HEARTBEAT_MS": "15"}
+	es, err := s.Provider.Exec(ctx, ref, spec)
+	if err != nil || n > 1 {
+		return es, err
+	}
+	return &editedReader{ExecStream: es, s: s, lines: bufio.NewReader(es)}, nil
+}
+
+func (s *editedStream) attached() [][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.attaches)
+}
+
+type editedReader struct {
+	provider.ExecStream
+	s     *editedStream
+	lines *bufio.Reader
+	out   []byte
+	err   error
+}
+
+func (r *editedReader) Read(p []byte) (int, error) {
+	for len(r.out) == 0 && r.err == nil {
+		line, err := r.lines.ReadBytes('\n')
+		if len(line) > 0 {
+			var f frame.Frame
+			_ = json.Unmarshal(line, &f)
+			emit := func(l []byte) { r.out = append(r.out, l...) }
+			if r.s.edit(f, line, emit) {
+				r.s.edited.Store(true)
+			}
+		}
+		r.err = err
+	}
+	if len(r.out) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.out)
+	r.out = r.out[n:]
+	return n, nil
+}
+
+func frameLine(f frame.Frame) []byte {
+	raw, _ := json.Marshal(f)
+	return append(raw, '\n')
+}
+
+// repeatLine sends the second stdout line again after the fourth, as a history replay would
+func repeatLine() func(frame.Frame, []byte, func([]byte)) bool {
+	stdout := 0
+	var second []byte
+	return func(f frame.Frame, line []byte, emit func([]byte)) bool {
+		emit(line)
+		if f.Kind != frame.KindStdout {
+			return false
+		}
+		switch stdout++; stdout {
+		case 2:
+			second = line
+		case 4:
+			emit(second)
+			return true
+		}
+		return false
+	}
+}
+
+// swapLines sends the fourth stdout line before the third and the heartbeats between them
+func swapLines() func(frame.Frame, []byte, func([]byte)) bool {
+	stdout := 0
+	var held []byte
+	return func(f frame.Frame, line []byte, emit func([]byte)) bool {
+		if f.Kind == frame.KindStdout {
+			stdout++
+		}
+		switch {
+		case stdout == 3:
+			held = append(held, line...)
+			return false
+		case stdout == 4 && held != nil:
+			emit(line)
+			emit(held)
+			held = nil
+			return true
+		}
+		emit(line)
+		return false
+	}
+}
+
+// lateHeartbeats holds the heartbeats after the second stdout line until the third has passed
+func lateHeartbeats() func(frame.Frame, []byte, func([]byte)) bool {
+	stdout := 0
+	var held []byte
+	return func(f frame.Frame, line []byte, emit func([]byte)) bool {
+		switch {
+		case f.Kind == frame.KindHeartbeat && stdout == 2:
+			held = append(held, line...)
+			return false
+		case f.Kind == frame.KindStdout:
+			stdout++
+		}
+		emit(line)
+		if stdout == 3 && held != nil {
+			emit(held)
+			held = nil
+			return true
+		}
+		return false
+	}
+}
+
+// overlapLine sends the third stdout line with the second one's data in front of it
+func overlapLine() func(frame.Frame, []byte, func([]byte)) bool {
+	stdout := 0
+	var second frame.Frame
+	return func(f frame.Frame, line []byte, emit func([]byte)) bool {
+		if f.Kind == frame.KindStdout {
+			switch stdout++; stdout {
+			case 2:
+				second = f
+			case 3:
+				emit(frameLine(frame.Frame{
+					Kind: frame.KindStdout, Offset: second.Offset,
+					Data: append(slices.Clone(second.Data), f.Data...),
+				}))
+				return true
+			}
+		}
+		emit(line)
+		return false
+	}
+}
+
+// levelBeats fails when a stored heartbeat or exit frame lags the output stored before it
+func levelBeats(t *testing.T, entries []streams.Entry) {
+	t.Helper()
+	var ends [2]int64
+	for _, e := range entries {
+		f := e.Frame
+		switch f.Kind {
+		case frame.KindStdout:
+			ends[0] = max(ends[0], f.Offset+int64(len(f.Data)))
+		case frame.KindStderr:
+			ends[1] = max(ends[1], f.Offset+int64(len(f.Data)))
+		case frame.KindHeartbeat, frame.KindExit:
+			if f.Out != ends[0] || f.Err != ends[1] {
+				t.Fatalf("stored %s frame counts %d/%d after output up to %d/%d", f.Kind, f.Out,
+					f.Err, ends[0], ends[1])
+			}
+		}
+	}
+}
+
+func TestOwnerStoresRepeatedAndReorderedOutputOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		edit   func() func(frame.Frame, []byte, func([]byte)) bool
+		attach bool
+	}{
+		{"a line repeated after later ones", repeatLine, false},
+		{"two lines swapped", swapLines, true},
+		{"heartbeats behind the line after them", lateHeartbeats, false},
+		{"a line overlapping stored output", overlapLine, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			edited := &editedStream{edit: c.edit()}
+			e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+				edited.Provider = p
+				return edited
+			})
+			s := e.service(t, "r1")
+			res := e.exec(t, s, slowLines(8, "0.05"), "", 10*time.Second, jobs.Until{})
+			if res.State != store.JobExited || res.ExitCode == nil || *res.ExitCode != 0 {
+				t.Fatalf("state %s exit %v, want exited with 0", res.State, res.ExitCode)
+			}
+			if !edited.edited.Load() {
+				t.Fatal("the runner stream was never edited")
+			}
+			if attaches := edited.attached(); (len(attaches) > 0) != c.attach {
+				t.Fatalf("attaches %q, want some only after a line came early: %v", attaches,
+					c.attach)
+			}
+			stored := e.streamed(t, res.JobID)
+			if got := output(t, stored, frame.KindStdout); got != lines(1, 8) {
+				t.Fatalf("the stream holds stdout %q, want lines 1 to 8 once each", got)
+			}
+			levelBeats(t, stored)
+			all := watch(t, s, res.JobID, "", jobs.Until{})
+			if got := output(t, all, frame.KindStdout); got != lines(1, 8) {
+				t.Fatalf("watch delivered %q, want lines 1 to 8 once each", got)
+			}
+			j := waitFinished(t, e.store, res.JobID)
+			if j.StdoutBytes != int64(len(lines(1, 8))) {
+				t.Fatalf("job row %+v, want all %d stdout bytes", j, len(lines(1, 8)))
+			}
+		})
+	}
+}
+
 func TestLostSupervisorEndsJobLost(t *testing.T) {
 	e := newEnv(t)
 	s := e.service(t, "r1")

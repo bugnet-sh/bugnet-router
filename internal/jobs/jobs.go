@@ -868,6 +868,10 @@ func (o *owner) pump(argv []string) pumpResult {
 		case streams.Terminal(f):
 			return o.end(f)
 		}
+		f, fresh := o.unseen(f)
+		if !fresh {
+			continue
+		}
 		if !o.append(f) {
 			return pumpStopped
 		}
@@ -888,6 +892,26 @@ func (o *owner) skips(f frame.Frame) bool {
 	return false
 }
 
+// unseen drops output and heartbeats behind the stream's offsets and trims a frame overlapping them
+func (o *owner) unseen(f frame.Frame) (frame.Frame, bool) {
+	if f.Kind == frame.KindHeartbeat {
+		return f, f.Out >= o.offsets[0] && f.Err >= o.offsets[1]
+	}
+	i, ok := streamOf(f.Kind)
+	if !ok {
+		return f, true
+	}
+	next := o.offsets[i]
+	if f.Offset+int64(len(f.Data)) <= next {
+		return f, false
+	}
+	if f.Offset < next {
+		f.Data = f.Data[next-f.Offset:]
+		f.Offset = next
+	}
+	return f, true
+}
+
 func (o *owner) append(f frame.Frame) bool {
 	if _, err := o.leaseNow().Append(o.ctx, f); err != nil {
 		if !errors.Is(err, streams.ErrLeaseLost) {
@@ -895,12 +919,8 @@ func (o *owner) append(f frame.Frame) bool {
 		}
 		return false
 	}
-	// Offsets never move back, since a lossy transport may repeat or reorder old frames
-	switch f.Kind {
-	case frame.KindStdout:
-		o.offsets[0] = max(o.offsets[0], f.Offset+int64(len(f.Data)))
-	case frame.KindStderr:
-		o.offsets[1] = max(o.offsets[1], f.Offset+int64(len(f.Data)))
+	if i, ok := streamOf(f.Kind); ok {
+		o.offsets[i] = f.Offset + int64(len(f.Data))
 	}
 	return true
 }

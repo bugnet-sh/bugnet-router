@@ -27,7 +27,7 @@ const (
 	// epochTTL bounds an epoch key no append ever gave the stream's expiry
 	epochTTL  = 24 * time.Hour
 	readCount = 256
-	scanPage  = 64
+	scanPage  = 256
 )
 
 var (
@@ -277,11 +277,12 @@ func (b *Bus) Last(ctx context.Context, jobID string) (Entry, bool, error) {
 	return entries[0], true, nil
 }
 
-// LastOffsets returns the byte offsets the stream holds output up to and whether it has ended
+// LastOffsets returns the furthest output offsets anywhere in the stream and whether it has ended
 func (b *Bus) LastOffsets(ctx context.Context, jobID string) (int64, int64, bool, error) {
 	var out, errOff int64
-	haveOut, haveErr, done := false, false, false
+	done := false
 	end := "+"
+	// The whole stream is read, so a stale entry near its end can never rewind a resume
 	for first := true; ; first = false {
 		page, err := b.revRange(ctx, jobID, end, scanPage)
 		if err != nil {
@@ -294,25 +295,11 @@ func (b *Bus) LastOffsets(ctx context.Context, jobID string) (int64, int64, bool
 			}
 			switch f.Kind {
 			case frame.KindStdout:
-				if !haveOut {
-					out, haveOut = f.Offset+int64(len(f.Data)), true
-				}
+				out = max(out, f.Offset+int64(len(f.Data)))
 			case frame.KindStderr:
-				if !haveErr {
-					errOff, haveErr = f.Offset+int64(len(f.Data)), true
-				}
+				errOff = max(errOff, f.Offset+int64(len(f.Data)))
 			case frame.KindHeartbeat, frame.KindExit:
-				// The runner sends these only after every byte before its offsets
-				if !haveOut {
-					out = f.Out
-				}
-				if !haveErr {
-					errOff = f.Err
-				}
-				return out, errOff, done, nil
-			}
-			if haveOut && haveErr {
-				return out, errOff, done, nil
+				out, errOff = max(out, f.Out), max(errOff, f.Err)
 			}
 		}
 		if len(page) < scanPage {

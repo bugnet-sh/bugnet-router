@@ -26,8 +26,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	kapi "github.com/koyeb/koyeb-api-client-go/api/v1/koyeb"
 )
 
 const fakeToken = "koyeb-fake-token"
@@ -61,7 +59,7 @@ type fakeService struct {
 
 type fakeDeployment struct {
 	id, serviceID, appID string
-	definition           kapi.DeploymentDefinition
+	definition           map[string]any
 	status               string
 	// startPolls is how many reads still see the deployment starting
 	startPolls int
@@ -80,6 +78,8 @@ type fakeProc struct {
 	entries []logEntry
 	done    bool
 	changed chan struct{}
+	cmd     *exec.Cmd
+	pipes   []io.Closer
 }
 
 func (p *fakeProc) add(stream, line string) {
@@ -117,6 +117,8 @@ type fakeKoyeb struct {
 	api  *httptest.Server
 	exec *httptest.Server
 	pool *x509.CertPool
+	// shell and path run started commands under dash when the host has it, like the Ubuntu image
+	shell, path string
 
 	// conflictStatus is how a taken app name is refused, 409 when zero
 	conflictStatus int
@@ -141,6 +143,8 @@ type fakeKoyeb struct {
 	routes      []string
 	protos      []string
 	uploads     []*http.Request
+	kills       []string
+	stamps      map[string][]time.Time
 	healthDown  int
 	script      *string
 	cleanup     []string
@@ -151,7 +155,7 @@ func newFake(t *testing.T) *fakeKoyeb {
 	f := &fakeKoyeb{
 		t: t, apps: map[string]*fakeApp{}, services: map[string]*fakeService{},
 		deployments: map[string]*fakeDeployment{}, procs: map[string]*fakeProc{},
-		faults: map[string]*fault{}, calls: map[string]int{},
+		faults: map[string]*fault{}, calls: map[string]int{}, stamps: map[string][]time.Time{},
 	}
 	api := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -177,6 +181,15 @@ func newFake(t *testing.T) *fakeKoyeb {
 	f.exec.StartTLS()
 	f.pool = x509.NewCertPool()
 	f.pool.AddCert(f.exec.Certificate())
+	f.shell, f.path = "sh", os.Getenv("PATH")
+	if _, err := os.Stat("/bin/dash"); err == nil {
+		bin := t.TempDir()
+		f.shell = filepath.Join(bin, "sh")
+		if err := os.Symlink("/bin/dash", f.shell); err != nil {
+			t.Fatal(err)
+		}
+		f.path = bin + string(os.PathListSeparator) + f.path
+	}
 
 	t.Cleanup(func() {
 		f.api.Close()
@@ -223,10 +236,17 @@ func (f *fakeKoyeb) inject(pattern string, ft fault) {
 	f.faults[pattern] = &ft
 }
 
+func (f *fakeKoyeb) clearFaults() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	clear(f.faults)
+}
+
 func (f *fakeKoyeb) take(pattern string) *fault {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls[pattern]++
+	f.stamps[pattern] = append(f.stamps[pattern], time.Now())
 	ft := f.faults[pattern]
 	if ft == nil {
 		return nil
@@ -244,6 +264,12 @@ func (f *fakeKoyeb) callCount(pattern string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[pattern]
+}
+
+func (f *fakeKoyeb) callTimes(pattern string) []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.stamps[pattern])
 }
 
 // gate checks the API token and applies any fault injected for the route
@@ -280,6 +306,19 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"status": status, "code": code, "message": message})
 }
 
+// future holds fields and enum values Koyeb may add, which the adapter must ignore
+var future = map[string]any{
+	"organization_id": "org-1", "version": "42", "role": "ROLE_NOT_KNOWN_YET",
+	"state": map[string]any{"desired": "RUNNING_SOMEWHERE_NEW", "auto_release": nil},
+}
+
+func withFuture(m map[string]any) map[string]any {
+	for k, v := range future {
+		m[k] = v
+	}
+	return m
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -293,12 +332,11 @@ func (f *fakeKoyeb) id(kind string) string {
 
 /* Apps */
 
-func (f *fakeKoyeb) appJSON(a *fakeApp) kapi.App {
-	status := kapi.AppStatus(a.status)
-	return kapi.App{
-		Id: &a.id, Name: &a.name, CreatedAt: &a.created, Status: &status,
-		Domains: []kapi.Domain{{Name: new(f.domain(a.id))}},
-	}
+func (f *fakeKoyeb) appJSON(a *fakeApp) map[string]any {
+	return withFuture(map[string]any{
+		"id": a.id, "name": a.name, "created_at": a.created, "status": a.status,
+		"domains": []map[string]any{{"name": f.domain(a.id), "type": "AUTOASSIGNED"}},
+	})
 }
 
 // domain is where the fake's edge serves an app, a host with a path so one server serves all
@@ -325,17 +363,22 @@ func (f *fakeKoyeb) liveApp(name string) *fakeApp {
 }
 
 func (f *fakeKoyeb) createApp(w http.ResponseWriter, r *http.Request) {
-	var req kapi.CreateApp
+	var req struct {
+		Name      string `json:"name"`
+		LifeCycle struct {
+			DeleteWhenEmpty bool `json:"delete_when_empty"`
+		} `json:"life_cycle"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_argument", "body is not an app")
 		return
 	}
-	name := req.GetName()
+	name := req.Name
 	if !fakeName.MatchString(name) {
 		writeError(w, http.StatusBadRequest, "invalid_argument", "app name "+name+" is invalid")
 		return
 	}
-	if !req.LifeCycle.GetDeleteWhenEmpty() {
+	if !req.LifeCycle.DeleteWhenEmpty {
 		writeError(w, http.StatusBadRequest, "invalid_argument", "fake apps must delete when empty")
 		return
 	}
@@ -351,7 +394,7 @@ func (f *fakeKoyeb) createApp(w http.ResponseWriter, r *http.Request) {
 	}
 	a := &fakeApp{id: f.id("app"), name: name, created: time.Now().UTC(), status: "STARTING"}
 	f.apps[a.id] = a
-	writeJSON(w, http.StatusOK, kapi.CreateAppReply{App: new(f.appJSON(a))})
+	writeJSON(w, http.StatusOK, map[string]any{"app": f.appJSON(a)})
 }
 
 // listApps filters names by substring, so the adapter must pick the exact name itself
@@ -367,14 +410,13 @@ func (f *fakeKoyeb) listApps(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(match, func(a, b *fakeApp) int { return strings.Compare(a.id, b.id) })
 	start, end, more := f.page(q, len(match))
-	reply := kapi.ListAppsReply{HasNext: &more}
+	apps := []map[string]any{}
 	for _, a := range match[start:end] {
-		j := f.appJSON(a)
-		reply.Apps = append(reply.Apps, kapi.AppListItem{
-			Id: j.Id, Name: j.Name, CreatedAt: j.CreatedAt, Status: j.Status, Domains: j.Domains,
-		})
+		apps = append(apps, f.appJSON(a))
 	}
-	writeJSON(w, http.StatusOK, reply)
+	writeJSON(w, http.StatusOK, withFuture(map[string]any{
+		"apps": apps, "has_next": more, "count": strconv.Itoa(len(match)),
+	}))
 }
 
 func (f *fakeKoyeb) page(q map[string][]string, n int) (int, int, bool) {
@@ -406,7 +448,7 @@ func (f *fakeKoyeb) getApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_resource", "App not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, kapi.GetAppReply{App: new(f.appJSON(a))})
+	writeJSON(w, http.StatusOK, map[string]any{"app": f.appJSON(a)})
 }
 
 // deleteApp keeps the app and its services as DELETED records, as Koyeb's soft delete does
@@ -436,71 +478,68 @@ var fakeInstanceTypes = []string{
 }
 
 func (f *fakeKoyeb) createService(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		return
-	}
-	var req kapi.CreateService
 	var body map[string]any
-	if json.Unmarshal(raw, &req) != nil || json.Unmarshal(raw, &body) != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_argument", "body is not a service")
 		return
 	}
-	if msg := checkSandbox(req); msg != "" {
+	if msg := checkSandbox(body); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_argument", msg)
 		return
 	}
+	appID, name := field(body, "app_id").(string), field(body, "name").(string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	a := f.apps[req.GetAppId()]
+	a := f.apps[appID]
 	if a == nil || a.status == "DELETED" {
 		writeError(w, http.StatusNotFound, "unknown_resource", "App not found")
 		return
 	}
 	for _, s := range f.services {
-		if s.appID == a.id && s.name == req.GetName() && s.status != "DELETED" {
+		if s.appID == a.id && s.name == name && s.status != "DELETED" {
 			writeError(w, http.StatusConflict, "invalid_argument", "service name already exists")
 			return
 		}
 	}
 	now := time.Now().UTC()
 	s := &fakeService{
-		id: f.id("svc"), appID: a.id, name: req.GetName(), created: now, status: "STARTING",
-		body: body,
+		id: f.id("svc"), appID: a.id, name: name, created: now, status: "STARTING", body: body,
 	}
 	d := &fakeDeployment{
-		id: f.id("dep"), serviceID: s.id, appID: a.id, definition: req.GetDefinition(),
-		status: "PROVISIONING", startPolls: f.startPolls, routingKey: "rk-" + s.id,
+		id: f.id("dep"), serviceID: s.id, appID: a.id,
+		definition: field(body, "definition").(map[string]any), status: "PROVISIONING",
+		startPolls: f.startPolls, routingKey: "rk-" + s.id,
 	}
 	s.deployment = d.id
 	f.services[s.id] = s
 	f.deployments[d.id] = d
 	a.status = "HEALTHY"
-	writeJSON(w, http.StatusOK, kapi.CreateServiceReply{Service: new(f.serviceJSON(s))})
+	writeJSON(w, http.StatusOK, map[string]any{"service": f.serviceJSON(s)})
 }
 
 // checkSandbox refuses the definitions a Bugnet sandbox must never have
-func checkSandbox(req kapi.CreateService) string {
-	def := req.Definition
-	env := map[string]string{}
-	for _, e := range def.GetEnv() {
-		env[e.GetKey()] = e.GetValue()
-	}
-	life := req.LifeCycle.GetDeleteAfterCreate()
+func checkSandbox(body map[string]any) string {
+	def, _ := field(body, "definition").(map[string]any)
+	env := definitionEnv(def)
+	types, _ := field(def, "instance_types").([]any)
+	scalings, _ := field(def, "scalings").([]any)
+	life, _ := field(body, "life_cycle.delete_after_create").(float64)
+	_, named := field(body, "name").(string)
+	_, inApp := field(body, "app_id").(string)
 	switch {
-	case req.GetName() == "" || req.GetAppId() == "" || def == nil:
+	case !named || !inApp || def == nil:
 		return "a service needs a name, an app and a definition"
-	case def.GetType() != kapi.DEPLOYMENTDEFINITIONTYPE_SANDBOX:
+	case field(def, "type") != "SANDBOX":
 		return "fake services are sandboxes"
-	case def.Docker.GetImage() != "koyeb/sandbox":
+	case field(def, "docker.image") != "koyeb/sandbox":
 		return "fake sandboxes run koyeb/sandbox"
-	case !slices.Equal(def.GetRegions(), []string{"fra"}):
+	case !jsonEqual(field(def, "regions"), `["fra"]`):
 		return "fake sandboxes run in fra"
-	case len(def.GetInstanceTypes()) != 1 ||
-		!slices.Contains(fakeInstanceTypes, def.GetInstanceTypes()[0].GetType()):
+	case len(types) != 1 || !slices.Contains(fakeInstanceTypes, fmt.Sprint(field(def,
+		"instance_types.0.type"))):
 		return "unknown instance type"
-	case len(def.GetScalings()) != 1 || def.GetScalings()[0].GetMin() != 1 ||
-		def.GetScalings()[0].GetMax() != 1 || len(def.GetScalings()[0].GetTargets()) != 0:
+	case len(scalings) != 1 || field(def, "scalings.0.min") != 1.0 ||
+		field(def, "scalings.0.max") != 1.0 || field(def, "scalings.0.targets") != nil:
 		return "fake sandboxes never scale to zero"
 	case env["SANDBOX_SECRET"] == "":
 		return "a sandbox needs SANDBOX_SECRET"
@@ -510,12 +549,30 @@ func checkSandbox(req kapi.CreateService) string {
 	return ""
 }
 
-func (f *fakeKoyeb) serviceJSON(s *fakeService) kapi.Service {
-	typ, status := kapi.SERVICETYPE_SANDBOX, kapi.ServiceStatus(s.status)
-	return kapi.Service{
-		Id: &s.id, AppId: &s.appID, Name: &s.name, CreatedAt: &s.created, Type: &typ,
-		Status: &status, LatestDeploymentId: &s.deployment, ActiveDeploymentId: &s.deployment,
+// definitionEnv reads the variables of a deployment definition decoded from JSON
+func definitionEnv(def map[string]any) map[string]string {
+	env := map[string]string{}
+	vars, _ := field(def, "env").([]any)
+	for _, v := range vars {
+		e, _ := v.(map[string]any)
+		key, _ := e["key"].(string)
+		value, _ := e["value"].(string)
+		env[key] = value
 	}
+	return env
+}
+
+func (f *fakeKoyeb) serviceJSON(s *fakeService) map[string]any {
+	latest := any(s.deployment)
+	if s.deployment == "" {
+		latest = nil
+	}
+	return withFuture(map[string]any{
+		"id": s.id, "app_id": s.appID, "name": s.name, "created_at": s.created,
+		"type": "SANDBOX", "status": s.status, "latest_deployment_id": latest,
+		"active_deployment_id": latest,
+		"life_cycle":           map[string]any{"delete_after_create": "86400"},
+	})
 }
 
 // listServices filters like Koyeb and lists deleted services too, so the adapter must skip them
@@ -533,16 +590,13 @@ func (f *fakeKoyeb) listServices(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(match, func(a, b *fakeService) int { return strings.Compare(a.id, b.id) })
 	start, end, more := f.page(q, len(match))
-	count := int64(len(match))
-	reply := kapi.ListServicesReply{HasNext: &more, Count: &count}
+	services := []map[string]any{}
 	for _, s := range match[start:end] {
-		j := f.serviceJSON(s)
-		reply.Services = append(reply.Services, kapi.ServiceListItem{
-			Id: j.Id, AppId: j.AppId, Name: j.Name, CreatedAt: j.CreatedAt, Type: j.Type,
-			Status: j.Status, LatestDeploymentId: j.LatestDeploymentId,
-		})
+		services = append(services, f.serviceJSON(s))
 	}
-	writeJSON(w, http.StatusOK, reply)
+	writeJSON(w, http.StatusOK, withFuture(map[string]any{
+		"services": services, "has_next": more, "count": strconv.Itoa(len(match)),
+	}))
 }
 
 func (f *fakeKoyeb) getService(w http.ResponseWriter, r *http.Request) {
@@ -553,7 +607,7 @@ func (f *fakeKoyeb) getService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_resource", "Service not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, kapi.GetServiceReply{Service: new(f.serviceJSON(s))})
+	writeJSON(w, http.StatusOK, map[string]any{"service": f.serviceJSON(s)})
 }
 
 func (f *fakeKoyeb) getDeployment(w http.ResponseWriter, r *http.Request) {
@@ -571,17 +625,18 @@ func (f *fakeKoyeb) getDeployment(w http.ResponseWriter, r *http.Request) {
 			d.status = "HEALTHY"
 		}
 	}
-	status := kapi.DeploymentStatus(d.status)
-	dep := kapi.Deployment{
-		Id: &d.id, ServiceId: &d.serviceID, AppId: &d.appID, Status: &status,
-		Definition: &d.definition, Messages: []string{"deployment is " + d.status},
-	}
+	dep := withFuture(map[string]any{
+		"id": d.id, "service_id": d.serviceID, "app_id": d.appID, "status": d.status,
+		"definition": d.definition, "messages": []string{"deployment is " + d.status},
+		"provisioning_info": map[string]any{"stages": []any{map[string]any{"name": "NEW"}}},
+		"metadata":          nil,
+	})
 	if !f.noMetadata {
-		dep.Metadata = &kapi.DeploymentMetadata{Sandbox: &kapi.SandboxMetadata{
-			PublicUrl: new("https://" + f.domain(d.appID)), RoutingKey: &d.routingKey,
-		}}
+		dep["metadata"] = map[string]any{"sandbox": map[string]any{
+			"public_url": "https://" + f.domain(d.appID), "routing_key": d.routingKey,
+		}, "proxy_ports": []any{}}
 	}
-	writeJSON(w, http.StatusOK, kapi.GetDeploymentReply{Deployment: &dep})
+	writeJSON(w, http.StatusOK, map[string]any{"deployment": dep})
 }
 
 // setDeployment changes the deployment of the app's live service
@@ -639,9 +694,9 @@ func (f *fakeKoyeb) addForeign(name, labels string) {
 	s := &fakeService{id: f.id("svc"), appID: a.id, name: name, created: now, status: "HEALTHY"}
 	d := &fakeDeployment{
 		id: f.id("dep"), serviceID: s.id, appID: a.id, status: "HEALTHY", routingKey: "rk",
-		definition: kapi.DeploymentDefinition{Env: []kapi.DeploymentEnv{
-			{Key: new("SANDBOX_SECRET"), Value: new("s")},
-			{Key: new("BUGNET_LABELS"), Value: &labels},
+		definition: map[string]any{"env": []any{
+			map[string]any{"key": "SANDBOX_SECRET", "value": "s"},
+			map[string]any{"key": "BUGNET_LABELS", "value": labels},
 		}},
 	}
 	s.deployment = d.id
@@ -674,13 +729,7 @@ func (f *fakeKoyeb) serviceBodies() []map[string]any {
 	return out
 }
 
-func fakeEnv(d *fakeDeployment) map[string]string {
-	env := map[string]string{}
-	for _, e := range d.definition.GetEnv() {
-		env[e.GetKey()] = e.GetValue()
-	}
-	return env
-}
+func fakeEnv(d *fakeDeployment) map[string]string { return definitionEnv(d.definition) }
 
 /* Executor */
 
@@ -728,6 +777,8 @@ func (f *fakeKoyeb) edge(w http.ResponseWriter, r *http.Request) {
 		f.startProcess(w, r)
 	case "GET /process_logs_streaming":
 		f.streamLogs(w, r)
+	case "POST /kill_process":
+		f.killProcess(w, r)
 	case "GET /files", "HEAD /files":
 		f.download(w, r)
 	case "PUT /files":
@@ -790,13 +841,11 @@ func (f *fakeKoyeb) startProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := exec.Command("sh", "-c", req.Cmd)
+	cmd := exec.Command(f.shell, "-c", req.Cmd)
 	cmd.Dir = req.Cwd
-	if len(req.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range req.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	cmd.Env = append(os.Environ(), "PATH="+f.path)
+	for k, v := range req.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err1 := cmd.StdoutPipe()
@@ -814,6 +863,9 @@ func (f *fakeKoyeb) startProcess(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.cmds = append(f.cmds, cmd)
 	f.mu.Unlock()
+	proc.mu.Lock()
+	proc.cmd, proc.pipes = cmd, []io.Closer{stdout, stderr}
+	proc.mu.Unlock()
 	go func() {
 		var pipes sync.WaitGroup
 		for stream, pipe := range map[string]io.Reader{"stdout": stdout, "stderr": stderr} {
@@ -832,6 +884,49 @@ func (f *fakeKoyeb) startProcess(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": id, "pid": cmd.Process.Pid, "status": "running",
 	})
+}
+
+// killProcess kills the started shell alone like the executor, whose Wait then closes its pipes
+func (f *fakeKoyeb) killProcess(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.kills = append(f.kills, req.ID)
+	proc := f.procs[req.ID]
+	f.mu.Unlock()
+	if proc == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false, "error": "process not found: " + req.ID,
+		})
+		return
+	}
+	proc.mu.Lock()
+	cmd, pipes, done := proc.cmd, proc.pipes, proc.done
+	proc.mu.Unlock()
+	if cmd == nil || done {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false, "error": "process is not running (status: completed)",
+		})
+		return
+	}
+	_ = cmd.Process.Kill()
+	for _, p := range pipes {
+		_ = p.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true, "message": "Process killed successfully",
+	})
+}
+
+func (f *fakeKoyeb) killed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.kills)
 }
 
 // streamLogs replays the command's lines, then follows it live until it ends

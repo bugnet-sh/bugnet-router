@@ -7,8 +7,10 @@
 // adapter mints, and a create adopts an existing app only when those labels match. The service
 // never scales to zero and deletes itself 24 hours after creation as a backstop, while the
 // router's own deadline destroys it sooner. Changing that timer redeploys and kills the running
-// processes, so SetLifetime changes nothing and refuses any lifetime past the 24 hours. The
-// executor is reached over HTTP/1.1 only, the protocol that can wake a sleeping service.
+// processes, so SetLifetime changes nothing and refuses any lifetime past the 23 hours 50
+// minutes the adapter sells, which keeps every deadline inside the backstop. The control plane
+// is called through a small client that reads only the fields it needs. The executor is reached
+// over HTTP/1.1 only, the protocol that can wake a sleeping service.
 package koyeb
 
 import (
@@ -21,18 +23,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
-	"net/http/httptrace"
-	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
-
-	kapi "github.com/koyeb/koyeb-api-client-go/api/v1/koyeb"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 )
@@ -49,8 +46,11 @@ const (
 	executorPort   = 3030
 	appPort        = 3031
 	executorPath   = "/koyeb-sandbox"
-	maxLifetime    = 24 * time.Hour
-	secretBytes    = 32
+	// backstop is the delete_after_create Koyeb allows at most, set on every service
+	backstop = 24 * time.Hour
+	// maxLifetime leaves the saga room to measure from its own earlier clock plus its slack
+	maxLifetime = backstop - 10*time.Minute
+	secretBytes = 32
 	// pageLimit is the largest page Koyeb's list calls serve
 	pageLimit = "100"
 	// arch is assumed because Koyeb reports no architecture and runs its fleet on amd64
@@ -75,7 +75,7 @@ var (
 	billingWord  = regexp.MustCompile(`(?i)billing|payment|credit card|unpaid|funds`)
 	quotaWord    = regexp.MustCompile(`(?i)quota|limit`)
 	suspendWord  = regexp.MustCompile(`(?i)suspend|banned|deactivated`)
-	capacityWord = regexp.MustCompile(`(?i)capacity|not available|unavailable`)
+	capacityWord = regexp.MustCompile(`(?i)capacity|not available|unavailable|no instance`)
 )
 
 // instanceType is one Koyeb instance type and its price per second in micro-USD
@@ -170,12 +170,14 @@ type Options struct {
 	// InstanceTypeBySize maps each size sold to its instance type, every type by name when empty
 	InstanceTypeBySize map[string]string
 	BaseURL            string
+	Log                *slog.Logger // slog.Default when nil
 }
 
 // Provider places sandboxes on Koyeb, it keeps no state beyond its configuration
 type Provider struct {
-	api          *kapi.APIClient
+	api          *api
 	exec         *http.Client
+	log          *slog.Logger
 	region       string
 	sizes        []size
 	pollInterval time.Duration
@@ -191,14 +193,18 @@ func New(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg := kapi.NewConfiguration()
-	cfg.Servers = kapi.ServerConfigurations{{URL: cmp.Or(opts.BaseURL, defaultBaseURL)}}
-	cfg.HTTPClient = &http.Client{}
-	cfg.UserAgent = "bugnet-router"
-	cfg.AddDefaultHeader("Authorization", "Bearer "+opts.APIToken)
+	log := opts.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Provider{
-		api:          kapi.NewAPIClient(cfg),
+		api: &api{
+			base:   strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
+			token:  opts.APIToken,
+			client: &http.Client{},
+		},
 		exec:         newExecutorClient(),
+		log:          log,
 		region:       cmp.Or(opts.Region, defaultRegion),
 		sizes:        sizes,
 		pollInterval: defaultPoll,
@@ -209,7 +215,7 @@ func New(opts Options) (*Provider, error) {
 // Name returns "koyeb"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports previews, egress rules, the 24 hour lifetime and a GPU when one is sold
+// Capabilities reports previews, egress rules, the lifetime cap and a GPU when one is sold
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		Preview: true, GPU: slices.ContainsFunc(p.sizes, size.gpu), EgressControl: true,
@@ -296,7 +302,8 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, err
 	}
 	if !fresh {
-		ref, found, err := p.adopt(after, appID, n)
+		held := fmt.Errorf("koyeb app %s exists already", n.name)
+		ref, found, err := p.adopt(after, appID, n, held)
 		if err != nil || found {
 			return ref, err
 		}
@@ -313,13 +320,9 @@ type newService struct {
 
 // createApp makes the app, or finds the one a repeated or lost create made and reports it not fresh
 func (p *Provider) createApp(ctx, after context.Context, name string) (string, bool, error) {
-	body := kapi.CreateApp{Name: &name, LifeCycle: &kapi.AppLifeCycle{DeleteWhenEmpty: new(true)}}
-	reply, err := call(ctx, true, func(ctx context.Context) (*kapi.CreateAppReply, *http.Response,
-		error) {
-		return p.api.AppsApi.CreateApp(ctx).App(body).Execute()
-	})
-	if err == nil && reply.App.GetId() != "" {
-		return reply.App.GetId(), true, nil
+	app, err := p.api.createApp(ctx, name)
+	if err == nil && app.ID != "" {
+		return app.ID, true, nil
 	}
 	if err == nil {
 		err = unknown(errors.New("koyeb create app reply names no app"))
@@ -327,27 +330,23 @@ func (p *Provider) createApp(ctx, after context.Context, name string) (string, b
 	if !mayExist(err) {
 		return "", false, err
 	}
-	app, lerr := p.findApp(after, name)
+	found, lerr := p.findApp(after, name)
 	if lerr != nil {
 		return "", false, unsettled(err, lerr)
 	}
-	if app == nil {
+	if found == nil {
 		return "", false, absent(err)
 	}
-	return app.GetId(), false, nil
+	return found.ID, false, nil
 }
 
 // createService makes the sandbox service in the app, removing the app when that surely failed
 func (p *Provider) createService(
 	ctx, after context.Context, appID string, n newService,
 ) (provider.Ref, error) {
-	body := p.serviceSpec(appID, n)
-	reply, err := call(ctx, true, func(ctx context.Context) (*kapi.CreateServiceReply,
-		*http.Response, error) {
-		return p.api.ServicesApi.CreateService(ctx).Service(body).Execute()
-	})
-	if err == nil && reply.Service.GetId() != "" {
-		ref := newRef(appID, reply.Service.GetId(), n.secret)
+	svc, err := p.api.createService(ctx, p.serviceSpec(appID, n))
+	if err == nil && svc.ID != "" {
+		ref := newRef(appID, svc.ID, n.secret)
 		ref.Meta[metaCreated] = n.created.Format(time.RFC3339)
 		return ref, nil
 	}
@@ -355,77 +354,72 @@ func (p *Provider) createService(
 		err = unknown(errors.New("koyeb create service reply names no service"))
 	}
 	if mayExist(err) {
-		ref, found, lerr := p.adopt(after, appID, n)
+		ref, found, aerr := p.adopt(after, appID, n, err)
 		switch {
-		case lerr != nil:
-			return provider.Ref{}, unsettled(err, lerr)
+		case aerr != nil:
+			return provider.Ref{}, aerr
 		case found:
 			return ref, nil
 		}
 		err = absent(err)
 	}
-	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeOutcomeUnknown {
+	if !isCode(err, provider.CodeOutcomeUnknown) {
 		// An app without its service is useless, and Koyeb would only drop it after 15 minutes
-		_, _ = call(after, false, func(ctx context.Context) (map[string]any, *http.Response,
-			error) {
-			return p.api.AppsApi.DeleteApp(ctx, appID).Execute()
-		})
+		_ = p.api.deleteApp(after, appID)
 	}
 	return provider.Ref{}, err
 }
 
-func (p *Provider) serviceSpec(appID string, n newService) kapi.CreateService {
-	typ, mesh := kapi.DEPLOYMENTDEFINITIONTYPE_SANDBOX, kapi.DEPLOYMENTMESH_AUTO
-	def := kapi.DeploymentDefinition{
-		Name:   &n.name,
-		Type:   &typ,
-		Docker: &kapi.DockerSource{Image: new(sandboxImage), Privileged: new(false)},
-		Env: []kapi.DeploymentEnv{
-			{Key: new(secretEnv), Value: new(n.secret)},
-			{Key: new(labelsEnv), Value: new(n.labelsJSON)},
+func (p *Provider) serviceSpec(appID string, n newService) createServiceRequest {
+	def := serviceDefinition{
+		Name: n.name,
+		Type: "SANDBOX",
+		Env: []envVar{
+			{Key: secretEnv, Value: n.secret},
+			{Key: labelsEnv, Value: n.labelsJSON},
 		},
-		Ports: []kapi.DeploymentPort{
-			{Port: new(int64(executorPort)), Protocol: new("http")},
-			{Port: new(int64(appPort)), Protocol: new("http")},
+		Ports: []portSpec{
+			{Port: executorPort, Protocol: "http"}, {Port: appPort, Protocol: "http"},
 		},
-		Routes: []kapi.DeploymentRoute{
-			{Port: new(int64(executorPort)), Path: new(executorPath + "/")},
-			{Port: new(int64(appPort)), Path: new("/")},
+		Routes: []routeSpec{
+			{Port: executorPort, Path: executorPath + "/"}, {Port: appPort, Path: "/"},
 		},
-		InstanceTypes: []kapi.DeploymentInstanceType{{Type: new(n.instanceType)}},
+		InstanceTypes: []typeSpec{{Type: n.instanceType}},
 		Regions:       []string{p.region},
 		// One instance at all times, since a sleeping sandbox loses its processes
-		Scalings: []kapi.DeploymentScaling{{Min: new(int64(1)), Max: new(int64(1))}},
-		Mesh:     &mesh,
+		Scalings: []scalingSpec{{Min: 1, Max: 1}},
+		Mesh:     "DEPLOYMENT_MESH_AUTO",
 	}
-	return kapi.CreateService{
-		AppId: &appID, Name: &n.name, Definition: &def,
-		LifeCycle: &kapi.ServiceLifeCycle{DeleteAfterCreate: new(int64(maxLifetime.Seconds()))},
-	}
+	def.Docker.Image = sandboxImage
+	req := createServiceRequest{AppID: appID, Name: n.name, Definition: def}
+	req.LifeCycle.DeleteAfterCreate = int64(backstop.Seconds())
+	return req
 }
 
 // adopt returns the sandbox the app already holds when its labels are the ones asked for
 func (p *Provider) adopt(
-	ctx context.Context, appID string, n newService,
+	ctx context.Context, appID string, n newService, cause error,
 ) (provider.Ref, bool, error) {
 	svc, err := p.findService(ctx, appID, n.name)
-	if err != nil || svc == nil {
-		return provider.Ref{}, false, err
-	}
-	dep, err := p.deployment(ctx, svc.GetLatestDeploymentId())
 	if err != nil {
-		return provider.Ref{}, false, err
+		return provider.Ref{}, false, unsettled(cause, err)
 	}
-	env := envOf(dep)
+	if svc == nil {
+		return provider.Ref{}, false, nil
+	}
+	dep, err := p.deployment(ctx, svc.LatestDeploymentID)
+	if err != nil {
+		return provider.Ref{}, false, unsettled(cause, err)
+	}
 	var labels map[string]string
-	if err := json.Unmarshal([]byte(env[labelsEnv]), &labels); err != nil ||
+	if err := json.Unmarshal([]byte(envOf(dep)[labelsEnv]), &labels); err != nil ||
 		!maps.Equal(labels, n.labels) {
 		return provider.Ref{}, false, &provider.Error{
 			Code: provider.CodeInternal, CanFailOver: true,
 			Err: fmt.Errorf("koyeb app name %s is held by a sandbox of another request", n.name),
 		}
 	}
-	return refFor(appID, svc.GetId(), svc.GetCreatedAt(), dep), true, nil
+	return refFor(appID, svc.ID, svc.CreatedAt, dep), true, nil
 }
 
 func newRef(appID, serviceID, secret string) provider.Ref {
@@ -435,7 +429,7 @@ func newRef(appID, serviceID, secret string) provider.Ref {
 }
 
 // refFor rebuilds a ref from what Koyeb holds about a sandbox
-func refFor(appID, serviceID string, created time.Time, dep *kapi.Deployment) provider.Ref {
+func refFor(appID, serviceID string, created time.Time, dep deploymentRecord) provider.Ref {
 	ref := newRef(appID, serviceID, envOf(dep)[secretEnv])
 	ref.Meta[metaCreated] = created.UTC().Truncate(time.Second).Format(time.RFC3339)
 	if url, key := sandboxURL(dep); url != "" {
@@ -447,25 +441,25 @@ func refFor(appID, serviceID string, created time.Time, dep *kapi.Deployment) pr
 	return ref
 }
 
-func envOf(dep *kapi.Deployment) map[string]string {
+func envOf(dep deploymentRecord) map[string]string {
 	env := map[string]string{}
-	for _, e := range dep.Definition.GetEnv() {
-		env[e.GetKey()] = e.GetValue()
+	for _, e := range dep.Definition.Env {
+		env[e.Key] = e.Value
 	}
 	return env
 }
 
 // sandboxURL is the executor's base URL and routing key from the deployment's sandbox metadata
-func sandboxURL(dep *kapi.Deployment) (string, string) {
-	sb := dep.Metadata.GetSandbox()
-	url := strings.TrimRight(sb.GetPublicUrl(), "/")
+func sandboxURL(dep deploymentRecord) (string, string) {
+	sb := dep.Metadata.Sandbox
+	url := strings.TrimRight(sb.PublicURL, "/")
 	if url == "" {
 		return "", ""
 	}
 	if !strings.Contains(url, "://") {
 		url = "https://" + url
 	}
-	return url + executorPath, sb.GetRoutingKey()
+	return url + executorPath, sb.RoutingKey
 }
 
 // appID returns the app id of a ref this provider made
@@ -479,26 +473,22 @@ func appID(ref provider.Ref) (string, error) {
 	return ref.ID, nil
 }
 
-func gone[T ~string](status T) bool { return status == "DELETING" || status == "DELETED" }
+func gone(status string) bool { return status == "DELETING" || status == "DELETED" }
 
 // findApp returns the live app with exactly this name, or nil
-func (p *Provider) findApp(ctx context.Context, name string) (*kapi.AppListItem, error) {
+func (p *Provider) findApp(ctx context.Context, name string) (*appRecord, error) {
 	for offset := 0; ; {
-		reply, err := call(ctx, false, func(ctx context.Context) (*kapi.ListAppsReply,
-			*http.Response, error) {
-			return p.api.AppsApi.ListApps(ctx).Name(name).Limit(pageLimit).
-				Offset(strconv.Itoa(offset)).Execute()
-		})
+		page, err := p.api.listApps(ctx, name, offset)
 		if err != nil {
 			return nil, err
 		}
-		for _, a := range reply.Apps {
-			if a.GetName() == name && !gone(a.GetStatus()) {
+		for _, a := range page.items {
+			if a.Name == name && !gone(a.Status) {
 				return &a, nil
 			}
 		}
-		offset += len(reply.Apps)
-		if !reply.GetHasNext() || len(reply.Apps) == 0 {
+		offset += len(page.items)
+		if !page.hasNext || len(page.items) == 0 {
 			return nil, nil
 		}
 	}
@@ -507,10 +497,10 @@ func (p *Provider) findApp(ctx context.Context, name string) (*kapi.AppListItem,
 // findService returns the app's live sandbox service with this name, any name when empty, or nil
 func (p *Provider) findService(
 	ctx context.Context, appID, name string,
-) (*kapi.ServiceListItem, error) {
-	var found *kapi.ServiceListItem
-	err := p.eachService(ctx, appID, func(s kapi.ServiceListItem) bool {
-		if name == "" || s.GetName() == name {
+) (*serviceRecord, error) {
+	var found *serviceRecord
+	err := p.eachService(ctx, appID, func(s serviceRecord) bool {
+		if name == "" || s.Name == name {
 			found = &s
 			return false
 		}
@@ -521,78 +511,56 @@ func (p *Provider) findService(
 
 // eachService hands fn the live sandbox services, of one app when appID is set, until fn says stop
 func (p *Provider) eachService(
-	ctx context.Context, appID string, fn func(kapi.ServiceListItem) bool,
+	ctx context.Context, appID string, fn func(serviceRecord) bool,
 ) error {
 	for offset := 0; ; {
-		reply, err := call(ctx, false, func(ctx context.Context) (*kapi.ListServicesReply,
-			*http.Response, error) {
-			list := p.api.ServicesApi.ListServices(ctx).Types([]string{"SANDBOX"}).
-				Limit(pageLimit).Offset(strconv.Itoa(offset))
-			if appID != "" {
-				list = list.AppId(appID)
-			}
-			return list.Execute()
-		})
+		page, err := p.api.listServices(ctx, appID, offset)
 		if err != nil {
 			return err
 		}
-		for _, s := range reply.Services {
-			if !gone(s.GetStatus()) && !fn(s) {
+		for _, s := range page.items {
+			if !gone(s.Status) && !fn(s) {
 				return nil
 			}
 		}
-		offset += len(reply.Services)
-		more := reply.GetHasNext() || int64(offset) < reply.GetCount()
-		if !more || len(reply.Services) == 0 {
+		offset += len(page.items)
+		more := page.hasNext || int64(offset) < page.count
+		if !more || len(page.items) == 0 {
 			return nil
 		}
 	}
 }
 
-func (p *Provider) deployment(ctx context.Context, id string) (*kapi.Deployment, error) {
+func (p *Provider) deployment(ctx context.Context, id string) (deploymentRecord, error) {
 	if id == "" {
-		return nil, unknown(errors.New("koyeb service has no deployment yet"))
+		return deploymentRecord{}, unknown(errors.New("koyeb service has no deployment yet"))
 	}
-	reply, err := call(ctx, false, func(ctx context.Context) (*kapi.GetDeploymentReply,
-		*http.Response, error) {
-		return p.api.DeploymentsApi.GetDeployment(ctx, id).Execute()
-	})
-	if err != nil {
-		return nil, err
-	}
-	if reply.Deployment == nil {
-		return nil, internal(fmt.Errorf("koyeb deployment %s reply is empty", id))
-	}
-	return reply.Deployment, nil
+	return p.api.getDeployment(ctx, id)
 }
 
 // service returns the ref's live service, not_found once it or its app is gone
-func (p *Provider) service(ctx context.Context, ref provider.Ref) (*kapi.Service, error) {
+func (p *Provider) service(ctx context.Context, ref provider.Ref) (serviceRecord, error) {
 	app, err := appID(ref)
 	if err != nil {
-		return nil, err
+		return serviceRecord{}, err
 	}
 	id := ref.Meta[metaService]
 	if id == "" {
 		item, err := p.findService(ctx, app, "")
 		if err != nil {
-			return nil, err
+			return serviceRecord{}, err
 		}
 		if item == nil {
-			return nil, notFound(fmt.Errorf("koyeb app %s holds no sandbox", app))
+			return serviceRecord{}, notFound(fmt.Errorf("koyeb app %s holds no sandbox", app))
 		}
-		id = item.GetId()
+		id = item.ID
 	}
-	reply, err := call(ctx, false, func(ctx context.Context) (*kapi.GetServiceReply,
-		*http.Response, error) {
-		return p.api.ServicesApi.GetService(ctx, id).Execute()
-	})
+	svc, err := p.api.getService(ctx, id)
 	if err != nil {
-		return nil, err
+		return serviceRecord{}, err
 	}
-	svc := reply.Service
-	if svc == nil || gone(svc.GetStatus()) || svc.GetAppId() != app {
-		return nil, notFound(fmt.Errorf("koyeb sandbox %s is gone", app))
+	if gone(svc.Status) || svc.AppID != app {
+		return serviceRecord{}, notFound(fmt.Errorf("koyeb sandbox %s is gone", app))
 	}
 	return svc, nil
 }
@@ -628,7 +596,11 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 		if ctx.Err() == nil {
 			last = err
 		}
-		if !sleep(ctx, p.pollInterval) {
+		wait := p.pollInterval
+		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
+			wait = max(wait, e.RetryAfter)
+		}
+		if !sleep(ctx, wait) {
 			if last == nil {
 				return fmt.Errorf("koyeb sandbox %s not ready: %w", ref.ID, ctx.Err())
 			}
@@ -637,31 +609,36 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	}
 }
 
+// endedStatuses are the deployment statuses that never turn healthy, as the SDK reads them
+var endedStatuses = []string{
+	"CANCELING", "CANCELED", "UNHEALTHY", "STOPPING", "STOPPED", "ERRORING", "ERROR", "STASHED",
+	"SLEEPING",
+}
+
 // readyTarget reads the deployment and returns its executor once Koyeb calls it healthy
 func (p *Provider) readyTarget(
-	ctx context.Context, ref provider.Ref, svc *kapi.Service,
+	ctx context.Context, ref provider.Ref, svc serviceRecord,
 ) (target, error) {
-	dep, err := p.deployment(ctx, svc.GetLatestDeploymentId())
+	dep, err := p.deployment(ctx, svc.LatestDeploymentID)
 	if err != nil {
 		return target{}, err
 	}
-	switch status := dep.GetStatus(); status {
-	case kapi.DEPLOYMENTSTATUS_HEALTHY, kapi.DEPLOYMENTSTATUS_DEGRADED:
-	case kapi.DEPLOYMENTSTATUS_PENDING, kapi.DEPLOYMENTSTATUS_PROVISIONING,
-		kapi.DEPLOYMENTSTATUS_SCHEDULED, kapi.DEPLOYMENTSTATUS_ALLOCATING,
-		kapi.DEPLOYMENTSTATUS_STARTING:
-		return target{}, internal(fmt.Errorf("koyeb deployment is %s", status))
-	default:
+	switch status := dep.Status; {
+	case status == "HEALTHY" || status == "DEGRADED":
+	case slices.Contains(endedStatuses, status):
 		return target{}, &provider.Error{
 			Code: provider.CodeCapacity, CanFailOver: true,
 			Err: fmt.Errorf("koyeb deployment ended %s: %s", status,
 				strings.Join(dep.Messages, "; ")),
 		}
+	default:
+		// A status Koyeb adds later is waited on like the starting ones
+		return target{}, internal(fmt.Errorf("koyeb deployment is %s", status))
 	}
 	return p.targetOf(ctx, ref, dep)
 }
 
-// SetLifetime accepts any lifetime within the 24 hours the service deletes itself after
+// SetLifetime accepts any lifetime within the cap, which the 24 hour backstop covers
 func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
 	if _, err := appID(ref); err != nil {
 		return err
@@ -675,8 +652,8 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 	if err != nil {
 		return err
 	}
-	if !known && until.Sub(svc.GetCreatedAt()) > maxLifetime {
-		return overLifetime(until, svc.GetCreatedAt())
+	if !known && until.Sub(svc.CreatedAt) > maxLifetime {
+		return overLifetime(until, svc.CreatedAt)
 	}
 	return nil
 }
@@ -692,18 +669,13 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	if err != nil {
 		return nil
 	}
-	_, err = call(ctx, false, func(ctx context.Context) (map[string]any, *http.Response, error) {
-		return p.api.AppsApi.DeleteApp(ctx, app).Execute()
-	})
+	err = p.api.deleteApp(ctx, app)
 	if err == nil || isCode(err, provider.CodeNotFound) {
 		return nil
 	}
 	// A delete may fail once the app is already on its way out
-	reply, gerr := call(ctx, false, func(ctx context.Context) (*kapi.GetAppReply, *http.Response,
-		error) {
-		return p.api.AppsApi.GetApp(ctx, app).Execute()
-	})
-	if isCode(gerr, provider.CodeNotFound) || (gerr == nil && gone(reply.App.GetStatus())) {
+	a, gerr := p.api.getApp(ctx, app)
+	if isCode(gerr, provider.CodeNotFound) || (gerr == nil && gone(a.Status)) {
 		return nil
 	}
 	return err
@@ -713,9 +685,10 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
 ) ([]provider.Summary, error) {
-	var items []kapi.ServiceListItem
-	err := p.eachService(ctx, "", func(s kapi.ServiceListItem) bool {
-		if strings.HasPrefix(s.GetName(), namePrefix) {
+	var items []serviceRecord
+	err := p.eachService(ctx, "", func(s serviceRecord) bool {
+		// A service still being created has no deployment to read labels from yet
+		if strings.HasPrefix(s.Name, namePrefix) && s.LatestDeploymentID != "" {
 			items = append(items, s)
 		}
 		return true
@@ -724,22 +697,35 @@ func (p *Provider) ListOwned(
 		return nil, err
 	}
 	var owned []provider.Summary
+	var wait time.Duration
 	for _, s := range items {
-		dep, err := p.deployment(ctx, s.GetLatestDeploymentId())
-		if isCode(err, provider.CodeNotFound) {
-			continue
+		if wait > 0 && !sleep(ctx, wait) {
+			return nil, ctx.Err()
+		}
+		dep, err := p.deployment(ctx, s.LatestDeploymentID)
+		wait = 0
+		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
+			wait = e.RetryAfter
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		if err != nil {
-			return nil, err
+			// One unreadable sandbox must not stop the sweep, the next sweep reads it again
+			if !isCode(err, provider.CodeNotFound) {
+				p.log.Warn("koyeb sweep skips a sandbox it cannot read", "app", s.AppID,
+					"service", s.ID, "err", err)
+			}
+			continue
 		}
 		var have map[string]string
 		if json.Unmarshal([]byte(envOf(dep)[labelsEnv]), &have) != nil || !hasLabels(have, labels) {
 			continue
 		}
 		owned = append(owned, provider.Summary{
-			Ref:       refFor(s.GetAppId(), s.GetId(), s.GetCreatedAt(), dep),
+			Ref:       refFor(s.AppID, s.ID, s.CreatedAt, dep),
 			Labels:    have,
-			CreatedAt: s.GetCreatedAt().UTC(),
+			CreatedAt: s.CreatedAt.UTC(),
 		})
 	}
 	return owned, nil
@@ -754,96 +740,7 @@ func hasLabels(have, want map[string]string) bool {
 	return true
 }
 
-/* Control plane errors */
-
-// call runs one control plane request and classifies its failure, create marks creating calls
-func call[T any](
-	ctx context.Context, create bool, do func(context.Context) (T, *http.Response, error),
-) (T, error) {
-	var sent atomic.Bool
-	trace := &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }}
-	v, resp, err := do(httptrace.WithClientTrace(ctx, trace))
-	if rv := reflect.ValueOf(v); err == nil && rv.Kind() == reflect.Pointer && rv.IsNil() {
-		err = errors.New("koyeb sent an empty reply")
-	}
-	if err != nil {
-		var zero T
-		return zero, apiError(err, resp, sent.Load(), create)
-	}
-	return v, nil
-}
-
-// apiError classifies a failed control plane call by its status, then its code and message
-func apiError(err error, resp *http.Response, sent, create bool) error {
-	if resp == nil {
-		switch {
-		case sent && create:
-			return unknown(err)
-		case sent:
-			return internal(err)
-		}
-		return &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: err}
-	}
-	var raw []byte
-	var gen *kapi.GenericOpenAPIError
-	if errors.As(err, &gen) {
-		raw = gen.Body()
-	}
-	var body struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-		Fields  []struct {
-			Field       string `json:"field"`
-			Description string `json:"description"`
-		} `json:"fields"`
-	}
-	_ = json.Unmarshal(raw, &body)
-	msg := cmp.Or(body.Message, strings.TrimSpace(string(raw)), err.Error())
-	for _, f := range body.Fields {
-		msg += ", " + f.Field + " " + f.Description
-	}
-	status := resp.StatusCode
-	e := &provider.Error{
-		Code: provider.CodeInternal,
-		Err:  fmt.Errorf("koyeb answered %d %s: %s", status, cmp.Or(body.Code, "error"), msg),
-	}
-	client := status >= 400 && status < 500
-	switch {
-	case status < 300 && create:
-		// The call went through but its reply could not be read
-		e.Code = provider.CodeOutcomeUnknown
-	case status < 300:
-	case status == http.StatusTooManyRequests || body.Code == "rate_limit_error":
-		e.Code, e.CanFailOver = provider.CodeRateLimited, true
-		e.RetryAfter = retryAfter(resp.Header)
-	case status == http.StatusPaymentRequired || (client && billingWord.MatchString(msg)):
-		e.Code, e.CanFailOver = provider.CodeUnfunded, true
-	case client && quotaWord.MatchString(msg):
-		e.Code, e.CanFailOver = provider.CodeQuota, true
-	case (status == http.StatusUnauthorized || status == http.StatusForbidden) &&
-		suspendWord.MatchString(msg):
-		e.Code, e.CanFailOver = provider.CodeAbuseLock, true
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		e.Code, e.CanFailOver = provider.CodeAuth, true
-	case status == http.StatusNotFound:
-		e.Code = provider.CodeNotFound
-	case client:
-		e.Code = provider.CodeInvalid
-	case status == http.StatusServiceUnavailable || capacityWord.MatchString(msg):
-		e.Code, e.CanFailOver = provider.CodeCapacity, true
-	}
-	return e
-}
-
-// retryAfter reads Retry-After, then Koyeb's rate limit reset, both in seconds
-func retryAfter(h http.Header) time.Duration {
-	for _, name := range []string{"Retry-After", "X-Ratelimit-Reset"} {
-		if s, err := strconv.Atoi(strings.TrimSpace(h.Get(name))); err == nil && s >= 0 {
-			return time.Duration(s) * time.Second
-		}
-	}
-	return defaultRetryAfter
-}
+/* Create outcomes */
 
 // mayExist reports whether the resource of a failed create may exist anyway
 func mayExist(err error) bool {
@@ -868,11 +765,8 @@ func absent(err error) error {
 	return err
 }
 
-// unsettled is a failed create whose lookup failed too, so whether it made something is unknown
+// unsettled is a create whose lookup failed, so whether it made a sandbox stays unknown
 func unsettled(err, lookup error) error {
-	if isCode(err, provider.CodeInvalid) {
-		return lookup
-	}
 	return unknown(fmt.Errorf("%w, and the lookup after it failed: %w", err, lookup))
 }
 

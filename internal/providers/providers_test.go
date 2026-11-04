@@ -213,7 +213,7 @@ func TestBuildKoyeb(t *testing.T) {
 		t.Fatalf("registry %v lacks koyeb", reg.Ordered())
 	}
 	caps := p.Capabilities()
-	if !caps.NeedsRunnerUpload || !caps.GPU || caps.MaxLifetime != 24*time.Hour ||
+	if !caps.NeedsRunnerUpload || !caps.GPU || caps.MaxLifetime != 24*time.Hour-10*time.Minute ||
 		p.BillingIncrement() != time.Second {
 		t.Fatalf("koyeb capabilities %+v, increment %v", caps, p.BillingIncrement())
 	}

@@ -21,9 +21,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
-
-	kapi "github.com/koyeb/koyeb-api-client-go/api/v1/koyeb"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 )
@@ -38,6 +38,7 @@ const (
 	maxEventLine = 8 << 20
 	// healthTimeout bounds one health probe as the SDK does, so a hung probe is retried
 	healthTimeout = 5 * time.Second
+	killTimeout   = 5 * time.Second
 )
 
 // safeWord matches the words a shell reads as they are, which need no quotes
@@ -68,7 +69,7 @@ func (p *Provider) target(ctx context.Context, ref provider.Ref) (target, error)
 	if err != nil {
 		return target{}, err
 	}
-	dep, err := p.deployment(ctx, svc.GetLatestDeploymentId())
+	dep, err := p.deployment(ctx, svc.LatestDeploymentID)
 	if err != nil {
 		return target{}, err
 	}
@@ -77,24 +78,20 @@ func (p *Provider) target(ctx context.Context, ref provider.Ref) (target, error)
 
 // targetOf builds the executor of a deployment, falling back to the app's domain like the SDK
 func (p *Provider) targetOf(
-	ctx context.Context, ref provider.Ref, dep *kapi.Deployment,
+	ctx context.Context, ref provider.Ref, dep deploymentRecord,
 ) (target, error) {
 	t := target{secret: cmp.Or(ref.Meta[metaSecret], envOf(dep)[secretEnv])}
 	t.base, t.routing = sandboxURL(dep)
 	if t.base == "" {
-		reply, err := call(ctx, false, func(ctx context.Context) (*kapi.GetAppReply,
-			*http.Response, error) {
-			return p.api.AppsApi.GetApp(ctx, ref.ID).Execute()
-		})
+		app, err := p.api.getApp(ctx, ref.ID)
 		if err != nil {
 			return target{}, err
 		}
-		domains := reply.App.GetDomains()
-		if len(domains) == 0 || domains[0].GetName() == "" {
+		if len(app.Domains) == 0 || app.Domains[0].Name == "" {
 			return target{}, internal(fmt.Errorf("koyeb sandbox %s has no public URL yet",
 				ref.ID))
 		}
-		t.base = "https://" + domains[0].GetName() + executorPath
+		t.base = "https://" + app.Domains[0].Name + executorPath
 	}
 	return t, nil
 }
@@ -261,12 +258,12 @@ func (p *Provider) Exec(
 	lines := bufio.NewScanner(resp.Body)
 	lines.Buffer(make([]byte, 0, 64<<10), maxEventLine)
 	return &execStream{
-		p: p, ctx: ctx, ref: ref, t: t, exitPath: exitPath, body: resp.Body, lines: lines,
-		cancel: cancel,
+		p: p, ctx: ctx, ref: ref, t: t, process: started.ID, exitPath: exitPath,
+		body: resp.Body, lines: lines, cancel: cancel,
 	}, nil
 }
 
-// wrap runs argv as positional parameters of a fixed script that saves the exit status to a file
+// wrap execs argv through a fixed script, the shell around it then saves the exit status
 func (p *Provider) wrap(argv []string) (string, string, error) {
 	if len(argv) == 0 {
 		return "", "", invalid(errors.New("exec needs a command"))
@@ -281,9 +278,9 @@ func (p *Provider) wrap(argv []string) (string, string, error) {
 	name := make([]byte, exitNameBytes)
 	_, _ = rand.Read(name)
 	exitPath := path.Join(p.exitDir, hex.EncodeToString(name)+".exit")
-	script := `"$@"; echo $? > ` + quote(exitPath)
-	cmd := "mkdir -p " + quote(p.exitDir) + " && sh -c " + quote(script) + " sh " +
-		strings.Join(words, " ")
+	// The command replaces the inner shell, so it is the started shell's own child
+	cmd := "mkdir -p " + quote(p.exitDir) + ` && { sh -c 'exec "$@"' sh ` +
+		strings.Join(words, " ") + "; echo $? > " + quote(exitPath) + "; }"
 	return cmd, exitPath, nil
 }
 
@@ -301,14 +298,16 @@ type execStream struct {
 	ctx      context.Context
 	ref      provider.Ref
 	t        target
+	process  string
 	exitPath string
 	body     io.ReadCloser
 	lines    *bufio.Scanner
 	cancel   context.CancelFunc
 	pending  []byte
-	complete bool
+	complete atomic.Bool
 	done     bool
 	err      error
+	closed   sync.Once
 }
 
 func (s *execStream) Read(p []byte) (int, error) {
@@ -351,7 +350,7 @@ func (s *execStream) next() {
 			s.pending = append(append(s.pending, entry.Data...), '\n')
 		}
 	case "complete":
-		s.complete = true
+		s.complete.Store(true)
 		s.finish(nil)
 	case "error":
 		var body struct {
@@ -422,10 +421,44 @@ func (s *execStream) Wait() (int, error) {
 	return code, nil
 }
 
-// Close stops reading, the command itself runs on since start_process detached it
+// Close stops reading and kills a command that has not finished
 func (s *execStream) Close() error {
-	s.cancel()
+	s.closed.Do(func() {
+		s.cancel()
+		_ = s.body.Close()
+		if !s.complete.Load() {
+			s.p.kill(s.ctx, s.t, s.process)
+		}
+	})
 	return nil
+}
+
+// kill ends a started process, best effort since the sandbox may already be gone
+func (p *Provider) kill(ctx context.Context, t target, id string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), killTimeout)
+	defer cancel()
+	body, _ := json.Marshal(map[string]string{"id": id})
+	err := func() error {
+		req, err := t.request(ctx, http.MethodPost, "/kill_process", nil, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := p.exec.Do(req)
+		if err != nil {
+			return err
+		}
+		defer drainClose(resp)
+		// 400 is a process that already ended
+		if resp.StatusCode >= 300 && resp.StatusCode != http.StatusBadRequest {
+			return executorError(resp)
+		}
+		return nil
+	}()
+	if err != nil {
+		p.log.Warn("koyeb could not kill a command whose stream closed early", "process", id,
+			"err", err)
+	}
 }
 
 /* Files */

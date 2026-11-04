@@ -281,6 +281,47 @@ func TestLastOffsets(t *testing.T) {
 	}
 }
 
+func TestLastOffsetsNeverRewindToStaleEntries(t *testing.T) {
+	b, _, _ := newBus(t)
+	ctx := t.Context()
+	l := acquire(t, b, "j1", "r1")
+	check := func(step string, wantOut, wantErr int64, wantDone bool) {
+		t.Helper()
+		o, e, done, err := b.LastOffsets(ctx, "j1")
+		if err != nil || o != wantOut || e != wantErr || done != wantDone {
+			t.Fatalf("%s: offsets %d/%d done %v (%v), want %d/%d done %v",
+				step, o, e, done, err, wantOut, wantErr, wantDone)
+		}
+	}
+	stale := []frame.Frame{
+		out(0, "hello world"),
+		{Kind: frame.KindStderr, Offset: 0, Data: []byte("abcd")},
+		{Kind: frame.KindHeartbeat, Out: 11, Err: 4},
+		out(3, "lo"),
+		{Kind: frame.KindStderr, Offset: 0, Data: []byte("a")},
+		{Kind: frame.KindHeartbeat, Out: 2, Err: 1},
+	}
+	// Enough stale heartbeats push the furthest output onto an earlier page of the scan
+	for range 300 {
+		stale = append(stale, frame.Frame{Kind: frame.KindHeartbeat, Out: 1})
+	}
+	for _, f := range stale {
+		if _, err := l.Append(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("stale output and heartbeats after the furthest", 11, 4, false)
+	beat := frame.Frame{Kind: frame.KindHeartbeat, Out: 13, Err: 4}
+	if _, err := l.Append(ctx, beat); err != nil {
+		t.Fatal(err)
+	}
+	check("a heartbeat counting past the stored output", 13, 4, false)
+	if _, err := l.Append(ctx, frame.Frame{Kind: frame.KindExit, Out: 5, Err: 0}); err != nil {
+		t.Fatal(err)
+	}
+	check("a stale exit", 13, 4, true)
+}
+
 func TestLastOffsetsTerminalError(t *testing.T) {
 	b, _, _ := newBus(t)
 	ctx := t.Context()
