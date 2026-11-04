@@ -32,6 +32,7 @@ const (
 	fakeHibernateSecs  = 4 * 60 * 60
 	fakeReadChunkBytes = 64 << 10
 	fakeListBatch      = 2
+	fakeKillGrace      = 100 * time.Millisecond
 )
 
 var (
@@ -71,6 +72,9 @@ type fakeBoxd struct {
 	vms          map[string]*fakeVM
 	nextID       int
 	faults       map[string]*fault
+	calls        map[string]int
+	scripted     bool
+	script       []*boxdpb.ExecChunk
 	creates      []*boxdpb.CreateVmRequest
 	commands     []string
 	writeChunks  []int
@@ -80,7 +84,9 @@ type fakeBoxd struct {
 
 func newFake(t *testing.T) *fakeBoxd {
 	t.Helper()
-	f := &fakeBoxd{t: t, vms: map[string]*fakeVM{}, faults: map[string]*fault{}}
+	f := &fakeBoxd{
+		t: t, vms: map[string]*fakeVM{}, faults: map[string]*fault{}, calls: map[string]int{},
+	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +131,7 @@ func (f *fakeBoxd) take(fullMethod string) *fault {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name := path.Base(fullMethod)
+	f.calls[name]++
 	ft := f.faults[name]
 	if ft == nil {
 		return nil
@@ -136,6 +143,19 @@ func (f *fakeBoxd) take(fullMethod string) *fault {
 		}
 	}
 	return ft
+}
+
+func (f *fakeBoxd) callCount(method string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[method]
+}
+
+// replyExec answers every later Exec with these chunks and a clean end instead of a command
+func (f *fakeBoxd) replyExec(chunks ...*boxdpb.ExecChunk) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripted, f.script = true, chunks
 }
 
 func authorized(ctx context.Context) bool {
@@ -385,9 +405,18 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 	if err == nil {
 		f.commands = append(f.commands, first.GetCommand())
 	}
+	scripted, script := f.scripted, f.script
 	f.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if scripted {
+		for _, c := range script {
+			if err := stream.Send(c); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	cmd := exec.Command("sh", "-c", first.GetCommand())
@@ -422,6 +451,10 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 		defer func() { _ = stdin.Close() }()
 		for {
 			c, err := stream.Recv()
+			// boxd's agent kills the command when the caller half-closes, as the proto says
+			if errors.Is(err, io.EOF) {
+				terminate(cmd.Process.Pid, exited)
+			}
 			if err != nil {
 				return
 			}
@@ -471,6 +504,21 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 	}
 	send(&boxdpb.ExecChunk{ExitCode: int32(code)})
 	return nil
+}
+
+// terminate sends the process group SIGTERM, then SIGKILL once the grace period passes
+func terminate(pid int, exited <-chan struct{}) {
+	select {
+	case <-exited:
+		return
+	default:
+	}
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(fakeKillGrace):
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}
 }
 
 func (f *fakeBoxd) lastCommand() string {

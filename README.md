@@ -111,6 +111,8 @@ URL.
 | `BUGNET_LOCAL_RUNNER` | required for local | Host build of `bugnet-run` the local provider runs |
 | `BUGNET_LOCAL_HOURLY_MICROS` | `0` | Hourly cost the local provider reports |
 | `BOXD_API_KEY` | empty | boxd credentials |
+| `BUGNET_BOXD_REGION` | `fra` | boxd region, served at `<region>.boxd.sh:9443` outside `fra` |
+| `BUGNET_BOXD_ENDPOINT` | `boxd.sh:9443` in `fra` | boxd gRPC address, overrides the region |
 | `E2B_API_KEY` | empty | E2B credentials |
 | `KOYEB_API_TOKEN` | empty | Koyeb credentials |
 | `BOAT_API_KEY` | empty | Boat credentials |

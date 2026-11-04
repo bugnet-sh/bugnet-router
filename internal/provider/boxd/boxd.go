@@ -6,7 +6,8 @@
 // the name already taken, or whose reply was lost, adopts the machine when the labels match.
 // Label keys at boxd may not contain underscores, so each underscore travels as a dot and the
 // adapter refuses router keys with dots of their own. Exec takes one shell command string, built
-// here from argv with single-quote escaping, and closing its stream kills the command.
+// here from argv with single-quote escaping, and closing either side of its stream kills the
+// command.
 package boxd
 
 import (
@@ -18,10 +19,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"path"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -86,12 +89,14 @@ type Options struct {
 	Endpoint string
 	Insecure bool
 	Region   string
+	Log      *slog.Logger // slog.Default when nil
 }
 
 // Provider places sandboxes on boxd over one long-lived gRPC connection
 type Provider struct {
 	conn         *grpc.ClientConn
 	api          boxdpb.BoxdApiClient
+	log          *slog.Logger
 	pollInterval time.Duration
 }
 
@@ -112,8 +117,12 @@ func New(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boxd: %w", err)
 	}
+	log := opts.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Provider{
-		conn: conn, api: boxdpb.NewBoxdApiClient(conn), pollInterval: defaultPoll,
+		conn: conn, api: boxdpb.NewBoxdApiClient(conn), log: log, pollInterval: defaultPoll,
 	}, nil
 }
 
@@ -316,7 +325,7 @@ func machineID(ref provider.Ref) (string, error) {
 	return ref.ID, nil
 }
 
-// WaitReady waits for status running, then for an exec to succeed, and turns auto hibernate off
+// WaitReady waits for status running, then for an exec to succeed, and tries to stop hibernation
 func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	vmID, err := machineID(ref)
 	if err != nil {
@@ -344,8 +353,8 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 		if err == nil {
 			break
 		}
-		if e, ok := provider.AsError(err); ok &&
-			(e.Code == provider.CodeNotFound || e.Code == provider.CodeAuth) {
+		if e, ok := provider.AsError(err); ok && (e.Code == provider.CodeNotFound ||
+			e.Code == provider.CodeAuth || e.Code == provider.CodeInvalid) {
 			return err
 		}
 		if perr := p.pause(ctx); perr != nil {
@@ -356,7 +365,11 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	_, err = p.api.SetAutoHibernateTimeout(ctx, &boxdpb.SetAutoHibernateTimeoutRequest{
 		VmId: vmID, TimeoutSecs: 0,
 	})
-	return classify(ctx, err)
+	if err != nil {
+		// The machine runs and its delete-after timer still bounds it, so a refusal only warns
+		p.log.Warn("boxd kept auto hibernate on", "machine", vmID, "err", err)
+	}
+	return nil
 }
 
 func (p *Provider) pause(ctx context.Context) error {
@@ -476,7 +489,7 @@ func hasLabels(have, want map[string]string) bool {
 
 /* Exec */
 
-// Exec runs argv through the machine's shell with stdin closed, Close kills the command
+// Exec runs argv through the machine's shell with stdin from /dev/null, Close kills the command
 func (p *Provider) Exec(
 	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
 ) (provider.ExecStream, error) {
@@ -494,11 +507,9 @@ func (p *Provider) Exec(
 		cancel()
 		return nil, classify(ctx, err)
 	}
-	// A failed send reports io.EOF and leaves the status for Recv, so Read surfaces it
+	// The send side stays open while the command runs, since boxd kills a command on half-close
 	err = stream.Send(&boxdpb.ExecChunk{VmId: vmID, Command: command})
-	if err == nil {
-		err = stream.CloseSend()
-	}
+	// A failed send reports io.EOF and leaves the status for Recv, so Read surfaces it
 	if err != nil && !errors.Is(err, io.EOF) {
 		cancel()
 		return nil, classify(ctx, err)
@@ -540,6 +551,7 @@ func commandLine(spec provider.ExecSpec) (string, error) {
 		}
 		b.WriteString(quote(a))
 	}
+	b.WriteString(" </dev/null")
 	line := b.String()
 	if strings.ContainsRune(line, 0) || !utf8.ValidString(line) {
 		return "", invalid(errors.New("boxd takes commands as UTF-8 text without NUL bytes"))
@@ -556,8 +568,10 @@ type execStream struct {
 	ctx     context.Context
 	stream  grpc.BidiStreamingClient[boxdpb.ExecChunk, boxdpb.ExecChunk]
 	cancel  context.CancelFunc
+	ending  sync.Once
 	pending []byte
 	code    int
+	exited  bool
 	err     error
 	done    bool
 }
@@ -577,7 +591,7 @@ func (s *execStream) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// next takes one chunk, the exit code rides on the last one and data chunks carry zero
+// next takes one chunk, the first one with no data or a non-zero code carries the exit code
 func (s *execStream) next() {
 	c, err := s.stream.Recv()
 	if err != nil {
@@ -585,11 +599,11 @@ func (s *execStream) next() {
 		if !errors.Is(err, io.EOF) {
 			s.err = classify(s.ctx, err)
 		}
-		s.cancel()
+		s.end()
 		return
 	}
-	if c.GetExitCode() != 0 || len(c.GetData()) == 0 {
-		s.code = int(c.GetExitCode())
+	if !s.exited && (len(c.GetData()) == 0 || c.GetExitCode() != 0) {
+		s.code, s.exited = int(c.GetExitCode()), true
 	}
 	if !c.GetIsStderr() {
 		s.pending = c.GetData()
@@ -604,12 +618,26 @@ func (s *execStream) Wait() (int, error) {
 	if s.err != nil {
 		return -1, s.err
 	}
+	if !s.exited {
+		return -1, &provider.Error{
+			Code: provider.CodeOutcomeUnknown,
+			Err:  errors.New("boxd ended the exec stream without an exit code"),
+		}
+	}
 	return s.code, nil
 }
 
 func (s *execStream) Close() error {
-	s.cancel()
+	s.end()
 	return nil
+}
+
+// end half-closes and then cancels the stream, once the command finished or the caller is done
+func (s *execStream) end() {
+	s.ending.Do(func() {
+		_ = s.stream.CloseSend()
+		s.cancel()
+	})
 }
 
 /* Files */

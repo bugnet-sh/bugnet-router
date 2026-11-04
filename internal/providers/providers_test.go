@@ -1,7 +1,9 @@
 package providers_test
 
 import (
+	"context"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +72,39 @@ func TestBuildBoxd(t *testing.T) {
 	if !p.Capabilities().NeedsRunnerUpload || p.BillingIncrement() != time.Second {
 		t.Fatalf("boxd capabilities %+v, increment %v", p.Capabilities(), p.BillingIncrement())
 	}
+}
+
+func TestBuildBoxdEndpointOverride(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+	t.Setenv("BUGNET_BOXD_ENDPOINT", lis.Addr().String())
+	t.Setenv("BUGNET_BOXD_REGION", "nyc")
+	reg, err := providers.Build(config.Config{
+		Providers:    []string{"boxd"},
+		ProviderKeys: map[string]string{"boxd": "bxd_test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := reg.Get("boxd")
+	t.Cleanup(func() { _ = p.(io.Closer).Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	listed := make(chan struct{})
+	go func() {
+		defer close(listed)
+		_, _ = p.ListOwned(ctx, map[string]string{"bugnet": "1"})
+	}()
+	defer func() { cancel(); <-listed }()
+	_ = lis.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
+	conn, err := lis.Accept()
+	if err != nil {
+		t.Fatalf("boxd never dialled BUGNET_BOXD_ENDPOINT: %v", err)
+	}
+	_ = conn.Close()
 }
 
 func TestBuildBoxdNeedsKey(t *testing.T) {

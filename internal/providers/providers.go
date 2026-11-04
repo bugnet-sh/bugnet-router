@@ -2,8 +2,10 @@
 package providers
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"os"
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/config"
@@ -41,7 +43,11 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 			if key == "" {
 				return nil, fmt.Errorf("providers: boxd needs BOXD_API_KEY")
 			}
-			p, err := boxd.New(boxd.Options{APIKey: key})
+			p, err := boxd.New(boxd.Options{
+				APIKey:   key,
+				Endpoint: os.Getenv("BUGNET_BOXD_ENDPOINT"),
+				Region:   cmp.Or(os.Getenv("BUGNET_BOXD_REGION"), "fra"),
+			})
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}

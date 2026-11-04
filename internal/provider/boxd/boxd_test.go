@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"io"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
 )
 
@@ -304,6 +306,74 @@ func TestBoxdWaitReady(t *testing.T) {
 	}
 }
 
+func TestBoxdWaitReadyWhenHibernateRefused(t *testing.T) {
+	refusals := []codes.Code{codes.PermissionDenied, codes.Unimplemented, codes.Unavailable}
+	for _, code := range refusals {
+		t.Run(code.String(), func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			var logs bytes.Buffer
+			p.log = slog.New(slog.NewTextHandler(&logs, nil))
+			vm := f.add("hibernate-refused", nil)
+			f.inject("SetAutoHibernateTimeout", fault{err: status.Error(code, "not for api keys")})
+			err := p.WaitReady(t.Context(), provider.Ref{Provider: "boxd", ID: vm.id})
+			if err != nil {
+				t.Fatalf("wait with auto hibernate refused gave %v, want ready", err)
+			}
+			if n := f.callCount("SetAutoHibernateTimeout"); n != 1 {
+				t.Fatalf("auto hibernate asked %d times, want once", n)
+			}
+			if got := logs.String(); !strings.Contains(got, "level=WARN") ||
+				!strings.Contains(got, vm.id) || !strings.Contains(got, "not for api keys") {
+				t.Fatalf("log %q, want a warning naming the machine and the refusal", got)
+			}
+		})
+	}
+}
+
+func TestBoxdWaitReadyProbeGivesUp(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		code provider.Code
+	}{
+		{"invalid", status.Error(codes.FailedPrecondition, "machine is migrating"),
+			provider.CodeInvalid},
+		{"auth", status.Error(codes.PermissionDenied, "exec is not for api keys"),
+			provider.CodeAuth},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			vm := f.add("probe-"+c.name, nil)
+			f.inject("Exec", fault{err: c.err})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := p.WaitReady(ctx, provider.Ref{Provider: "boxd", ID: vm.id})
+			if !isCode(err, c.code) || ctx.Err() != nil {
+				t.Fatalf("wait gave %v, want %s before the deadline", err, c.code)
+			}
+			if n := f.callCount("Exec"); n != 1 {
+				t.Fatalf("probe ran %d times, want once", n)
+			}
+		})
+	}
+
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	vm := f.add("probe-transient", nil)
+	f.inject("Exec", fault{
+		err: status.Error(codes.Unavailable, "cannot connect to VM agent"), times: 3,
+	})
+	if err := p.WaitReady(t.Context(), provider.Ref{Provider: "boxd", ID: vm.id}); err != nil {
+		t.Fatalf("wait through an agent that comes up gave %v", err)
+	}
+	if n := f.callCount("Exec"); n != 4 {
+		t.Fatalf("probe ran %d times, want three refusals and one success", n)
+	}
+}
+
 func TestBoxdExecQuoting(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
@@ -369,6 +439,73 @@ func TestBoxdExecStreams(t *testing.T) {
 	out, _, err = runExec(t.Context(), p, ref, big)
 	if err != nil || len(out) != 300000 {
 		t.Fatalf("large output gave %d bytes, %v", len(out), err)
+	}
+}
+
+func TestBoxdExecRunsOnAfterExecReturns(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	spec := provider.ExecSpec{
+		Argv: []string{"sh", "-c", "echo early; sleep 0.5; echo late; exit 7"},
+	}
+	out, code, err := runExec(ctx, p, ref, spec)
+	if err != nil || string(out) != "early\nlate\n" || code != 7 {
+		t.Fatalf("long command gave %q exit %d, %v, want both lines and exit 7", out, code, err)
+	}
+}
+
+func TestBoxdExecExitCode(t *testing.T) {
+	cases := []struct {
+		name  string
+		reply []*boxdpb.ExecChunk
+		out   string
+		code  int
+	}{
+		{
+			name: "exit chunk then empty chunks",
+			reply: []*boxdpb.ExecChunk{
+				{Data: []byte("out")}, {ExitCode: 3}, {IsStderr: true}, {},
+			},
+			out: "out", code: 3,
+		},
+		{
+			name:  "exit code on the last data chunk",
+			reply: []*boxdpb.ExecChunk{{Data: []byte("o")}, {Data: []byte("ut"), ExitCode: 4}},
+			out:   "out", code: 4,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			ref := readyMachine(t, f)
+			f.replyExec(c.reply...)
+			out, code, err := runExec(t.Context(), p, ref, provider.ExecSpec{Argv: []string{"x"}})
+			if err != nil || string(out) != c.out || code != c.code {
+				t.Fatalf("exec gave %q exit %d, %v, want %q exit %d", out, code, err, c.out,
+					c.code)
+			}
+		})
+	}
+
+	for name, reply := range map[string][]*boxdpb.ExecChunk{
+		"data then the end": {{Data: []byte("out")}},
+		"no chunk at all":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			ref := readyMachine(t, f)
+			f.replyExec(reply...)
+			_, code, err := runExec(t.Context(), p, ref, provider.ExecSpec{Argv: []string{"x"}})
+			if !isCode(err, provider.CodeOutcomeUnknown) {
+				t.Fatalf("stream without an exit chunk gave exit %d, %v, want outcome_unknown",
+					code, err)
+			}
+		})
 	}
 }
 
