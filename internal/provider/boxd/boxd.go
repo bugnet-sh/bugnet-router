@@ -565,15 +565,17 @@ func quote(s string) string {
 }
 
 type execStream struct {
-	ctx     context.Context
-	stream  grpc.BidiStreamingClient[boxdpb.ExecChunk, boxdpb.ExecChunk]
-	cancel  context.CancelFunc
-	ending  sync.Once
-	pending []byte
-	code    int
-	exited  bool
-	err     error
-	done    bool
+	ctx      context.Context
+	stream   grpc.BidiStreamingClient[boxdpb.ExecChunk, boxdpb.ExecChunk]
+	cancel   context.CancelFunc
+	ending   sync.Once
+	pending  []byte
+	code     int
+	failed   bool
+	received bool
+	exited   bool
+	err      error
+	done     bool
 }
 
 func (s *execStream) Read(p []byte) (int, error) {
@@ -596,14 +598,18 @@ func (s *execStream) next() {
 	c, err := s.stream.Recv()
 	if err != nil {
 		s.done = true
-		if !errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) {
+			s.exited = s.received
+		} else {
 			s.err = classify(s.ctx, err)
 		}
 		s.end()
 		return
 	}
-	if !s.exited && (len(c.GetData()) == 0 || c.GetExitCode() != 0) {
-		s.code, s.exited = int(c.GetExitCode()), true
+	s.received = true
+	// exit_code has no presence bit, so the first non-zero code wins and a clean close means 0
+	if code := int(c.GetExitCode()); code != 0 && !s.failed {
+		s.code, s.failed = code, true
 	}
 	if !c.GetIsStderr() {
 		s.pending = c.GetData()

@@ -476,6 +476,16 @@ func TestBoxdExecExitCode(t *testing.T) {
 			reply: []*boxdpb.ExecChunk{{Data: []byte("o")}, {Data: []byte("ut"), ExitCode: 4}},
 			out:   "out", code: 4,
 		},
+		{
+			name:  "empty chunk before the exit chunk",
+			reply: []*boxdpb.ExecChunk{{Data: []byte("out")}, {}, {ExitCode: 5}},
+			out:   "out", code: 5,
+		},
+		{
+			name:  "clean close after data",
+			reply: []*boxdpb.ExecChunk{{Data: []byte("o")}, {Data: []byte("ut")}},
+			out:   "out", code: 0,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -491,22 +501,16 @@ func TestBoxdExecExitCode(t *testing.T) {
 		})
 	}
 
-	for name, reply := range map[string][]*boxdpb.ExecChunk{
-		"data then the end": {{Data: []byte("out")}},
-		"no chunk at all":   nil,
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFake(t)
-			p := f.provider(t, fakeKey)
-			ref := readyMachine(t, f)
-			f.replyExec(reply...)
-			_, code, err := runExec(t.Context(), p, ref, provider.ExecSpec{Argv: []string{"x"}})
-			if !isCode(err, provider.CodeOutcomeUnknown) {
-				t.Fatalf("stream without an exit chunk gave exit %d, %v, want outcome_unknown",
-					code, err)
-			}
-		})
-	}
+	t.Run("no chunk at all", func(t *testing.T) {
+		f := newFake(t)
+		p := f.provider(t, fakeKey)
+		ref := readyMachine(t, f)
+		f.replyExec()
+		_, code, err := runExec(t.Context(), p, ref, provider.ExecSpec{Argv: []string{"x"}})
+		if !isCode(err, provider.CodeOutcomeUnknown) {
+			t.Fatalf("stream without any chunk gave exit %d, %v, want outcome_unknown", code, err)
+		}
+	})
 }
 
 func TestBoxdExecCloseKillsCommand(t *testing.T) {
