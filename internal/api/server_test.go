@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -169,6 +170,7 @@ type env struct {
 	client    routerv1connect.SandboxRouterServiceClient
 	url       string
 	dbURL     string
+	pool      *pgxpool.Pool
 	store     *store.Store
 	jobs      *jobs.Service
 	vk        valkey.Client
@@ -263,8 +265,8 @@ func newEnv(t *testing.T, opts options) *env {
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, dbURL: dbURL, store: st, jobs: js, vk: vk, apiVK: apiVK, apiVKName: apiName,
-		prefix: prefix, root: root, priv: priv, handleKey: handleKey,
+		api: srv, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk, apiVK: apiVK,
+		apiVKName: apiName, prefix: prefix, root: root, priv: priv, handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv, internalToken)
@@ -1602,6 +1604,53 @@ func (e *env) opsKeys(t *testing.T) []string {
 	return keys
 }
 
+// jobCount counts the job rows of a placement
+func (e *env) jobCount(t *testing.T, placementID string) int {
+	t.Helper()
+	var n int
+	err := e.pool.QueryRow(t.Context(), `select count(*) from jobs where placement_id = $1`,
+		placementID).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// waitFull waits for a placement's operation bucket to refill, which expires its key
+func (e *env) waitFull(t *testing.T, placementID string) {
+	t.Helper()
+	key := e.prefix + "ops:" + placementID
+	for give := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		n, err := e.vk.Do(t.Context(), e.vk.B().Exists().Key(key).Build()).AsInt64()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			return
+		}
+		if time.Now().After(give) {
+			t.Fatalf("operation bucket %s still not full after 10 s", key)
+		}
+	}
+}
+
+// watchFirst opens WatchPlacement and returns once the first message arrives
+func (e *env) watchFirst(t *testing.T, h string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	stream, err := e.client.WatchPlacement(ctx, connect.NewRequest(
+		&routerv1.WatchPlacementRequest{Handle: h}))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stream.Close() }()
+	if !stream.Receive() {
+		return cmp.Or(stream.Err(), errors.New("the watch ended without a message"))
+	}
+	return nil
+}
+
 func TestSandboxOperationsAreRateLimited(t *testing.T) {
 	const burst = 3
 	// One token a second keeps the spent bucket empty for the few calls that follow
@@ -1617,8 +1666,12 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 			wantCode(t, ops[name](ended), connect.CodeFailedPrecondition)
 		}
 	}
-	watchErr := func(h string) error {
-		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
+	ran := sh(busy, "echo ran")
+	ran.Until = &routerv1.Until{Exit: true}
+	job := e.exec(t, ran).GetJobId()
+	e.waitFull(t, busyMsg.GetPlacementId())
+	watchErr := func(h, jobID string) error {
+		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: jobID})
 		return err
 	}
 	uncounted := func(when string) {
@@ -1627,7 +1680,13 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		if _, err := e.checkExtend(t, busy, morePkg); err != nil {
 			t.Fatalf("CheckExtendPlacement %s: %v", when, err)
 		}
-		wantCode(t, watchErr(busy), connect.CodeNotFound)
+		if err := e.watchFirst(t, busy); err != nil {
+			t.Fatalf("WatchPlacement %s: %v", when, err)
+		}
+		if err := watchErr(busy, job); err != nil {
+			t.Fatalf("WatchJob %s: %v", when, err)
+		}
+		wantCode(t, watchErr(busy, "j_nope"), connect.CodeNotFound)
 	}
 	for range burst + 1 {
 		uncounted("before the burst")
@@ -1651,6 +1710,23 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 			t.Errorf("%s past the burst asks to retry in %v, want up to 1s", name, wait)
 		}
 	}
+	jobs := e.jobCount(t, busyMsg.GetPlacementId())
+	_, err := e.client.Exec(ctx, connect.NewRequest(sh(busy, `touch "$HOME/refused"`)))
+	wantCode(t, err, connect.CodeResourceExhausted)
+	_, err = e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
+		Handle: busy, Path: "/root/ops.txt", Data: []byte("refused"),
+	}))
+	wantCode(t, err, connect.CodeResourceExhausted)
+	home := filepath.Join(e.sandboxFS(t, busy), "root")
+	if _, err := os.Stat(filepath.Join(home, "refused")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused Exec ran its command (%v)", err)
+	}
+	if n := e.jobCount(t, busyMsg.GetPlacementId()); n != jobs {
+		t.Fatalf("%d jobs after a refused Exec, want the %d before", n, jobs)
+	}
+	if data, err := os.ReadFile(filepath.Join(home, "ops.txt")); err != nil || string(data) != "x" {
+		t.Fatalf("file after a refused WriteFile holds %q, %v, want the x from before", data, err)
+	}
 	uncounted("with the bucket spent")
 	for _, req := range []*routerv1.ExecRequest{
 		{Handle: busy},
@@ -1660,7 +1736,7 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		_, err := e.client.Exec(ctx, connect.NewRequest(req))
 		wantCode(t, err, connect.CodeInvalidArgument)
 	}
-	_, err := e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
+	_, err = e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
 		Handle: busy, Path: "/root/setuid", Data: []byte("x"), Mode: 0o4755,
 	}))
 	wantCode(t, err, connect.CodeInvalidArgument)
@@ -1812,8 +1888,8 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// killSupervisor kills a job's supervisor and then its command so no exit code is recorded
-func (e *env) killSupervisor(t *testing.T, h, jobID string) {
+// sandboxFS returns the host directory of the local sandbox the handle's placement runs on
+func (e *env) sandboxFS(t *testing.T, h string) string {
 	t.Helper()
 	sha, err := handle.Hash(h)
 	if err != nil {
@@ -1823,7 +1899,13 @@ func (e *env) killSupervisor(t *testing.T, h, jobID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(e.root, p.ProviderRef.ID, "fs", "tmp", "bugnet", "jobs", jobID)
+	return filepath.Join(e.root, p.ProviderRef.ID, "fs")
+}
+
+// killSupervisor kills a job's supervisor and then its command so no exit code is recorded
+func (e *env) killSupervisor(t *testing.T, h, jobID string) {
+	t.Helper()
+	dir := filepath.Join(e.sandboxFS(t, h), "tmp", "bugnet", "jobs", jobID)
 	for _, name := range []string{"spid", "pid"} {
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
