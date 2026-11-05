@@ -797,7 +797,8 @@ func TestLoadFileSyntaxErrorsNameOnlyKnownKeys(t *testing.T) {
 		}
 		for i := 0; i+8 <= len(pasted); i++ {
 			if strings.Contains(msg, pasted[i:i+8]) {
-				t.Errorf("a pasted secret after %q: error carries %q: %s", table, pasted[i:i+8], msg)
+				t.Errorf("a pasted secret after %q: error carries %q: %s", table, pasted[i:i+8],
+					msg)
 			}
 		}
 	}
