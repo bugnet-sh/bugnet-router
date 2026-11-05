@@ -203,9 +203,11 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 		t.Fatalf("build e2b without a key: %v", err)
 	}
 	for name, table := range map[string]string{
-		"no vCPU":     "size = \"2x2\"\ntemplate = \"bugnet-2x2\"\nmemory_mib = 2048",
-		"no template": "size = \"2x2\"\nvcpu = 2\nmemory_mib = 2048",
-		"no size":     "template = \"bugnet-2x2\"\nvcpu = 2\nmemory_mib = 2048",
+		"no vCPU": "size = \"2x2\"\ntemplate = \"bugnet-2x2\"\nmemory_mib = 2048\n" +
+			"disk_gib = 10",
+		"no template": "size = \"2x2\"\nvcpu = 2\nmemory_mib = 2048\ndisk_gib = 10",
+		"no size":     "template = \"bugnet-2x2\"\nvcpu = 2\nmemory_mib = 2048\ndisk_gib = 10",
+		"no disk":     "size = \"2x2\"\ntemplate = \"bugnet-2x2\"\nvcpu = 2\nmemory_mib = 2048",
 	} {
 		cfg := load(t, "providers = [\"e2b\"]\n[[e2b.templates]]\n"+table,
 			map[string]string{"e2b": "e2b_test"})
@@ -214,11 +216,12 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 			t.Errorf("%s: build gave %v, want an error naming e2b.templates", name, err)
 		}
 	}
-	again := "[[e2b.templates]]\nsize = \"2x2\"\ntemplate = \"other\"\nvcpu = 2\nmemory_mib = 2048"
+	again := "[[e2b.templates]]\nsize = \"2x2\"\ntemplate = \"other\"\nvcpu = 2\n" +
+		"memory_mib = 2048\ndisk_gib = 10"
 	twice := load(t, "providers = [\"e2b\"]\n"+e2bTemplates+again,
 		map[string]string{"e2b": "e2b_test"})
 	if _, err := providers.Build(twice, nil); err == nil ||
-		!strings.Contains(err.Error(), "e2b.templates") {
+		!strings.Contains(err.Error(), "e2b.templates") || !strings.Contains(err.Error(), "two") {
 		t.Errorf("a size twice: build gave %v, want an error naming e2b.templates", err)
 	}
 }

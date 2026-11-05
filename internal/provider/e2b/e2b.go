@@ -119,8 +119,8 @@ func validate(templates []Template) error {
 		switch {
 		case t.Name == "" || t.TemplateID == "":
 			return fmt.Errorf("e2b: template %+v needs a name and a template ID", t)
-		case t.VCPU < 1 || t.MemoryMiB < 1 || t.DiskGiB < 0:
-			return fmt.Errorf("e2b: template %s needs vCPUs and memory", t.Name)
+		case t.VCPU < 1 || t.MemoryMiB < 1 || t.DiskGiB < 1:
+			return fmt.Errorf("e2b: template %s needs vCPUs, memory and disk", t.Name)
 		case seen[t.Name]:
 			return fmt.Errorf("e2b: two templates are named %s", t.Name)
 		}

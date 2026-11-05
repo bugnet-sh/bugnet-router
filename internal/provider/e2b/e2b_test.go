@@ -914,8 +914,8 @@ func TestE2BOptions(t *testing.T) {
 		}},
 		"negative lifetime": {APIKey: "k", MaxLifetime: -time.Hour},
 		"two templates named alike": {APIKey: "k", Templates: []Template{
-			{Name: "a", TemplateID: "t", VCPU: 1, MemoryMiB: 1},
-			{Name: "a", TemplateID: "u", VCPU: 2, MemoryMiB: 2},
+			{Name: "a", TemplateID: "t", VCPU: 1, MemoryMiB: 1, DiskGiB: 1},
+			{Name: "a", TemplateID: "u", VCPU: 2, MemoryMiB: 2, DiskGiB: 1},
 		}},
 	}
 	for name, opts := range bad {
@@ -966,6 +966,7 @@ func TestNewChecksTemplates(t *testing.T) {
 		"no template ID": {{Name: "2x2", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}},
 		"no vCPU":        {{Name: "2x2", TemplateID: "bugnet", MemoryMiB: 2048, DiskGiB: 10}},
 		"no memory":      {{Name: "2x2", TemplateID: "bugnet", VCPU: 2, DiskGiB: 10}},
+		"no disk":        {{Name: "2x2", TemplateID: "bugnet", VCPU: 2, MemoryMiB: 2048}},
 		"negative disk": {
 			{Name: "2x2", TemplateID: "bugnet", VCPU: 2, MemoryMiB: 2048, DiskGiB: -1},
 		},
