@@ -89,6 +89,51 @@ code. If the stream breaks, it prints the `bugnet-dev watch` command that resume
 cursor. `bugnet-dev token` prints a token for other clients, and `bugnet-dev` with no arguments
 lists every command.
 
+A recorded session against `dev-up.sh` on the local provider (2026-11-05):
+
+```text
+$ bin/bugnet-dev create --package dev-small-10m
+handle=sbx_incf5d4j2g46mypgm6wajtyic5
+placement_id=5bef8fc5-a11f-4e46-a88e-17d69739f859
+state=ready
+package_id=dev-small-10m
+created_at=2026-11-05T01:25:34.268894Z
+ready_at=2026-11-05T01:25:34.277819Z
+deadline=2026-11-05T01:35:34.277819Z
+
+$ bin/bugnet-dev exec --handle sbx_incf5d4j2g46mypgm6wajtyic5 -- \
+    sh -c 'echo hello; sleep 1; echo done; exit 3'
+hello
+done
+$ echo $?
+3
+
+$ bin/bugnet-dev exec --handle sbx_incf5d4j2g46mypgm6wajtyic5 -- \
+    sh -c 'for i in 1 2 3; do date +%T; sleep 0.5; done'
+02:25:43
+02:25:44
+02:25:44
+
+$ bin/bugnet-dev extend --handle sbx_incf5d4j2g46mypgm6wajtyic5 --package dev-small-10m-more
+placement_id=5bef8fc5-a11f-4e46-a88e-17d69739f859
+state=ready
+package_id=dev-small-10m
+created_at=2026-11-05T01:25:34.268894Z
+ready_at=2026-11-05T01:25:34.277819Z
+deadline=2026-11-05T01:45:34.277819Z
+
+$ bin/bugnet-dev stop --handle sbx_incf5d4j2g46mypgm6wajtyic5
+placement_id=5bef8fc5-a11f-4e46-a88e-17d69739f859
+state=terminated
+package_id=dev-small-10m
+created_at=2026-11-05T01:25:34.268894Z
+ready_at=2026-11-05T01:25:34.277819Z
+deadline=2026-11-05T01:45:34.277819Z
+```
+
+The outbox then held `placement.ready`, `placement.extended` and `placement.terminated` with
+`billed_seconds` 11 and reason `stop`, pending because `BUGNET_EVENTS_URL` was empty.
+
 ## Environment
 
 Both `router-api` and `router-worker` read these. `router-api migrate` reads only the database
