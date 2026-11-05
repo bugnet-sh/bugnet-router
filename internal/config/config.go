@@ -204,22 +204,34 @@ func LoadFile(path string) (Config, error) {
 	return c, nil
 }
 
-// decode checks the document's keys against the schema, then decodes it strictly over the defaults
+// decode checks the document against the schema, then decodes it strictly over the defaults
 func decode(raw []byte) (file, error) {
-	doc, err := outline(raw)
-	if err != nil {
-		return file{}, err
-	}
-	if err := check(doc); err != nil {
-		return file{}, err
-	}
-	f := defaults()
-	dec := toml.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return file{}, errors.New(describe(err, doc))
-	}
-	return f, nil
+	return recovered(func() (file, error) {
+		doc, err := outline(raw)
+		if err != nil {
+			return file{}, err
+		}
+		if err := check(doc); err != nil {
+			return file{}, err
+		}
+		f := defaults()
+		dec := toml.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&f); err != nil {
+			return file{}, errors.New(describe(err, doc))
+		}
+		return f, nil
+	})
+}
+
+// recovered runs a decode and turns a panic inside go-toml into an error that quotes nothing
+func recovered(run func() (file, error)) (f file, err error) {
+	defer func() {
+		if recover() != nil {
+			f, err = file{}, errors.New("the file could not be decoded")
+		}
+	}()
+	return run()
 }
 
 func (f file) config() (Config, error) {

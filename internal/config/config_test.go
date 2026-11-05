@@ -783,6 +783,20 @@ func TestLoadFileRefusesDatesAndTimes(t *testing.T) {
 	}
 }
 
+func TestDecodeRecoversFromPanics(t *testing.T) {
+	f, err := recovered(func() (file, error) {
+		panic("reflect.Set: e2b_pastedsecretvalue")
+	})
+	if err == nil || err.Error() != "the file could not be decoded" ||
+		!reflect.DeepEqual(f, file{}) {
+		t.Fatalf("a panic while decoding gave %+v, %v, want a generic error", f, err)
+	}
+	f, err = recovered(func() (file, error) { return defaults(), nil })
+	if err != nil || !reflect.DeepEqual(f, defaults()) {
+		t.Fatalf("a decode without a panic gave %+v, %v", f, err)
+	}
+}
+
 func TestLoadFileValueKinds(t *testing.T) {
 	cases := []struct{ name, toml, want string }{
 		{"whole number as an array", "[limits]\nmax_running_jobs = [16]",
