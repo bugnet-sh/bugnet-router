@@ -286,6 +286,20 @@ func (s *Server) ExtendPlacement(
 	return connect.NewResponse(&routerv1.ExtendPlacementResponse{Placement: placementMsg(p)}), nil
 }
 
+// CheckExtendPlacement answers as ExtendPlacement would for a fresh order of the package, with
+// the deadline it would set, so the gateway can ask before it takes payment
+func (s *Server) CheckExtendPlacement(
+	ctx context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
+) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
+	p, deadline, err := s.d.Saga.CheckExtend(ctx, req.Msg.GetHandle(), req.Msg.GetPackageId())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
+		Placement: placementMsg(p), Deadline: timestamppb.New(deadline),
+	}), nil
+}
+
 // StopPlacement destroys the sandbox and ends the placement, a stopped one staying as it is
 func (s *Server) StopPlacement(
 	ctx context.Context, req *connect.Request[routerv1.StopPlacementRequest],

@@ -34,6 +34,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/valkey-io/valkey-go"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
@@ -510,6 +511,13 @@ func TestUnauthenticatedRejected(t *testing.T) {
 		if connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Errorf("%s: estimate gave %v, want unauthenticated", name, err)
 		}
+		_, err = c.CheckExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.CheckExtendPlacementRequest{
+				Handle: "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa", PackageId: morePkg,
+			}))
+		if connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Errorf("%s: check extend gave %v, want unauthenticated", name, err)
+		}
 		stream, err := c.WatchPlacement(t.Context(), connect.NewRequest(
 			&routerv1.WatchPlacementRequest{Handle: "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa"}))
 		if err == nil {
@@ -610,6 +618,44 @@ func TestCreateGetReadyExecStop(t *testing.T) {
 	}
 	_, err = e.client.Exec(t.Context(), connect.NewRequest(sh(h, "echo late")))
 	wantCode(t, err, connect.CodeFailedPrecondition)
+}
+
+func (e *env) checkExtend(
+	t *testing.T, h, pkg string,
+) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
+	t.Helper()
+	return e.client.CheckExtendPlacement(t.Context(), connect.NewRequest(
+		&routerv1.CheckExtendPlacementRequest{Handle: h, PackageId: pkg}))
+}
+
+func TestCheckExtendThenExtend(t *testing.T) {
+	e := newEnv(t, options{})
+	h, ready := e.readyPlacement(t)
+	check, err := e.checkExtend(t, h, morePkg)
+	if err != nil {
+		t.Fatalf("check extend: %v", err)
+	}
+	if !proto.Equal(check.Msg.GetPlacement(), ready) {
+		t.Fatalf("check gave placement %v, want it as it is %v", check.Msg.GetPlacement(), ready)
+	}
+	would := check.Msg.GetDeadline().AsTime()
+	if moved := would.Sub(ready.GetDeadline().AsTime()); moved != 10*time.Minute {
+		t.Fatalf("check would move the deadline by %v, want 10m", moved)
+	}
+	if p := e.get(t, h, 0, 0); !proto.Equal(p, ready) {
+		t.Fatalf("placement after the check %v, want %v", p, ready)
+	}
+
+	ext, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+		&routerv1.ExtendPlacementRequest{
+			Handle: h, OrderToken: e.extendToken(t, h, morePkg, morePrice),
+		}))
+	if err != nil {
+		t.Fatalf("extend after the check: %v", err)
+	}
+	if got := ext.Msg.GetPlacement().GetDeadline().AsTime(); !got.Equal(would) {
+		t.Fatalf("extend gave deadline %v, the check said %v", got, would)
+	}
 }
 
 func TestGetPlacementLongPollWakes(t *testing.T) {
@@ -1252,6 +1298,10 @@ func TestErrorCodes(t *testing.T) {
 			&routerv1.ExtendPlacementRequest{Handle: h, OrderToken: tok}))
 		return err
 	}
+	checkErr := func(h, pkg string) error {
+		_, err := e.checkExtend(t, h, pkg)
+		return err
+	}
 	execErr := func(req *routerv1.ExecRequest) error {
 		_, err := e.client.Exec(ctx, connect.NewRequest(req))
 		return err
@@ -1272,6 +1322,7 @@ func TestErrorCodes(t *testing.T) {
 		wantCode(t, execErr(sh(unknown, "true")), connect.CodeNotFound)
 		wantCode(t, extend(unknown, e.extendToken(t, unknown, morePkg, morePrice)),
 			connect.CodeNotFound)
+		wantCode(t, checkErr(unknown, morePkg), connect.CodeNotFound)
 	})
 	t.Run("malformed handle is not found", func(t *testing.T) {
 		wantCode(t, get("sbx_not-a-handle"), connect.CodeNotFound)
@@ -1279,6 +1330,7 @@ func TestErrorCodes(t *testing.T) {
 			&routerv1.StopPlacementRequest{Handle: "nope"}))
 		wantCode(t, err, connect.CodeNotFound)
 		wantCode(t, readErr("", "/root"), connect.CodeNotFound)
+		wantCode(t, checkErr("nope", morePkg), connect.CodeNotFound)
 	})
 	t.Run("bad or expired token is permission denied", func(t *testing.T) {
 		_, err := e.createWith(t, "v1.garbage.token")
@@ -1311,10 +1363,12 @@ func TestErrorCodes(t *testing.T) {
 	t.Run("unknown package is invalid", func(t *testing.T) {
 		_, err := e.createWith(t, e.startToken(t, "no-such-package", smallPrice))
 		wantCode(t, err, connect.CodeInvalidArgument)
+		wantCode(t, checkErr(h, "no-such-package"), connect.CodeInvalidArgument)
 	})
 	t.Run("package that does not extend the placement is invalid", func(t *testing.T) {
 		wantCode(t, extend(h, e.extendToken(t, h, longPkg, longPrice)),
 			connect.CodeInvalidArgument)
+		wantCode(t, checkErr(h, longPkg), connect.CodeInvalidArgument)
 	})
 	t.Run("no candidate is resource exhausted", func(t *testing.T) {
 		_, err := e.createWith(t, e.startToken(t, gpuPkg, gpuPrice))
@@ -1333,6 +1387,8 @@ func TestErrorCodes(t *testing.T) {
 				Handle: ph, OrderToken: slow.extendToken(t, ph, morePkg, morePrice),
 			}))
 		wantCode(t, err, connect.CodeFailedPrecondition)
+		_, err = slow.checkExtend(t, ph, morePkg)
+		wantCode(t, err, connect.CodeFailedPrecondition)
 		_, err = slow.client.StopPlacement(ctx, connect.NewRequest(
 			&routerv1.StopPlacementRequest{Handle: ph}))
 		wantCode(t, err, connect.CodeFailedPrecondition)
@@ -1344,6 +1400,7 @@ func TestErrorCodes(t *testing.T) {
 		wantCode(t, readErr(th, "/root"), connect.CodeFailedPrecondition)
 		wantCode(t, extend(th, e.extendToken(t, th, morePkg, morePrice)),
 			connect.CodeFailedPrecondition)
+		wantCode(t, checkErr(th, morePkg), connect.CodeFailedPrecondition)
 	})
 	t.Run("extension past the provider's max lifetime is a failed precondition",
 		func(t *testing.T) {
@@ -1353,6 +1410,8 @@ func TestErrorCodes(t *testing.T) {
 				&routerv1.ExtendPlacementRequest{
 					Handle: ch, OrderToken: capped.extendToken(t, ch, morePkg, morePrice),
 				}))
+			wantCode(t, err, connect.CodeFailedPrecondition)
+			_, err = capped.checkExtend(t, ch, morePkg)
 			wantCode(t, err, connect.CodeFailedPrecondition)
 		})
 	t.Run("file over 256 KiB is invalid", func(t *testing.T) {

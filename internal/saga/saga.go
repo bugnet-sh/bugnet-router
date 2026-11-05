@@ -237,13 +237,22 @@ func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, er
 
 // paidPackage returns the token's package once the amount paid covers its price
 func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
-	pkg, ok := s.d.Catalog.Get(c.PackageID)
-	if !ok {
-		return pkg, fmt.Errorf("%w %q", ErrUnknownPackage, c.PackageID)
+	pkg, err := s.lookupPackage(c.PackageID)
+	if err != nil {
+		return pkg, err
 	}
 	if c.AmountMicros < pkg.PriceMicros {
 		return pkg, fmt.Errorf("%w: paid %d, %s costs %d", ErrUnderpaid, c.AmountMicros, pkg.ID,
 			pkg.PriceMicros)
+	}
+	return pkg, nil
+}
+
+// lookupPackage returns the catalog's package with this ID or ErrUnknownPackage
+func (s *Saga) lookupPackage(id string) (catalog.Package, error) {
+	pkg, ok := s.d.Catalog.Get(id)
+	if !ok {
+		return pkg, fmt.Errorf("%w %q", ErrUnknownPackage, id)
 	}
 	return pkg, nil
 }
@@ -647,32 +656,17 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if err != nil {
 		return store.Placement{}, err
 	}
-	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	x, err := s.checkExtend(ctx, sha, pkg, func(p store.Placement) (bool, error) {
+		return s.d.Store.HasExtendOrder(ctx, c.OrderID, p.ID)
+	})
 	if err != nil {
 		return store.Placement{}, err
 	}
-	if pkg.ID != p.PackageID && pkg.ExtensionOf != p.PackageID {
-		return store.Placement{}, fmt.Errorf("%w: %s on %s", ErrNotExtension, pkg.ID, p.PackageID)
-	}
-	replay, err := s.d.Store.HasExtendOrder(ctx, c.OrderID, p.ID)
-	if err != nil {
-		return store.Placement{}, err
-	}
-	if replay {
-		return s.replayExtend(ctx, p), nil
-	}
-	if p.State != store.PlacementReady {
-		return store.Placement{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
-	}
-	prov, ref, err := s.home(p)
-	if err != nil {
-		return store.Placement{}, err
-	}
-	by := time.Duration(pkg.Minutes) * time.Minute
-	if err := withinLifetime(prov, p, p.Deadline.Add(by)); err != nil {
-		return store.Placement{}, err
+	if x.replay {
+		return s.replayExtend(ctx, x.p), nil
 	}
 
+	p, prov, ref, by := x.p, x.prov, x.ref, x.by
 	var applied bool
 	var ev Event
 	id := p.ID
@@ -714,6 +708,69 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	}
 	s.publish(ctx, ev)
 	return p, nil
+}
+
+// CheckExtend answers what Extend would decide now for a fresh order of the package, changing
+// nothing, with the deadline the placement would then have
+func (s *Saga) CheckExtend(
+	ctx context.Context, h, packageID string,
+) (store.Placement, time.Time, error) {
+	sha, err := hashHandle(h)
+	if err != nil {
+		return store.Placement{}, time.Time{}, err
+	}
+	pkg, err := s.lookupPackage(packageID)
+	if err != nil {
+		return store.Placement{}, time.Time{}, err
+	}
+	x, err := s.checkExtend(ctx, sha, pkg, nil)
+	if err != nil {
+		return store.Placement{}, time.Time{}, err
+	}
+	return x.p, x.p.Deadline.Add(x.by), nil
+}
+
+// extension is a placement that passed the extend checks, with what extending it needs
+type extension struct {
+	p      store.Placement
+	prov   provider.Provider
+	ref    provider.Ref
+	by     time.Duration
+	replay bool // the order already extended the placement, so the later checks were skipped
+}
+
+// checkExtend makes the checks of Extend and CheckExtend, asking replayed, when given, whether
+// the order was already applied before the ready check
+func (s *Saga) checkExtend(
+	ctx context.Context, sha []byte, pkg catalog.Package,
+	replayed func(store.Placement) (bool, error),
+) (extension, error) {
+	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	if err != nil {
+		return extension{}, err
+	}
+	if pkg.ID != p.PackageID && pkg.ExtensionOf != p.PackageID {
+		return extension{}, fmt.Errorf("%w: %s on %s", ErrNotExtension, pkg.ID, p.PackageID)
+	}
+	x := extension{p: p, by: time.Duration(pkg.Minutes) * time.Minute}
+	if replayed != nil {
+		if x.replay, err = replayed(p); err != nil {
+			return extension{}, err
+		}
+		if x.replay {
+			return x, nil
+		}
+	}
+	if p.State != store.PlacementReady {
+		return extension{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
+	}
+	if x.prov, x.ref, err = s.home(p); err != nil {
+		return extension{}, err
+	}
+	if err := withinLifetime(x.prov, p, p.Deadline.Add(x.by)); err != nil {
+		return extension{}, err
+	}
+	return x, nil
 }
 
 // withinLifetime refuses a deadline whose sandbox would outlast the provider's maximum lifetime

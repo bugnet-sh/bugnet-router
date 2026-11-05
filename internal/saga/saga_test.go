@@ -1670,6 +1670,140 @@ func TestExtendReplayAfterStop(t *testing.T) {
 	}
 }
 
+func (e *env) extendOrders(t *testing.T) int {
+	t.Helper()
+	var n int
+	err := e.pool.QueryRow(t.Context(),
+		`select count(*) from orders where kind = 'extend'`).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
+	var fail atomic.Bool
+	var calls atomic.Int64
+	root := t.TempDir()
+	a := lifetimeProbe{newLocal(t, local.Options{Name: "a", Root: root}), &fail, &calls}
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	want := p.Deadline.Add(10 * time.Minute)
+	before := calls.Load()
+
+	for _, pkg := range []string{morePkg, smallPkg} {
+		got, deadline, err := e.saga.CheckExtend(t.Context(), h, pkg)
+		if err != nil {
+			t.Fatalf("check %s: %v", pkg, err)
+		}
+		if got.ID != p.ID || got.State != store.PlacementReady ||
+			!got.Deadline.Equal(*p.Deadline) || !deadline.Equal(want) {
+			t.Fatalf("check %s gave %+v and %v, want the placement as it is and %v", pkg, got,
+				deadline, want)
+		}
+	}
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(*p.Deadline) {
+		t.Fatalf("deadline moved from %v to %v", p.Deadline, got.Deadline)
+	}
+	if n := calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls for a check", n)
+	}
+	if lt := lifetime(t, root, p.ProviderRef); !near(lt, p.Deadline.Add(5*time.Minute)) {
+		t.Fatalf("provider lifetime %v, want %v", lt, p.Deadline.Add(5*time.Minute))
+	}
+	if evs := e.events(t, saga.EventExtended); len(evs) != 0 {
+		t.Fatalf("extended events %+v", evs)
+	}
+	if jobs := e.deadlineJobs(t); len(jobs) != 1 {
+		t.Fatalf("deadline jobs %+v, want only the first", jobs)
+	}
+	if n := e.extendOrders(t); n != 0 {
+		t.Fatalf("%d extend orders recorded by a check", n)
+	}
+
+	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice, h))
+	if err != nil || !got.Deadline.Equal(want) {
+		t.Fatalf("extend after the check %v, %v, want deadline %v", got.Deadline, err, want)
+	}
+}
+
+func TestCheckExtendRefusesAsExtendDoes(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	_, h := e.placeReady(t, "order-1")
+	_, stopped := e.placeReady(t, "order-2")
+	if _, err := e.saga.Stop(t.Context(), stopped); err != nil {
+		t.Fatal(err)
+	}
+	placing, sha := handle.Derive(e.handleKey, "order-3")
+	_, _, err := e.store.CreatePlacement(t.Context(), store.NewPlacement{
+		HandleSHA256: sha, OrderID: "order-3", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, _ := handle.New()
+
+	for name, c := range map[string]struct {
+		handle, pkg string
+		price       int64
+		want        error
+	}{
+		"unknown handle":        {unknown, morePkg, morePrice, store.ErrNotFound},
+		"unknown package":       {h, "no-such-package", morePrice, saga.ErrUnknownPackage},
+		"package of another":    {h, longPkg, 120000, saga.ErrNotExtension},
+		"placing placement":     {placing, morePkg, morePrice, saga.ErrNotReady},
+		"terminated placement":  {stopped, morePkg, morePrice, saga.ErrNotReady},
+		"unknown package first": {unknown, "no-such-package", morePrice, saga.ErrUnknownPackage},
+	} {
+		if _, _, err := e.saga.CheckExtend(t.Context(), c.handle, c.pkg); !errors.Is(err, c.want) {
+			t.Errorf("%s: check gave %v, want %v", name, err, c.want)
+		}
+		tok := e.extendToken(t, "ext-"+name, c.pkg, c.price, c.handle)
+		if _, err := e.saga.Extend(t.Context(), c.handle, tok); !errors.Is(err, c.want) {
+			t.Errorf("%s: extend gave %v, want %v", name, err, c.want)
+		}
+	}
+	for _, bad := range []string{"", "nope", "sbx_not-a-handle"} {
+		_, _, err := e.saga.CheckExtend(t.Context(), bad, morePkg)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("malformed handle %q gave %v, want ErrNotFound", bad, err)
+		}
+	}
+	if evs := e.events(t, saga.EventExtended); len(evs) != 0 {
+		t.Fatalf("extended events %+v", evs)
+	}
+}
+
+func TestCheckExtendRefusesPastMaxLifetime(t *testing.T) {
+	a := newCapped(t, t.TempDir(), 30*time.Minute)
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	_, deadline, err := e.saga.CheckExtend(t.Context(), h, morePkg)
+	if err != nil || !deadline.Equal(p.Deadline.Add(10*time.Minute)) {
+		t.Fatalf("check within the provider's max lifetime %v, %v", deadline, err)
+	}
+	if _, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice,
+		h)); err != nil {
+		t.Fatalf("extend within the provider's max lifetime: %v", err)
+	}
+
+	before := a.calls.Load()
+	if _, _, err := e.saga.CheckExtend(t.Context(), h, morePkg); !errors.Is(
+		err, saga.ErrExceedsLifetime) {
+		t.Fatalf("check past the max lifetime gave %v, want ErrExceedsLifetime", err)
+	}
+	_, err = e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-2", morePkg, morePrice, h))
+	if !errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Fatalf("extend past the max lifetime gave %v, want ErrExceedsLifetime", err)
+	}
+	if n := a.calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls for a refused check and extension", n)
+	}
+	if n := e.extendOrders(t); n != 1 {
+		t.Fatalf("%d extend orders, want the first only", n)
+	}
+}
+
 /* Stop and Terminate */
 
 func TestStopDestroysAndReleases(t *testing.T) {
