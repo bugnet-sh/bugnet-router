@@ -4,7 +4,7 @@
 # config/example.toml lists every setting.
 
 packages_file = "config/dev-packages.json"
-providers = ["local"]         # add e2b, boat, koyeb or boxd here with its key in .env
+providers = ["local"]         # preference order, a real provider goes first, its key in .env
 deployment_id = "dev"         # its sweep never destroys main's sandboxes on a shared account
 
 [api]

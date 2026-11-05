@@ -91,8 +91,12 @@ local provider. Logs go to `bin/logs/`. Ctrl-C stops both. Delete `.env.keys` to
 secrets. Both `.env` and `.env.keys` are ignored by git.
 
 The local provider runs commands as host processes under `bin/local/`. Use it only with code
-you trust. To try a real provider, add it to `providers` in `config/dev.toml` and its key to
-`.env`.
+you trust. To try a real provider, put it in front of `local` in `providers` in
+`config/dev.toml`, or replace `local` with it, as in `providers = ["e2b"]`, and paste its key
+into `.env`. `providers` is the preference order, and `local` costs nothing and fits every
+package, so a provider listed after it is chosen only when `local` fails. Real providers also
+need the Linux build of `bugnet-run` that `runner.linux_amd64` names, which `make build` in
+`../bugnet-run` writes.
 
 Drive the router from another terminal in the repository root:
 
