@@ -204,10 +204,10 @@ func New(opts Options) (*Provider, error) {
 // Name returns "koyeb"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports previews, egress rules, the cap, a GPU when sold and one sandbox per key
+// Capabilities reports egress rules, the cap, a GPU when sold and one sandbox per key
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Preview: true, GPU: slices.ContainsFunc(p.sizes, size.gpu), EgressControl: true,
+		GPU: slices.ContainsFunc(p.sizes, size.gpu), EgressControl: true,
 		NeedsRunnerUpload: true, MaxLifetime: maxLifetime, OneSandboxPerKey: true,
 	}
 }

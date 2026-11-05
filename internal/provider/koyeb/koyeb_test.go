@@ -1225,7 +1225,7 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := provider.Capabilities{
-		Preview: true, GPU: true, EgressControl: true, NeedsRunnerUpload: true,
+		GPU: true, EgressControl: true, NeedsRunnerUpload: true,
 		MaxLifetime: 24*time.Hour - 10*time.Minute, OneSandboxPerKey: true,
 	}
 	if caps := p.Capabilities(); caps != want {
@@ -1622,4 +1622,9 @@ func TestKoyebExecOfACommandThatEndedBeforeItsStream(t *testing.T) {
 		t.Fatalf("exec of a command that ended before its stream gave %q exit %d, %v", out, code,
 			err)
 	}
+}
+
+func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
+	c := newFake(t).provider(t, fakeToken).Capabilities()
+	eq(t, c.SSH || c.Preview, false)
 }

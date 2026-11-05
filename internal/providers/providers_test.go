@@ -293,8 +293,8 @@ func TestBuildBoat(t *testing.T) {
 		t.Fatalf("registry %v lacks boat", reg.Ordered())
 	}
 	caps := p.Capabilities()
-	if !caps.NeedsRunnerUpload || !caps.SSH || caps.GPU || caps.MaxLifetime != 30*24*time.Hour ||
-		p.BillingIncrement() != time.Second {
+	if !caps.NeedsRunnerUpload || caps.SSH || caps.Preview || caps.GPU ||
+		caps.MaxLifetime != 30*24*time.Hour || p.BillingIncrement() != time.Second {
 		t.Fatalf("boat capabilities %+v, increment %v", caps, p.BillingIncrement())
 	}
 	size, ok := p.SizeFor(provider.Resources{VCPU: 4, MemoryMiB: 8192})

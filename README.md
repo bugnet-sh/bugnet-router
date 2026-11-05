@@ -348,3 +348,6 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   comes from `GET /limits`. When the key cannot read it, the router prices the fee from the
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
+
+No provider offers SSH or previews yet. An order that requires either finds no provider, and
+`Estimate` marks every package unavailable for it.

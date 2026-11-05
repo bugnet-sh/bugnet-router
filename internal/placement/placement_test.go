@@ -9,6 +9,10 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/boat"
+	"github.com/oynozan/bugnet-router/internal/provider/boxd"
+	"github.com/oynozan/bugnet-router/internal/provider/e2b"
+	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
 )
 
@@ -317,6 +321,52 @@ func TestCandidatesCapabilitiesAndLifetime(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("got %v, %v", names(got), err)
 	}
+}
+
+// adapters builds every provider adapter offline, each pointed at a closed loopback port
+func adapters(t *testing.T) []provider.Provider {
+	t.Helper()
+	const closed = "127.0.0.1:1"
+	bx, err := boxd.New(boxd.Options{APIKey: "bxd_test", Endpoint: closed, Insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bx.Close() })
+	eb, err := e2b.New(e2b.Options{
+		APIKey: "e2b_test", BaseURL: "http://" + closed, EnvdURL: "http://" + closed,
+		Templates: []e2b.Template{
+			{Name: "2x2", TemplateID: "bugnet-2x2", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ky, err := koyeb.New(koyeb.Options{APIToken: "koyeb_test", BaseURL: "http://" + closed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, err := boat.New(boat.Options{APIKey: "boat_test", BaseURL: "http://" + closed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []provider.Provider{newLocal(t, "local", 0, time.Second), bx, eb, ky, bt}
+}
+
+func TestCandidatesForSSHOrPreviewFindNone(t *testing.T) {
+	e := engine(fakeHealth{}, adapters(t)...)
+	in := func(r Requirements) Inputs {
+		return Inputs{Package: pkg(10, 10_000_000), Requirements: r}
+	}
+	// Boat prices a start from its API, which this test never calls
+	plain := in(Requirements{})
+	plain.Exclude = map[string]bool{"boat": true}
+	got, err := e.Candidates(plain)
+	eq(t, err, nil)
+	eq(t, len(got), 4)
+	_, err = e.Candidates(in(Requirements{SSH: true}))
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+	_, err = e.Candidates(in(Requirements{Preview: true}))
+	eq(t, errors.Is(err, ErrNoCandidate), true)
 }
 
 func TestCandidatesSkipUnhealthyAndExcluded(t *testing.T) {

@@ -857,7 +857,7 @@ func TestE2BSizesAndPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := provider.Capabilities{
-		Preview: true, EgressControl: true, NeedsRunnerUpload: true, MaxLifetime: time.Hour,
+		EgressControl: true, NeedsRunnerUpload: true, MaxLifetime: time.Hour,
 	}
 	if caps := p.Capabilities(); caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)
@@ -1099,4 +1099,9 @@ func TestE2BListFilesRateLimited(t *testing.T) {
 	if !isCode(err, provider.CodeRateLimited) {
 		t.Fatalf("envd refusing a listing as resource exhausted gave %v, want rate_limited", err)
 	}
+}
+
+func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
+	c := newFake(t).provider(t, fakeKey).Capabilities()
+	eq(t, c.SSH || c.Preview, false)
 }

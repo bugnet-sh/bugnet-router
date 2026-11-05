@@ -782,3 +782,8 @@ func TestLocalListFilesStopsAtTheLimit(t *testing.T) {
 	p := newLocal(t, local.Options{})
 	contract.ListLimit(t, p, createReady(t, p, nil), "/root/many")
 }
+
+func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
+	c := newLocal(t, local.Options{}).Capabilities()
+	eq(t, c.SSH || c.Preview, false)
+}

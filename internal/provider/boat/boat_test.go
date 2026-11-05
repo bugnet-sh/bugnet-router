@@ -1173,9 +1173,7 @@ func TestBoatForeignRefIsNotFound(t *testing.T) {
 func TestBoatSizesAndPrices(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
-	want := provider.Capabilities{
-		SSH: true, Preview: true, NeedsRunnerUpload: true, MaxLifetime: 30 * 24 * time.Hour,
-	}
+	want := provider.Capabilities{NeedsRunnerUpload: true, MaxLifetime: 30 * 24 * time.Hour}
 	if got := p.Capabilities(); got != want {
 		t.Errorf("capabilities %+v, want %+v", got, want)
 	}
@@ -1495,4 +1493,9 @@ func TestBoatSkipsAFailingSharedCountForAWhile(t *testing.T) {
 	if !f.useShared(now) {
 		t.Fatal("a shared count that answers again is skipped")
 	}
+}
+
+func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
+	c := newFake(t).provider(t, fakeKey).Capabilities()
+	eq(t, c.SSH || c.Preview, false)
 }
