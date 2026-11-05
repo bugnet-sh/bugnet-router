@@ -1098,13 +1098,15 @@ func (o *owner) snapshot(final bool) bool {
 			if final {
 				continue
 			}
-			break
+			// Unstored output stays held for the final tail, which may draw on the reserve
+			return true
 		}
 		if err != nil {
 			return false
 		}
 		o.stored += streams.Cost(f)
 		o.stream[i] = o.offsets[i]
+		o.held[i] = nil
 	}
 	o.held = [2][]byte{}
 	return o.skipStream(o.offsets) == nil

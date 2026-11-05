@@ -1892,3 +1892,26 @@ func TestExecRefusesPastTheRunningJobLimit(t *testing.T) {
 		t.Fatalf("a repeated key of a running job gave %s, want it attached", res.State)
 	}
 }
+
+func TestFinalTailKeepsOutputARefusedSnapshotHeld(t *testing.T) {
+	jobs.SetFloodEvery(t, 200*time.Millisecond)
+	e := newEnv(t)
+	const budget = 64 << 10
+	s := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", PlacementBudget: budget})
+	key := e.prefix + "placement:" + e.place.ID.String() + ":out"
+	set := e.vk.B().Set().Key(key).Value(fmt.Sprint(budget)).Build()
+	if err := e.vk.Do(t.Context(), set).Error(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ script, out, err string }{
+		{"echo result; sleep 1; echo more", "result\nmore\n", ""},
+		{"echo result; sleep 1; echo err >&2", "result\n", "err\n"},
+	} {
+		res := e.exec(t, s, []string{"sh", "-c", c.script}, "", 30*time.Second, jobs.Until{})
+		if res.State != store.JobExited || string(res.StdoutTail) != c.out ||
+			string(res.StderrTail) != c.err {
+			t.Errorf("%q past the budget gave %s stdout %q stderr %q, want %q and %q",
+				c.script, res.State, res.StdoutTail, res.StderrTail, c.out, c.err)
+		}
+	}
+}
