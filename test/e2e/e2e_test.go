@@ -155,15 +155,21 @@ func TestE2EHappyPath(t *testing.T) {
 			"fewer than all 20000005 ending in end, a skip note and 0", len(stdout), stderr, code)
 	}
 
+	listed := s.devOK(t, s.a, "extensions", "--handle", h)
+	wantListed := morePkg + " minutes=10 price_micros=45000 available=true reason=\n" +
+		smallPkg + " minutes=10 price_micros=50000 available=true reason=\n"
+	if listed != wantListed {
+		t.Errorf("bugnet-dev extensions printed %q, want %q", listed, wantListed)
+	}
 	checked := parseKV(s.devOK(t, s.a, "check-extend", "--handle", h, "--package", morePkg))
 	after, err := time.Parse(time.RFC3339Nano, checked["deadline_after"])
 	if err != nil {
 		t.Fatalf("bugnet-dev check-extend printed %v: %v", checked, err)
 	}
 	want := p.GetDeadline().AsTime().Add(10 * time.Minute)
-	if checked["state"] != "ready" || !after.Equal(want) {
-		t.Errorf("bugnet-dev check-extend printed %v, want ready and deadline_after %s", checked,
-			want.Format(time.RFC3339Nano))
+	if checked["state"] != "ready" || !after.Equal(want) || checked["price_micros"] != "45000" {
+		t.Errorf("bugnet-dev check-extend printed %v, want ready, deadline_after %s and "+
+			"price_micros 45000", checked, want.Format(time.RFC3339Nano))
 	}
 	token := strings.TrimSpace(s.devOK(t, s.a, "token", "--kind", "extend",
 		"--package", morePkg, "--handle", h))
