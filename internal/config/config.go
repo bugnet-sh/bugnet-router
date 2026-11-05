@@ -1,9 +1,10 @@
 // Package config reads the router's settings from a TOML file and its secrets from the environment.
 //
 // The settings file holds everything that is not a secret, and config/example.toml shows every
-// key at its default. It is decoded strictly, so an unknown key, or a secret pasted into the
-// file, is an error naming the key. Relative paths in it resolve against the working directory.
-// Secrets come only from the environment, and no error message ever carries one.
+// key at its default. It is decoded strictly, so an unknown key, a key in the wrong case, or a
+// secret pasted into the file, is an error naming the key and its line. Relative paths in it
+// resolve against the working directory. Secrets come only from the environment, and no error
+// message ever carries one or quotes a value of the file.
 package config
 
 import (
@@ -17,7 +18,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -193,17 +193,33 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
-	f := defaults()
-	dec := toml.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return Config{}, fmt.Errorf("config: %s: %s", path, describe(err))
+	f, err := decode(raw)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	c, err := f.config()
 	if err != nil {
 		return Config{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// decode checks the document's keys against the schema, then decodes it strictly over the defaults
+func decode(raw []byte) (file, error) {
+	doc, err := outline(raw)
+	if err != nil {
+		return file{}, err
+	}
+	if err := check(doc); err != nil {
+		return file{}, err
+	}
+	f := defaults()
+	dec := toml.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return file{}, errors.New(describe(err, doc))
+	}
+	return f, nil
 }
 
 func (f file) config() (Config, error) {
@@ -329,102 +345,6 @@ func providerList(given *[]string, c Config) ([]string, error) {
 		seen[name] = true
 	}
 	return slices.Clone(names), nil
-}
-
-/* Decode errors */
-
-// secretNames are the environment variables that hold secrets
-var secretNames = []string{
-	databaseURLEnv, "BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY", "BUGNET_EVENT_SIGNING_KEY",
-	"BUGNET_ORDER_PRIVATE_KEY", "BOXD_API_KEY", "E2B_API_KEY", "KOYEB_API_TOKEN", "BOAT_API_KEY",
-}
-
-// fieldError is how the decoder names the Go field a value of the wrong type was meant for
-var fieldError = regexp.MustCompile(`cannot decode TOML \w+ into struct field (\S+) of type`)
-
-// fieldKey is the TOML key of a Go field in the schema and the kind of value it takes
-type fieldKey struct{ key, want string }
-
-// fieldKeys maps each schema field, as the decoder names it, to its TOML key
-var fieldKeys = func() map[string]fieldKey {
-	keys := map[string]fieldKey{}
-	var walk func(t reflect.Type, prefix string)
-	walk = func(t reflect.Type, prefix string) {
-		for i := range t.NumField() {
-			f := t.Field(i)
-			key := prefix + f.Tag.Get("toml")
-			keys[t.String()+"."+f.Name] = fieldKey{key: key, want: valueKind(f.Type)}
-			inner := f.Type
-			if inner.Kind() == reflect.Slice {
-				inner = inner.Elem()
-			}
-			if inner.Kind() == reflect.Struct {
-				walk(inner, key+".")
-			}
-		}
-	}
-	walk(reflect.TypeFor[file](), "")
-	return keys
-}()
-
-func valueKind(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.Pointer:
-		return valueKind(t.Elem())
-	case reflect.Bool:
-		return "true or false"
-	case reflect.Int, reflect.Int64:
-		return "a whole number"
-	case reflect.Float64:
-		return "a number"
-	case reflect.Slice:
-		if t.Elem().Kind() == reflect.Struct {
-			return "an array of tables"
-		}
-		return "an array of strings"
-	case reflect.Map:
-		return "a table of strings"
-	case reflect.Struct:
-		return "a table"
-	}
-	return "a string"
-}
-
-// describe names the keys a decode error is about and never quotes the document's values
-func describe(err error) string {
-	var missing *toml.StrictMissingError
-	if errors.As(err, &missing) {
-		var out []string
-		for _, e := range missing.Errors {
-			row, _ := e.Position()
-			out = append(out, fmt.Sprintf("line %d: %s", row, unknownKey(e.Key())))
-		}
-		return strings.Join(out, ", ")
-	}
-	msg := strings.TrimPrefix(err.Error(), "toml: ")
-	if m := fieldError.FindStringSubmatch(msg); m != nil {
-		if k, ok := fieldKeys[m[1]]; ok {
-			msg = k.key + " must be " + k.want
-		}
-	}
-	var de *toml.DecodeError
-	if errors.As(err, &de) {
-		row, _ := de.Position()
-		return fmt.Sprintf("line %d: %s", row, msg)
-	}
-	return msg
-}
-
-// unknownKey says what is wrong with a key the schema lacks, pointing secrets to the environment
-func unknownKey(key toml.Key) string {
-	name := strings.Join(key, ".")
-	env := strings.ToUpper(strings.Join(key, "_"))
-	for _, s := range secretNames {
-		if env == s || "BUGNET_"+env == s {
-			return fmt.Sprintf("%s is a secret, set %s in the environment instead", name, s)
-		}
-	}
-	return name + " is not a setting"
 }
 
 /* Secrets */

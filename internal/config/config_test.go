@@ -417,7 +417,8 @@ func TestLoadFileValidation(t *testing.T) {
 		{"local without runner", "providers = [\"e2b\", \"local\"]\n[local]\nenabled = true",
 			"local.runner is not set"},
 		{"negative local hourly cost", "[local]\nhourly_micros = -1", "local.hourly_micros"},
-		{"fractional local hourly cost", "[local]\nhourly_micros = 1.5", "line 4"},
+		{"fractional local hourly cost", "[local]\nhourly_micros = 1.5",
+			"line 4: local.hourly_micros must be a whole number"},
 		{"local enabled as a number", "[local]\nenabled = 1", "local.enabled must be true or"},
 		{"uppercase deployment", `deployment_id = "Prod"`, "deployment_id"},
 		{"deployment with underscore", `deployment_id = "blue_green"`, "deployment_id"},
@@ -456,8 +457,9 @@ func TestLoadFileValidation(t *testing.T) {
 		{"template vcpu in words", "[[e2b.templates]]\nsize = \"2x2\"\nvcpu = \"two\"",
 			"e2b.templates.vcpu must be a whole number"},
 		{"instance type as a number", "[koyeb.instance_types]\ncpu = 1",
-			"koyeb.instance_types must be a table of strings"},
-		{"size named twice", "[boat.types]\ncpu = \"small\"\ncpu = \"large\"", "cpu"},
+			"line 4: koyeb.instance_types.cpu must be a string"},
+		{"size named twice", "[boat.types]\ncpu = \"small\"\ncpu = \"large\"",
+			"line 5: boat.types.cpu is set twice"},
 		{"listen address as a number", "[api]\nlisten_addr = 8080",
 			"api.listen_addr must be a string"},
 		{"top-level listen address", `listen_addr = ":8080"`, "listen_addr is not a setting"},
@@ -520,6 +522,174 @@ func TestLoadFileRefusesSecrets(t *testing.T) {
 		!strings.Contains(err.Error(), "line 3: limits.foo is not a setting") ||
 		strings.Contains(err.Error(), secretToken) {
 		t.Fatalf("two unknown keys gave %v, want both named and no value", err)
+	}
+}
+
+func TestLoadFileKeysAreCaseSensitive(t *testing.T) {
+	cases := []struct{ name, toml, want string }{
+		{"top-level key", `Providers = ["boat"]`,
+			"line 3: Providers is not a setting, did you mean providers"},
+		{"table", "[API]\nlisten_addr = \":9\"", "line 3: API is not a setting, did you mean api"},
+		{"key in a table", "[api]\nlisten_Addr = \":9\"",
+			"line 4: api.listen_Addr is not a setting, did you mean api.listen_addr"},
+		{"key set again in capitals", `PACKAGES_FILE = "/b"`,
+			"line 3: PACKAGES_FILE is not a setting, did you mean packages_file"},
+		{"dotted key", "Limits.max_running_jobs = 2", "line 3: Limits.max_running_jobs is not"},
+		{"template key", "[[e2b.templates]]\nSize = \"2x2\"", "line 4: e2b.templates.Size is not"},
+		{"table header in capitals", "[Boat.types]\ncpu = \"small\"", "line 3: Boat.types is not"},
+	}
+	for _, c := range cases {
+		path := writeFile(t, serving(t)+c.toml)
+		_, err := LoadFile(path)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error with %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestLoadFileChecksSizeNames(t *testing.T) {
+	example, err := os.ReadFile(filepath.Join("..", "..", "config", "example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secret = "e2b_pastedsecretvalue"
+	pasted := `E2B_API_KEY = "` + secret + `"`
+	head, tail, ok := strings.Cut(string(example), "[koyeb.instance_types]")
+	if !ok {
+		t.Fatal("config/example.toml has no [koyeb.instance_types] table")
+	}
+	header, rest, _ := strings.Cut(tail, "\n")
+	for table, content := range map[string]string{
+		"boat.types": string(example) + "\n" + pasted + "\n",
+		"koyeb.instance_types": head + "[koyeb.instance_types]" + header + "\n" + pasted + "\n" +
+			rest,
+	} {
+		_, err := LoadFile(writeFile(t, content))
+		want := table + ".E2B_API_KEY is not a size name, size names are lowercase letters, " +
+			"digits and hyphens"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("a secret pasted into %s gave %v, want %q", table, err, want)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("a secret pasted into %s: error echoes its value: %v", table, err)
+		}
+	}
+	for _, key := range []string{
+		"CPU", "cpu_2", "cpu2 ", `""`, strings.Repeat("c", 33), `"cpu.2"`, "events_url",
+	} {
+		name := strings.Trim(key, `"`)
+		_, err := LoadFile(writeFile(t, "[boat.types]\n"+quoteKey(key)+` = "small"`))
+		if err == nil || !strings.Contains(err.Error(), "boat.types."+name+" is not a size name") {
+			t.Errorf("size %q gave %v, want an error naming it", key, err)
+		}
+	}
+	long := strings.Repeat("c", 32)
+	c, err := LoadFile(writeFile(t, "[boat.types]\ncpu-2 = \"small\"\n"+long+" = \"large\"\n"+
+		"[koyeb]\ninstance_types = { gpu-1 = \"gpu-nvidia-rtx-4000-sff-ada\" }"))
+	if err != nil || len(c.Boat.Types) != 2 || c.Koyeb.InstanceTypes["gpu-1"] == "" {
+		t.Fatalf("valid size names gave %+v, %+v, %v", c.Boat, c.Koyeb, err)
+	}
+}
+
+// quoteKey quotes a TOML key that a bare key cannot spell
+func quoteKey(key string) string {
+	if strings.ContainsAny(key, " ") {
+		return `"` + key + `"`
+	}
+	return key
+}
+
+func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
+	for _, key := range []string{"limits.max_running_jobs", "local.hourly_micros"} {
+		table, name, _ := strings.Cut(key, ".")
+		for _, value := range []string{
+			"1.5", "true", "99999999999999999999", "-9999999999999999999",
+		} {
+			path := writeFile(t, serving(t)+"["+table+"]\n"+name+" = "+value+"\n")
+			_, err := LoadFile(path)
+			if err == nil {
+				t.Errorf("%s = %s loaded", key, value)
+				continue
+			}
+			msg, ok := strings.CutPrefix(err.Error(), "config: "+path+": line 4: ")
+			if !ok || !strings.HasPrefix(msg, key+" must be a whole number") {
+				t.Errorf("%s = %s gave %v, want line 4 and %s named", key, value, err, key)
+			}
+			digits := strings.Map(func(r rune) rune {
+				if r < '0' || r > '9' {
+					return -1
+				}
+				return r
+			}, value)
+			if digits != "" && strings.ContainsAny(msg, digits) {
+				t.Errorf("%s = %s: error carries digits of the value: %v", key, value, err)
+			}
+		}
+	}
+	cases := []struct{ name, toml, want string }{
+		{"template vcpu as a fraction", "[[e2b.templates]]\nvcpu = 2.5",
+			"line 4: e2b.templates.vcpu must be a whole number"},
+		{"inline template", "[e2b]\ntemplates = [{ size = \"2x2\", disk_gib = false }]",
+			"line 4: e2b.templates.disk_gib must be a whole number"},
+		{"size type as a number", "[boat.types]\ncpu = 1",
+			"line 4: boat.types.cpu must be a string"},
+		{"inline size type", "[boat]\ntypes = { cpu = 1 }",
+			"line 4: boat.types.cpu must be a string"},
+		{"provider as a number", "providers = [\n  \"boat\",\n  7,\n]",
+			"line 5: providers must be an array of strings"},
+		{"margin in hex", "margin_floor = 0x10", "line 3: margin_floor must be a number"},
+		{"table as a value", `api = "x"`, "line 3: api must be a table"},
+		{"templates as a table", "[e2b.templates]\nsize = \"2x2\"",
+			"line 3: e2b.templates must be an array of tables"},
+		{"api as an array of tables", "[[api]]\nlisten_addr = \":9\"",
+			"line 3: api must be a table"},
+		{"setting as a table", "[margin_floor]", "line 3: margin_floor must be a number"},
+		{"key below a setting", "margin_floor.x = 1", "line 3: margin_floor must be a number"},
+		{"key below a size", "[boat.types]\ncpu.x = \"small\"",
+			"line 4: boat.types.cpu must be a string"},
+		{"size set twice", "[boat.types]\ncpu = \"small\"\ncpu = \"large\"",
+			"line 5: boat.types.cpu is set twice"},
+		{"table set twice", "[api]\nlisten_addr = \":9\"\n[api]", "line 5: api is set twice"},
+		{"key set twice", "[limits]\nmax_running_jobs = 2\nmax_running_jobs = 3",
+			"line 5: limits.max_running_jobs is set twice"},
+		{"syntax error", "margin_floor = 0.5 0.6", "line 3: margin_floor is not valid TOML"},
+		{"syntax error in a table", "[limits]\nmax_running_jobs = 2 3",
+			"line 4: limits.max_running_jobs is not valid TOML"},
+		{"broken header", "[limits\nmax_running_jobs = 2", "line 3: not valid TOML"},
+		{"pasted environment line", "E2B_API_KEY=e2b_pastedsecretvalue",
+			"line 3: E2B_API_KEY is a secret, set E2B_API_KEY in the environment instead"},
+	}
+	for _, c := range cases {
+		path := writeFile(t, serving(t)+c.toml)
+		_, err := LoadFile(path)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error with %q", c.name, err, c.want)
+			continue
+		}
+		for _, v := range []string{"0x10", "0.6", "e2b_pastedsecretvalue", "2.5", "strconv"} {
+			if strings.Contains(err.Error(), v) {
+				t.Errorf("%s: error quotes %q: %v", c.name, v, err)
+			}
+		}
+	}
+	for _, ok := range []string{
+		"[e2b]\ntemplates = [{ size = \"a\", vcpu = 1 }, { size = \"b\", vcpu = 2 }]",
+		"[[e2b.templates]]\nsize = \"a\"\n[[e2b.templates]]\nsize = \"b\"",
+		"api.listen_addr = \":9\"\nworker.listen_addr = \":10\"",
+		"[limits]\n[api]\n[limits.x]",
+	} {
+		_, err := LoadFile(writeFile(t, ok))
+		if strings.HasSuffix(ok, "[limits.x]") {
+			if err == nil || !strings.Contains(err.Error(), "limits.x is not a setting") ||
+				strings.Contains(err.Error(), "twice") {
+				t.Errorf("%q gave %v, want only limits.x named", ok, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%q gave %v", ok, err)
+		}
 	}
 }
 
