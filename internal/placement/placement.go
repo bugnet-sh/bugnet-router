@@ -61,7 +61,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	needGPU := in.Requirements.GPU || pk.Resources.GPUCount > 0
 	need := time.Duration(pk.Minutes)*time.Minute + lifetimeSlack
-	var out []Candidate
+	var rs []ranked
 	for _, p := range e.reg.Ordered() {
 		name := p.Name()
 		if in.Exclude[name] || !e.health.Healthy(name) {
@@ -99,27 +99,33 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 				continue
 			}
 		}
-		out = append(out, Candidate{
-			Provider: p, Size: size, CostMicros: cost, MarginFraction: margin,
-		})
+		c := Candidate{Provider: p, Size: size, CostMicros: cost, MarginFraction: margin}
+		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
 	}
-	if len(out) == 0 {
+	if len(rs) == 0 {
 		return nil, ErrNoCandidate
 	}
 	/* Ordering */
 	// A stable sort leaves equal costs in the order the providers setting lists them
-	slices.SortStableFunc(out, func(a, b Candidate) int {
-		return cmp.Or(
-			cmp.Compare(e.slowRank(a), e.slowRank(b)),
-			cmp.Compare(a.CostMicros, b.CostMicros),
-		)
+	slices.SortStableFunc(rs, func(a, b ranked) int {
+		return cmp.Or(cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
 	})
+	out := make([]Candidate, len(rs))
+	for i, r := range rs {
+		out[i] = r.Candidate
+	}
 	return out, nil
 }
 
+// ranked keeps a slow rank read once, a ready time recorded mid-sort would break the comparator
+type ranked struct {
+	Candidate
+	slow int
+}
+
 // slowRank puts a provider whose ready p95 is over the threshold behind the fast ones
-func (e *Engine) slowRank(c Candidate) int {
-	if e.health.ReadyP95(c.Provider.Name()) > slowReadyThreshold {
+func (e *Engine) slowRank(name string) int {
+	if e.health.ReadyP95(name) > slowReadyThreshold {
 		return 1
 	}
 	return 0

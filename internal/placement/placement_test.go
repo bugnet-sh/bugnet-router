@@ -109,6 +109,36 @@ func TestCandidatesSlowCheapAfterFastDearer(t *testing.T) {
 	}
 }
 
+// readCounter reports every provider fast and counts the ready p95 reads of each
+type readCounter struct{ reads map[string]int }
+
+func (r readCounter) Healthy(string) bool { return true }
+
+func (r readCounter) ReadyP95(name string) time.Duration {
+	r.reads[name]++
+	return 0
+}
+
+func TestCandidatesReadReadyP95OncePerCandidate(t *testing.T) {
+	h := readCounter{reads: map[string]int{}}
+	ps := []provider.Provider{
+		newLocal(t, "a", 4000, time.Second), newLocal(t, "b", 3000, time.Second),
+		newLocal(t, "c", 2000, time.Second), newLocal(t, "d", 1000, time.Second),
+	}
+	got, err := engine(h, ps...).Candidates(Inputs{Package: pkg(10, 1000000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"d", "c", "b", "a"}) {
+		t.Fatalf("order = %v", names(got))
+	}
+	for _, n := range names(got) {
+		if h.reads[n] != 1 {
+			t.Fatalf("ready p95 of %s read %d times, want 1", n, h.reads[n])
+		}
+	}
+}
+
 func TestCandidatesOrderByCostWithStartFee(t *testing.T) {
 	// 10 minutes cost 1,000 plus a 5,000 start fee against 3,000 with no fee
 	fee := startFee{Provider: newLocal(t, "fee", 6000, time.Second), fee: 5000}
