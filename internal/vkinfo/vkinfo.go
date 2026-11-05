@@ -24,7 +24,7 @@ type Memory struct {
 	Policy    string
 }
 
-// Reader reads a Valkey's memory, Read outside tests
+// Reader reads a Valkey's memory, keeping the fields it found beside an error, Read outside tests
 type Reader func(context.Context, valkey.Client) (Memory, error)
 
 // Read asks c for INFO memory and parses the reply
@@ -36,7 +36,7 @@ func Read(ctx context.Context, c valkey.Client) (Memory, error) {
 	return Parse(info)
 }
 
-// Parse reads used_memory, maxmemory and maxmemory_policy from INFO text, which needs all three
+// Parse reads used_memory, maxmemory and maxmemory_policy from INFO text, naming each one missing
 func Parse(info string) (Memory, error) {
 	fields := map[string]string{}
 	for line := range strings.Lines(info) {
@@ -44,19 +44,14 @@ func Parse(info string) (Memory, error) {
 			fields[key] = value
 		}
 	}
-	used, err := number(fields, "used_memory")
-	if err != nil {
-		return Memory{}, err
-	}
-	limit, err := number(fields, "maxmemory")
-	if err != nil {
-		return Memory{}, err
-	}
+	used, usedErr := number(fields, "used_memory")
+	limit, limitErr := number(fields, "maxmemory")
 	policy := fields["maxmemory_policy"]
+	var policyErr error
 	if policy == "" {
-		return Memory{}, errors.New("valkey info memory: no maxmemory_policy")
+		policyErr = errors.New("valkey info memory: no maxmemory_policy")
 	}
-	return Memory{Used: used, Max: limit, Policy: policy}, nil
+	return Memory{Used: used, Max: limit, Policy: policy}, errors.Join(usedErr, limitErr, policyErr)
 }
 
 func number(fields map[string]string, key string) (int64, error) {
@@ -77,10 +72,10 @@ func CheckStart(ctx context.Context, log *slog.Logger, c valkey.Client, read Rea
 	defer cancel()
 	m, err := read(ctx, c)
 	switch {
-	case err != nil:
-		log.Warn("valkey memory is unknown, its maxmemory-policy goes unchecked", "err", err)
-	case m.Policy != NoEviction:
+	case m.Policy != "" && m.Policy != NoEviction:
 		return fmt.Errorf("valkey: maxmemory-policy is %s, the router needs noeviction", m.Policy)
+	case err != nil:
+		log.Warn("valkey info memory cannot be read in full, starting anyway", "err", err)
 	case m.Max == 0:
 		log.Warn("valkey has no maxmemory, so /monitor cannot alert on memory")
 	}

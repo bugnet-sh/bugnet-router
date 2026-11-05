@@ -253,8 +253,8 @@ Valkey holds the job streams, leases and shared counters, and nothing in it may 
 with `maxmemory` set and `maxmemory-policy noeviction`, so a full Valkey refuses writes, which
 the router logs, instead of dropping streams or leases. `router-api` and `router-worker` refuse to
 start with `valkey: maxmemory-policy is X, the router needs noeviction` when `INFO memory`
-reports any other policy, and start with a warning when it reports no `maxmemory` or cannot be
-read.
+reports any other policy, even when it lacks another field, and start with a warning when it
+reports no `maxmemory` or cannot be read in full.
 
 The output budgets bound what the streams hold. The aggregate bound is
 `limits.placement_output_budget` times the placements running at once, plus
@@ -268,8 +268,8 @@ expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeo
 Valkey unreachable, placements ready or terminating over 3 minutes past their deadline, which
 means the worker runs but no longer ends sandboxes, stuck outbox events, Valkey memory at 80% of
 `maxmemory` or more, and a `maxmemory-policy` other than `noeviction`. A failed connection means
-the worker is down. When `INFO memory` cannot be read, `/monitor` skips the memory and policy
-checks and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only that
+the worker is down. When `INFO memory` cannot be read in full, `/monitor` checks the fields it
+got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only that
 Postgres and Valkey answer.
 
 ## Events

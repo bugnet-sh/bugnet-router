@@ -158,6 +158,10 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 		{name: "valkey policy", postgres: true, vk: vk,
 			read: fixed(vkinfo.Memory{Used: 1 << 40, Policy: "allkeys-lru"}),
 			want: "valkey maxmemory-policy is allkeys-lru, the router needs noeviction\n"},
+		{name: "valkey policy beside a missing number", postgres: true, vk: vk,
+			read: func(context.Context, valkey.Client) (vkinfo.Memory, error) {
+				return vkinfo.Parse("maxmemory:100\r\nmaxmemory_policy:volatile-ttl\r\n")
+			}, want: "valkey maxmemory-policy is volatile-ttl, the router needs noeviction\n"},
 		{name: "several", vk: vk,
 			read: fixed(vkinfo.Memory{Used: 2047, Max: 2048, Policy: "volatile-lru"}),
 			want: "postgres is unreachable\nvalkey memory is at 99% of maxmemory\n" +

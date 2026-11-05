@@ -31,25 +31,38 @@ func TestParseReadsUsedMaxAndPolicy(t *testing.T) {
 	}
 }
 
-func TestParseNeedsEveryField(t *testing.T) {
-	for _, field := range []string{"used_memory", "maxmemory", "maxmemory_policy"} {
-		var kept []string
-		for line := range strings.Lines(sample) {
-			if !strings.HasPrefix(line, field+":") {
-				kept = append(kept, line)
-			}
+// without returns sample less the line of field
+func without(field string) string {
+	var kept []string
+	for line := range strings.Lines(sample) {
+		if !strings.HasPrefix(line, field+":") {
+			kept = append(kept, line)
 		}
-		m, err := vkinfo.Parse(strings.Join(kept, ""))
-		if err == nil || !strings.Contains(err.Error(), field) {
-			t.Errorf("Parse without %s = %+v, %v, want an error naming it", field, m, err)
+	}
+	return strings.Join(kept, "")
+}
+
+func TestParseNamesAMissingFieldAndKeepsTheRest(t *testing.T) {
+	for field, want := range map[string]vkinfo.Memory{
+		"used_memory":      {Max: 4294967296, Policy: "noeviction"},
+		"maxmemory":        {Used: 2317312, Policy: "noeviction"},
+		"maxmemory_policy": {Used: 2317312, Max: 4294967296},
+	} {
+		m, err := vkinfo.Parse(without(field))
+		if err == nil || !strings.Contains(err.Error(), field) || m != want {
+			t.Errorf("Parse without %s = %+v, %v, want %+v and an error naming it",
+				field, m, err, want)
 		}
 	}
 }
 
 func TestParseRefusesANonNumber(t *testing.T) {
 	text := strings.Replace(sample, "maxmemory:4294967296", "maxmemory:lots", 1)
-	if m, err := vkinfo.Parse(text); err == nil || !strings.Contains(err.Error(), "maxmemory") {
-		t.Fatalf("Parse with a non-number maxmemory = %+v, %v, want an error naming it", m, err)
+	m, err := vkinfo.Parse(text)
+	want := vkinfo.Memory{Used: 2317312, Policy: "noeviction"}
+	if err == nil || !strings.Contains(err.Error(), "maxmemory") || m != want {
+		t.Fatalf("Parse with a non-number maxmemory = %+v, %v, want %+v and an error naming it",
+			m, err, want)
 	}
 }
 
@@ -63,6 +76,11 @@ func TestReadAsksValkey(t *testing.T) {
 
 func fixed(m vkinfo.Memory, err error) vkinfo.Reader {
 	return func(context.Context, valkey.Client) (vkinfo.Memory, error) { return m, err }
+}
+
+// parsed is a reader that always answers what Parse makes of info
+func parsed(info string) vkinfo.Reader {
+	return func(context.Context, valkey.Client) (vkinfo.Memory, error) { return vkinfo.Parse(info) }
 }
 
 func TestCheckStart(t *testing.T) {
@@ -80,6 +98,10 @@ func TestCheckStart(t *testing.T) {
 			"valkey has no maxmemory, so /monitor cannot alert on memory"},
 		{"unreadable", fixed(vkinfo.Memory{}, errors.New("no maxmemory_policy")), "",
 			"no maxmemory_policy"},
+		{"evicting without maxmemory", parsed(strings.Replace(without("maxmemory"),
+			"noeviction", "allkeys-lru", 1)),
+			"valkey: maxmemory-policy is allkeys-lru, the router needs noeviction", ""},
+		{"noeviction without used_memory", parsed(without("used_memory")), "", "no used_memory"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logs bytes.Buffer

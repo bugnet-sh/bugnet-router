@@ -24,11 +24,11 @@ const (
 	monitorTimeout     = 2 * time.Second
 )
 
-// health is what one /monitor request found, memory nil when INFO could not be read
+// health is what one /monitor request found, memory holding only what INFO gave
 type health struct {
 	postgresDown, valkeyDown bool
 	overdue, stuck           int
-	memory                   *vkinfo.Memory
+	memory                   vkinfo.Memory
 }
 
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
@@ -68,20 +68,19 @@ func checkPostgres(ctx context.Context, log *slog.Logger, st *store.Store) (int,
 	return overdue, stuck, false
 }
 
-// checkValkey pings Valkey and then reads its memory, which an INFO failure leaves unknown
+// checkValkey pings Valkey and then reads its memory, a field INFO lacks staying zero
 func checkValkey(
 	ctx context.Context, log *slog.Logger, vk valkey.Client, read vkinfo.Reader,
-) (*vkinfo.Memory, bool) {
+) (vkinfo.Memory, bool) {
 	if err := vk.Do(ctx, vk.B().Ping().Build()).Error(); err != nil {
 		log.Warn("monitor cannot reach valkey", "err", err)
-		return nil, true
+		return vkinfo.Memory{}, true
 	}
 	m, err := read(ctx, vk)
 	if err != nil {
-		log.Warn("monitor cannot read valkey memory", "err", err)
-		return nil, false
+		log.Warn("monitor cannot read valkey memory in full", "err", err)
 	}
-	return &m, false
+	return m, false
 }
 
 func (h health) problems() []string {
@@ -99,15 +98,13 @@ func (h health) problems() []string {
 	if h.stuck > 0 {
 		out = append(out, fmt.Sprintf("%d outbox events are stuck", h.stuck))
 	}
-	if m := h.memory; m != nil {
-		if m.Max > 0 && m.Used*100 >= memoryAlertPercent*m.Max {
-			percent := m.Used * 100 / m.Max
-			out = append(out, fmt.Sprintf("valkey memory is at %d%% of maxmemory", percent))
-		}
-		if m.Policy != vkinfo.NoEviction {
-			out = append(out, fmt.Sprintf(
-				"valkey maxmemory-policy is %s, the router needs noeviction", m.Policy))
-		}
+	if m := h.memory; m.Max > 0 && m.Used*100 >= memoryAlertPercent*m.Max {
+		percent := m.Used * 100 / m.Max
+		out = append(out, fmt.Sprintf("valkey memory is at %d%% of maxmemory", percent))
+	}
+	if p := h.memory.Policy; p != "" && p != vkinfo.NoEviction {
+		out = append(out, fmt.Sprintf(
+			"valkey maxmemory-policy is %s, the router needs noeviction", p))
 	}
 	return out
 }
