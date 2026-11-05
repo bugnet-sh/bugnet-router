@@ -1681,6 +1681,15 @@ func (e *env) extendOrders(t *testing.T) int {
 	return n
 }
 
+func (e *env) pendingOutbox(t *testing.T) int {
+	t.Helper()
+	pending, err := e.store.PendingOutbox(t.Context(), time.Now(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(pending)
+}
+
 func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	var fail atomic.Bool
 	var calls atomic.Int64
@@ -1690,6 +1699,7 @@ func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	p, h := e.placeReady(t, "order-1")
 	want := p.Deadline.Add(10 * time.Minute)
 	before := calls.Load()
+	outbox := e.pendingOutbox(t)
 
 	for _, pkg := range []string{morePkg, smallPkg} {
 		got, deadline, err := e.saga.CheckExtend(t.Context(), h, pkg)
@@ -1714,6 +1724,9 @@ func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	if evs := e.events(t, saga.EventExtended); len(evs) != 0 {
 		t.Fatalf("extended events %+v", evs)
 	}
+	if n := e.pendingOutbox(t); n != outbox {
+		t.Fatalf("%d pending outbox events after the checks, want %d as before", n, outbox)
+	}
 	if jobs := e.deadlineJobs(t); len(jobs) != 1 {
 		t.Fatalf("deadline jobs %+v, want only the first", jobs)
 	}
@@ -1724,6 +1737,9 @@ func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice, h))
 	if err != nil || !got.Deadline.Equal(want) {
 		t.Fatalf("extend after the check %v, %v, want deadline %v", got.Deadline, err, want)
+	}
+	if n := e.pendingOutbox(t); n != outbox+1 {
+		t.Fatalf("%d pending outbox events after the extension, want %d", n, outbox+1)
 	}
 }
 
