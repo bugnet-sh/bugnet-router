@@ -320,6 +320,31 @@ func TestE2EOwnerCrashNoGap(t *testing.T) {
 	}
 }
 
+func TestE2ESandboxOpsLimitIsShared(t *testing.T) {
+	t.Parallel()
+	// One token a second keeps the spent bucket empty for the few calls that follow
+	s := startStackWith(t, "[limits]\nsandbox_ops_per_second = 1\nsandbox_ops_burst = 2\n")
+	a, b := s.client(t, s.a), s.client(t, s.b)
+	h, _ := s.place(t, a, smallPkg, smallPrice)
+	list := func(c routerv1connect.SandboxRouterServiceClient) error {
+		ctx, cancel := context.WithTimeout(t.Context(), callTimeout)
+		defer cancel()
+		_, err := c.ListFiles(ctx, connect.NewRequest(&routerv1.ListFilesRequest{Handle: h}))
+		return err
+	}
+	for i, c := range []routerv1connect.SandboxRouterServiceClient{a, b} {
+		if err := list(c); err != nil {
+			t.Fatalf("ListFiles %d of a burst of 2: %v", i+1, err)
+		}
+	}
+	for name, c := range map[string]routerv1connect.SandboxRouterServiceClient{"a": a, "b": b} {
+		if err := list(c); connect.CodeOf(err) != connect.CodeResourceExhausted {
+			t.Errorf("ListFiles on api-%s past the shared burst gave %v, want resource_exhausted",
+				name, err)
+		}
+	}
+}
+
 /* Stack */
 
 type stack struct {
@@ -331,14 +356,21 @@ type stack struct {
 	env      []string // environment of every router process, the secrets only
 	events   *receiver
 	procs    []*proc
-	a, b     *proc // router-api replicas
+	a, b     *proc  // router-api replicas
+	extra    string // settings every process's file ends with
 }
 
 func startStack(t *testing.T) *stack {
 	t.Helper()
+	return startStackWith(t, "")
+}
+
+// startStackWith starts a stack whose settings files all end with extra
+func startStackWith(t *testing.T, extra string) *stack {
+	t.Helper()
 	dbURL := testenv.DatabaseURL(t)
 	_, prefix := testenv.Valkey(t)
-	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t)}
+	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t), extra: extra}
 	seed := decodeKey(t, s.keys, "BUGNET_ORDER_PRIVATE_KEY", ed25519.SeedSize)
 	s.priv = ed25519.NewKeyFromSeed(seed)
 	eventSeed := decodeKey(t, s.keys, "BUGNET_EVENT_SIGNING_KEY", ed25519.SeedSize)
@@ -407,8 +439,8 @@ prefix = %q
 enabled = true
 root = %q
 runner = %q
-`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
-		valkeyAddr(), s.prefix, s.root, bin.runner)
+%s`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
+		valkeyAddr(), s.prefix, s.root, bin.runner, s.extra)
 	path := filepath.Join(t.TempDir(), name+".toml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
