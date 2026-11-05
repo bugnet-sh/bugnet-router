@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -59,6 +60,19 @@ var codes = []struct {
 	{errShuttingDown, connect.CodeUnavailable, ""},
 	{context.Canceled, connect.CodeCanceled, ""},
 	{context.DeadlineExceeded, connect.CodeDeadlineExceeded, ""},
+}
+
+// unavailable names an extension refusal as a PackageOption does, its ErrorInfo reason lowercased
+func unavailable(refusal error) string {
+	if refusal == nil {
+		return ""
+	}
+	for _, c := range codes {
+		if errors.Is(refusal, c.err) {
+			return strings.ToLower(c.reason)
+		}
+	}
+	return ""
 }
 
 func invalid(format string, args ...any) error {

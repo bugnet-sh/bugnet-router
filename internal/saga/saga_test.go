@@ -1877,6 +1877,169 @@ func TestCheckExtendRefusesPastMaxLifetime(t *testing.T) {
 	}
 }
 
+// listCatalogJSON prices extensions so that catalog order, by price, differs from listing order
+const listCatalogJSON = `{"packages": [
+	{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 50000},
+	{"id": "small-30m-cheap", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 30, "price_micros": 20000, "extension_of": "small-10m"},
+	{"id": "small-5m-b", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 5, "price_micros": 25000, "extension_of": "small-10m"},
+	{"id": "small-5m-a", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 5, "price_micros": 25000, "extension_of": "small-10m"},
+	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 45000, "extension_of": "small-10m"},
+	{"id": "small-30m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 30, "price_micros": 120000},
+	{"id": "small-30m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 30, "price_micros": 100000, "extension_of": "small-30m"}
+]}`
+
+// listOrder is how ListExtensions orders the extensions of a small-10m placement
+var listOrder = []string{
+	"small-5m-a", "small-5m-b", "small-10m-more", "small-10m", "small-30m-cheap",
+}
+
+// newListEnv is newEnv over listCatalogJSON, also returning the saga's deps and catalog
+func newListEnv(t *testing.T, ps ...provider.Provider) (*env, saga.Deps, *catalog.Catalog) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "list-packages.json")
+	if err := os.WriteFile(path, []byte(listCatalogJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deps saga.Deps
+	e := newEnvWith(t, func(d *saga.Deps) {
+		d.Catalog = cat
+		deps = *d
+	}, ps...)
+	return e, deps, cat
+}
+
+// refusal names the refusal err wraps, ok for none
+func refusal(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, saga.ErrNotReady):
+		return "not ready"
+	case errors.Is(err, saga.ErrExceedsLifetime):
+		return "exceeds lifetime"
+	}
+	return err.Error()
+}
+
+// listed lists the placement's extensions as "<id> <refusal>", failing where CheckExtend differs
+func (e *env) listed(t *testing.T, h string) []string {
+	t.Helper()
+	exts, err := e.saga.ListExtensions(t.Context(), h)
+	if err != nil {
+		t.Fatalf("list extensions: %v", err)
+	}
+	var out []string
+	for _, x := range exts {
+		_, _, checkErr := e.saga.CheckExtend(t.Context(), h, x.Package.ID)
+		if refusal(checkErr) != refusal(x.Refusal) {
+			t.Errorf("%s listed with %v, CheckExtend gave %v", x.Package.ID, x.Refusal, checkErr)
+		}
+		out = append(out, x.Package.ID+" "+refusal(x.Refusal))
+	}
+	return out
+}
+
+func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
+	// 30 minutes from creation fits a 10-minute extension but not a 30-minute one
+	a := newCapped(t, t.TempDir(), 30*time.Minute)
+	e, _, cat := newListEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	before := a.calls.Load()
+	outbox := e.pendingOutbox(t)
+
+	want := []string{
+		"small-5m-a ok", "small-5m-b ok", "small-10m-more ok", "small-10m ok",
+		"small-30m-cheap exceeds lifetime",
+	}
+	if got := e.listed(t, h); !slices.Equal(got, want) {
+		t.Fatalf("listed %q, want %q", got, want)
+	}
+	exts, err := e.saga.ListExtensions(t.Context(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range exts {
+		if pkg, _ := cat.Get(x.Package.ID); x.Package != pkg {
+			t.Errorf("listed %+v, the catalog has %+v", x.Package, pkg)
+		}
+	}
+
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(*p.Deadline) {
+		t.Fatalf("deadline moved from %v to %v", p.Deadline, got.Deadline)
+	}
+	if n := a.calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls for a listing", n)
+	}
+	if n := e.pendingOutbox(t); n != outbox {
+		t.Fatalf("%d pending outbox events after the listing, want %d as before", n, outbox)
+	}
+	if jobs := e.deadlineJobs(t); len(jobs) != 1 {
+		t.Fatalf("deadline jobs %+v, want only the first", jobs)
+	}
+	if n := e.extendOrders(t); n != 0 {
+		t.Fatalf("%d extend orders recorded by a listing", n)
+	}
+}
+
+func TestListExtensionsOfAPlacementNotReady(t *testing.T) {
+	e, _, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
+	_, stopped := e.placeReady(t, "order-1")
+	if _, err := e.saga.Stop(t.Context(), stopped); err != nil {
+		t.Fatal(err)
+	}
+	placing, sha := handle.Derive(e.handleKey, "order-2")
+	_, _, err := e.store.CreatePlacement(t.Context(), store.NewPlacement{
+		HandleSHA256: sha, OrderID: "order-2", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, id := range listOrder {
+		want = append(want, id+" not ready")
+	}
+	for name, h := range map[string]string{"placing": placing, "terminated": stopped} {
+		if got := e.listed(t, h); !slices.Equal(got, want) {
+			t.Errorf("%s placement listed %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestListExtensionsOfAnUnknownHandle(t *testing.T) {
+	e, _, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
+	unknown, _ := handle.New()
+	for _, h := range []string{unknown, "", "nope", "sbx_not-a-handle"} {
+		if exts, err := e.saga.ListExtensions(t.Context(), h); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("handle %q listed %+v, %v, want ErrNotFound", h, exts, err)
+		}
+	}
+}
+
+func TestListExtensionsFailsAsCheckExtendWhenTheProviderIsGone(t *testing.T) {
+	e, deps, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
+	_, h := e.placeReady(t, "order-1")
+	deps.Registry = provider.NewRegistry(nil)
+	other := saga.New(deps)
+	exts, err := other.ListExtensions(t.Context(), h)
+	if err == nil || errors.Is(err, saga.ErrNotReady) || errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Errorf("listing on a saga without the provider gave %+v, %v, want its error", exts, err)
+	}
+	if _, _, err := other.CheckExtend(t.Context(), h, morePkg); err == nil {
+		t.Error("check on a saga without the provider passed")
+	}
+}
+
 /* Stop and Terminate */
 
 func TestStopDestroysAndReleases(t *testing.T) {

@@ -553,6 +553,11 @@ func TestUnauthenticatedRejected(t *testing.T) {
 		if connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Errorf("%s: check extend gave %v, want unauthenticated", name, err)
 		}
+		_, err = c.ListExtensions(t.Context(), connect.NewRequest(
+			&routerv1.ListExtensionsRequest{Handle: "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa"}))
+		if connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Errorf("%s: list extensions gave %v, want unauthenticated", name, err)
+		}
 		stream, err := c.WatchPlacement(t.Context(), connect.NewRequest(
 			&routerv1.WatchPlacementRequest{Handle: "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa"}))
 		if err == nil {
@@ -677,6 +682,13 @@ func TestCheckExtendThenExtend(t *testing.T) {
 	if moved := would.Sub(ready.GetDeadline().AsTime()); moved != 10*time.Minute {
 		t.Fatalf("check would move the deadline by %v, want 10m", moved)
 	}
+	more := &routerv1.PackageOption{
+		PackageId: morePkg, Resources: smallResources, Minutes: 10, PriceMicros: morePrice,
+		Available: true,
+	}
+	if !proto.Equal(check.Msg.GetPackage(), more) {
+		t.Fatalf("check gave package %v, want %v", check.Msg.GetPackage(), more)
+	}
 	if p := e.get(t, h, 0, 0); !proto.Equal(p, ready) {
 		t.Fatalf("placement after the check %v, want %v", p, ready)
 	}
@@ -690,6 +702,78 @@ func TestCheckExtendThenExtend(t *testing.T) {
 	}
 	if got := ext.Msg.GetPlacement().GetDeadline().AsTime(); !got.Equal(would) {
 		t.Fatalf("extend gave deadline %v, the check said %v", got, would)
+	}
+}
+
+// smallResources are the resources of every small package in catalogJSON
+var smallResources = &routerv1.Resources{Vcpu: 2, MemoryMib: 2048, DiskGib: 10}
+
+func (e *env) listExtensions(t *testing.T, h string) ([]*routerv1.PackageOption, error) {
+	t.Helper()
+	res, err := e.client.ListExtensions(t.Context(), connect.NewRequest(
+		&routerv1.ListExtensionsRequest{Handle: h}))
+	if err != nil {
+		return nil, err
+	}
+	return res.Msg.GetOptions(), nil
+}
+
+// smallExtensions are the options ListExtensions gives a small-10m placement, with reason
+func smallExtensions(reason string) []*routerv1.PackageOption {
+	return []*routerv1.PackageOption{
+		{
+			PackageId: morePkg, Resources: smallResources, Minutes: 10, PriceMicros: morePrice,
+			Available: reason == "", UnavailableReason: reason,
+		},
+		{
+			PackageId: smallPkg, Resources: smallResources, Minutes: 10, PriceMicros: smallPrice,
+			Available: reason == "", UnavailableReason: reason,
+		},
+	}
+}
+
+func equalOptions(a, b []*routerv1.PackageOption) bool {
+	return slices.EqualFunc(a, b, func(x, y *routerv1.PackageOption) bool {
+		return proto.Equal(x, y)
+	})
+}
+
+func TestListExtensions(t *testing.T) {
+	e := newEnv(t, options{})
+	h, ready := e.readyPlacement(t)
+	opts, err := e.listExtensions(t, h)
+	if err != nil {
+		t.Fatalf("list extensions: %v", err)
+	}
+	if want := smallExtensions(""); !equalOptions(opts, want) {
+		t.Fatalf("listed %v, want %v", opts, want)
+	}
+	for _, o := range opts {
+		check, err := e.checkExtend(t, h, o.GetPackageId())
+		if err != nil || !proto.Equal(check.Msg.GetPackage(), o) {
+			t.Errorf("listed %v, the check gave %v, %v", o, check.Msg.GetPackage(), err)
+		}
+	}
+	if p := e.get(t, h, 0, 0); !proto.Equal(p, ready) {
+		t.Fatalf("placement after the listing %v, want %v", p, ready)
+	}
+
+	ended, _ := e.readyPlacement(t)
+	e.stop(t, ended)
+	if opts, err := e.listExtensions(t, ended); err != nil ||
+		!equalOptions(opts, smallExtensions("not_ready")) {
+		t.Errorf("terminated placement listed %v, %v, want every option not_ready", opts, err)
+	}
+	capped := newEnv(t, options{maxLifetime: 17 * time.Minute})
+	ch, _ := capped.readyPlacement(t)
+	if opts, err := capped.listExtensions(t, ch); err != nil ||
+		!equalOptions(opts, smallExtensions("exceeds_lifetime")) {
+		t.Errorf("capped placement listed %v, %v, want every option exceeds_lifetime", opts, err)
+	}
+	unknown, _ := handle.New()
+	for _, bad := range []string{unknown, "nope", "sbx_not-a-handle"} {
+		_, err := e.listExtensions(t, bad)
+		wantCode(t, err, connect.CodeNotFound)
 	}
 }
 
@@ -1685,6 +1769,9 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		e.get(t, busy, routerv1.PlacementState_PLACEMENT_STATE_UNSPECIFIED, 0)
 		if _, err := e.checkExtend(t, busy, morePkg); err != nil {
 			t.Fatalf("CheckExtendPlacement %s: %v", when, err)
+		}
+		if _, err := e.listExtensions(t, busy); err != nil {
+			t.Fatalf("ListExtensions %s: %v", when, err)
 		}
 		if err := e.watchFirst(t, busy); err != nil {
 			t.Fatalf("WatchPlacement %s: %v", when, err)

@@ -162,28 +162,17 @@ func (s *Server) Estimate(
 		if pkg.ExtensionOf != "" {
 			continue
 		}
-		r := pkg.Resources
-		opt := &routerv1.PackageOption{
-			PackageId: pkg.ID,
-			Resources: &routerv1.Resources{
-				Vcpu: uint32(r.VCPU), MemoryMib: uint32(r.MemoryMiB), DiskGib: uint32(r.DiskGiB),
-				GpuCount: uint32(r.GPUCount), GpuMemoryGib: uint32(r.GPUMemoryGiB),
-			},
-			Minutes:     uint32(pkg.Minutes),
-			PriceMicros: pkg.PriceMicros,
-		}
 		_, err := s.d.Engine.Candidates(placement.Inputs{
 			Package: pkg, Requirements: need, MarginFloor: s.d.MarginFloor,
 		})
+		reason := ""
 		switch {
-		case err == nil:
-			opt.Available = true
 		case errors.Is(err, placement.ErrNoCandidate):
-			opt.UnavailableReason = saga.ReasonNoCandidate
-		default:
-			opt.UnavailableReason = err.Error()
+			reason = saga.ReasonNoCandidate
+		case err != nil:
+			reason = err.Error()
 		}
-		opts = append(opts, opt)
+		opts = append(opts, packageOption(pkg, err == nil, reason))
 	}
 	return connect.NewResponse(&routerv1.EstimateResponse{Options: opts}), nil
 }
@@ -307,9 +296,27 @@ func (s *Server) CheckExtendPlacement(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	// CheckExtend refused any package missing from the catalog the saga and the server share
+	pkg, _ := s.d.Catalog.Get(req.Msg.GetPackageId())
 	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
 		Placement: placementMsg(p), Deadline: timestamppb.New(deadline),
+		Package: packageOption(pkg, true, ""),
 	}), nil
+}
+
+// ListExtensions lists the packages that can extend a placement, each as CheckExtendPlacement would
+func (s *Server) ListExtensions(
+	ctx context.Context, req *connect.Request[routerv1.ListExtensionsRequest],
+) (*connect.Response[routerv1.ListExtensionsResponse], error) {
+	exts, err := s.d.Saga.ListExtensions(ctx, req.Msg.GetHandle())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	opts := make([]*routerv1.PackageOption, 0, len(exts))
+	for _, x := range exts {
+		opts = append(opts, packageOption(x.Package, x.Refusal == nil, unavailable(x.Refusal)))
+	}
+	return connect.NewResponse(&routerv1.ListExtensionsResponse{Options: opts}), nil
 }
 
 // StopPlacement destroys the sandbox and ends the placement, a stopped one staying as it is
@@ -621,6 +628,22 @@ func (s *Server) ListFiles(
 
 func requirements(r *routerv1.Requirements) placement.Requirements {
 	return placement.Requirements{SSH: r.GetSsh(), Preview: r.GetPreview(), GPU: r.GetGpu()}
+}
+
+// packageOption describes a package and whether it is available, reason saying why when not
+func packageOption(pkg catalog.Package, available bool, reason string) *routerv1.PackageOption {
+	r := pkg.Resources
+	return &routerv1.PackageOption{
+		PackageId: pkg.ID,
+		Resources: &routerv1.Resources{
+			Vcpu: uint32(r.VCPU), MemoryMib: uint32(r.MemoryMiB), DiskGib: uint32(r.DiskGiB),
+			GpuCount: uint32(r.GPUCount), GpuMemoryGib: uint32(r.GPUMemoryGiB),
+		},
+		Minutes:           uint32(pkg.Minutes),
+		PriceMicros:       pkg.PriceMicros,
+		Available:         available,
+		UnavailableReason: reason,
+	}
 }
 
 func placementMsg(p store.Placement) *routerv1.Placement {

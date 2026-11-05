@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -658,7 +659,11 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if err != nil {
 		return store.Placement{}, err
 	}
-	x, err := s.checkExtend(ctx, sha, pkg, func(p store.Placement) (bool, error) {
+	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	if err != nil {
+		return store.Placement{}, err
+	}
+	x, err := s.checkExtend(p, pkg, func(p store.Placement) (bool, error) {
 		return s.d.Store.HasExtendOrder(ctx, c.OrderID, p.ID)
 	})
 	if err != nil {
@@ -668,7 +673,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		return s.replayExtend(ctx, x.p), nil
 	}
 
-	p, prov, ref, by := x.p, x.prov, x.ref, x.by
+	prov, ref, by := x.prov, x.ref, x.by
 	var applied bool
 	var ev Event
 	id := p.ID
@@ -724,11 +729,51 @@ func (s *Saga) CheckExtend(
 	if err != nil {
 		return store.Placement{}, time.Time{}, err
 	}
-	x, err := s.checkExtend(ctx, sha, pkg, nil)
+	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	if err != nil {
+		return store.Placement{}, time.Time{}, err
+	}
+	x, err := s.checkExtend(p, pkg, nil)
 	if err != nil {
 		return store.Placement{}, time.Time{}, err
 	}
 	return x.p, x.p.Deadline.Add(x.by), nil
+}
+
+// Extension is a package that can extend a placement, with the refusal extending by it gets now
+type Extension struct {
+	Package catalog.Package
+	Refusal error // nil, or one wrapping ErrNotReady or ErrExceedsLifetime
+}
+
+// ListExtensions checks each package that can extend the placement as CheckExtend would
+func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error) {
+	sha, err := hashHandle(h)
+	if err != nil {
+		return nil, err
+	}
+	// One read serves every package, so the listing never mixes two states of the placement
+	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	if err != nil {
+		return nil, err
+	}
+	var out []Extension
+	for _, pkg := range s.d.Catalog.All() {
+		_, err := s.checkExtend(p, pkg, nil)
+		switch {
+		case errors.Is(err, ErrNotExtension):
+			continue
+		case err != nil && !errors.Is(err, ErrNotReady) && !errors.Is(err, ErrExceedsLifetime):
+			return nil, err
+		}
+		out = append(out, Extension{Package: pkg, Refusal: err})
+	}
+	slices.SortFunc(out, func(a, b Extension) int {
+		return cmp.Or(cmp.Compare(a.Package.Minutes, b.Package.Minutes),
+			cmp.Compare(a.Package.PriceMicros, b.Package.PriceMicros),
+			cmp.Compare(a.Package.ID, b.Package.ID))
+	})
+	return out, nil
 }
 
 // extension is a placement that passed the extend checks, with what extending it needs
@@ -740,15 +785,11 @@ type extension struct {
 	replay bool // the order already extended the placement, so the later checks were skipped
 }
 
-// checkExtend makes the checks Extend and CheckExtend share, asking replayed before the ready one
+// checkExtend makes the checks every extend caller shares, asking replayed before the ready one
 func (s *Saga) checkExtend(
-	ctx context.Context, sha []byte, pkg catalog.Package,
-	replayed func(store.Placement) (bool, error),
+	p store.Placement, pkg catalog.Package, replayed func(store.Placement) (bool, error),
 ) (extension, error) {
-	p, err := s.d.Store.PlacementByHandle(ctx, sha)
-	if err != nil {
-		return extension{}, err
-	}
+	var err error
 	if pkg.ID != p.PackageID && pkg.ExtensionOf != p.PackageID {
 		return extension{}, fmt.Errorf("%w: %s on %s", ErrNotExtension, pkg.ID, p.PackageID)
 	}
