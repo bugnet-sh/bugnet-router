@@ -76,7 +76,7 @@ func TestBucketAheadOfValkeysClockRefillsFromNow(t *testing.T) {
 
 func TestBurstThenRefusedWithAWait(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
-	l := ratelimit.New(vk, prefix, 10, 3)
+	l := ratelimit.New(vk, prefix, 1, 3)
 	id := uuid.New()
 	for i := range 3 {
 		if ok, _ := take(t, l, id); !ok {
@@ -87,28 +87,31 @@ func TestBurstThenRefusedWithAWait(t *testing.T) {
 	if ok {
 		t.Fatal("the operation past the burst was allowed")
 	}
-	// A token comes every 100 ms at 10 a second, and three operations took a little of that
-	if wait <= 0 || wait > 100*time.Millisecond {
-		t.Fatalf("refused with a wait of %v, want more than 0 and at most 100ms", wait)
+	if wait <= 0 || wait > time.Second {
+		t.Fatalf("refused with a wait of %v, want more than 0 and at most 1s", wait)
 	}
 }
 
 func TestWaitIsTheTimeToTheNextToken(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
-	l := ratelimit.New(vk, prefix, 4, 1)
+	l := ratelimit.New(vk, prefix, 2, 1)
 	id := uuid.New()
+	start := time.Now()
 	if ok, _ := take(t, l, id); !ok {
 		t.Fatal("the first operation was refused")
 	}
-	_, wait := take(t, l, id)
-	if wait <= 200*time.Millisecond || wait > 250*time.Millisecond {
-		t.Fatalf("refused with a wait of %v, want just under 250ms at 4 a second", wait)
+	ok, wait := take(t, l, id)
+	elapsed := time.Since(start)
+	// Valkey's clock moved at most elapsed between the two, which brought the token that near
+	if ok || wait < 500*time.Millisecond-elapsed || wait > 500*time.Millisecond {
+		t.Fatalf("allowed %v with a wait of %v, %v after the first, want 500ms less that",
+			ok, wait, elapsed)
 	}
 }
 
 func TestRefillsAfterTheWait(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
-	l := ratelimit.New(vk, prefix, 10, 2)
+	l := ratelimit.New(vk, prefix, 1, 2)
 	id := uuid.New()
 	take(t, l, id)
 	take(t, l, id)
@@ -134,14 +137,13 @@ func TestPlacementsHaveSeparateBuckets(t *testing.T) {
 	if ok, _ := take(t, l, busy); ok {
 		t.Fatal("the operation past the burst was allowed")
 	}
+	if ok, _ := take(t, ratelimit.New(vk, prefix, 1, 2), busy); ok {
+		t.Fatal("a second limiter on the same prefix gave the busy placement a fresh bucket")
+	}
 	for i := range 2 {
 		if ok, _ := take(t, l, other); !ok {
 			t.Fatalf("operation %d on another placement was refused", i+1)
 		}
-	}
-	shared := ratelimit.New(vk, prefix, 1, 2)
-	if ok, _ := take(t, shared, busy); ok {
-		t.Fatal("a second limiter on the same prefix gave the busy placement a fresh bucket")
 	}
 	if ok, _ := take(t, ratelimit.New(vk, prefix+"x:", 1, 2), busy); !ok {
 		t.Fatal("a limiter on another prefix shared the busy placement's bucket")
@@ -150,17 +152,17 @@ func TestPlacementsHaveSeparateBuckets(t *testing.T) {
 
 func TestBucketExpiresOnceFull(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
-	l := ratelimit.New(vk, prefix, 10, 3)
+	l := ratelimit.New(vk, prefix, 1, 3)
 	id := uuid.New()
 	key := prefix + "ops:" + id.String()
 	take(t, l, id)
-	if ttl := pttl(t, vk, key); ttl <= 0 || ttl > 100*time.Millisecond {
-		t.Fatalf("%s expires in %v after one operation, want at most the 100ms to refill", key, ttl)
+	if ttl := pttl(t, vk, key); ttl <= 0 || ttl > time.Second {
+		t.Fatalf("%s expires in %v after one operation, want at most the 1s to refill", key, ttl)
 	}
 	take(t, l, id)
 	take(t, l, id)
-	if ttl := pttl(t, vk, key); ttl <= 200*time.Millisecond || ttl > 300*time.Millisecond {
-		t.Fatalf("%s expires in %v after three operations, want just under 300ms", key, ttl)
+	if ttl := pttl(t, vk, key); ttl <= 2*time.Second || ttl > 3*time.Second {
+		t.Fatalf("%s expires in %v after three operations, want just under 3s", key, ttl)
 	}
 
 	fast := ratelimit.New(vk, prefix, 100, 1)
