@@ -92,12 +92,11 @@ to `bin/logs/`. Ctrl-C stops both. Delete `.env.keys` to get new secrets. Both `
 `.env.keys` are ignored by git.
 
 The local provider runs commands as host processes under `bin/local/`. Use it only with code
-you trust. To try a real provider, put it in front of `local` in `providers` in
-`config/dev.toml`, or replace `local` with it, as in `providers = ["e2b"]`, and paste its key
-into `.env`. `providers` is the preference order, and `local` costs nothing and fits every
-package, so a provider listed after it is chosen only when `local` fails. Real providers also
-need the Linux build of `bugnet-run` that `runner.linux_amd64` names, which `make build` in
-`../bugnet-run` writes.
+you trust. To try a real provider, replace `local` with it in `providers` in `config/dev.toml`,
+as in `providers = ["e2b"]`, and paste its key into `.env`. The router tries the cheapest
+provider first, and `local` costs nothing and fits every package, so a provider listed beside it
+is chosen only when `local` fails. Real providers also need the Linux build of `bugnet-run` that
+`runner.linux_amd64` names, which `make build` in `../bugnet-run` writes.
 
 Drive the router from another terminal in the repository root:
 
@@ -277,7 +276,10 @@ example after the events endpoint is fixed.
 
 Every provider has an adapter: boxd, E2B, Koyeb and Boat, beside `local` for development. Each
 reads its key from the environment and its settings from its table in the settings file, and
-`providers` lists the ones a deployment uses in preference order.
+`providers` lists the ones a deployment uses. A placement tries the providers that can host the
+package cheapest first, a cost being the package's minutes in whole billing increments plus any
+start fee. A provider whose recent starts took over 10 s to get ready at the 95th percentile
+goes behind the faster ones. The order of `providers` only breaks ties in cost.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
