@@ -30,6 +30,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/oynozan/bugnet-router/internal/vkinfo"
 	"github.com/oynozan/bugnet-router/internal/worker"
 )
 
@@ -81,7 +82,7 @@ func run(log *slog.Logger, args ...string) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	return serve(ctx, log, cfg, ln)
+	return serve(ctx, log, cfg, ln, vkinfo.Read)
 }
 
 // redriveOutbox reads only BUGNET_DATABASE_URL and gives stuck events their attempts back
@@ -103,7 +104,9 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
-func serve(ctx context.Context, log *slog.Logger, cfg config.Config, ln net.Listener) error {
+func serve(
+	ctx context.Context, log *slog.Logger, cfg config.Config, ln net.Listener, read vkinfo.Reader,
+) error {
 	defer func() { _ = ln.Close() }()
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -115,6 +118,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, ln net.List
 		return fmt.Errorf("connect to valkey: %w", err)
 	}
 	defer vk.Close()
+	if err := vkinfo.CheckStart(ctx, log, vk, read); err != nil {
+		return err
+	}
 	cat, err := catalog.Load(cfg.PackagesFile)
 	if err != nil {
 		return err

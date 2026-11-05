@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -13,10 +14,12 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/oynozan/bugnet-router/internal/vkinfo"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -82,6 +85,19 @@ func TestServeNeedsASettingsFile(t *testing.T) {
 	if err := run(discard, []string{"--config", missing}); err == nil ||
 		!strings.Contains(err.Error(), missing) {
 		t.Fatalf("run with a missing settings file gave %v, want an error naming it", err)
+	}
+}
+
+func TestServeRefusesAnEvictingValkey(t *testing.T) {
+	cfg := config.Config{DatabaseURL: "postgres://localhost:1/unused",
+		ValkeyAddr: testenv.ValkeyAddr()}
+	read := func(context.Context, valkey.Client) (vkinfo.Memory, error) {
+		return vkinfo.Memory{Max: 1 << 30, Policy: "volatile-ttl"}, nil
+	}
+	err := serve(t.Context(), discard, cfg, read)
+	want := "valkey: maxmemory-policy is volatile-ttl, the router needs noeviction"
+	if err == nil || err.Error() != want {
+		t.Fatalf("serve on an evicting Valkey gave %v, want %q", err, want)
 	}
 }
 

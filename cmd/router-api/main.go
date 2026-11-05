@@ -37,6 +37,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/streams"
+	"github.com/oynozan/bugnet-router/internal/vkinfo"
 )
 
 const (
@@ -77,7 +78,7 @@ func run(log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, log, cfg)
+	return serve(ctx, log, cfg, vkinfo.Read)
 }
 
 // migrateDatabase reads only BUGNET_DATABASE_URL, so a migration job needs no serving settings
@@ -93,7 +94,7 @@ func migrateDatabase(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
-func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
+func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("open postgres pool: %w", err)
@@ -104,6 +105,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 		return fmt.Errorf("connect to valkey: %w", err)
 	}
 	defer vk.Close()
+	if err := vkinfo.CheckStart(ctx, log, vk, read); err != nil {
+		return err
+	}
 	cat, err := catalog.Load(cfg.PackagesFile)
 	if err != nil {
 		return err

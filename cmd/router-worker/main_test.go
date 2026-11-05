@@ -19,12 +19,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/oynozan/bugnet-router/internal/vkinfo"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -117,6 +119,25 @@ func TestRunNeedsASettingsFile(t *testing.T) {
 	}
 }
 
+// fixed is a Valkey memory reader that always answers m
+func fixed(m vkinfo.Memory) vkinfo.Reader {
+	return func(context.Context, valkey.Client) (vkinfo.Memory, error) { return m, nil }
+}
+
+func TestServeRefusesAnEvictingValkey(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{DatabaseURL: "postgres://localhost:1/unused",
+		ValkeyAddr: testenv.ValkeyAddr()}
+	err = serve(t.Context(), discard, cfg, ln, fixed(vkinfo.Memory{Policy: "allkeys-lru"}))
+	want := "valkey: maxmemory-policy is allkeys-lru, the router needs noeviction"
+	if err == nil || err.Error() != want {
+		t.Fatalf("serve on an evicting Valkey gave %v, want %q", err, want)
+	}
+}
+
 func get(url string) int {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -163,7 +184,7 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, discard, cfg, ln) }()
+	go func() { done <- serve(ctx, discard, cfg, ln, vkinfo.Read) }()
 
 	base := "http://" + ln.Addr().String()
 	pool, err := pgxpool.New(t.Context(), url)
