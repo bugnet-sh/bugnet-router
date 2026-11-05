@@ -1110,7 +1110,7 @@ func (o *owner) snapshot(final bool) bool {
 	return o.skipStream(o.offsets) == nil
 }
 
-// finalTail stores the newest tailSize bytes of f, the tail Exec returns, from the tail reserve
+// finalTail stores f's newest tailSize bytes, the tail Exec returns, from the budget or reserve
 func (o *owner) finalTail(i int, f frame.Frame) (frame.Frame, error) {
 	if cut := len(f.Data) - tailSize; cut > 0 {
 		f.Data, f.Offset = f.Data[cut:], f.Offset+int64(cut)
