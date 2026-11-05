@@ -1,10 +1,12 @@
 // Package api serves the SandboxRouterService over Connect, plus health and readiness checks.
 //
 // Placements go through the saga, commands through the jobs service and file operations
-// straight to the placement's provider. GetPlacement and WatchPlacement wait on the placement's
-// Valkey channel, which one pattern subscription per server fans out to the waiting requests.
-// Each wake-up re-reads the store, so a lost message only delays a reader until its next read.
-// Close ends long polls and streams so an HTTP server shutting down can drain its connections.
+// straight to the placement's provider. Exec, CancelJob and each file operation first spend a
+// token of the placement's operation bucket, which every replica shares in Valkey. GetPlacement
+// and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
+// server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
+// only delays a reader until its next read. Close ends long polls and streams so an HTTP server
+// shutting down can drain its connections.
 package api
 
 import (
@@ -32,6 +34,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
 	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/ratelimit"
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/streams"
@@ -59,12 +62,17 @@ type Deps struct {
 	Prefix      string
 	MarginFloor float64
 	Log         *slog.Logger // slog.Default when nil
+	// SandboxOpsPerSecond refills each placement's operation bucket, a default when zero
+	SandboxOpsPerSecond int
+	// SandboxOpsBurst is what a placement's full operation bucket holds, a default when zero
+	SandboxOpsBurst int
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
 type Server struct {
 	d      Deps
 	notes  *notifier
+	ops    *ratelimit.Limiter
 	ctx    context.Context // ends when Close is called
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -77,10 +85,12 @@ func New(deps Deps) *Server {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
 	}
+	ops := ratelimit.New(deps.Valkey, deps.Prefix, deps.SandboxOpsPerSecond, deps.SandboxOpsBurst)
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
+		ops:    ops,
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -324,7 +334,7 @@ func (s *Server) placement(ctx context.Context, h string) (store.Placement, erro
 	return s.d.Store.PlacementByHandle(ctx, sha)
 }
 
-// sandbox returns a ready placement and the provider its sandbox runs on
+// sandbox returns a ready placement and the provider its sandbox runs on, spending an operation
 func (s *Server) sandbox(
 	ctx context.Context, h string,
 ) (store.Placement, provider.Provider, error) {
@@ -340,7 +350,24 @@ func (s *Server) sandbox(
 		return store.Placement{}, nil, fmt.Errorf("provider %q is not configured",
 			p.ProviderRef.Provider)
 	}
+	if err := s.spend(ctx, p); err != nil {
+		return store.Placement{}, nil, err
+	}
 	return p, prov, nil
+}
+
+// spend takes one of the placement's operation tokens, refusing the operation when none is left
+func (s *Server) spend(ctx context.Context, p store.Placement) error {
+	ok, wait, err := s.ops.Take(ctx, p.ID)
+	switch {
+	case err != nil:
+		// The limit protects the router, so an operation never fails for want of reading it
+		s.d.Log.Warn("api: sandbox operation limit unread, letting the operation through",
+			"err", err)
+	case !ok:
+		return rateLimited(wait)
+	}
+	return nil
 }
 
 /* Jobs */
@@ -450,6 +477,9 @@ func (s *Server) CancelJob(
 	ctx context.Context, req *connect.Request[routerv1.CancelJobRequest],
 ) (*connect.Response[routerv1.CancelJobResponse], error) {
 	p, err := s.placement(ctx, req.Msg.GetHandle())
+	if err == nil {
+		err = s.spend(ctx, p)
+	}
 	if err != nil {
 		return nil, s.status(err)
 	}

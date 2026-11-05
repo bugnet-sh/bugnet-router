@@ -148,16 +148,18 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 	// The scanner runs until jobs.Shutdown, so jobs keep being taken over while HTTP drains
 	scanner.Go(func() { js.RunScanner(context.Background()) })
 	srv := api.New(api.Deps{
-		Store:       st,
-		Saga:        sg,
-		Jobs:        js,
-		Engine:      engine,
-		Catalog:     cat,
-		Registry:    reg,
-		Valkey:      vk,
-		Prefix:      cfg.ValkeyPrefix,
-		MarginFloor: cfg.MarginFloor,
-		Log:         log,
+		Store:               st,
+		Saga:                sg,
+		Jobs:                js,
+		Engine:              engine,
+		Catalog:             cat,
+		Registry:            reg,
+		Valkey:              vk,
+		Prefix:              cfg.ValkeyPrefix,
+		MarginFloor:         cfg.MarginFloor,
+		Log:                 log,
+		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
+		SandboxOpsBurst:     cfg.SandboxOpsBurst,
 	})
 	defer srv.Close()
 

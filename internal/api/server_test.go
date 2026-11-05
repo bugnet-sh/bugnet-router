@@ -155,6 +155,10 @@ type options struct {
 	maxLifetime time.Duration
 	maxRunning  int   // jobs a placement may run at once, the jobs default when zero
 	jobBudget   int64 // what one job's output may cost its stream, the jobs default when zero
+	// opsPerSecond and opsBurst are each placement's operation limit, the defaults when zero
+	opsPerSecond int
+	opsBurst     int
+	log          *slog.Logger // the API server's log, discarded when nil
 }
 
 type env struct {
@@ -165,7 +169,8 @@ type env struct {
 	store     *store.Store
 	jobs      *jobs.Service
 	vk        valkey.Client
-	apiVKName string // client name of the API server's own Valkey connections
+	apiVK     valkey.Client // the API server's own Valkey client
+	apiVKName string        // client name of the API server's own Valkey connections
 	prefix    string
 	root      string
 	priv      ed25519.PrivateKey
@@ -243,15 +248,20 @@ func newEnv(t *testing.T, opts options) *env {
 		t.Fatalf("connect to valkey: %v", err)
 	}
 	t.Cleanup(apiVK.Close)
+	log := discard
+	if opts.log != nil {
+		log = opts.log
+	}
 	srv := api.New(api.Deps{
 		Store: st, Saga: sg, Jobs: js, Engine: engine, Catalog: cat, Registry: reg,
-		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: discard,
+		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
+		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, dbURL: dbURL, store: st, jobs: js, vk: vk, apiVKName: apiName, prefix: prefix,
-		root: root, priv: priv, handleKey: handleKey,
+		api: srv, dbURL: dbURL, store: st, jobs: js, vk: vk, apiVK: apiVK, apiVKName: apiName,
+		prefix: prefix, root: root, priv: priv, handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv, internalToken)
@@ -474,6 +484,26 @@ func wantInfo(t *testing.T, err error, reason string) {
 		}
 	}
 	t.Fatalf("error %v has no ErrorInfo detail", err)
+}
+
+// wantRetry checks that err carries a google.rpc.RetryInfo and returns its delay
+func wantRetry(t *testing.T, err error) time.Duration {
+	t.Helper()
+	var ce *connect.Error
+	if !errors.As(err, &ce) {
+		t.Fatalf("error %v is not a Connect error", err)
+	}
+	for _, d := range ce.Details() {
+		v, derr := d.Value()
+		if derr != nil {
+			t.Fatalf("decode error detail: %v", derr)
+		}
+		if info, ok := v.(*errdetails.RetryInfo); ok {
+			return info.GetRetryDelay().AsDuration()
+		}
+	}
+	t.Fatalf("error %v has no RetryInfo detail", err)
+	return 0
 }
 
 func httpGet(t *testing.T, url string) (int, string) {
@@ -1524,6 +1554,162 @@ func TestErrorCodes(t *testing.T) {
 		_, err := down.client.Exec(ctx, connect.NewRequest(sh(dh, "true")))
 		wantCode(t, err, connect.CodeUnavailable)
 	})
+}
+
+// sandboxOps calls each operation the per-placement limit counts, on the handle given
+func (e *env) sandboxOps(t *testing.T) map[string]func(h string) error {
+	ctx := t.Context()
+	return map[string]func(h string) error{
+		"Exec": func(h string) error {
+			_, err := e.client.Exec(ctx, connect.NewRequest(sh(h, "true")))
+			return err
+		},
+		"CancelJob": func(h string) error {
+			_, err := e.client.CancelJob(ctx, connect.NewRequest(
+				&routerv1.CancelJobRequest{Handle: h, JobId: "j_nope"}))
+			return err
+		},
+		"ReadFile": func(h string) error {
+			_, err := e.client.ReadFile(ctx, connect.NewRequest(
+				&routerv1.ReadFileRequest{Handle: h, Path: "/root/ops.txt"}))
+			return err
+		},
+		"WriteFile": func(h string) error {
+			_, err := e.client.WriteFile(ctx, connect.NewRequest(
+				&routerv1.WriteFileRequest{Handle: h, Path: "/root/ops.txt", Data: []byte("x")}))
+			return err
+		},
+		"ListFiles": func(h string) error {
+			_, err := e.client.ListFiles(ctx, connect.NewRequest(
+				&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
+			return err
+		},
+	}
+}
+
+// opsKeys lists the operation buckets under the env's prefix
+func (e *env) opsKeys(t *testing.T) []string {
+	t.Helper()
+	keys, err := e.vk.Do(t.Context(), e.vk.B().Keys().Pattern(e.prefix+"ops:*").Build()).
+		AsStrSlice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func TestSandboxOperationsAreRateLimited(t *testing.T) {
+	const burst = 3
+	// One token a second keeps the spent bucket empty for the few calls that follow
+	e := newEnv(t, options{opsPerSecond: 1, opsBurst: burst})
+	ctx := t.Context()
+	busy, busyMsg := e.readyPlacement(t)
+	calm, calmMsg := e.readyPlacement(t)
+	ops := e.sandboxOps(t)
+	watchErr := func(h string) error {
+		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
+		return err
+	}
+	uncounted := func(when string) {
+		t.Helper()
+		e.get(t, busy, routerv1.PlacementState_PLACEMENT_STATE_UNSPECIFIED, 0)
+		if _, err := e.checkExtend(t, busy, morePkg); err != nil {
+			t.Fatalf("CheckExtendPlacement %s: %v", when, err)
+		}
+		wantCode(t, watchErr(busy), connect.CodeNotFound)
+	}
+	for range burst + 1 {
+		uncounted("before the burst")
+	}
+
+	spend := []string{"WriteFile", "ReadFile", "ListFiles"}
+	for _, name := range spend[:burst] {
+		if err := ops[name](busy); err != nil {
+			t.Fatalf("%s within the burst: %v", name, err)
+		}
+	}
+	for name, op := range ops {
+		err := op(busy)
+		wantCode(t, err, connect.CodeResourceExhausted)
+		wantInfo(t, err, "RATE_LIMITED")
+		var ce *connect.Error
+		if errors.As(err, &ce) && ce.Message() != "too many sandbox operations, slow down" {
+			t.Errorf("%s past the burst says %q", name, ce.Message())
+		}
+		if wait := wantRetry(t, err); wait <= 0 || wait > time.Second {
+			t.Errorf("%s past the burst asks to retry in %v, want up to 1s", name, wait)
+		}
+	}
+	uncounted("with the bucket spent")
+	_, err := e.client.Exec(ctx, connect.NewRequest(&routerv1.ExecRequest{Handle: busy}))
+	wantCode(t, err, connect.CodeInvalidArgument)
+	_, err = e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
+		Handle: busy, Path: "/root/setuid", Data: []byte("x"), Mode: 0o4755,
+	}))
+	wantCode(t, err, connect.CodeInvalidArgument)
+
+	for _, name := range spend[:burst] {
+		if err := ops[name](calm); err != nil {
+			t.Fatalf("%s on another placement: %v", name, err)
+		}
+	}
+	unknown, _ := handle.New()
+	for _, op := range ops {
+		wantCode(t, op(unknown), connect.CodeNotFound)
+		wantCode(t, op("sbx_not-a-handle"), connect.CodeNotFound)
+	}
+	want := []string{
+		e.prefix + "ops:" + busyMsg.GetPlacementId(),
+		e.prefix + "ops:" + calmMsg.GetPlacementId(),
+	}
+	slices.Sort(want)
+	if keys := e.opsKeys(t); !slices.Equal(keys, want) {
+		t.Fatalf("operation buckets %v, want only the two placements' %v", keys, want)
+	}
+
+	_, err = e.client.ExtendPlacement(ctx, connect.NewRequest(&routerv1.ExtendPlacementRequest{
+		Handle: busy, OrderToken: e.extendToken(t, busy, morePkg, morePrice),
+	}))
+	if err != nil {
+		t.Fatalf("ExtendPlacement with the bucket spent: %v", err)
+	}
+	e.stop(t, busy)
+}
+
+func TestSandboxOperationsGoThroughWhenTheLimitCannotBeRead(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, options{
+		opsPerSecond: 1, opsBurst: 1, log: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	h, _ := e.readyPlacement(t)
+	e.apiVK.Close()
+	for i := range 3 {
+		if err := e.sandboxOps(t)["ListFiles"](h); err != nil {
+			t.Fatalf("operation %d with the limit unreadable: %v", i+1, err)
+		}
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=\"api: sandbox operation limit unread") {
+		t.Fatalf("no warning that the limit was not read in the log:\n%s", logs.String())
+	}
+}
+
+// syncBuffer collects log output written from several goroutines
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // killSupervisor kills a job's supervisor and then its command so no exit code is recorded

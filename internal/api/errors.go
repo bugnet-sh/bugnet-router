@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
@@ -16,8 +18,12 @@ import (
 	"github.com/oynozan/bugnet-router/internal/streams"
 )
 
-// errorDomain names the router in every google.rpc.ErrorInfo it sends
-const errorDomain = "bugnet.router"
+const (
+	// errorDomain names the router in every google.rpc.ErrorInfo it sends
+	errorDomain = "bugnet.router"
+	// reasonRateLimited marks a sandbox operation refused by the placement's operation limit
+	reasonRateLimited = "RATE_LIMITED"
+)
 
 var (
 	errNotReady     = errors.New("api: placement is not ready")
@@ -57,6 +63,17 @@ func invalid(format string, args ...any) error {
 // withInfo attaches a google.rpc.ErrorInfo carrying reason to ce
 func withInfo(ce *connect.Error, reason string) *connect.Error {
 	d, err := connect.NewErrorDetail(&errdetails.ErrorInfo{Reason: reason, Domain: errorDomain})
+	if err == nil {
+		ce.AddDetail(d)
+	}
+	return ce
+}
+
+// rateLimited refuses a sandbox operation, saying how long until the placement may make another
+func rateLimited(wait time.Duration) error {
+	ce := withInfo(connect.NewError(connect.CodeResourceExhausted,
+		errors.New("too many sandbox operations, slow down")), reasonRateLimited)
+	d, err := connect.NewErrorDetail(&errdetails.RetryInfo{RetryDelay: durationpb.New(wait)})
 	if err == nil {
 		ce.AddDetail(d)
 	}
