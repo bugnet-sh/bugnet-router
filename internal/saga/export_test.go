@@ -11,3 +11,6 @@ func SetCleanupTimeout(t testing.TB, d time.Duration) {
 	cleanupTimeout = d
 	t.Cleanup(func() { cleanupTimeout = old })
 }
+
+// ByListing is the order ListExtensions sorts its extensions in
+var ByListing = byListing

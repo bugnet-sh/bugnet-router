@@ -768,12 +768,15 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 		}
 		out = append(out, Extension{Package: pkg, Refusal: err})
 	}
-	slices.SortFunc(out, func(a, b Extension) int {
-		return cmp.Or(cmp.Compare(a.Package.Minutes, b.Package.Minutes),
-			cmp.Compare(a.Package.PriceMicros, b.Package.PriceMicros),
-			cmp.Compare(a.Package.ID, b.Package.ID))
-	})
+	slices.SortFunc(out, byListing)
 	return out, nil
+}
+
+// byListing orders extensions by minutes, then price, then id
+func byListing(a, b Extension) int {
+	return cmp.Or(cmp.Compare(a.Package.Minutes, b.Package.Minutes),
+		cmp.Compare(a.Package.PriceMicros, b.Package.PriceMicros),
+		cmp.Compare(a.Package.ID, b.Package.ID))
 }
 
 // extension is a placement that passed the extend checks, with what extending it needs

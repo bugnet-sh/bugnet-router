@@ -1992,6 +1992,27 @@ func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
 	}
 }
 
+func TestListExtensionsOrdersByMinutesThenPriceThenID(t *testing.T) {
+	ext := func(id string, minutes int, price int64) saga.Extension {
+		return saga.Extension{
+			Package: catalog.Package{ID: id, Minutes: minutes, PriceMicros: price},
+		}
+	}
+	for _, c := range []struct {
+		name          string
+		first, second saga.Extension
+	}{
+		{"fewer minutes, though dearer with a later id", ext("z-5m", 5, 9), ext("a-30m", 30, 1)},
+		{"same minutes, cheaper with a later id", ext("z-cheap", 10, 4), ext("a-dear", 10, 6)},
+		{"same minutes and price, lower id", ext("a-tie", 10, 4), ext("b-tie", 10, 4)},
+	} {
+		if saga.ByListing(c.first, c.second) >= 0 || saga.ByListing(c.second, c.first) <= 0 {
+			t.Errorf("%s: %s is not listed before %s", c.name, c.first.Package.ID,
+				c.second.Package.ID)
+		}
+	}
+}
+
 func TestListExtensionsOfAPlacementNotReady(t *testing.T) {
 	e, _, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
 	_, stopped := e.placeReady(t, "order-1")
