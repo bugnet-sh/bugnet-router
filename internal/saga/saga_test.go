@@ -230,6 +230,45 @@ func (f *failingDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
 	return f.Provider.Destroy(ctx, ref)
 }
 
+// overlapping holds each destroy 300 ms and records the most that ran at once, failing when fail
+type overlapping struct {
+	*local.Provider
+	fail bool
+	mu   *sync.Mutex
+	runs *[2]int // running now and most at once
+}
+
+func newOverlapping(t *testing.T, fail bool) overlapping {
+	t.Helper()
+	return overlapping{
+		Provider: newLocal(t, local.Options{Name: "a"}), fail: fail, mu: &sync.Mutex{},
+		runs: &[2]int{},
+	}
+}
+
+func (o overlapping) Destroy(ctx context.Context, ref provider.Ref) error {
+	o.mu.Lock()
+	o.runs[0]++
+	o.runs[1] = max(o.runs[1], o.runs[0])
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.runs[0]--
+		o.mu.Unlock()
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if o.fail {
+		return &provider.Error{Code: provider.CodeRateLimited, Err: errors.New("slow down")}
+	}
+	return o.Provider.Destroy(ctx, ref)
+}
+
+func (o overlapping) most() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.runs[1]
+}
+
 // clock is wall time shifted by an offset the test can move forward
 type clock struct {
 	mu     sync.Mutex
@@ -2015,6 +2054,57 @@ func TestStopConcurrentReleasesOnce(t *testing.T) {
 	}
 	if evs := e.events(t, saga.EventTerminated); len(evs) != 1 {
 		t.Fatalf("%d terminated events", len(evs))
+	}
+}
+
+// stopTogether stops the handle n times at once and returns each stop's error
+func stopTogether(t *testing.T, e *env, h string, n int) []error {
+	t.Helper()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() { _, errs[i] = e.saga.Stop(t.Context(), h) })
+	}
+	wg.Wait()
+	return errs
+}
+
+func TestConcurrentStopsShareOneDestroy(t *testing.T) {
+	prov := newOverlapping(t, false)
+	e := newEnv(t, prov)
+	p, h := e.placeReady(t, "order-1")
+	for _, err := range stopTogether(t, e, h, 10) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := prov.most(); n != 1 {
+		t.Fatalf("%d destroys ran at once for 10 stops, want 1", n)
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementTerminated {
+		t.Fatalf("placement is %s, want terminated", got.State)
+	}
+}
+
+func TestStopsOfAFailingDestroyShareIt(t *testing.T) {
+	prov := newOverlapping(t, true)
+	e := newEnv(t, prov)
+	p, h := e.placeReady(t, "order-1")
+	// A stop whose destroy failed left the placement terminating
+	if _, err := e.store.MarkPlacementTerminating(t.Context(), p.ID, saga.ReasonStop,
+		time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stopTogether(t, e, h, 10) {
+		if pe, ok := provider.AsError(err); !ok || pe.Code != provider.CodeRateLimited {
+			t.Fatalf("stop with a failing destroy gave %v, want its rate_limited error", err)
+		}
+	}
+	if n := prov.most(); n != 1 {
+		t.Fatalf("%d destroys ran at once for 10 stops, want 1", n)
+	}
+	if got := e.reload(t, p.ID); got.State != store.PlacementTerminating {
+		t.Fatalf("placement is %s, want still terminating", got.State)
 	}
 }
 

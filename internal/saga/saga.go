@@ -33,6 +33,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/valkey-io/valkey-go"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/handle"
@@ -127,8 +128,9 @@ type Deps struct {
 
 // Saga runs placements from order to teardown
 type Saga struct {
-	d  Deps
-	wg sync.WaitGroup
+	d        Deps
+	wg       sync.WaitGroup
+	destroys singleflight.Group // keyed by placement, so racing terminations share one destroy
 }
 
 // New builds a saga over deps
@@ -859,7 +861,11 @@ func (s *Saga) terminate(
 	if err != nil {
 		return store.Placement{}, err
 	}
-	if err := destroyRef(ctx, prov, ref); err != nil {
+	// A stop retried while the destroy is in flight waits for it instead of calling the provider
+	_, err, _ = s.destroys.Do(p.ID.String(), func() (any, error) {
+		return nil, destroyRef(ctx, prov, ref)
+	})
+	if err != nil {
 		return store.Placement{}, fmt.Errorf("destroy sandbox: %w", err)
 	}
 
