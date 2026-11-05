@@ -155,6 +155,16 @@ func TestE2EHappyPath(t *testing.T) {
 			"fewer than all 20000005 ending in end, a skip note and 0", len(stdout), stderr, code)
 	}
 
+	checked := parseKV(s.devOK(t, s.a, "check-extend", "--handle", h, "--package", morePkg))
+	after, err := time.Parse(time.RFC3339Nano, checked["deadline_after"])
+	if err != nil {
+		t.Fatalf("bugnet-dev check-extend printed %v: %v", checked, err)
+	}
+	want := p.GetDeadline().AsTime().Add(10 * time.Minute)
+	if checked["state"] != "ready" || !after.Equal(want) {
+		t.Errorf("bugnet-dev check-extend printed %v, want ready and deadline_after %s", checked,
+			want.Format(time.RFC3339Nano))
+	}
 	token := strings.TrimSpace(s.devOK(t, s.a, "token", "--kind", "extend",
 		"--package", morePkg, "--handle", h))
 	ctx, cancel := context.WithTimeout(t.Context(), callTimeout)
@@ -165,9 +175,8 @@ func TestE2EHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtendPlacement: %v", err)
 	}
-	want := p.GetDeadline().AsTime().Add(10 * time.Minute)
-	if got := ext.Msg.GetPlacement().GetDeadline().AsTime(); !got.Equal(want) {
-		t.Errorf("deadline after extend %s, want %s", got, want)
+	if got := ext.Msg.GetPlacement().GetDeadline().AsTime(); !got.Equal(after) {
+		t.Errorf("deadline after extend %s, check-extend said %s", got, after)
 	}
 	s.events.await(t, "placement.extended", id, eventWait)
 
