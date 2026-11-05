@@ -241,9 +241,9 @@ token from a bucket that every `router-api` replica shares, `ops:<placement id>`
 `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10 by default, and
 expires once it is full again. A call that finds it empty answers `ResourceExhausted` with reason
 `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls
-spend nothing, nor does an invalid request, an unknown handle, or an `Exec` or file call on a
-placement that is not ready. When Valkey cannot answer, the call goes through and the router logs
-a warning.
+spend nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec`
+or file call on a placement that is not ready. A request only the provider refuses has spent its
+token. When Valkey cannot answer, the call goes through and the router logs a warning.
 
 ## Deployment
 
