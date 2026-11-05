@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -573,7 +574,7 @@ func (c *cli) follow(
 		Handle: h, JobId: job, Cursor: cursor,
 	}))
 	if err != nil {
-		return resumable(err, h, job, cursor)
+		return c.resumable(err, h, job, cursor)
 	}
 	defer func() { _ = stream.Close() }()
 	for stream.Receive() {
@@ -603,19 +604,34 @@ func (c *cli) follow(
 	if err == nil {
 		err = errors.New("the stream ended before the job exited")
 	}
-	return resumable(err, h, job, cursor)
+	return c.resumable(err, h, job, cursor)
 }
 
 // resumable adds the watch command that continues the stream, unless the job itself ended
-func resumable(err error, h, job, cursor string) error {
+func (c *cli) resumable(err error, h, job, cursor string) error {
 	if connect.CodeOf(err) == connect.CodeAborted {
 		return err
 	}
-	resume := "bugnet-dev watch --handle " + h + " --job " + job
+	resume := "bugnet-dev "
+	if c.configPath != defaultConfig {
+		resume += "--config " + shellWord(c.configPath) + " "
+	}
+	resume += "watch --handle " + h + " --job " + job
 	if cursor != "" {
 		resume += " --cursor " + cursor
 	}
 	return fmt.Errorf("%w\nresume with: %s", err, resume)
+}
+
+// plainWord is a word a POSIX shell reads as it is
+var plainWord = regexp.MustCompile(`^[A-Za-z0-9_./:@%+=,-]+$`)
+
+// shellWord quotes s for a POSIX shell when it holds anything but plain characters
+func shellWord(s string) string {
+	if plainWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 /* Settings */

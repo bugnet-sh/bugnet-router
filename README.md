@@ -109,7 +109,8 @@ for the API address and the catalog, and needs only `BUGNET_INTERNAL_TOKEN` and
 `BUGNET_ORDER_PRIVATE_KEY` from the environment. `create` signs an order token with
 `BUGNET_ORDER_PRIVATE_KEY`, priced from the catalog, and waits until the sandbox is ready.
 `exec` streams the output and exits with the command's exit code. If the stream breaks, it
-prints the `bugnet-dev watch` command that resumes from the last cursor. `bugnet-dev token`
+prints the `bugnet-dev watch` command that resumes from the last cursor, with the same
+`--config` when one was given. `bugnet-dev token`
 prints a token for other clients, `bugnet-dev pubkey` the public key that verifies its tokens,
 and `bugnet-dev` with no arguments lists every command.
 

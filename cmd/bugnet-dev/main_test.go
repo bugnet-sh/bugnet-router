@@ -6,12 +6,16 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/handle"
@@ -284,5 +288,50 @@ func TestUsage(t *testing.T) {
 			!strings.Contains(stderr, "usage") {
 			t.Errorf("%q exited %d with %q, want 2 and the usage", args, code, stderr)
 		}
+	}
+}
+
+func TestResumeHintNamesTheSettingsFile(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "my settings")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "other.toml")
+	if err := os.WriteFile(path, []byte("[api]\nlisten_addr = \""+addr+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vars := env(map[string]string{"BUGNET_INTERNAL_TOKEN": strings.Repeat("t", 32)})
+	_, stderr, code := runCLI(t, vars, "--config", path, "watch", "--handle", "sbx_x", "--job", "j",
+		"--cursor", "c1")
+	want := "resume with: bugnet-dev --config '" + path + "' watch --handle sbx_x --job j " +
+		"--cursor c1"
+	if code != 1 || !strings.Contains(stderr, want) {
+		t.Errorf("watch on a closed API exited %d with %q, want 1 and %q", code, stderr, want)
+	}
+
+	broken := connect.NewError(connect.CodeUnavailable, errors.New("stream broke"))
+	for configPath, want := range map[string]string{
+		defaultConfig:      "resume with: bugnet-dev watch --handle sbx_x --job j\n",
+		"bin/other.toml":   "resume with: bugnet-dev --config bin/other.toml watch --handle sbx_x",
+		"it's here.toml":   `resume with: bugnet-dev --config 'it'\''s here.toml' watch`,
+		"/srv/bn/a$b.toml": `resume with: bugnet-dev --config '/srv/bn/a$b.toml' watch`,
+	} {
+		c := &cli{configPath: configPath}
+		got := c.resumable(broken, "sbx_x", "j", "").Error() + "\n"
+		if !strings.Contains(got, want) {
+			t.Errorf("settings file %q gave %q, want %q", configPath, got, want)
+		}
+	}
+	ended := connect.NewError(connect.CodeAborted, errors.New("job lost"))
+	if got := (&cli{configPath: "x.toml"}).resumable(ended, "sbx_x", "j", "c"); got != ended {
+		t.Errorf("an ended job gave %v, want the error alone", got)
 	}
 }
