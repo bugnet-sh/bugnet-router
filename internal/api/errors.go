@@ -23,6 +23,10 @@ const (
 	errorDomain = "bugnet.router"
 	// reasonRateLimited marks a sandbox operation refused by the placement's operation limit
 	reasonRateLimited = "RATE_LIMITED"
+	// reasonNotReady marks a call refused because the placement is placing, ending or ended
+	reasonNotReady = "NOT_READY"
+	// reasonExceedsLifetime marks an extension past the provider's maximum sandbox lifetime
+	reasonExceedsLifetime = "EXCEEDS_LIFETIME"
 )
 
 var (
@@ -30,30 +34,31 @@ var (
 	errShuttingDown = errors.New("api: server is shutting down")
 )
 
-// codes maps service errors to status codes, the first match winning
+// codes maps service errors to status codes and ErrorInfo reasons, the first match winning
 var codes = []struct {
-	err  error
-	code connect.Code
+	err    error
+	code   connect.Code
+	reason string
 }{
-	{saga.ErrBadToken, connect.CodePermissionDenied},
-	{saga.ErrUnderpaid, connect.CodePermissionDenied},
-	{saga.ErrHandleMismatch, connect.CodePermissionDenied},
-	{saga.ErrUnknownPackage, connect.CodeInvalidArgument},
-	{saga.ErrNotExtension, connect.CodeInvalidArgument},
-	{jobs.ErrInvalid, connect.CodeInvalidArgument},
-	{streams.ErrBadCursor, connect.CodeInvalidArgument},
-	{saga.ErrNotReady, connect.CodeFailedPrecondition},
-	{saga.ErrExceedsLifetime, connect.CodeFailedPrecondition},
-	{jobs.ErrNotReady, connect.CodeFailedPrecondition},
-	{errNotReady, connect.CodeFailedPrecondition},
-	{placement.ErrNoCandidate, connect.CodeResourceExhausted},
-	{jobs.ErrTooManyJobs, connect.CodeResourceExhausted},
-	{store.ErrNotFound, connect.CodeNotFound},
-	{jobs.ErrNotFound, connect.CodeNotFound},
-	{jobs.ErrShuttingDown, connect.CodeUnavailable},
-	{errShuttingDown, connect.CodeUnavailable},
-	{context.Canceled, connect.CodeCanceled},
-	{context.DeadlineExceeded, connect.CodeDeadlineExceeded},
+	{saga.ErrBadToken, connect.CodePermissionDenied, ""},
+	{saga.ErrUnderpaid, connect.CodePermissionDenied, ""},
+	{saga.ErrHandleMismatch, connect.CodePermissionDenied, ""},
+	{saga.ErrUnknownPackage, connect.CodeInvalidArgument, ""},
+	{saga.ErrNotExtension, connect.CodeInvalidArgument, ""},
+	{jobs.ErrInvalid, connect.CodeInvalidArgument, ""},
+	{streams.ErrBadCursor, connect.CodeInvalidArgument, ""},
+	{saga.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},
+	{saga.ErrExceedsLifetime, connect.CodeFailedPrecondition, reasonExceedsLifetime},
+	{jobs.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},
+	{errNotReady, connect.CodeFailedPrecondition, reasonNotReady},
+	{placement.ErrNoCandidate, connect.CodeResourceExhausted, ""},
+	{jobs.ErrTooManyJobs, connect.CodeResourceExhausted, ""},
+	{store.ErrNotFound, connect.CodeNotFound, ""},
+	{jobs.ErrNotFound, connect.CodeNotFound, ""},
+	{jobs.ErrShuttingDown, connect.CodeUnavailable, ""},
+	{errShuttingDown, connect.CodeUnavailable, ""},
+	{context.Canceled, connect.CodeCanceled, ""},
+	{context.DeadlineExceeded, connect.CodeDeadlineExceeded, ""},
 }
 
 func invalid(format string, args ...any) error {
@@ -106,9 +111,13 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		return err
 	}
 	for _, c := range codes {
-		if errors.Is(err, c.err) {
-			return connect.NewError(c.code, err)
+		if !errors.Is(err, c.err) {
+			continue
 		}
+		if c.reason != "" {
+			return withInfo(connect.NewError(c.code, err), c.reason)
+		}
+		return connect.NewError(c.code, err)
 	}
 	if e, ok := provider.AsError(err); ok {
 		code, msg := connect.CodeUnavailable, "sandbox provider unavailable"

@@ -1350,6 +1350,11 @@ func TestErrorCodes(t *testing.T) {
 		_, err := e.watchJob(t, req)
 		return err
 	}
+	notReady := func(t *testing.T, err error) {
+		t.Helper()
+		wantCode(t, err, connect.CodeFailedPrecondition)
+		wantInfo(t, err, "NOT_READY")
+	}
 
 	t.Run("unknown handle is not found", func(t *testing.T) {
 		unknown, _ := handle.New()
@@ -1413,29 +1418,28 @@ func TestErrorCodes(t *testing.T) {
 		slow := newEnv(t, options{readyDelay: 2 * time.Second})
 		ph, _ := slow.create(t)
 		_, err := slow.client.Exec(ctx, connect.NewRequest(sh(ph, "true")))
-		wantCode(t, err, connect.CodeFailedPrecondition)
+		notReady(t, err)
 		_, err = slow.client.ListFiles(ctx, connect.NewRequest(
 			&routerv1.ListFilesRequest{Handle: ph, Path: "/root"}))
-		wantCode(t, err, connect.CodeFailedPrecondition)
+		notReady(t, err)
 		_, err = slow.client.ExtendPlacement(ctx, connect.NewRequest(
 			&routerv1.ExtendPlacementRequest{
 				Handle: ph, OrderToken: slow.extendToken(t, ph, morePkg, morePrice),
 			}))
-		wantCode(t, err, connect.CodeFailedPrecondition)
+		notReady(t, err)
 		_, err = slow.checkExtend(t, ph, morePkg)
-		wantCode(t, err, connect.CodeFailedPrecondition)
+		notReady(t, err)
 		_, err = slow.client.StopPlacement(ctx, connect.NewRequest(
 			&routerv1.StopPlacementRequest{Handle: ph}))
-		wantCode(t, err, connect.CodeFailedPrecondition)
+		notReady(t, err)
 	})
 	t.Run("terminated placement is a failed precondition", func(t *testing.T) {
 		th, _ := e.readyPlacement(t)
 		e.stop(t, th)
-		wantCode(t, execErr(sh(th, "true")), connect.CodeFailedPrecondition)
-		wantCode(t, readErr(th, "/root"), connect.CodeFailedPrecondition)
-		wantCode(t, extend(th, e.extendToken(t, th, morePkg, morePrice)),
-			connect.CodeFailedPrecondition)
-		wantCode(t, checkErr(th, morePkg), connect.CodeFailedPrecondition)
+		notReady(t, execErr(sh(th, "true")))
+		notReady(t, readErr(th, "/root"))
+		notReady(t, extend(th, e.extendToken(t, th, morePkg, morePrice)))
+		notReady(t, checkErr(th, morePkg))
 	})
 	t.Run("extension past the provider's max lifetime is a failed precondition",
 		func(t *testing.T) {
@@ -1446,8 +1450,10 @@ func TestErrorCodes(t *testing.T) {
 					Handle: ch, OrderToken: capped.extendToken(t, ch, morePkg, morePrice),
 				}))
 			wantCode(t, extendErr, connect.CodeFailedPrecondition)
+			wantInfo(t, extendErr, "EXCEEDS_LIFETIME")
 			_, checkErr := capped.checkExtend(t, ch, morePkg)
 			wantCode(t, checkErr, connect.CodeFailedPrecondition)
+			wantInfo(t, checkErr, "EXCEEDS_LIFETIME")
 			// The limit can come from the settings file, which the gateway never sees
 			for _, err := range []error{extendErr, checkErr} {
 				if strings.Contains(err.Error(), "17m") {
