@@ -26,6 +26,12 @@ local now = redis.call('TIME')
 now = tonumber(now[1]) * 1000000 + tonumber(now[2])
 local held = redis.call('HMGET', KEYS[1], 'tokens', 'at')
 local tokens, at = tonumber(held[1]) or cap, tonumber(held[2]) or now
+-- A clock behind the bucket's, as after a failover, refills from now and not from the old clock
+if now < at then
+	at = now
+	redis.call('HSET', KEYS[1], 'at', at)
+	redis.call('PEXPIRE', KEYS[1], math.ceil((cap - tokens) / rate / 1000))
+end
 tokens = math.min(cap, tokens + math.max(0, now - at) * rate)
 if tokens < 1000000 then
 	return {0, math.ceil((1000000 - tokens) / rate / 1000)}

@@ -1,6 +1,7 @@
 package ratelimit_test
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -31,6 +32,46 @@ func pttl(t *testing.T, vk valkey.Client, key string) time.Duration {
 		t.Fatal(err)
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// seed stores a bucket holding tokens whose time is ahead of Valkey's clock
+func seed(t *testing.T, vk valkey.Client, key string, tokens int64, ahead time.Duration) {
+	t.Helper()
+	now, err := vk.Do(t.Context(), vk.B().Time().Build()).AsIntSlice()
+	if err != nil || len(now) != 2 {
+		t.Fatalf("valkey time %v, %v", now, err)
+	}
+	at := now[0]*1000000 + now[1] + ahead.Microseconds()
+	cmds := valkey.Commands{
+		vk.B().Hset().Key(key).FieldValue().FieldValue("tokens", strconv.FormatInt(tokens, 10)).
+			FieldValue("at", strconv.FormatInt(at, 10)).Build(),
+		vk.B().Pexpire().Key(key).Milliseconds(time.Minute.Milliseconds()).Build(),
+	}
+	for _, res := range vk.DoMulti(t.Context(), cmds...) {
+		if err := res.Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestBucketAheadOfValkeysClockRefillsFromNow(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	l := ratelimit.New(vk, prefix, 2, 2)
+	id := uuid.New()
+	key := prefix + "ops:" + id.String()
+	// A failover to a node whose clock is behind leaves the bucket's time in the future
+	seed(t, vk, key, 0, 30*time.Second)
+	ok, wait := take(t, l, id)
+	if ok || wait != 500*time.Millisecond {
+		t.Fatalf("empty bucket allowed %v with a wait of %v, want a refusal of 500ms", ok, wait)
+	}
+	if ttl := pttl(t, vk, key); ttl <= 0 || ttl > time.Second {
+		t.Fatalf("%s expires in %v, want at most the 1s to refill from now", key, ttl)
+	}
+	time.Sleep(wait)
+	if ok, _ := take(t, l, id); !ok {
+		t.Fatalf("refused again after waiting the %v it asked for", wait)
+	}
 }
 
 func TestBurstThenRefusedWithAWait(t *testing.T) {
