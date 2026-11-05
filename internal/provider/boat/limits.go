@@ -30,6 +30,8 @@ const (
 	topStartMicros = 70_000
 	// startsTimeout bounds a call to the shared start count, past it this process's count is used
 	startsTimeout = time.Second
+	// sharedRetryAfter keeps a hung Valkey from slowing every pricing and create by startsTimeout
+	sharedRetryAfter = 30 * time.Second
 )
 
 // startWindows are the $20 plan's included starts per window and the multiple Boat refuses past
@@ -51,17 +53,18 @@ var startBrackets = []struct {
 
 // fees knows what the next start costs, from GET /limits or from the starts counted so far
 type fees struct {
-	mu         sync.Mutex
-	fetched    time.Time // when /limits last answered
-	attempted  time.Time
-	refreshing bool
-	failing    bool            // the last call to /limits got no usable reply
-	refused    bool            // the last reply said a start would be refused
-	fee        int64           // the last reply's next start fee
-	available  map[string]bool // machine types the last reply named
-	starts     []time.Time     // this process's starts, counted when shared is nil or failing
-	shared     *sharedStarts
-	sharedDown bool // the last call to the shared count failed
+	mu          sync.Mutex
+	fetched     time.Time // when /limits last answered
+	attempted   time.Time
+	refreshing  bool
+	failing     bool            // the last call to /limits got no usable reply
+	refused     bool            // the last reply said a start would be refused
+	fee         int64           // the last reply's next start fee
+	available   map[string]bool // machine types the last reply named
+	starts      []time.Time     // this process's starts, counted when shared is nil or failing
+	shared      *sharedStarts
+	sharedDown  bool      // the last call to the shared count failed
+	sharedRetry time.Time // while down, the shared count is skipped until then
 }
 
 // StartCostMicros is the fee the next start of a size costs, false when Boat would refuse it
@@ -102,7 +105,7 @@ func (p *Provider) limitsFee(s size, now time.Time) (fee int64, ok, known bool) 
 // countedFee prices the next start from every replica's starts, or this process's alone
 func (p *Provider) countedFee(now time.Time) (int64, bool) {
 	f := &p.fees
-	if f.shared != nil {
+	if f.useShared(now) {
 		ctx, cancel := context.WithTimeout(context.Background(), startsTimeout)
 		defer cancel()
 		counts, err := f.shared.counts(ctx, now)
@@ -156,17 +159,27 @@ func (p *Provider) started(at time.Time) {
 	}
 	f.starts = append(keep, at)
 	f.mu.Unlock()
-	if f.shared != nil {
+	if f.useShared(at) {
 		ctx, cancel := context.WithTimeout(context.Background(), startsTimeout)
 		defer cancel()
 		f.noteShared(f.shared.add(ctx, at))
 	}
 }
 
+// useShared reports whether to ask the shared count, which is skipped for a while after it fails
+func (f *fees) useShared(now time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.shared != nil && (!f.sharedDown || !now.Before(f.sharedRetry))
+}
+
 // noteShared logs when the shared start count stops or starts answering
 func (f *fees) noteShared(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err != nil {
+		f.sharedRetry = time.Now().Add(sharedRetryAfter)
+	}
 	if down := err != nil; down != f.sharedDown {
 		f.sharedDown = down
 		if down {

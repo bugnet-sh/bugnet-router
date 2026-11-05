@@ -220,6 +220,9 @@ func DatabaseURLFrom(getenv func(string) (string, bool)) (string, error) {
 }
 
 // byteSize reads a positive whole number of bytes, KiB or MiB, such as 65536, 64KiB or 8MiB
+// maxByteSize caps byte settings at 1 TiB so derived allowances never overflow
+const maxByteSize = 1 << 40
+
 func byteSize(name, raw string) (int64, error) {
 	digits, unit := raw, int64(1)
 	for _, u := range byteUnits {
@@ -229,9 +232,9 @@ func byteSize(name, raw string) (int64, error) {
 		}
 	}
 	n, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil || n < 1 || n > math.MaxInt64/unit {
+	if err != nil || n < 1 || n > maxByteSize/unit {
 		return 0, fmt.Errorf(
-			"config: %s must be a positive whole number of bytes, optionally ending in KiB or MiB",
+			"config: %s must be 1 byte to 1 TiB, a whole number optionally ending in KiB or MiB",
 			name)
 	}
 	return n * unit, nil

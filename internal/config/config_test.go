@@ -265,11 +265,11 @@ func TestLoadOptional(t *testing.T) {
 func TestByteSizes(t *testing.T) {
 	sizes := map[string]int64{
 		"1": 1, "8388608": 8 << 20, "8KiB": 8 << 10, "8MiB": 8 << 20, "+2MiB": 2 << 20,
-		"8796093022207MiB": 8796093022207 << 20,
+		"1048576MiB": 1 << 40,
 	}
 	for _, raw := range []string{
 		"", "KiB", "MiB", "0", "0MiB", "-1KiB", "8 KiB", "8kib", "8GiB", "8KB", "1e3", "0x10",
-		"8796093022208MiB",
+		"1048577MiB", "1099511627777",
 	} {
 		sizes[raw] = 0
 	}

@@ -1485,3 +1485,22 @@ func TestBoatStartCountFallsBackWithoutValkey(t *testing.T) {
 			fee, ok)
 	}
 }
+
+func TestBoatSkipsAFailingSharedCountForAWhile(t *testing.T) {
+	f := &fees{shared: &sharedStarts{}}
+	now := time.Now()
+	if !f.useShared(now) {
+		t.Fatal("a healthy shared count is skipped")
+	}
+	f.noteShared(errors.New("valkey hung"))
+	if f.useShared(now.Add(time.Second)) {
+		t.Fatal("a failing shared count is asked again at once")
+	}
+	if !f.useShared(now.Add(sharedRetryAfter + time.Second)) {
+		t.Fatalf("the shared count is still skipped %v after it failed", sharedRetryAfter)
+	}
+	f.noteShared(nil)
+	if !f.useShared(now) {
+		t.Fatal("a shared count that answers again is skipped")
+	}
+}
