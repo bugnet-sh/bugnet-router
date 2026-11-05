@@ -1,5 +1,5 @@
 // Command router-worker works the router's River jobs for placement deadlines, the watch, the
-// sweep and the outbox, and with the outbox-redrive argument sends dead outbox events again.
+// sweep and the outbox, and with the outbox-redrive argument sends stuck outbox events at once.
 //
 // It builds every service from the environment, starts the River client and answers /healthz
 // and /readyz over HTTP. On SIGTERM or SIGINT it stops fetching jobs, gives running ones a
@@ -74,7 +74,7 @@ func run(log *slog.Logger, args ...string) error {
 	return serve(ctx, log, cfg, ln)
 }
 
-// redriveOutbox reads only BUGNET_DATABASE_URL and gives dead events their attempts back
+// redriveOutbox reads only BUGNET_DATABASE_URL and gives stuck events their attempts back
 func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 	url, err := config.DatabaseURL()
 	if err != nil {
@@ -89,7 +89,7 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("outbox-redrive: %w", err)
 	}
-	log.Info("dead outbox events will be sent again", "events", n)
+	log.Info("stuck outbox events will be sent at once", "events", n)
 	return nil
 }
 

@@ -74,8 +74,8 @@ func (w *Worker) deliverNext(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 	// Logged after the commit, so a failure the store did not record is never reported
-	if attempts := d.ev.Attempts + 1; attempts >= store.MaxOutboxAttempts {
-		w.log.Error("outbox event is dead", "event", d.ev.ID, "type", d.ev.EventType,
+	if attempts := d.ev.Attempts + 1; attempts == store.MaxOutboxAttempts {
+		w.log.Error("outbox event keeps failing", "event", d.ev.ID, "type", d.ev.EventType,
 			"attempts", attempts, "err", d.err)
 	} else {
 		w.log.Warn("outbox delivery failed", "event", d.ev.ID, "attempts", attempts,

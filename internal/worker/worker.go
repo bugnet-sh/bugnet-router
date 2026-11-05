@@ -5,10 +5,12 @@
 // through that client. A deadline job ends a placement once its paid time is up. The watch runs
 // every 30 s on a budget of its own, fails placements whose placing saga went away, frees slots
 // ended placements still hold, ends placements past their deadline and finishes stops that broke
-// off. The sweep runs every minute over this deployment's sandboxes on every provider at once and
-// destroys the ones no placement needs. The outbox job runs every second and posts each due
-// event, signed, to the configured events URL. A periodic job a crashed worker left running is
-// rescued after a few minutes, so it holds back the next run of its kind only that long.
+// off, and alerts while outbox events are stuck. The sweep runs every minute over this
+// deployment's sandboxes on every provider at once and destroys the ones no placement needs. The
+// outbox job runs every second and posts each due event, signed, to the configured events URL,
+// retrying a failed one with backoff until it is delivered. A periodic job a crashed worker left
+// running is rescued after a few minutes, so it holds back the next run of its kind only that
+// long.
 package worker
 
 import (
@@ -63,10 +65,10 @@ type Worker struct {
 	saga     *saga.Saga
 	http     *http.Client
 	noURL    sync.Once
-	deadMu   sync.Mutex
-	dead     int // dead outbox events at the last report
-	// deadReported is when the watch last reported dead events
-	deadReported time.Time
+	stuckMu  sync.Mutex
+	stuck    int // stuck outbox events at the last report
+	// stuckReported is when the watch last reported stuck events
+	stuckReported time.Time
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it

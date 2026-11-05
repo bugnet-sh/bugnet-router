@@ -13,7 +13,7 @@ record, Valkey carries output streams and job leases, and River runs durable job
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends dead events again |
+| `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/saga` | Start, extend and stop of placements |
@@ -181,10 +181,13 @@ exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
 | `refundable` | Whether the order should be refunded |
 | `reason` | A stable code such as `stop`, `deadline`, `no_candidate`, `provider_capacity`, `boot_failed` or `placing_stalled` |
 
-An event is retried with backoff up to 10 times. After that it stays in the `outbox` table as
-dead, the watch logs `outbox holds dead events` at error level with the count, which is the
-signal to alert on, and `router-worker outbox-redrive` (which reads only `BUGNET_DATABASE_URL`)
-sends every dead event again.
+An event is retried until it is delivered, 2^n seconds after its nth failure and at most every
+5 minutes. An event that failed 10 times or more is stuck. The worker logs `outbox event keeps
+failing` at error level at its 10th failure, and the watch logs `outbox holds stuck events` at
+error level with their count whenever it changes and every 10 minutes while any is undelivered,
+which is the signal to alert on. `router-worker outbox-redrive` (which reads only
+`BUGNET_DATABASE_URL`) gives every stuck event its attempts back so it is sent at once, for
+example after the events endpoint is fixed.
 
 ## Providers
 

@@ -440,7 +440,7 @@ func TestOutboxPendingAndDelivered(t *testing.T) {
 	}
 }
 
-func TestOutboxStopsAfterMaxAttempts(t *testing.T) {
+func TestOutboxRetriesPastMaxAttempts(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	err := s.WithTx(ctx, func(tx pgx.Tx) error { return s.InsertOutbox(ctx, tx, "a", 1) })
@@ -448,24 +448,26 @@ func TestOutboxStopsAfterMaxAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	for n := 1; n <= store.MaxOutboxAttempts; n++ {
+	for n := 1; n <= store.MaxOutboxAttempts+5; n++ {
 		pending, err := s.PendingOutbox(ctx, now, 10)
-		if err != nil || len(pending) != 1 {
-			t.Fatalf("before failure %d pending=%v err=%v", n, pending, err)
+		if err != nil || len(pending) != 1 || pending[0].Attempts != n-1 {
+			t.Fatalf("before failure %d pending=%+v err=%v, want the event due again", n,
+				pending, err)
 		}
 		if err := s.MarkOutboxFailed(ctx, pending[0].ID, "nope", now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if pending, _ := s.PendingOutbox(ctx, now.Add(time.Hour), 10); len(pending) != 0 {
-		t.Fatalf("pending after %d failures = %+v", store.MaxOutboxAttempts, pending)
+	if n, err := s.StuckOutboxCount(ctx); err != nil || n != 1 {
+		t.Fatalf("stuck count %d, %v, want the event that failed past the alert threshold", n,
+			err)
 	}
 }
 
-func TestRedriveOutboxRevivesDeadEvents(t *testing.T) {
+func TestRedriveOutboxResetsStuckEvents(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
-	for _, kind := range []string{"dead", "alive"} {
+	for _, kind := range []string{"stuck", "fresh"} {
 		err := s.WithTx(ctx, func(tx pgx.Tx) error { return s.InsertOutbox(ctx, tx, kind, 1) })
 		if err != nil {
 			t.Fatal(err)
@@ -477,25 +479,29 @@ func TestRedriveOutboxRevivesDeadEvents(t *testing.T) {
 		t.Fatalf("pending %+v, %v", pending, err)
 	}
 	for range store.MaxOutboxAttempts {
-		if err := s.MarkOutboxFailed(ctx, pending[0].ID, "nope", now); err != nil {
+		err := s.MarkOutboxFailed(ctx, pending[0].ID, "nope", now.Add(5*time.Minute))
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := s.MarkOutboxFailed(ctx, pending[1].ID, "nope", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.DeadOutboxCount(ctx); err != nil || n != 1 {
-		t.Fatalf("dead count %d, %v, want 1", n, err)
+	if due, err := s.PendingOutbox(ctx, now, 10); err != nil || len(due) != 0 {
+		t.Fatalf("due before redrive %+v, %v, want both events backing off", due, err)
+	}
+	if n, err := s.StuckOutboxCount(ctx); err != nil || n != 1 {
+		t.Fatalf("stuck count %d, %v, want 1", n, err)
 	}
 	if n, err := s.RedriveOutbox(ctx); err != nil || n != 1 {
-		t.Fatalf("redrive revived %d, %v, want 1", n, err)
+		t.Fatalf("redrive reset %d, %v, want 1", n, err)
 	}
-	if n, err := s.DeadOutboxCount(ctx); err != nil || n != 0 {
-		t.Fatalf("dead count after redrive %d, %v, want 0", n, err)
+	if n, err := s.StuckOutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("stuck count after redrive %d, %v, want 0", n, err)
 	}
 	due, err := s.PendingOutbox(ctx, now, 10)
 	if err != nil || len(due) != 1 || due[0].ID != pending[0].ID || due[0].Attempts != 0 {
-		t.Fatalf("due after redrive %+v, %v, want the revived event alone, due at once", due, err)
+		t.Fatalf("due after redrive %+v, %v, want the reset event alone, due at once", due, err)
 	}
 }
 

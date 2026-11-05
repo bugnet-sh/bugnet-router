@@ -1180,10 +1180,10 @@ func TestOutboxRetriesOnFailure(t *testing.T) {
 	}
 
 	recv.set(func(r *receiver) { r.fail = http.StatusInternalServerError })
-	dead := e.insertEvent(t, "dead")
-	for n := range 10 {
+	stuck := e.insertEvent(t, "stuck")
+	for n := range 14 {
 		e.run(t, jobargs.Outbox{})
-		row := e.outboxRow(t, dead)
+		row := e.outboxRow(t, stuck)
 		want := min(time.Second<<n, 5*time.Minute)
 		if d := row.nextAttempt.Sub(clk.Now()); row.attempts != n+1 || d > want ||
 			d < want-500*time.Millisecond {
@@ -1192,15 +1192,18 @@ func TestOutboxRetriesOnFailure(t *testing.T) {
 		}
 		clk.Advance(5 * time.Minute)
 	}
+	if n := strings.Count(logs.String(), "outbox event keeps failing"); n != 1 ||
+		!strings.Contains(logs.String(), "level=ERROR msg=\"outbox event keeps failing\"") {
+		t.Fatalf("failing event alerted %d times, want once at error level\n%s", n,
+			logs.String())
+	}
+	recv.set(func(r *receiver) { r.fail = 0 })
 	e.run(t, jobargs.Outbox{})
-	if n := len(recv.deliveries()); n != 12 {
-		t.Fatalf("%d requests, want no more after ten failures", n)
+	if row := e.outboxRow(t, stuck); row.deliveredAt == nil || row.attempts != 14 {
+		t.Fatalf("event row %+v, want delivered on the try after 14 failures", row)
 	}
-	if row := e.outboxRow(t, dead); row.deliveredAt != nil || row.attempts != 10 {
-		t.Fatalf("dead event row %+v, want undelivered after 10 attempts", row)
-	}
-	if n := strings.Count(logs.String(), "outbox event is dead"); n != 1 {
-		t.Fatalf("dead event logged %d times, want once\n%s", n, logs.String())
+	if n := len(recv.deliveries()); n != 17 {
+		t.Fatalf("%d requests, want every failed try and the delivery", n)
 	}
 	recv.checkClean(t)
 }
@@ -1307,26 +1310,50 @@ func TestOutboxRedactsTransportError(t *testing.T) {
 	}
 }
 
-func TestWatchReportsDeadEvents(t *testing.T) {
+func TestWatchReportsStuckEvents(t *testing.T) {
 	var logs syncBuffer
-	e := newEnv(t, options{log: &logs})
+	clk := &clock{}
+	e := newEnv(t, options{log: &logs, workerClock: clk})
 	id := e.insertEvent(t, "1")
+	e.insertEvent(t, "2")
+	e.start(t)
+	e.run(t, jobargs.Watch{})
+	if strings.Contains(logs.String(), "outbox holds stuck events") {
+		t.Fatalf("watch alerted with no event at the threshold\n%s", logs.String())
+	}
 	_, err := e.pool.Exec(t.Context(), `update outbox set attempts = $2 where id = $1`, id,
 		store.MaxOutboxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.start(t)
 	e.run(t, jobargs.Watch{})
 	e.run(t, jobargs.Watch{})
-	if n := strings.Count(logs.String(), "outbox holds dead events"); n != 1 ||
-		!strings.Contains(logs.String(), "dead=1") {
-		t.Fatalf("watch logged the dead events %d times, want once with the count\n%s", n,
+	clk.Advance(9 * time.Minute)
+	e.run(t, jobargs.Watch{})
+	if n := strings.Count(logs.String(), "outbox holds stuck events"); n != 1 ||
+		!strings.Contains(logs.String(), "events=1") ||
+		!strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("watch alerted %d times, want once at error level with the count\n%s", n,
+			logs.String())
+	}
+	clk.Advance(time.Minute)
+	e.run(t, jobargs.Watch{})
+	if n := strings.Count(logs.String(), "outbox holds stuck events"); n != 2 {
+		t.Fatalf("watch alerted %d times, want again after 10 minutes\n%s", n, logs.String())
+	}
+	if _, err := e.pool.Exec(t.Context(),
+		`update outbox set delivered_at = now() where id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(10 * time.Minute)
+	e.run(t, jobargs.Watch{})
+	if n := strings.Count(logs.String(), "outbox holds stuck events"); n != 2 {
+		t.Fatalf("watch alerted %d times, want no alert once the event was delivered\n%s", n,
 			logs.String())
 	}
 }
 
-func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
+func TestOutboxAlertsOnceTheTenthFailureIsRecorded(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -1336,8 +1363,8 @@ func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
 	recv.fail = http.StatusInternalServerError
 	e := newEnv(t, options{eventsURL: recv.srv.URL, eventKey: priv, log: &logs})
 	ctx := t.Context()
-	id := e.insertEvent(t, "dead")
-	// One failure short of dead, while the database refuses to record the tenth failure
+	id := e.insertEvent(t, "stuck")
+	// One failure short of the alert, while the database refuses to record the tenth failure
 	_, err = e.pool.Exec(ctx, `update outbox set attempts = 9 where id = $1`, id)
 	if err != nil {
 		t.Fatal(err)
@@ -1358,8 +1385,9 @@ func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
 	if _, err := e.river.JobCancel(ctx, res.Job.ID); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(logs.String(), "outbox event is dead") {
-		t.Fatalf("dead event logged although its failure was rolled back\n%s", logs.String())
+	if strings.Contains(logs.String(), "outbox event keeps failing") {
+		t.Fatalf("failing event alerted although its failure was rolled back\n%s",
+			logs.String())
 	}
 	if row := e.outboxRow(t, id); row.attempts != 9 {
 		t.Fatalf("row %+v, want the ninth failure still the last recorded", row)
@@ -1372,7 +1400,7 @@ func TestOutboxLogsDeadEventOnceRecorded(t *testing.T) {
 	if row := e.outboxRow(t, id); row.attempts != 10 || row.deliveredAt != nil {
 		t.Fatalf("row %+v, want undelivered after 10 attempts", row)
 	}
-	if n := strings.Count(logs.String(), "outbox event is dead"); n != 1 {
-		t.Fatalf("dead event logged %d times, want once\n%s", n, logs.String())
+	if n := strings.Count(logs.String(), "outbox event keeps failing"); n != 1 {
+		t.Fatalf("failing event alerted %d times, want once\n%s", n, logs.String())
 	}
 }

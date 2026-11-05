@@ -11,6 +11,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/saga"
+	"github.com/oynozan/bugnet-router/internal/store"
 )
 
 const (
@@ -22,8 +23,8 @@ const (
 	terminatingAfter = 2 * time.Minute
 	// endWorkers bounds how many placements one watch ends at a time
 	endWorkers = 4
-	// deadReportEvery repeats the dead event report while the count stays the same
-	deadReportEvery = 10 * time.Minute
+	// stuckReportEvery repeats the stuck event alert while the count stays the same
+	stuckReportEvery = 10 * time.Minute
 )
 
 type watchWorker struct {
@@ -50,25 +51,25 @@ func (w *Worker) watchPlacements(ctx context.Context) {
 		w.log.Warn("watch freed slots that ended placements still held", "slots", n)
 	}
 	w.endOverdue(ctx, now)
-	w.reportDead(ctx, now)
+	w.reportStuck(ctx, now)
 }
 
-// reportDead logs an error whenever the count of dead outbox events changes, for alerting
-func (w *Worker) reportDead(ctx context.Context, now time.Time) {
-	n, err := w.store.DeadOutboxCount(ctx)
+// reportStuck alerts when the stuck event count changes and every 10 minutes while it is above 0
+func (w *Worker) reportStuck(ctx context.Context, now time.Time) {
+	n, err := w.store.StuckOutboxCount(ctx)
 	if err != nil {
-		w.log.Error("watch count dead outbox events", "err", err)
+		w.log.Error("watch count stuck outbox events", "err", err)
 		return
 	}
-	w.deadMu.Lock()
-	defer w.deadMu.Unlock()
-	if n == w.dead && (n == 0 || now.Sub(w.deadReported) < deadReportEvery) {
+	w.stuckMu.Lock()
+	defer w.stuckMu.Unlock()
+	if n == w.stuck && (n == 0 || now.Sub(w.stuckReported) < stuckReportEvery) {
 		return
 	}
-	w.dead, w.deadReported = n, now
+	w.stuck, w.stuckReported = n, now
 	if n > 0 {
-		w.log.Error("outbox holds dead events, router-worker outbox-redrive sends them again",
-			"dead", n)
+		w.log.Error("outbox holds stuck events, router-worker outbox-redrive sends them at once",
+			"events", n, "attempts_at_least", store.MaxOutboxAttempts)
 	}
 }
 

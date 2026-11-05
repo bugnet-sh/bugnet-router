@@ -200,10 +200,10 @@ func TestRedriveOutboxNeedsOnlyDatabaseURL(t *testing.T) {
 	if err := run(discard, "outbox-redrive"); err != nil {
 		t.Fatalf("outbox-redrive: %v", err)
 	}
-	var dead int
+	var stuck int
 	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where attempts >= $1`,
-		store.MaxOutboxAttempts).Scan(&dead); err != nil || dead != 0 {
-		t.Fatalf("%d dead events after the redrive, %v, want none", dead, err)
+		store.MaxOutboxAttempts).Scan(&stuck); err != nil || stuck != 0 {
+		t.Fatalf("%d stuck events after the redrive, %v, want none", stuck, err)
 	}
 	if err := run(discard, "nonsense"); err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Fatalf("an unknown argument gave %v, want the usage", err)

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// MaxOutboxAttempts is how many failed deliveries an event gets before it is left undelivered
+// MaxOutboxAttempts is how many failed deliveries make an event stuck, which raises an alert
 const MaxOutboxAttempts = 10
 
 // OutboxEvent is an event waiting for delivery
@@ -45,10 +45,9 @@ func (s *Store) PendingOutbox(
 	rows, err := s.q.Query(ctx, `
 		select id, event_type, payload, created_at, attempts, coalesce(last_error, '')
 		from outbox
-		where delivered_at is null and attempts < $1
-			and (next_attempt_at is null or next_attempt_at <= $2)
-		order by created_at, id limit $3
-		for update skip locked`, MaxOutboxAttempts, utc(now), limit)
+		where delivered_at is null and (next_attempt_at is null or next_attempt_at <= $1)
+		order by created_at, id limit $2
+		for update skip locked`, utc(now), limit)
 	if err != nil {
 		return nil, fmt.Errorf("pending outbox: %w", err)
 	}
@@ -92,19 +91,19 @@ func (s *Store) MarkOutboxFailed(
 	return nil
 }
 
-// DeadOutboxCount counts the undelivered events that ran out of attempts
-func (s *Store) DeadOutboxCount(ctx context.Context) (int, error) {
+// StuckOutboxCount counts the undelivered events that failed at least MaxOutboxAttempts times
+func (s *Store) StuckOutboxCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.q.QueryRow(ctx, `
 		select count(*) from outbox where delivered_at is null and attempts >= $1`,
 		MaxOutboxAttempts).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("count dead outbox events: %w", err)
+		return 0, fmt.Errorf("count stuck outbox events: %w", err)
 	}
 	return n, nil
 }
 
-// RedriveOutbox gives every dead event its attempts back so the outbox job sends it again
+// RedriveOutbox gives every stuck event its attempts back so the outbox job sends it at once
 func (s *Store) RedriveOutbox(ctx context.Context) (int, error) {
 	tag, err := s.q.Exec(ctx, `
 		update outbox set attempts = 0, next_attempt_at = null
