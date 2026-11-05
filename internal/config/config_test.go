@@ -719,6 +719,108 @@ func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
 	}
 }
 
+// problem loads the serving lines and content as a file and returns its error after the path
+func problem(t *testing.T, content string) string {
+	t.Helper()
+	path := writeFile(t, serving(t)+content)
+	_, err := LoadFile(path)
+	if err == nil {
+		return ""
+	}
+	msg, _ := strings.CutPrefix(err.Error(), "config: "+path+": ")
+	return msg
+}
+
+func TestLoadFileRefusesDatesAndTimes(t *testing.T) {
+	cases := []struct{ name, toml, want string }{
+		{"date as a whole number", "[limits]\nmax_running_jobs = 1979-05-27",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"date and time as a number", "margin_floor = 1979-05-27T07:32:00Z",
+			"line 3: margin_floor must be a number"},
+		{"date as true or false", "[local]\nenabled = 1979-05-27",
+			"line 4: local.enabled must be true or false"},
+		{"date as a provider", "providers = [1979-05-27]",
+			"line 3: providers must be an array of strings"},
+		{"date as a size type", "[boat.types]\ncpu = 1979-05-27",
+			"line 4: boat.types.cpu must be a string"},
+		{"date as an instance type", "[koyeb.instance_types]\ncpu = 1979-05-27",
+			"line 4: koyeb.instance_types.cpu must be a string"},
+		{"date as a template vcpu", "[[e2b.templates]]\nvcpu = 1979-05-27",
+			"line 4: e2b.templates.vcpu must be a whole number"},
+		{"date as a template size", "[[e2b.templates]]\nsize = 1979-05-27",
+			"line 4: e2b.templates.size must be a string"},
+		{"date and time as a lifetime", "[e2b]\nmax_lifetime = 1979-05-27T07:32:00Z",
+			"line 4: e2b.max_lifetime must be a string"},
+		{"local time", "[e2b]\nmax_lifetime = 07:32:00",
+			"line 4: e2b.max_lifetime must be a string"},
+		{"local time with fractions", "[limits]\nmax_running_jobs = 07:32:00.999",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"local date and time", "[local]\nhourly_micros = 1979-05-27T07:32:00",
+			"line 4: local.hourly_micros must be a whole number"},
+		{"date and time with a space", "[api]\nlisten_addr = 1979-05-27 07:32:00-07:00",
+			"line 4: api.listen_addr must be a string"},
+		{"date in an inline table", "[boat]\ntypes = { cpu = 1979-05-27 }",
+			"line 4: boat.types.cpu must be a string"},
+		{"date in an inline template", "[e2b]\ntemplates = [{ size = \"a\", disk_gib = 07:32:00 }]",
+			"line 4: e2b.templates.disk_gib must be a whole number"},
+		{"date on its own line", "providers = [\n  \"boat\",\n  1979-05-27T07:32:00,\n]",
+			"line 5: providers must be an array of strings"},
+		{"date as a template", "[e2b]\ntemplates = [1979-05-27]",
+			"line 4: e2b.templates must be an array of tables"},
+		{"date as a table", "api = 1979-05-27", "line 3: api must be a table"},
+		{"date under an unknown key", "nimbus = 1979-05-27", "line 3: nimbus is not a setting"},
+	}
+	for _, c := range cases {
+		msg := problem(t, c.toml)
+		if msg != c.want {
+			t.Errorf("%s: %q, want %q", c.name, msg, c.want)
+		}
+		for _, v := range []string{"1979", "05-27", "07:32", "999"} {
+			if strings.Contains(msg, v) {
+				t.Errorf("%s: error quotes %q: %s", c.name, v, msg)
+			}
+		}
+	}
+}
+
+func TestLoadFileValueKinds(t *testing.T) {
+	cases := []struct{ name, toml, want string }{
+		{"whole number as an array", "[limits]\nmax_running_jobs = [16]",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"string as an array", "[api]\nlisten_addr = [\":9\"]",
+			"line 4: api.listen_addr must be a string"},
+		{"boolean as an array", "[local]\nenabled = [true]",
+			"line 4: local.enabled must be true or false"},
+		{"number as an array", "margin_floor = [0.5]", "line 3: margin_floor must be a number"},
+		{"size type as an array", "[boat.types]\ncpu = [\"small\"]",
+			"line 4: boat.types.cpu must be a string"},
+		{"providers in an array", "providers = [[\"boat\"]]",
+			"line 3: providers must be an array of strings"},
+		{"template size as an array", "[[e2b.templates]]\nsize = [\"a\"]",
+			"line 4: e2b.templates.size must be a string"},
+		{"whole number as a table", "[limits]\nmax_running_jobs = { a = 1 }",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"whole number as an array of tables", "[limits]\nmax_running_jobs = [{ a = 1 }]",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"provider as a table", "providers = [{ name = \"boat\" }]",
+			"line 3: providers must be an array of strings"},
+		{"template as a string", "[e2b]\ntemplates = [\"2x2\"]",
+			"line 4: e2b.templates must be an array of tables"},
+		{"size types as an array", "[boat]\ntypes = [\"small\"]",
+			"line 4: boat.types must be a table of strings"},
+		{"a float as a whole number", "[limits]\nmax_running_jobs = 2.0",
+			"line 4: limits.max_running_jobs must be a whole number"},
+		{"two templates", "[[e2b.templates]]\nsize = [\"a\"]\n[[e2b.templates]]\nvcpu = [1]",
+			"line 4: e2b.templates.size must be a string, " +
+				"line 6: e2b.templates.vcpu must be a whole number"},
+	}
+	for _, c := range cases {
+		if msg := problem(t, c.toml); msg != c.want {
+			t.Errorf("%s: %q, want %q", c.name, msg, c.want)
+		}
+	}
+}
+
 func TestLoadFileMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent.toml")
 	_, err := LoadFile(path)

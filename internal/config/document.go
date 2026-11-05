@@ -27,6 +27,13 @@ type setting struct {
 	header  bool          // a [table] or [[array]] header
 	array   bool          // an [[array]] header
 	value   unstable.Kind // the kind of a key's value
+	items   []item        // the elements of an array value
+}
+
+// item is one element of an array value
+type item struct {
+	kind unstable.Kind
+	line int
 }
 
 type outliner struct {
@@ -103,10 +110,36 @@ func (o *outliner) keyValue(kv *unstable.Node, table []string, scope string) {
 	}
 	path := slices.Concat(table, parts)
 	v := kv.Value()
+	var items []item
+	if v.Kind == unstable.Array {
+		at := line
+		for it := v.Children(); it.Next(); {
+			n := it.Node()
+			at = o.start(n, at)
+			items = append(items, item{kind: n.Kind, line: at})
+		}
+	}
 	o.out = append(o.out, setting{
 		path: path, id: id, parents: parents, line: line, column: column, value: v.Kind,
+		items: items,
 	})
 	o.inner(v, path, id)
+}
+
+// start is the line a value starts on, or line when go-toml keeps no position for the value
+func (o *outliner) start(v *unstable.Node, line int) int {
+	switch {
+	case v.Raw.Length > 0:
+		return o.p.Shape(v.Raw).Start.Line
+	case v.Kind == unstable.Array:
+		if it := v.Children(); it.Next() {
+			return o.start(it.Node(), line)
+		}
+	case v.Kind != unstable.String && len(v.Data) > 0:
+		// Booleans, dates and times keep their text as a slice of the document
+		return o.p.Shape(o.p.Range(v.Data)).Start.Line
+	}
+	return line
 }
 
 // inner adds the keys of the inline tables in a value, those inside arrays included
@@ -156,27 +189,37 @@ func (o *outliner) syntaxError(err error, table []string) error {
 // sizeName is what a key of boat.types or koyeb.instance_types must look like
 var sizeName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
-// check finds unknown or miscased keys, bad size names, tables of the wrong kind and repeated keys
+// check finds unknown or miscased keys, bad size names, values of the wrong kind and repeated keys
 func check(doc []setting) error {
 	var problems []string
 	var unknown [][]string
+	var wrong []string // ids of the values of the wrong kind
 	seen := map[string]int{}
 	for _, s := range doc {
-		// Keys below an unknown key are not reported again
+		// Keys below an unknown key or inside a value of the wrong kind are not reported again
 		if slices.ContainsFunc(unknown, func(u []string) bool {
 			return len(u) <= len(s.path) && slices.Equal(u, s.path[:len(u)])
+		}) || slices.ContainsFunc(wrong, func(id string) bool {
+			return strings.HasPrefix(s.id, id+".") || strings.HasPrefix(s.id, id+"#")
 		}) {
 			continue
 		}
+		line := s.line
 		problem, isUnknown := fit(s)
+		if problem == "" && !isUnknown && !s.header {
+			problem, line = mismatch(s)
+			if problem != "" {
+				wrong = append(wrong, s.id)
+			}
+		}
 		if again := repeated(seen, s); again != nil {
-			problem = strings.Join(again, ".") + " is set twice"
+			problem, line = strings.Join(again, ".")+" is set twice", s.line
 		}
 		if isUnknown {
 			unknown = append(unknown, s.path)
 		}
 		if problem != "" {
-			problems = append(problems, fmt.Sprintf("line %d: %s", s.line, problem))
+			problems = append(problems, fmt.Sprintf("line %d: %s", line, problem))
 		}
 	}
 	if len(problems) > 0 {
@@ -256,6 +299,48 @@ func fit(s setting) (problem string, unknown bool) {
 		return strings.Join(s.path, ".") + " must be " + valueKind(t), false
 	}
 	return "", false
+}
+
+// mismatch says what a value must be when its kind does not fit its setting, and the line
+func mismatch(s setting) (problem string, line int) {
+	t, ok := schemaType(s.path)
+	if !ok {
+		return "", s.line
+	}
+	want := strings.Join(s.path, ".") + " must be " + valueKind(t)
+	if !takes(t, s.value) {
+		return want, s.line
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	for _, it := range s.items {
+		if !takes(t.Elem(), it.kind) {
+			return want, it.line
+		}
+	}
+	return "", s.line
+}
+
+// takes says whether go-toml decodes a value of kind k into type t, apart from its elements
+func takes(t reflect.Type, k unstable.Kind) bool {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return takes(t.Elem(), k)
+	case reflect.Bool:
+		return k == unstable.Bool
+	case reflect.Int, reflect.Int64:
+		return k == unstable.Integer
+	case reflect.Float64:
+		return k == unstable.Float || k == unstable.Integer
+	case reflect.String:
+		return k == unstable.String
+	case reflect.Slice:
+		return k == unstable.Array
+	case reflect.Struct, reflect.Map:
+		return k == unstable.InlineTable
+	}
+	return false
 }
 
 // field finds the field of struct t whose TOML key is name, or the key name spells in another case
