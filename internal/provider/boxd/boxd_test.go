@@ -399,6 +399,35 @@ func TestBoxdCreateDestroysOnItsOwnDeadlineOnceTheBudgetIsSpent(t *testing.T) {
 	eq(t, f.count(), 0)
 }
 
+func TestBoxdCreateClosesAMachineWhoseCallerLeftDuringCreateVm(t *testing.T) {
+	f, p := newTestProvider(t)
+	// An old server's reply leaves the timer to SetDeleteAfter, which must outlive the caller too
+	f.omitMachine = true
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f.onCreated = cancel
+	size, _ := p.SizeFor(provider.Resources{VCPU: 2})
+	ref, err := p.Create(ctx, provider.CreateRequest{
+		IdempotencyKey: "key-left", Size: size, Labels: map[string]string{"bugnet": "1"},
+		Lifetime: 15 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create whose caller left during CreateVm: %v", err)
+	}
+	eq(t, ctx.Err() != nil, true)
+	eq(t, f.callCount("DestroyVm"), 0)
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "29417"}})
+	vm, err := f.vm(ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, vm.proxyPort, "29417")
+	eq(t, vm.sshOff, true)
+	eq(t, vm.deleteAt.IsZero(), false)
+	eq(t, ref.Meta["hibernate_off"], "1")
+	eq(t, vm.autoHibernate, uint32(0))
+}
+
 func TestBoxdCreateRecordsHibernateOff(t *testing.T) {
 	f, p := newTestProvider(t)
 	ref := mustCreate(t, p, "key-5")

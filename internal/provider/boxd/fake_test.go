@@ -88,6 +88,8 @@ type fakeBoxd struct {
 	ignoreLength bool
 	// refuseNetworkConfig refuses a CreateVm whose config sets network beside a spec
 	refuseNetworkConfig bool
+	// onCreated runs inside CreateVm once the machine exists, before the reply
+	onCreated func()
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
@@ -345,6 +347,9 @@ func (f *fakeBoxd) CreateVm(
 	resp := &boxdpb.CreateVmResponse{VmId: vm.id, Name: vm.name, Status: vm.status}
 	if !f.omitMachine {
 		resp.Machine = toMachine(vm)
+	}
+	if f.onCreated != nil {
+		f.onCreated()
 	}
 	return resp, nil
 }
