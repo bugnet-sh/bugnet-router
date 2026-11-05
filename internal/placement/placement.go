@@ -1,4 +1,4 @@
-// Package placement picks which providers may host a package and tries the cheapest first
+// Package placement filters the providers that may host a package and orders them cheapest first
 package placement
 
 import (
