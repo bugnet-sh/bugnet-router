@@ -67,12 +67,12 @@ func reasons(t *testing.T, opts []*routerv1.PackageOption) map[string]string {
 	return out
 }
 
-// sameAsEstimate checks that PricePackage answers each package as Estimate lists it
-func (e *env) sameAsEstimate(t *testing.T) {
+// sameAsEstimate checks that Estimate lists starts packages and PricePackage answers each the same
+func (e *env) sameAsEstimate(t *testing.T, starts int) {
 	t.Helper()
 	for _, r := range []*routerv1.Requirements{nil, {Ssh: true}, {Preview: true}, {Gpu: true}} {
 		opts := e.estimate(t, r)
-		eq(t, len(opts), 3)
+		eq(t, len(opts), starts)
 		for _, want := range opts {
 			if got := e.price(t, want.GetPackageId(), r); !proto.Equal(got, want) {
 				t.Fatalf("requirements %v, PricePackage %v, Estimate %v", r, got, want)
@@ -83,7 +83,7 @@ func (e *env) sameAsEstimate(t *testing.T) {
 
 func TestPricePackageMatchesEstimate(t *testing.T) {
 	e := newEnv(t, options{})
-	e.sameAsEstimate(t)
+	e.sameAsEstimate(t, 3)
 	small := e.price(t, smallPkg, nil)
 	eq(t, small.GetAvailable(), true)
 	eq(t, small.GetPriceMicros(), int64(smallPrice))
@@ -99,7 +99,27 @@ func TestPricePackageMatchesEstimate(t *testing.T) {
 		e.tracker.RecordFailure("local")
 	}
 	eq(t, e.price(t, smallPkg, nil).GetUnavailableReason(), "no_candidate")
-	e.sameAsEstimate(t)
+	e.sameAsEstimate(t, 3)
+}
+
+const thinPkg = "thin-10m"
+
+// thinCatalog adds a start package priced over the local provider's 167 micro cost but under the
+// 0.5 margin floor, so only the floor keeps a provider from taking it
+var thinCatalog = strings.TrimSuffix(catalogJSON, "\n]}") + `,
+	{"id": "thin-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 200}
+]}`
+
+func TestPricePackageKeepsTheMarginFloor(t *testing.T) {
+	e := newEnv(t, options{apiCatalog: thinCatalog})
+	eq(t, reasons(t, e.estimate(t, nil)), map[string]string{
+		thinPkg: "no_candidate", smallPkg: "", longPkg: "", gpuPkg: "feature_unavailable",
+	})
+	thin := e.price(t, thinPkg, nil)
+	eq(t, thin.GetUnavailableReason(), "no_candidate")
+	eq(t, thin.GetPriceMicros(), int64(200))
+	e.sameAsEstimate(t, 4)
 }
 
 func TestUnavailableReasonCodes(t *testing.T) {
