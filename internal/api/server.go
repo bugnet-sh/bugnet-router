@@ -10,6 +10,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -364,8 +365,8 @@ func (s *Server) spend(ctx context.Context, p store.Placement) error {
 	defer cancel()
 	ok, wait, err := s.ops.Take(tctx, p.ID)
 	switch {
-	case err != nil && ctx.Err() != nil:
-		return ctx.Err()
+	case err != nil && gaveUp(ctx):
+		return cmp.Or(ctx.Err(), context.DeadlineExceeded)
 	case err != nil:
 		// The limit protects the router, so an operation never fails for want of reading it
 		s.d.Log.Warn("api: sandbox operation limit unread, letting the operation through",
@@ -374,6 +375,12 @@ func (s *Server) spend(ctx context.Context, p store.Placement) error {
 		return rateLimited(wait)
 	}
 	return nil
+}
+
+// gaveUp reports whether ctx ended or passed its deadline, which a socket deadline can see first
+func gaveUp(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return ctx.Err() != nil || ok && !time.Now().Before(dl)
 }
 
 /* Jobs */
