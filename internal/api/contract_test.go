@@ -10,7 +10,7 @@ import (
 	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 )
 
-// unbuilt calls each contract RPC the router does not serve yet, by name
+// unbuilt maps each contract RPC the router does not serve yet to a call of it
 func unbuilt(
 	ctx context.Context, c routerv1connect.SandboxRouterServiceClient,
 ) map[string]func() error {
