@@ -304,7 +304,7 @@ func (p *Provider) stopHibernation(ctx context.Context, id string) provider.Ref 
 		VmId: id, TimeoutSecs: 0,
 	})
 	if err != nil {
-		// The machine runs and its delete-after timer still bounds it, so a refusal only warns
+		// The delete-after timer still bounds the machine, so a refusal only warns
 		p.log.Warn("boxd kept auto hibernate on", "machine", id, "err", err)
 		ref.Meta[hibernateOffMeta] = "0"
 	}
