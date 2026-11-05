@@ -30,7 +30,6 @@ func localConfig(t *testing.T) config.Config {
 }
 
 func TestBuildLocal(t *testing.T) {
-	t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", "1")
 	reg, err := providers.Build(localConfig(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -53,11 +52,12 @@ func TestBuildLocal(t *testing.T) {
 	}
 }
 
-func TestBuildLocalRefusesWithoutFlag(t *testing.T) {
-	t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", "")
-	_, err := providers.Build(localConfig(t), nil)
-	if err == nil || !strings.Contains(err.Error(), "BUGNET_ENABLE_LOCAL_PROVIDER") {
-		t.Fatalf("build without the flag: %v", err)
+func TestBuildLocalRefusesUnlessEnabled(t *testing.T) {
+	cfg := localConfig(t)
+	cfg.LocalEnabled = false
+	_, err := providers.Build(cfg, nil)
+	if err == nil || !strings.Contains(err.Error(), "local.enabled") {
+		t.Fatalf("build while disabled: %v", err)
 	}
 }
 

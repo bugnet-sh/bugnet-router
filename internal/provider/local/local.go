@@ -34,7 +34,6 @@ import (
 )
 
 const (
-	enableEnv         = "BUGNET_ENABLE_LOCAL_PROVIDER"
 	runnerName        = "bugnet-run"
 	runnerSandboxPath = "/tmp/bugnet/bin/bugnet-run"
 	runnerJobsDir     = "/tmp/bugnet/jobs"
@@ -68,10 +67,11 @@ type Provider struct {
 	attempts atomic.Int64
 }
 
-// FromEnv builds a provider only when BUGNET_ENABLE_LOCAL_PROVIDER is 1
-func FromEnv(opts Options) (*Provider, error) {
-	if os.Getenv(enableEnv) != "1" {
-		return nil, fmt.Errorf("the local provider runs commands on the host, set %s=1", enableEnv)
+// Open builds a provider only when enabled, since the local provider runs commands on the host
+func Open(enabled bool, opts Options) (*Provider, error) {
+	if !enabled {
+		return nil, errors.New(
+			"the local provider runs commands on the host, set local.enabled = true to use it")
 	}
 	if !filepath.IsAbs(opts.Root) {
 		return nil, fmt.Errorf("local provider root %q is not an absolute path", opts.Root)
@@ -79,7 +79,7 @@ func FromEnv(opts Options) (*Provider, error) {
 	return New(opts), nil
 }
 
-// New builds a provider without checking the environment and panics unless Root is absolute
+// New builds a provider without the enabled gate and panics unless Root is absolute
 func New(opts Options) *Provider {
 	if !filepath.IsAbs(opts.Root) {
 		panic(fmt.Sprintf("local provider root %q is not an absolute path", opts.Root))

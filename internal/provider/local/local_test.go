@@ -115,22 +115,18 @@ func TestLocalCreateHookFailure(t *testing.T) {
 	}
 }
 
-func TestLocalRefusesWithoutFlag(t *testing.T) {
+func TestLocalRefusesUnlessEnabled(t *testing.T) {
 	opts := local.Options{Name: "local", Root: t.TempDir()}
-	for _, v := range []string{"", "0", "true"} {
-		t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", v)
-		if p, err := local.FromEnv(opts); err == nil || p != nil {
-			t.Errorf("FromEnv with the flag set to %q gave %v, %v, want an error", v, p, err)
-		}
+	p, err := local.Open(false, opts)
+	if err == nil || p != nil || !strings.Contains(err.Error(), "local.enabled") {
+		t.Errorf("Open while disabled gave %v, %v, want an error naming local.enabled", p, err)
 	}
-
-	t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", "1")
-	if p, err := local.FromEnv(opts); err != nil || p == nil {
-		t.Fatalf("FromEnv with the flag set gave %v, %v", p, err)
+	if p, err := local.Open(true, opts); err != nil || p == nil {
+		t.Fatalf("Open while enabled gave %v, %v", p, err)
 	}
 	relative := local.Options{Name: "local", Root: "relative/root"}
-	if _, err := local.FromEnv(relative); err == nil {
-		t.Error("FromEnv accepted a relative Root")
+	if _, err := local.Open(true, relative); err == nil {
+		t.Error("Open accepted a relative Root")
 	}
 }
 

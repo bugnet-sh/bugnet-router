@@ -33,7 +33,7 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 	for _, name := range cfg.Providers {
 		switch name {
 		case "local":
-			p, err := local.FromEnv(local.Options{
+			p, err := local.Open(cfg.LocalEnabled, local.Options{
 				Name:             "local",
 				Root:             cfg.LocalRoot,
 				Sizes:            []provider.Size{localSize},
