@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// Registry holds the configured providers by name and in their configured order
+// Registry holds the configured providers by name and in the order they were listed
 type Registry struct {
 	order  []Provider
 	byName map[string]Provider
