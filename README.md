@@ -9,6 +9,9 @@ sweeps stray sandboxes and posts signed events to `events_url`. Postgres is the 
 Valkey carries output streams and job leases, and River runs durable jobs. Both read their
 settings from a TOML file and their secrets from the environment.
 
+`router-api` serves `SandboxRouterService` from `bugnet-proto`. Its previews, transfers, SSH keys,
+secrets and `FetchSource` RPCs answer `Unimplemented` until the router builds them.
+
 ## Layout
 
 | Path | What it holds |

@@ -73,6 +73,8 @@ type Deps struct {
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
 type Server struct {
+	// Answers Unimplemented for every RPC of the contract without a method here
+	routerv1connect.UnimplementedSandboxRouterServiceHandler
 	d      Deps
 	notes  *notifier
 	ops    *ratelimit.Limiter
