@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +19,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/handle"
@@ -180,6 +186,7 @@ func TestSettingsReadOnlyWhenNeeded(t *testing.T) {
 		"stop":           {"stop", "--handle", "sbx_x"},
 		"watch":          {"watch", "--handle", "sbx_x", "--job", "j"},
 		"exec":           {"exec", "--handle", "sbx_x", "--", "true"},
+		"check-extend":   {"check-extend", "--handle", "sbx_x", "--package", "p"},
 		"unpriced token": {"token", "--priv", priv, "--package", "p"},
 		"signed create":  {"create", "--package", "p"},
 	} {
@@ -333,5 +340,96 @@ func TestResumeHintNamesTheSettingsFile(t *testing.T) {
 	ended := connect.NewError(connect.CodeAborted, errors.New("job lost"))
 	if got := (&cli{configPath: "x.toml"}).resumable(ended, "sbx_x", "j", "c"); got != ended {
 		t.Errorf("an ended job gave %v, want the error alone", got)
+	}
+}
+
+// checkRouter answers CheckExtendPlacement with answer, or err when set, and records each call
+type checkRouter struct {
+	routerv1connect.UnimplementedSandboxRouterServiceHandler
+	answer *routerv1.CheckExtendPlacementResponse
+	err    error
+	got    chan *connect.Request[routerv1.CheckExtendPlacementRequest]
+}
+
+func (r *checkRouter) CheckExtendPlacement(
+	_ context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
+) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
+	r.got <- req
+	if r.err != nil {
+		return nil, r.err
+	}
+	return connect.NewResponse(r.answer), nil
+}
+
+// serve runs h over h2c and returns a settings file pointing api.listen_addr at it
+func serve(t *testing.T, h routerv1connect.SandboxRouterServiceHandler) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle(routerv1connect.NewSandboxRouterServiceHandler(h))
+	srv := httptest.NewUnstartedServer(mux)
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = &protocols
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return writeSettings(t, "[api]\nlisten_addr = \""+srv.Listener.Addr().String()+"\"\n")
+}
+
+func TestCheckExtend(t *testing.T) {
+	created := time.Date(2026, 11, 5, 1, 25, 34, 268894000, time.UTC)
+	ready := created.Add(8925 * time.Microsecond)
+	r := &checkRouter{
+		answer: &routerv1.CheckExtendPlacementResponse{
+			Placement: &routerv1.Placement{
+				PlacementId: "5bef8fc5", State: routerv1.PlacementState_PLACEMENT_STATE_READY,
+				PackageId: "small-10m", CreatedAt: timestamppb.New(created),
+				ReadyAt:  timestamppb.New(ready),
+				Deadline: timestamppb.New(ready.Add(10 * time.Minute)),
+			},
+			Deadline: timestamppb.New(ready.Add(20 * time.Minute)),
+		},
+		got: make(chan *connect.Request[routerv1.CheckExtendPlacementRequest], 1),
+	}
+	settings := serve(t, r)
+	token := strings.Repeat("t", 32)
+	vars := env(map[string]string{"BUGNET_INTERNAL_TOKEN": token})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "check-extend", "--handle", "sbx_x",
+		"--package", "small-10m-more")
+	want := "placement_id=5bef8fc5\nstate=ready\npackage_id=small-10m\n" +
+		"created_at=2026-11-05T01:25:34.268894Z\nready_at=2026-11-05T01:25:34.277819Z\n" +
+		"deadline=2026-11-05T01:35:34.277819Z\ndeadline_after=2026-11-05T01:45:34.277819Z\n"
+	if code != 0 || out != want {
+		t.Fatalf("check-extend exited %d with %q and %q, want 0 and %q", code, out, stderr, want)
+	}
+	req := <-r.got
+	if req.Msg.GetHandle() != "sbx_x" || req.Msg.GetPackageId() != "small-10m-more" ||
+		req.Header().Get("Authorization") != "Bearer "+token {
+		t.Errorf("router got %v with authorization %q", req.Msg, req.Header().Get("Authorization"))
+	}
+
+	refusing := serve(t, &checkRouter{
+		err: connect.NewError(connect.CodeFailedPrecondition, errors.New("placement is placing")),
+		got: make(chan *connect.Request[routerv1.CheckExtendPlacementRequest], 1),
+	})
+	out, stderr, code = runCLI(t, vars, "--config", refusing, "check-extend", "--handle", "sbx_x",
+		"--package", "small-10m-more")
+	if code != 1 || out != "" || !strings.Contains(stderr, "placement is placing") {
+		t.Errorf("refused check-extend exited %d with %q and %q, want 1 and the refusal", code,
+			out, stderr)
+	}
+
+	for name, args := range map[string][]string{
+		"no handle":      {"--package", "small-10m-more"},
+		"no package":     {"--handle", "sbx_x"},
+		"extra argument": {"--handle", "sbx_x", "--package", "p", "more"},
+	} {
+		args := append([]string{"--config", settings, "check-extend"}, args...)
+		if _, _, code := runCLI(t, vars, args...); code != 2 {
+			t.Errorf("%s: exited %d, want 2", name, code)
+		}
+	}
+	if help, _, code := runCLI(t, env(nil), "help"); code != 0 ||
+		!strings.Contains(help, "\n  check-extend --handle H --package P ") {
+		t.Errorf("help exited %d with %q, want check-extend listed", code, help)
 	}
 }

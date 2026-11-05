@@ -49,6 +49,7 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   get --handle H                         print a placement
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
+  check-extend --handle H --package P    print a placement and the deadline an extension would give
   stop --handle H                        stop a placement
   exec --handle H [--cwd D] [--env K=V]... -- ARGV
                                          run a command and stream its output
@@ -105,7 +106,8 @@ func run(
 	c := &cli{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
 	commands := map[string]func([]string) error{
 		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
-		"extend": c.extend, "stop": c.stop, "exec": c.exec, "watch": c.watch,
+		"extend": c.extend, "check-extend": c.checkExtend, "stop": c.stop, "exec": c.exec,
+		"watch": c.watch,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -478,6 +480,35 @@ func (c *cli) extend(args []string) error {
 		return err
 	}
 	return c.printPlacement(res.Msg.GetPlacement())
+}
+
+// checkExtend prints the placement and, as deadline_after, the deadline an extension would set
+func (c *cli) checkExtend(args []string) error {
+	fs := newFlags("check-extend")
+	h := fs.String("handle", "", "sandbox handle")
+	pkg := fs.String("package", "", "extension package id")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	if err := required("handle", *h); err != nil {
+		return err
+	}
+	if err := required("package", *pkg); err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.CheckExtendPlacement(c.ctx, connect.NewRequest(
+		&routerv1.CheckExtendPlacementRequest{Handle: *h, PackageId: *pkg}))
+	if err != nil {
+		return err
+	}
+	if err := c.printPlacement(res.Msg.GetPlacement()); err != nil {
+		return err
+	}
+	return c.print([][2]string{{"deadline_after", stamp(res.Msg.GetDeadline())}})
 }
 
 func (c *cli) stop(args []string) error {
