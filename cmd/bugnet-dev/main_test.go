@@ -187,6 +187,7 @@ func TestSettingsReadOnlyWhenNeeded(t *testing.T) {
 		"watch":          {"watch", "--handle", "sbx_x", "--job", "j"},
 		"exec":           {"exec", "--handle", "sbx_x", "--", "true"},
 		"check-extend":   {"check-extend", "--handle", "sbx_x", "--package", "p"},
+		"extensions":     {"extensions", "--handle", "sbx_x"},
 		"unpriced token": {"token", "--priv", priv, "--package", "p"},
 		"signed create":  {"create", "--package", "p"},
 	} {
@@ -387,6 +388,9 @@ func TestCheckExtend(t *testing.T) {
 				Deadline: timestamppb.New(ready.Add(10 * time.Minute)),
 			},
 			Deadline: timestamppb.New(ready.Add(20 * time.Minute)),
+			Package: &routerv1.PackageOption{
+				PackageId: "small-10m-more", Minutes: 10, PriceMicros: 45000, Available: true,
+			},
 		},
 		got: make(chan *connect.Request[routerv1.CheckExtendPlacementRequest], 1),
 	}
@@ -397,7 +401,8 @@ func TestCheckExtend(t *testing.T) {
 		"--package", "small-10m-more")
 	want := "placement_id=5bef8fc5\nstate=ready\npackage_id=small-10m\n" +
 		"created_at=2026-11-05T01:25:34.268894Z\nready_at=2026-11-05T01:25:34.277819Z\n" +
-		"deadline=2026-11-05T01:35:34.277819Z\ndeadline_after=2026-11-05T01:45:34.277819Z\n"
+		"deadline=2026-11-05T01:35:34.277819Z\ndeadline_after=2026-11-05T01:45:34.277819Z\n" +
+		"price_micros=45000\n"
 	if code != 0 || out != want {
 		t.Fatalf("check-extend exited %d with %q and %q, want 0 and %q", code, out, stderr, want)
 	}
@@ -431,5 +436,71 @@ func TestCheckExtend(t *testing.T) {
 	if help, _, code := runCLI(t, env(nil), "help"); code != 0 ||
 		!strings.Contains(help, "\n  check-extend --handle H --package P ") {
 		t.Errorf("help exited %d with %q, want check-extend listed", code, help)
+	}
+}
+
+// listRouter answers ListExtensions with answer, or err when set, and records each call
+type listRouter struct {
+	routerv1connect.UnimplementedSandboxRouterServiceHandler
+	answer *routerv1.ListExtensionsResponse
+	err    error
+	got    chan *connect.Request[routerv1.ListExtensionsRequest]
+}
+
+func (r *listRouter) ListExtensions(
+	_ context.Context, req *connect.Request[routerv1.ListExtensionsRequest],
+) (*connect.Response[routerv1.ListExtensionsResponse], error) {
+	r.got <- req
+	if r.err != nil {
+		return nil, r.err
+	}
+	return connect.NewResponse(r.answer), nil
+}
+
+func TestExtensions(t *testing.T) {
+	r := &listRouter{
+		answer: &routerv1.ListExtensionsResponse{Options: []*routerv1.PackageOption{
+			{PackageId: "small-10m-more", Minutes: 10, PriceMicros: 45000, Available: true},
+			{PackageId: "small-30m-more", Minutes: 30, PriceMicros: 120000,
+				UnavailableReason: "exceeds_lifetime"},
+		}},
+		got: make(chan *connect.Request[routerv1.ListExtensionsRequest], 1),
+	}
+	settings := serve(t, r)
+	token := strings.Repeat("t", 32)
+	vars := env(map[string]string{"BUGNET_INTERNAL_TOKEN": token})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "extensions", "--handle", "sbx_x")
+	want := "small-10m-more minutes=10 price_micros=45000 available=true reason=\n" +
+		"small-30m-more minutes=30 price_micros=120000 available=false reason=exceeds_lifetime\n"
+	if code != 0 || out != want {
+		t.Fatalf("extensions exited %d with %q and %q, want 0 and %q", code, out, stderr, want)
+	}
+	req := <-r.got
+	if req.Msg.GetHandle() != "sbx_x" || req.Header().Get("Authorization") != "Bearer "+token {
+		t.Errorf("router got %v with authorization %q", req.Msg, req.Header().Get("Authorization"))
+	}
+
+	refusing := serve(t, &listRouter{
+		err: connect.NewError(connect.CodeNotFound, errors.New("placement not found")),
+		got: make(chan *connect.Request[routerv1.ListExtensionsRequest], 1),
+	})
+	out, stderr, code = runCLI(t, vars, "--config", refusing, "extensions", "--handle", "sbx_x")
+	if code != 1 || out != "" || !strings.Contains(stderr, "placement not found") {
+		t.Errorf("refused extensions exited %d with %q and %q, want 1 and the refusal", code, out,
+			stderr)
+	}
+
+	for name, args := range map[string][]string{
+		"no handle":      {},
+		"extra argument": {"--handle", "sbx_x", "more"},
+	} {
+		args := append([]string{"--config", settings, "extensions"}, args...)
+		if _, _, code := runCLI(t, vars, args...); code != 2 {
+			t.Errorf("%s: exited %d, want 2", name, code)
+		}
+	}
+	if help, _, code := runCLI(t, env(nil), "help"); code != 0 ||
+		!strings.Contains(help, "\n  extensions --handle H ") {
+		t.Errorf("help exited %d with %q, want extensions listed", code, help)
 	}
 }

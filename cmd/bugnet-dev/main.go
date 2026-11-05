@@ -50,6 +50,7 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
   check-extend --handle H --package P    print a placement and the deadline an extension would give
+  extensions --handle H                  list the packages that can extend a placement
   stop --handle H                        stop a placement
   exec --handle H [--cwd D] [--env K=V]... -- ARGV
                                          run a command and stream its output
@@ -106,8 +107,8 @@ func run(
 	c := &cli{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
 	commands := map[string]func([]string) error{
 		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
-		"extend": c.extend, "check-extend": c.checkExtend, "stop": c.stop, "exec": c.exec,
-		"watch": c.watch,
+		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
+		"stop": c.stop, "exec": c.exec, "watch": c.watch,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -482,7 +483,7 @@ func (c *cli) extend(args []string) error {
 	return c.printPlacement(res.Msg.GetPlacement())
 }
 
-// checkExtend prints the placement and, as deadline_after, the deadline an extension would set
+// checkExtend prints the placement, then the deadline and the price an extension would give it
 func (c *cli) checkExtend(args []string) error {
 	fs := newFlags("check-extend")
 	h := fs.String("handle", "", "sandbox handle")
@@ -508,7 +509,36 @@ func (c *cli) checkExtend(args []string) error {
 	if err := c.printPlacement(res.Msg.GetPlacement()); err != nil {
 		return err
 	}
-	return c.print([][2]string{{"deadline_after", stamp(res.Msg.GetDeadline())}})
+	return c.print([][2]string{
+		{"deadline_after", stamp(res.Msg.GetDeadline())},
+		{"price_micros", strconv.FormatInt(res.Msg.GetPackage().GetPriceMicros(), 10)},
+	})
+}
+
+// extensions prints a line for each package that can extend a placement and whether it would now
+func (c *cli) extensions(args []string) error {
+	h, err := handleFlag("extensions", args)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.ListExtensions(c.ctx, connect.NewRequest(&routerv1.ListExtensionsRequest{
+		Handle: h,
+	}))
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	for _, o := range res.Msg.GetOptions() {
+		fmt.Fprintf(&b, "%s minutes=%d price_micros=%d available=%t reason=%s\n",
+			o.GetPackageId(), o.GetMinutes(), o.GetPriceMicros(), o.GetAvailable(),
+			o.GetUnavailableReason())
+	}
+	_, err = io.WriteString(c.stdout, b.String())
+	return err
 }
 
 func (c *cli) stop(args []string) error {
