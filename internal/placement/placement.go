@@ -1,7 +1,8 @@
-// Package placement picks which providers may host a package, in the order to try them
+// Package placement picks which providers may host a package and tries the cheapest first
 package placement
 
 import (
+	"cmp"
 	"errors"
 	"math/big"
 	"slices"
@@ -55,7 +56,7 @@ func New(reg *provider.Registry, health Health) *Engine {
 	return &Engine{reg: reg, health: health}
 }
 
-// Candidates returns the usable providers best first, or ErrNoCandidate when none remain
+// Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	needGPU := in.Requirements.GPU || pk.Resources.GPUCount > 0
@@ -106,15 +107,19 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		return nil, ErrNoCandidate
 	}
 	/* Ordering */
+	// A stable sort leaves equal costs in the order the providers setting lists them
 	slices.SortStableFunc(out, func(a, b Candidate) int {
-		return rank(e.health.ReadyP95(a.Provider.Name()) > slowReadyThreshold) -
-			rank(e.health.ReadyP95(b.Provider.Name()) > slowReadyThreshold)
+		return cmp.Or(
+			cmp.Compare(e.slowRank(a), e.slowRank(b)),
+			cmp.Compare(a.CostMicros, b.CostMicros),
+		)
 	})
 	return out, nil
 }
 
-func rank(slow bool) int {
-	if slow {
+// slowRank puts a provider whose ready p95 is over the threshold behind the fast ones
+func (e *Engine) slowRank(c Candidate) int {
+	if e.health.ReadyP95(c.Provider.Name()) > slowReadyThreshold {
 		return 1
 	}
 	return 0

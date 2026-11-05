@@ -61,20 +61,67 @@ func engine(h Health, ps ...provider.Provider) *Engine {
 	return New(provider.NewRegistry(ps), h)
 }
 
-func TestCandidatesRespectPreferenceOrder(t *testing.T) {
+func TestCandidatesCheapestFirst(t *testing.T) {
 	a := newLocal(t, "a", 600000, time.Second)
 	b := newLocal(t, "b", 300000, time.Second)
-	c := newLocal(t, "c", 100000, time.Second)
+	c := newLocal(t, "c", 120000, time.Second)
 	e := engine(fakeHealth{}, a, b, c)
 	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names(got), []string{"a", "b", "c"}) {
+	if !slices.Equal(names(got), []string{"c", "b", "a"}) {
 		t.Fatalf("order = %v", names(got))
 	}
-	if got[0].CostMicros != 100000 || got[0].Size.Name != "small" {
+	if got[0].CostMicros != 20000 || got[0].Size.Name != "small" {
 		t.Fatalf("candidate = %+v", got[0])
+	}
+}
+
+func TestCandidatesEqualCostKeepListOrder(t *testing.T) {
+	dear := newLocal(t, "dear", 600000, time.Second)
+	b := newLocal(t, "b", 1000, time.Second)
+	a := newLocal(t, "a", 1000, time.Second)
+	c := newLocal(t, "c", 1000, time.Second)
+	got, err := engine(fakeHealth{}, dear, b, a, c).Candidates(Inputs{Package: pkg(10, 1000000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"b", "a", "c", "dear"}) {
+		t.Fatalf("order = %v", names(got))
+	}
+}
+
+func TestCandidatesSlowCheapAfterFastDearer(t *testing.T) {
+	slowDear := newLocal(t, "slow-dear", 300000, time.Second)
+	slowCheap := newLocal(t, "slow-cheap", 1000, time.Second)
+	fastDear := newLocal(t, "fast-dear", 600000, time.Second)
+	h := fakeHealth{p95: map[string]time.Duration{
+		"slow-dear": 11 * time.Second, "slow-cheap": 11 * time.Second,
+	}}
+	e := engine(h, slowDear, slowCheap, fastDear)
+	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"fast-dear", "slow-cheap", "slow-dear"}) {
+		t.Fatalf("order = %v", names(got))
+	}
+}
+
+func TestCandidatesOrderByCostWithStartFee(t *testing.T) {
+	// 10 minutes cost 1,000 plus a 5,000 start fee against 3,000 with no fee
+	fee := startFee{Provider: newLocal(t, "fee", 6000, time.Second), fee: 5000}
+	plain := newLocal(t, "plain", 18000, time.Second)
+	got, err := engine(fakeHealth{}, fee, plain).Candidates(Inputs{Package: pkg(10, 1000000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"plain", "fee"}) {
+		t.Fatalf("order = %v", names(got))
+	}
+	if got[1].CostMicros != 6000 {
+		t.Fatalf("fee costs %d, want 6000", got[1].CostMicros)
 	}
 }
 
@@ -138,9 +185,9 @@ func TestCandidatesCountTheStartFee(t *testing.T) {
 		t.Fatalf("got %v costing %d, want free alone at 3000", names(got), got[0].CostMicros)
 	}
 	got, err = e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.3})
-	if err != nil || !slices.Equal(names(got), []string{"fee", "free"}) ||
-		got[0].CostMicros != 33000 {
-		t.Fatalf("got %v, %v, want fee at 33000 then free", got, err)
+	if err != nil || !slices.Equal(names(got), []string{"free", "fee"}) ||
+		got[1].CostMicros != 33000 {
+		t.Fatalf("got %v, %v, want free then fee at 33000", got, err)
 	}
 }
 
