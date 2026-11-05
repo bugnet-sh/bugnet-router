@@ -818,3 +818,20 @@ func TestBoxdReadFileKeepsToTheLength(t *testing.T) {
 			len(got), eof, err)
 	}
 }
+
+func TestBoxdClassifiesADestroyedMachineAsNotFound(t *testing.T) {
+	cases := []struct {
+		msg  string
+		code provider.Code
+	}{
+		{"cannot set delete-after on vm in status 'destroyed'", provider.CodeNotFound},
+		{"cannot exec on vm in status 'destroying'", provider.CodeNotFound},
+		{"machine is migrating", provider.CodeInvalid},
+	}
+	for _, c := range cases {
+		err := classify(t.Context(), status.Error(codes.FailedPrecondition, c.msg))
+		if !isCode(err, c.code) {
+			t.Errorf("FailedPrecondition %q gave %v, want %s", c.msg, err, c.code)
+		}
+	}
+}

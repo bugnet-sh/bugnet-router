@@ -270,7 +270,8 @@ func (f *fakeBoxd) CreateVm(
 	f.creates = append(f.creates, req)
 	if req.GetName() != "" {
 		if _, err := f.lookup(req.GetName()); err == nil {
-			return nil, status.Errorf(codes.AlreadyExists, "name %q is taken", req.GetName())
+			return nil, status.Errorf(codes.FailedPrecondition, "name '%s' is already taken",
+				req.GetName())
 		}
 	}
 	f.nextID++

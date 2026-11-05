@@ -80,6 +80,8 @@ func res(vcpu, memGiB int) provider.Resources {
 var (
 	routerLabelKey = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$`)
 	rateWord       = regexp.MustCompile(`(?i)\brate(limit\w*)?\b`)
+	// goneStatus is how boxd refuses a call on a machine it keeps listed after destroying it
+	goneStatus = regexp.MustCompile(`status '(destroyed|destroying)'`)
 )
 
 // Options configures the adapter, an empty Endpoint follows Region and Insecure is only for tests
@@ -223,7 +225,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		if vm == nil {
 			vm = &boxdpb.GetVmResponse{VmId: resp.GetVmId(), Name: resp.GetName()}
 		}
-	case code == codes.AlreadyExists && in.Name != "":
+	case nameTaken(err) && in.Name != "":
 		if vm, err = p.adopt(after, in.Name, labels); err != nil {
 			return provider.Ref{}, err
 		}
@@ -245,6 +247,13 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, err
 	}
 	return newRef(vm.GetVmId()), nil
+}
+
+// nameTaken reports a create refused for its name, which boxd answers with FailedPrecondition
+func nameTaken(err error) bool {
+	st, _ := status.FromError(err)
+	return st.Code() == codes.AlreadyExists ||
+		st.Code() == codes.FailedPrecondition && strings.Contains(st.Message(), "already taken")
 }
 
 // adopt returns the machine holding name when its labels carry everything the create asked for
@@ -788,7 +797,12 @@ func classify(ctx context.Context, err error) error {
 		e.Code = provider.CodeAuth
 	case codes.NotFound:
 		e.Code, e.CanFailOver = provider.CodeNotFound, false
-	case codes.InvalidArgument, codes.FailedPrecondition, codes.AlreadyExists, codes.OutOfRange:
+	case codes.FailedPrecondition:
+		e.Code, e.CanFailOver = provider.CodeInvalid, false
+		if goneStatus.MatchString(st.Message()) {
+			e.Code = provider.CodeNotFound
+		}
+	case codes.InvalidArgument, codes.AlreadyExists, codes.OutOfRange:
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
 	}
 	return e
