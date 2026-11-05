@@ -288,7 +288,7 @@ func (s *Server) ExtendPlacement(
 	return connect.NewResponse(&routerv1.ExtendPlacementResponse{Placement: placementMsg(p)}), nil
 }
 
-// CheckExtendPlacement answers as ExtendPlacement would for a fresh order, with the new deadline
+// CheckExtendPlacement answers as a fresh order's extension would, with its deadline and package
 func (s *Server) CheckExtendPlacement(
 	ctx context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
 ) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
@@ -296,8 +296,10 @@ func (s *Server) CheckExtendPlacement(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	// CheckExtend refused any package missing from the catalog the saga and the server share
-	pkg, _ := s.d.Catalog.Get(req.Msg.GetPackageId())
+	pkg, ok := s.d.Catalog.Get(req.Msg.GetPackageId())
+	if !ok {
+		return nil, s.status(errors.New("api: the saga checked a package the catalog lacks"))
+	}
 	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
 		Placement: placementMsg(p), Deadline: timestamppb.New(deadline),
 		Package: packageOption(pkg, true, ""),

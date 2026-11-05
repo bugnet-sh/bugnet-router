@@ -163,6 +163,7 @@ type options struct {
 	opsBurst     int
 	log          *slog.Logger // the API server's log, discarded when nil
 	apiValkey    string       // what the API server's Valkey client dials, valkeyAddr() when empty
+	apiCatalog   string       // the API server's catalog JSON, the saga's catalogJSON when empty
 }
 
 type env struct {
@@ -209,14 +210,7 @@ func newEnv(t *testing.T, opts options) *env {
 	if _, err := rand.Read(handleKey); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "packages.json")
-	if err := os.WriteFile(path, []byte(catalogJSON), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cat, err := catalog.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cat := loadCatalog(t, catalogJSON)
 
 	root := t.TempDir()
 	prov := local.New(local.Options{
@@ -257,8 +251,12 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.log != nil {
 		log = opts.log
 	}
+	apiCat := cat
+	if opts.apiCatalog != "" {
+		apiCat = loadCatalog(t, opts.apiCatalog)
+	}
 	srv := api.New(api.Deps{
-		Store: st, Saga: sg, Jobs: js, Engine: engine, Catalog: cat, Registry: reg,
+		Store: st, Saga: sg, Jobs: js, Engine: engine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 	})
@@ -284,6 +282,19 @@ func newEnv(t *testing.T, opts options) *env {
 	e.url = hs.URL
 	e.client = e.clientWith(t, "Bearer "+internalToken, true)
 	return e
+}
+
+func loadCatalog(t *testing.T, packages string) *catalog.Catalog {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "packages.json")
+	if err := os.WriteFile(path, []byte(packages), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cat
 }
 
 func valkeyAddr() string {
@@ -702,6 +713,17 @@ func TestCheckExtendThenExtend(t *testing.T) {
 	}
 	if got := ext.Msg.GetPlacement().GetDeadline().AsTime(); !got.Equal(would) {
 		t.Fatalf("extend gave deadline %v, the check said %v", got, would)
+	}
+}
+
+func TestCheckExtendOfAPackageTheServerLacks(t *testing.T) {
+	without := strings.Replace(catalogJSON, `"small-10m-more"`, `"small-10m-other"`, 1)
+	e := newEnv(t, options{apiCatalog: without})
+	h, _ := e.readyPlacement(t)
+	res, err := e.checkExtend(t, h, morePkg)
+	if connect.CodeOf(err) != connect.CodeInternal || strings.Contains(err.Error(), morePkg) {
+		t.Fatalf("check of a package only the saga has gave %v, %v, want an internal error "+
+			"without the package id", res, err)
 	}
 }
 
