@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/oynozan/bugnet-router/internal/jobs"
+	"github.com/oynozan/bugnet-router/internal/ratelimit"
 )
 
 const secretToken = "0123456789abcdef0123456789abcdef"
@@ -117,6 +118,11 @@ func TestLoadFileDefaults(t *testing.T) {
 		t.Fatalf("output limits %d, %d, %d and %d jobs, want the jobs service's defaults",
 			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
 	}
+	if c.SandboxOpsPerSecond != ratelimit.DefaultPerSecond ||
+		c.SandboxOpsBurst != ratelimit.DefaultBurst {
+		t.Fatalf("sandbox operations %d a second and %d at once, want the limiter's defaults",
+			c.SandboxOpsPerSecond, c.SandboxOpsBurst)
+	}
 	if c.Boxd != (Boxd{Region: "fra"}) || c.Koyeb.Region != "fra" ||
 		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil {
 		t.Fatalf("provider defaults: %+v, %+v, %+v", c.Boxd, c.Koyeb, c.Boat)
@@ -186,6 +192,8 @@ job_output_budget = "4096KiB"
 placement_output_budget = "64MiB"
 placement_tail_reserve = "1000000"
 max_running_jobs = 4
+sandbox_ops_per_second = 3
+sandbox_ops_burst = 5
 
 [local]
 enabled = true
@@ -248,6 +256,10 @@ cpu8 = "large"
 		c.PlacementTailReserve != 1_000_000 || c.MaxRunningJobs != 4 {
 		t.Fatalf("output limits %d, %d, %d and %d jobs, want 4 MiB, 64 MiB, 1000000 and 4",
 			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
+	}
+	if c.SandboxOpsPerSecond != 3 || c.SandboxOpsBurst != 5 {
+		t.Fatalf("sandbox operations %d a second and %d at once, want 3 and 5",
+			c.SandboxOpsPerSecond, c.SandboxOpsBurst)
 	}
 	if !c.LocalEnabled || c.LocalRoot != "/var/bn" || c.LocalRunnerPath != "/r/local" ||
 		c.LocalHourlyMicros != 1500 {
@@ -462,6 +474,18 @@ func TestLoadFileValidation(t *testing.T) {
 		{"negative running jobs", "[limits]\nmax_running_jobs = -3", "limits.max_running_jobs"},
 		{"running jobs with a suffix", "[limits]\nmax_running_jobs = \"16KiB\"",
 			"limits.max_running_jobs must be a whole number"},
+		{"zero operations a second", "[limits]\nsandbox_ops_per_second = 0",
+			"limits.sandbox_ops_per_second must be a positive whole number"},
+		{"negative operations a second", "[limits]\nsandbox_ops_per_second = -10",
+			"limits.sandbox_ops_per_second must be a positive whole number"},
+		{"operations a second as a string", "[limits]\nsandbox_ops_per_second = \"10\"",
+			"limits.sandbox_ops_per_second must be a whole number"},
+		{"zero burst", "[limits]\nsandbox_ops_burst = 0",
+			"limits.sandbox_ops_burst must be a positive whole number"},
+		{"negative burst", "[limits]\nsandbox_ops_burst = -20",
+			"limits.sandbox_ops_burst must be a positive whole number"},
+		{"burst as a string", "[limits]\nsandbox_ops_burst = \"20\"",
+			"limits.sandbox_ops_burst must be a whole number"},
 		{"lifetime in words", "[e2b]\nmax_lifetime = \"an hour\"", "e2b.max_lifetime"},
 		{"negative lifetime", "[e2b]\nmax_lifetime = \"-1h\"", "e2b.max_lifetime"},
 		{"zero lifetime", "[e2b]\nmax_lifetime = \"0s\"", "e2b.max_lifetime"},
@@ -623,7 +647,10 @@ func quoteKey(key string) string {
 }
 
 func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
-	for _, key := range []string{"limits.max_running_jobs", "local.hourly_micros"} {
+	for _, key := range []string{
+		"limits.max_running_jobs", "limits.sandbox_ops_per_second", "limits.sandbox_ops_burst",
+		"local.hourly_micros",
+	} {
 		table, name, _ := strings.Cut(key, ".")
 		for _, value := range []string{
 			"1.5", "true", "99999999999999999999", "-9999999999999999999",

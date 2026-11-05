@@ -29,6 +29,8 @@ job_output_budget = "8MiB"        # bytes, KiB or MiB, 1 byte to 1 TiB, a job's 
 placement_output_budget = "32MiB" # stream memory of all of a placement's jobs together
 placement_tail_reserve = "8MiB"   # further stream memory per placement for final tails
 max_running_jobs = 16             # positive integer
+sandbox_ops_per_second = 10       # positive integer, a sandbox's operations a second, sustained
+sandbox_ops_burst = 20            # positive integer, a sandbox's operations at once
 
 [local]
 enabled = false               # must be true for the local provider, it runs commands on the host

@@ -60,10 +60,14 @@ type Config struct {
 	PlacementTailReserve int64
 	// MaxRunningJobs bounds the jobs one placement runs at once
 	MaxRunningJobs int
-	Boxd           Boxd
-	E2B            E2B
-	Koyeb          Koyeb
-	Boat           Boat
+	// SandboxOpsPerSecond is how fast a placement's operation bucket refills, in tokens a second
+	SandboxOpsPerSecond int
+	// SandboxOpsBurst is how many operations a placement's full bucket admits at once
+	SandboxOpsBurst int
+	Boxd            Boxd
+	E2B             E2B
+	Koyeb           Koyeb
+	Boat            Boat
 }
 
 // Boxd holds the boxd adapter's settings
@@ -147,6 +151,8 @@ type limitsFile struct {
 	PlacementOutputBudget string `toml:"placement_output_budget"`
 	PlacementTailReserve  string `toml:"placement_tail_reserve"`
 	MaxRunningJobs        int64  `toml:"max_running_jobs"`
+	SandboxOpsPerSecond   int64  `toml:"sandbox_ops_per_second"`
+	SandboxOpsBurst       int64  `toml:"sandbox_ops_burst"`
 }
 
 type localFile struct {
@@ -173,6 +179,7 @@ func defaults() file {
 		Limits: limitsFile{
 			JobOutputBudget: "8MiB", PlacementOutputBudget: "32MiB",
 			PlacementTailReserve: "8MiB", MaxRunningJobs: 16,
+			SandboxOpsPerSecond: 10, SandboxOpsBurst: 20,
 		},
 		Local: localFile{Root: filepath.Join(os.TempDir(), "bugnet-local")},
 		Boxd:  Boxd{Region: "fra"},
@@ -302,10 +309,20 @@ func (f file) config() (Config, error) {
 	if c.LocalHourlyMicros < 0 {
 		return Config{}, errors.New("local.hourly_micros must be a non-negative whole number")
 	}
-	if f.Limits.MaxRunningJobs < 1 {
-		return Config{}, errors.New("limits.max_running_jobs must be a positive whole number")
+	for _, n := range []struct {
+		key  string
+		raw  int64
+		into *int
+	}{
+		{"limits.max_running_jobs", f.Limits.MaxRunningJobs, &c.MaxRunningJobs},
+		{"limits.sandbox_ops_per_second", f.Limits.SandboxOpsPerSecond, &c.SandboxOpsPerSecond},
+		{"limits.sandbox_ops_burst", f.Limits.SandboxOpsBurst, &c.SandboxOpsBurst},
+	} {
+		if n.raw < 1 {
+			return Config{}, fmt.Errorf("%s must be a positive whole number", n.key)
+		}
+		*n.into = int(n.raw)
 	}
-	c.MaxRunningJobs = int(f.Limits.MaxRunningJobs)
 	for _, b := range []struct {
 		key, raw, def string
 		into          *int64
