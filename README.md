@@ -215,6 +215,28 @@ provider needs one that is unset or unreadable. `make build` in `bugnet-run` wri
 
 Money is integer micro-USD and times are UTC.
 
+## Prices and availability
+
+`Estimate` lists every start package by price, each with `available` where a provider could host
+it now for the order's requirements. `PricePackage` takes one start package ID and the same
+requirements and answers with that package as `Estimate` would list it. The gateway asks it right
+before Payments charges a paid start. It writes nothing, spends no rate-limit token, and leaves
+`fits`, `extensions_needed` and `short_on` unset. An unknown package, or one with `extension_of`
+set, answers `InvalidArgument`.
+
+An unavailable start package's `unavailable_reason` is always one of these codes, never error
+text.
+
+| Code | When |
+| --- | --- |
+| `no_candidate` | A configured provider has the capabilities needed, but none can take it now |
+| `feature_unavailable` | No configured provider has the SSH, preview or GPU capability needed |
+| `internal` | Any other error, logged at error level with the detail |
+
+A capable provider can still refuse a package for its health, its sizes, the margin or its
+maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
+`feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
+
 ## Extensions
 
 `ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
@@ -353,4 +375,4 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   from each process's own count while Valkey does not answer.
 
 No provider offers SSH or previews yet. An order that requires either finds no provider, and
-`Estimate` marks every package unavailable for it.
+`Estimate` marks every package `feature_unavailable` for it.

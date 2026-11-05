@@ -164,6 +164,7 @@ type options struct {
 	log          *slog.Logger // the API server's log, discarded when nil
 	apiValkey    string       // what the API server's Valkey client dials, valkeyAddr() when empty
 	apiCatalog   string       // the API server's catalog JSON, the saga's catalogJSON when empty
+	apiEngine    api.Engine   // the API server's engine, the saga's engine when nil
 }
 
 type env struct {
@@ -175,6 +176,7 @@ type env struct {
 	store     *store.Store
 	jobs      *jobs.Service
 	vk        valkey.Client
+	tracker   *placement.Tracker
 	apiVK     valkey.Client // the API server's own Valkey client
 	apiVKName string        // client name of the API server's own Valkey connections
 	prefix    string
@@ -255,16 +257,21 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.apiCatalog != "" {
 		apiCat = loadCatalog(t, opts.apiCatalog)
 	}
+	var apiEngine api.Engine = engine
+	if opts.apiEngine != nil {
+		apiEngine = opts.apiEngine
+	}
 	srv := api.New(api.Deps{
-		Store: st, Saga: sg, Jobs: js, Engine: engine, Catalog: apiCat, Registry: reg,
+		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk, apiVK: apiVK,
-		apiVKName: apiName, prefix: prefix, root: root, priv: priv, handleKey: handleKey,
+		api: srv, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk, tracker: tracker,
+		apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root, priv: priv,
+		handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv, internalToken)
@@ -1034,7 +1041,7 @@ func TestEstimate(t *testing.T) {
 		t.Fatalf("small option %v", first)
 	}
 	gpu := resp.Msg.GetOptions()[2]
-	if gpu.GetAvailable() || gpu.GetUnavailableReason() != saga.ReasonNoCandidate ||
+	if gpu.GetAvailable() || gpu.GetUnavailableReason() != "feature_unavailable" ||
 		gpu.GetResources().GetGpuCount() != 1 || gpu.GetResources().GetGpuMemoryGib() != 24 {
 		t.Fatalf("gpu option %v, want unavailable", gpu)
 	}

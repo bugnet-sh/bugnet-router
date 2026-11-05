@@ -53,12 +53,17 @@ const (
 	opsTimeout = 500 * time.Millisecond
 )
 
+// Engine finds the providers that may host a package now
+type Engine interface {
+	Candidates(in placement.Inputs) ([]placement.Candidate, error)
+}
+
 // Deps are the services and settings a Server works with
 type Deps struct {
 	Store       *store.Store
 	Saga        *saga.Saga
 	Jobs        *jobs.Service
-	Engine      *placement.Engine
+	Engine      Engine
 	Catalog     *catalog.Catalog
 	Registry    *provider.Registry
 	Valkey      valkey.Client
@@ -164,19 +169,47 @@ func (s *Server) Estimate(
 		if pkg.ExtensionOf != "" {
 			continue
 		}
-		_, err := s.d.Engine.Candidates(placement.Inputs{
-			Package: pkg, Requirements: need, MarginFloor: s.d.MarginFloor,
-		})
-		reason := ""
-		switch {
-		case errors.Is(err, placement.ErrNoCandidate):
-			reason = saga.ReasonNoCandidate
-		case err != nil:
-			reason = err.Error()
-		}
-		opts = append(opts, packageOption(pkg, err == nil, reason))
+		opts = append(opts, s.startOption(pkg, need))
 	}
 	return connect.NewResponse(&routerv1.EstimateResponse{Options: opts}), nil
+}
+
+// PricePackage answers with one start package as Estimate lists it, writing and spending nothing
+func (s *Server) PricePackage(
+	_ context.Context, req *connect.Request[routerv1.PricePackageRequest],
+) (*connect.Response[routerv1.PricePackageResponse], error) {
+	id := req.Msg.GetPackageId()
+	pkg, ok := s.d.Catalog.Get(id)
+	switch {
+	case !ok:
+		return nil, invalid("unknown package %q", id)
+	case pkg.ExtensionOf != "":
+		return nil, invalid("package %q is an extension, a start needs a start package", id)
+	}
+	return connect.NewResponse(&routerv1.PricePackageResponse{
+		Option: s.startOption(pkg, requirements(req.Msg.GetRequirements())),
+	}), nil
+}
+
+// startOption prices a start package and says whether a provider can host it now
+func (s *Server) startOption(
+	pkg catalog.Package, need placement.Requirements,
+) *routerv1.PackageOption {
+	_, err := s.d.Engine.Candidates(placement.Inputs{
+		Package: pkg, Requirements: need, MarginFloor: s.d.MarginFloor,
+	})
+	reason := ""
+	switch {
+	case err == nil:
+	case errors.Is(err, placement.ErrNoCapableProvider):
+		reason = unavailableFeature
+	case errors.Is(err, placement.ErrNoCandidate):
+		reason = unavailableNoCandidate
+	default:
+		s.d.Log.Error("api: find candidates", "package", pkg.ID, "err", err)
+		reason = unavailableInternal
+	}
+	return packageOption(pkg, err == nil, reason)
 }
 
 // CreatePlacement starts placing a paid order, a repeated order returning the same placement

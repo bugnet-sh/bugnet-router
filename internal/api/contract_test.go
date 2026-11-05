@@ -76,9 +76,9 @@ func unbuilt(
 
 // built names the RPCs Server implements
 var built = []string{
-	"Estimate", "CreatePlacement", "GetPlacement", "WatchPlacement", "ExtendPlacement",
-	"CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec", "WatchJob", "CancelJob",
-	"ReadFile", "WriteFile", "ListFiles",
+	"Estimate", "PricePackage", "CreatePlacement", "GetPlacement", "WatchPlacement",
+	"ExtendPlacement", "CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec",
+	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {

@@ -30,6 +30,13 @@ const (
 	reasonExceedsLifetime = "EXCEEDS_LIFETIME"
 )
 
+// Codes a start package's unavailable_reason takes, never error text
+const (
+	unavailableNoCandidate = saga.ReasonNoCandidate
+	unavailableFeature     = "feature_unavailable"
+	unavailableInternal    = "internal"
+)
+
 var (
 	errNotReady     = errors.New("api: placement is not ready")
 	errShuttingDown = errors.New("api: server is shutting down")
