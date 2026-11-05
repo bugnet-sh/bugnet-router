@@ -2,9 +2,9 @@
 // sweep and the outbox, and with the outbox-redrive argument sends stuck outbox events at once.
 //
 // router-worker -config FILE builds every service from the settings in FILE and the secrets in
-// the environment, starts the River client and answers /healthz and /readyz over HTTP. On
-// SIGTERM or SIGINT it stops fetching jobs, gives running ones a bounded time before cancelling
-// them, waits a bounded time for the saga, and exits.
+// the environment, starts the River client and answers /healthz, /readyz and /monitor over HTTP.
+// On SIGTERM or SIGINT it stops fetching jobs, gives running ones a bounded time before
+// cancelling them, waits a bounded time for the saga, and exits.
 package main
 
 import (
@@ -160,6 +160,7 @@ func serve(
 		_, _ = io.WriteString(rw, "ok\n")
 	})
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
+	mux.HandleFunc("GET /monitor", monitor(log, st, vk, read))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

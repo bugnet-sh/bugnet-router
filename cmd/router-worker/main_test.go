@@ -201,12 +201,12 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 			t.Fatal(err)
 		}
 		if get(base+"/healthz") == http.StatusOK && get(base+"/readyz") == http.StatusOK &&
-			swept > 0 {
+			get(base+"/monitor") == http.StatusOK && swept > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("healthz %d, readyz %d, %d sweeps completed", get(base+"/healthz"),
-				get(base+"/readyz"), swept)
+			t.Fatalf("healthz %d, readyz %d, monitor %d, %d sweeps completed",
+				get(base+"/healthz"), get(base+"/readyz"), get(base+"/monitor"), swept)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
