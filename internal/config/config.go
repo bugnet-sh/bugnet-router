@@ -4,7 +4,7 @@
 // key at its default. It is decoded strictly, so an unknown key, a key in the wrong case, or a
 // secret pasted into the file, is an error naming the key and its line. Relative paths in it
 // resolve against the working directory. Secrets come only from the environment, and no error
-// message ever carries one or quotes a value of the file.
+// message ever carries one.
 package config
 
 import (
