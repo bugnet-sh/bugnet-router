@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -358,28 +359,37 @@ func TestLoadSecrets(t *testing.T) {
 	}
 
 	shortKey := base64.StdEncoding.EncodeToString([]byte("short"))
-	bad := map[string]map[string]string{
-		"BUGNET_DATABASE_URL":           {"BUGNET_DATABASE_URL": "-"},
-		"BUGNET_INTERNAL_TOKEN":         {"BUGNET_INTERNAL_TOKEN": "tooshort-secret"},
-		"BUGNET_HANDLE_KEY":             {"BUGNET_HANDLE_KEY": shortKey},
-		"handle key not base64":         {"BUGNET_HANDLE_KEY": "!!not-base64!!"},
-		"BUGNET_EVENT_SIGNING_KEY":      {"BUGNET_EVENT_SIGNING_KEY": "AAAA"},
-		"missing token":                 {"BUGNET_INTERNAL_TOKEN": "-"},
-		"empty token":                   {"BUGNET_INTERNAL_TOKEN": ""},
-		"missing handle key":            {"BUGNET_HANDLE_KEY": "-"},
-		"empty database url":            {"BUGNET_DATABASE_URL": ""},
-		"short token with the rest set": {"BUGNET_INTERNAL_TOKEN": "x"},
+	bad := []struct {
+		name, env string
+		over      map[string]string
+	}{
+		{"missing database url", "BUGNET_DATABASE_URL",
+			map[string]string{"BUGNET_DATABASE_URL": "-"}},
+		{"empty database url", "BUGNET_DATABASE_URL", map[string]string{"BUGNET_DATABASE_URL": ""}},
+		{"missing token", "BUGNET_INTERNAL_TOKEN", map[string]string{"BUGNET_INTERNAL_TOKEN": "-"}},
+		{"empty token", "BUGNET_INTERNAL_TOKEN", map[string]string{"BUGNET_INTERNAL_TOKEN": ""}},
+		{"short token", "BUGNET_INTERNAL_TOKEN",
+			map[string]string{"BUGNET_INTERNAL_TOKEN": "tooshort-secret"}},
+		{"one character token", "BUGNET_INTERNAL_TOKEN",
+			map[string]string{"BUGNET_INTERNAL_TOKEN": "x"}},
+		{"missing handle key", "BUGNET_HANDLE_KEY", map[string]string{"BUGNET_HANDLE_KEY": "-"}},
+		{"empty handle key", "BUGNET_HANDLE_KEY", map[string]string{"BUGNET_HANDLE_KEY": ""}},
+		{"short handle key", "BUGNET_HANDLE_KEY", map[string]string{"BUGNET_HANDLE_KEY": shortKey}},
+		{"handle key not base64", "BUGNET_HANDLE_KEY",
+			map[string]string{"BUGNET_HANDLE_KEY": "!!not-base64!!"}},
+		{"short event signing key", "BUGNET_EVENT_SIGNING_KEY",
+			map[string]string{"BUGNET_EVENT_SIGNING_KEY": "AAAA"}},
 	}
-	for name, over := range bad {
-		_, err := Load(path, env(over))
+	for _, c := range bad {
+		_, err := Load(path, env(c.over))
 		if err == nil {
-			t.Errorf("%s: expected an error", name)
+			t.Errorf("%s: expected an error", c.name)
 			continue
 		}
-		if strings.HasPrefix(name, "BUGNET_") && !strings.Contains(err.Error(), name) {
-			t.Errorf("%s: error does not name the variable: %v", name, err)
+		if !strings.Contains(err.Error(), c.env) {
+			t.Errorf("%s: error does not name %s: %v", c.name, c.env, err)
 		}
-		noSecrets(t, name, err, over)
+		noSecrets(t, c.name, err, c.over)
 	}
 }
 
@@ -701,33 +711,34 @@ func TestLoadFileMissing(t *testing.T) {
 	}
 }
 
-// committed reads a settings file of the repository with a generated order token key
-func committed(t *testing.T, name string) Config {
+// committed reads a settings file of the repository and checks that it loads as it is
+func committed(t *testing.T, name string) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "config", name))
+	path := filepath.Join("..", "..", "config", name)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadFile(filepath.Join("..", "..", "config", name)); err != nil {
+	if _, err := LoadFile(path); err != nil {
 		t.Fatalf("config/%s as committed: %v", name, err)
 	}
-	line := `order_token_public_key = "` + pubB64(t) + `"`
-	content := string(raw)
-	if strings.Contains(content, `order_token_public_key = ""`) {
-		content = strings.Replace(content, `order_token_public_key = ""`, line, 1)
-	} else {
-		// dev-up puts the key in front, since top-level keys must precede every table
-		content = line + "\n\n" + content
-	}
-	c, err := LoadFile(writeFile(t, content))
-	if err != nil {
-		t.Fatalf("config/%s with an order token key: %v", name, err)
-	}
-	return c
+	return string(raw)
 }
 
+// orderKeyLine is a top-level order_token_public_key line, which dev-up.sh drops and replaces
+var orderKeyLine = regexp.MustCompile(`(?m)^[ \t]*order_token_public_key[ \t]*=`)
+
 func TestCommittedFilesLoad(t *testing.T) {
-	dev := committed(t, "dev.toml")
+	raw := committed(t, "dev.toml")
+	if orderKeyLine.MatchString(raw) {
+		t.Fatal("config/dev.toml sets order_token_public_key, which dev-up.sh adds")
+	}
+	// dev-up.sh writes the key line, a blank line and the file, and both binaries Load the result
+	line := `order_token_public_key = "` + pubB64(t) + `"`
+	dev, err := Load(writeFile(t, line+"\n\n"+raw), env(nil))
+	if err != nil {
+		t.Fatalf("config/dev.toml as dev-up.sh writes it: %v", err)
+	}
 	if !slices.Equal(dev.Providers, []string{"local"}) || !dev.LocalEnabled ||
 		dev.ValkeyPrefix != "bn:dev:" || dev.ListenAddr != "127.0.0.1:8080" ||
 		dev.WorkerListenAddr != "127.0.0.1:8081" {
@@ -746,13 +757,20 @@ func TestCommittedFilesLoad(t *testing.T) {
 		t.Errorf("config/dev.toml e2b templates %+v, want both deploy/e2b builds", dev.E2B)
 	}
 
-	example := committed(t, "example.toml")
+	content := committed(t, "example.toml")
+	if !strings.Contains(content, `order_token_public_key = ""`) {
+		t.Fatal(`config/example.toml lacks order_token_public_key = ""`)
+	}
+	content = strings.Replace(content, `order_token_public_key = ""`, line, 1)
+	example, err := LoadFile(writeFile(t, content))
+	if err != nil {
+		t.Fatalf("config/example.toml with an order token key: %v", err)
+	}
 	if len(example.E2B.Templates) != 2 {
 		t.Errorf("config/example.toml e2b templates %+v, want both deploy/e2b builds",
 			example.E2B)
 	}
-	empty, err := LoadFile(writeFile(t, `order_token_public_key = "`+
-		base64.StdEncoding.EncodeToString(example.OrderTokenPublicKey)+`"`))
+	empty, err := LoadFile(writeFile(t, line))
 	if err != nil {
 		t.Fatal(err)
 	}
