@@ -114,7 +114,7 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 		{name: "one overdue placement", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				seedPlacement(t, pool, store.PlacementTerminating, now.Add(-10*time.Minute))
-			}, want: "1 placement is over 3 minutes past its deadline\n"},
+			}, want: "1 placements are over 3 minutes past their deadline\n"},
 		{name: "stuck outbox events", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
@@ -125,7 +125,7 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 		{name: "one stuck outbox event", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
-			}, want: "1 outbox event is stuck\n"},
+			}, want: "1 outbox events are stuck\n"},
 		{name: "valkey memory", postgres: true, vk: vk,
 			read: fixed(vkinfo.Memory{Used: 80, Max: 100, Policy: "noeviction"}),
 			want: "valkey memory is at 80% of maxmemory\n"},

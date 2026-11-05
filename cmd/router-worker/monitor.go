@@ -92,18 +92,11 @@ func (h health) problems() []string {
 	if h.valkeyDown {
 		out = append(out, "valkey is unreachable")
 	}
-	minutes := int(overdueAfter / time.Minute)
-	switch {
-	case h.overdue == 1:
-		out = append(out, fmt.Sprintf("1 placement is over %d minutes past its deadline", minutes))
-	case h.overdue > 1:
+	if h.overdue > 0 {
 		out = append(out, fmt.Sprintf("%d placements are over %d minutes past their deadline",
-			h.overdue, minutes))
+			h.overdue, int(overdueAfter/time.Minute)))
 	}
-	switch {
-	case h.stuck == 1:
-		out = append(out, "1 outbox event is stuck")
-	case h.stuck > 1:
+	if h.stuck > 0 {
 		out = append(out, fmt.Sprintf("%d outbox events are stuck", h.stuck))
 	}
 	if m := h.memory; m != nil {
