@@ -210,13 +210,24 @@ Money is integer micro-USD and times are UTC.
 
 ## Extensions
 
-`ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline
-by the package's minutes, once per order, for the placement's own package or one whose
-`extension_of` names it. It refuses a placement that is not ready and an extension that would
-outlast the provider's maximum lifetime. `CheckExtendPlacement` takes a handle and a package ID
-and answers as `ExtendPlacement` would for a fresh order of that package now, with the same
-`NotFound`, `InvalidArgument` or `FailedPrecondition`, or else the placement as it is and the
-deadline it would have, changing nothing. The gateway asks it before it takes payment.
+`ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
+the package's minutes, once per order, for the placement's own package or one whose `extension_of`
+names it. It refuses a placement that is not ready with `FailedPrecondition` and the
+`google.rpc.ErrorInfo` reason `NOT_READY`, as every call does that needs a ready placement, and an
+extension that would outlast the provider's maximum lifetime with `FailedPrecondition` and reason
+`EXCEEDS_LIFETIME`. The router keeps ended placements, so extending a handle past its deadline
+answers `NOT_READY`, and only a handle it never issued answers `NotFound`. `CheckExtendPlacement`
+takes a handle and a package ID and answers as `ExtendPlacement` would for a fresh order of that
+package now, with the same `NotFound`, `InvalidArgument` or `FailedPrecondition`, or else the
+placement as it is and the deadline it would have, changing nothing. The gateway asks it before it
+takes payment.
+
+`PermissionDenied`, `InvalidArgument`, `NotFound` and `FailedPrecondition` from `ExtendPlacement`
+mean that call recorded nothing. Any other error, or a reply that never arrives, may follow a
+committed extension. A retry with the same order token then answers with the placement if the
+order was applied, since a repeated order is answered before the ready and lifetime checks, and
+refuses as above if it was not. Once the token has expired a retry answers `PermissionDenied`
+either way, and only a `placement.extended` event with the order's `extend_order_id` tells.
 
 ## Job output
 
