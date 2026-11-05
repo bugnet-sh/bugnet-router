@@ -419,7 +419,7 @@ func TestLoadFileValidation(t *testing.T) {
 		{"NaN margin", `margin_floor = nan`, "margin_floor"},
 		{"+Inf margin", `margin_floor = +inf`, "margin_floor"},
 		{"-Inf margin", `margin_floor = -inf`, "margin_floor"},
-		{"unknown provider", `providers = ["koyeb", "nope"]`, `unknown provider "nope"`},
+		{"unknown provider", `providers = ["koyeb", "nope"]`, "providers entry 2 is not one of"},
 		{"duplicate providers", `providers = ["boat", "e2b", "boat"]`, `"boat" more than once`},
 		{"empty entry", `providers = ["boat", "", "e2b"]`, "providers has an empty entry"},
 		{"empty providers", `providers = []`, "providers must name at least one provider"},
@@ -1010,5 +1010,39 @@ func TestDatabaseURLNeedsNothingElse(t *testing.T) {
 	t.Setenv("BUGNET_DATABASE_URL", "postgres://localhost/y")
 	if url, err := DatabaseURL(); err != nil || url != "postgres://localhost/y" {
 		t.Fatalf("database url from the process %q, %v", url, err)
+	}
+}
+
+func TestLoadFileRefusesAFileOverItsSizeCap(t *testing.T) {
+	path := writeFile(t, strings.Repeat("# padding line of a settings file\n", 2000))
+	_, err := LoadFile(path)
+	if err == nil || !strings.Contains(err.Error(), "larger than 64 KiB") {
+		t.Fatalf("LoadFile of a 68 KB file gave %v, want the size cap", err)
+	}
+}
+
+func TestLoadFileSurvivesDeepNestingUnderTheCap(t *testing.T) {
+	depth := 30000
+	doc := "providers = " + strings.Repeat("[", depth) + strings.Repeat("]", depth) + "\n"
+	if _, err := LoadFile(writeFile(t, doc)); err == nil {
+		t.Fatal("nested arrays as providers were accepted")
+	}
+}
+
+func TestProviderErrorsNeverQuoteAnUnknownName(t *testing.T) {
+	const pasted = "e2b_pastedsecretvalue"
+	for name, doc := range map[string]string{
+		"unknown":          `providers = ["` + pasted + `"]`,
+		"unknown repeated": `providers = ["` + pasted + `", "` + pasted + `"]`,
+	} {
+		_, err := LoadFile(writeFile(t, doc+"\n"))
+		if err == nil || strings.Contains(err.Error(), "pastedsecret") ||
+			!strings.Contains(err.Error(), "providers") {
+			t.Errorf("%s: %v, want an error naming providers without the value", name, err)
+		}
+	}
+	_, err := LoadFile(writeFile(t, `providers = ["e2b", "e2b"]`+"\n"))
+	if err == nil || !strings.Contains(err.Error(), `"e2b" more than once`) {
+		t.Errorf("a repeated known provider gave %v, want it named", err)
 	}
 }

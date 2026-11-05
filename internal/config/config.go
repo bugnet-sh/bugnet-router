@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"os"
@@ -187,9 +188,12 @@ var knownProviders = map[string]bool{
 
 var deploymentID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
+// maxFileBytes keeps a settings file far below the nesting depth that overflows go-toml's stack
+const maxFileBytes = 64 << 10
+
 // LoadFile reads and checks the settings file at path, leaving every secret unset
 func LoadFile(path string) (Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readCapped(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
@@ -202,6 +206,23 @@ func LoadFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// readCapped reads the file at path, refusing one larger than maxFileBytes
+func readCapped(path string) ([]byte, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = fh.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(fh, maxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxFileBytes {
+		return nil, fmt.Errorf("%s: the settings file is larger than 64 KiB", path)
+	}
+	return raw, nil
 }
 
 // decode checks the document against the schema, then decodes it strictly over the defaults
@@ -341,14 +362,15 @@ func providerList(given *[]string, c Config) ([]string, error) {
 		names = *given
 	}
 	seen := map[string]bool{}
-	for _, name := range names {
+	for i, name := range names {
 		switch {
 		case name == "":
 			return nil, errors.New("providers has an empty entry")
+		case !knownProviders[name]:
+			// An unknown entry is never quoted, since a secret could have been pasted there
+			return nil, fmt.Errorf("providers entry %d is not one of %s", i+1, knownList())
 		case seen[name]:
 			return nil, fmt.Errorf("providers lists %q more than once", name)
-		case !knownProviders[name]:
-			return nil, fmt.Errorf("providers has unknown provider %q", name)
 		case name == "local" && !c.LocalEnabled:
 			return nil, errors.New("providers names local but local.enabled is not true")
 		case name == "local" && c.LocalRunnerPath == "":
@@ -483,4 +505,10 @@ func defaultReplicaID() string {
 		host = "router"
 	}
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
+}
+
+// knownList names every provider the settings file may list, in a fixed order
+func knownList() string {
+	names := slices.Sorted(maps.Keys(knownProviders))
+	return strings.Join(names, ", ")
 }
