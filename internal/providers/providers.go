@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
+
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/boat"
@@ -25,8 +27,8 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 	GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32,
 }}
 
-// Build returns the configured providers in preference order
-func Build(cfg config.Config) (*provider.Registry, error) {
+// Build returns the configured providers in preference order, sharing state across replicas in vk
+func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 	var ps []provider.Provider
 	for _, name := range cfg.Providers {
 		switch name {
@@ -70,7 +72,7 @@ func Build(cfg config.Config) (*provider.Registry, error) {
 			}
 			ps = append(ps, p)
 		case "boat":
-			p, err := buildBoat(cfg.ProviderKeys["boat"])
+			p, err := buildBoat(cfg.ProviderKeys["boat"], vk, cfg.ValkeyPrefix)
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -162,7 +164,7 @@ func buildKoyeb(token string) (*koyeb.Provider, error) {
 }
 
 // buildBoat reads the Boat settings, every machine type is a size unless some are named
-func buildBoat(key string) (*boat.Provider, error) {
+func buildBoat(key string, vk valkey.Client, prefix string) (*boat.Provider, error) {
 	if key == "" {
 		return nil, errors.New("boat needs BOAT_API_KEY")
 	}
@@ -170,5 +172,5 @@ func buildBoat(key string) (*boat.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("BUGNET_BOAT_TYPES: %w", err)
 	}
-	return boat.New(boat.Options{APIKey: key, TypeBySize: types})
+	return boat.New(boat.Options{APIKey: key, TypeBySize: types, Valkey: vk, Prefix: prefix})
 }

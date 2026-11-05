@@ -207,4 +207,7 @@ reads its credentials and settings from the environment table above.
   with `KOYEB_API_TOKEN`, `BUGNET_KOYEB_REGION` and `BUGNET_KOYEB_INSTANCE_TYPES`.
 - `boat` runs Boat sandboxes in the EU without the account's secrets, snapshots or monitoring,
   with `BOAT_API_KEY` and `BUGNET_BOAT_TYPES`. `large` needs a first payment and `xlarge` the
-  $100 plan, so `BUGNET_BOAT_TYPES` can leave them out.
+  $100 plan, so `BUGNET_BOAT_TYPES` can leave them out. The fee of a start past the plan's
+  included starts comes from `GET /limits`. When the key cannot read it, the router prices the
+  fee from the starts every replica counts in Valkey under `BUGNET_VALKEY_PREFIX`, kept for the
+  day-long window, and from each process's own count while Valkey does not answer.

@@ -88,14 +88,18 @@ func Postgres(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// ValkeyAddr returns the address of the Valkey tests use
+func ValkeyAddr() string {
+	if addr := os.Getenv("BUGNET_TEST_VALKEY_ADDR"); addr != "" {
+		return addr
+	}
+	return defaultValkeyURL
+}
+
 // Valkey returns a client and a unique key prefix whose keys are deleted when the test ends
 func Valkey(t *testing.T) (valkey.Client, string) {
 	t.Helper()
-	addr := os.Getenv("BUGNET_TEST_VALKEY_ADDR")
-	if addr == "" {
-		addr = defaultValkeyURL
-	}
-	client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{addr}})
+	client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{ValkeyAddr()}})
 	if err != nil {
 		t.Fatalf("connect to valkey: %v", err)
 	}

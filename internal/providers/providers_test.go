@@ -31,7 +31,7 @@ func localConfig(t *testing.T) config.Config {
 
 func TestBuildLocal(t *testing.T) {
 	t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", "1")
-	reg, err := providers.Build(localConfig(t))
+	reg, err := providers.Build(localConfig(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestBuildLocal(t *testing.T) {
 
 func TestBuildLocalRefusesWithoutFlag(t *testing.T) {
 	t.Setenv("BUGNET_ENABLE_LOCAL_PROVIDER", "")
-	_, err := providers.Build(localConfig(t))
+	_, err := providers.Build(localConfig(t), nil)
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_ENABLE_LOCAL_PROVIDER") {
 		t.Fatalf("build without the flag: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestBuildBoxd(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"boxd"},
 		ProviderKeys: map[string]string{"boxd": "bxd_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestBuildBoxdEndpointOverride(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"boxd"},
 		ProviderKeys: map[string]string{"boxd": "bxd_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestBuildBoxdEndpointOverride(t *testing.T) {
 }
 
 func TestBuildBoxdNeedsKey(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"boxd"}})
+	_, err := providers.Build(config.Config{Providers: []string{"boxd"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "BOXD_API_KEY") {
 		t.Fatalf("build boxd without a key: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestBuildE2B(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"e2b"},
 		ProviderKeys: map[string]string{"e2b": "e2b_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestBuildE2BDefaults(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"e2b"},
 		ProviderKeys: map[string]string{"e2b": "e2b_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,8 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 			} else {
 				t.Setenv(c.env, c.value)
 			}
-			_, err := providers.Build(config.Config{Providers: []string{"e2b"}, ProviderKeys: keys})
+			cfg := config.Config{Providers: []string{"e2b"}, ProviderKeys: keys}
+			_, err := providers.Build(cfg, nil)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("build gave %v, want an error naming %s", err, want)
 			}
@@ -207,7 +208,7 @@ func TestBuildKoyeb(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"koyeb"},
 		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +233,7 @@ func TestBuildKoyebInstanceTypes(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"koyeb"},
 		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +249,7 @@ func TestBuildKoyebInstanceTypes(t *testing.T) {
 }
 
 func TestBuildKoyebRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"koyeb"}})
+	_, err := providers.Build(config.Config{Providers: []string{"koyeb"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "KOYEB_API_TOKEN") {
 		t.Fatalf("build koyeb without a token: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestBuildKoyebRejectsBadConfig(t *testing.T) {
 	_, err = providers.Build(config.Config{
 		Providers:    []string{"koyeb"},
 		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_KOYEB_INSTANCE_TYPES") {
 		t.Fatalf("build koyeb with an unknown instance type: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestBuildBoat(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"boat"},
 		ProviderKeys: map[string]string{"boat": "boat_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +292,7 @@ func TestBuildBoatTypes(t *testing.T) {
 	reg, err := providers.Build(config.Config{
 		Providers:    []string{"boat"},
 		ProviderKeys: map[string]string{"boat": "boat_test"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func TestBuildBoatTypes(t *testing.T) {
 }
 
 func TestBuildBoatRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"boat"}})
+	_, err := providers.Build(config.Config{Providers: []string{"boat"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "BOAT_API_KEY") {
 		t.Fatalf("build boat without a key: %v", err)
 	}
@@ -314,14 +315,14 @@ func TestBuildBoatRejectsBadConfig(t *testing.T) {
 	_, err = providers.Build(config.Config{
 		Providers:    []string{"boat"},
 		ProviderKeys: map[string]string{"boat": "boat_test"},
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_BOAT_TYPES") {
 		t.Fatalf("build boat with an unknown type: %v", err)
 	}
 }
 
 func TestBuildRejectsUnknownProviders(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}})
+	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "nimbus") {
 		t.Fatalf("build nimbus: %v", err)
 	}

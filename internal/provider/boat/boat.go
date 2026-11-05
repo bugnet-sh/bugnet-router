@@ -8,8 +8,9 @@
 // adapter reopens from the delivered offsets whenever it ends early. File calls are JSON with a
 // 5 MiB cap, so a larger upload goes through a signed upload URL and a larger read through tail
 // in the sandbox. StartCostMicros prices the next start from GET /limits, read at most every
-// 10 s, or from this process's own count of starts when the key cannot read it. The client in
-// ./api is generated from the vendored OpenAPI document.
+// 10 s, or when the key cannot read it from the starts every replica counts in Valkey, and this
+// process's own count while Valkey cannot answer. The client in ./api is generated from the
+// vendored OpenAPI document.
 package boat
 
 import (
@@ -30,6 +31,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/boat/api"
@@ -133,6 +136,9 @@ type Options struct {
 	// TypeBySize maps each size sold to its machine type, every type by name when empty
 	TypeBySize map[string]string
 	BaseURL    string
+	// Valkey shares the count of starts with other replicas under Prefix, none when nil
+	Valkey valkey.Client
+	Prefix string
 }
 
 // Provider places sandboxes on Boat, keeping only what it knows about the next start's fee
@@ -172,12 +178,16 @@ func New(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boat: %w", err)
 	}
-	return &Provider{
+	p := &Provider{
 		api: client, control: control, baseURL: base, key: key,
 		direct: &http.Client{CheckRedirect: provider.NoRedirect}, sizes: sizes,
 		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
-	}, nil
+	}
+	if opts.Valkey != nil {
+		p.fees.shared = &sharedStarts{c: opts.Valkey, key: opts.Prefix + "boat:starts"}
+	}
+	return p, nil
 }
 
 // Name returns "boat"
@@ -260,7 +270,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if err != nil {
 		return provider.Ref{}, err
 	}
-	p.fees.started(time.Now())
+	p.started(time.Now())
 	var reply sandboxReply
 	if err := decode(raw, &reply); err != nil || reply.Sandbox.ID == "" {
 		return provider.Ref{}, unknown(fmt.Errorf("boat create reply names no sandbox: %.200s",

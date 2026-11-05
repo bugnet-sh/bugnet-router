@@ -109,7 +109,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, ln net.List
 	if err != nil {
 		return err
 	}
-	reg, err := providers.Build(cfg)
+	reg, err := providers.Build(cfg, vk)
 	if err != nil {
 		return err
 	}

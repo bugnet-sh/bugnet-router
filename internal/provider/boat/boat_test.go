@@ -22,9 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
+
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
 	"github.com/oynozan/bugnet-router/internal/provider/shell"
+	"github.com/oynozan/bugnet-router/internal/testenv"
 )
 
 const (
@@ -1420,5 +1423,65 @@ func TestBoatStartCostCountsStartsWithoutLimits(t *testing.T) {
 	}
 	if fee, ok := p.StartCostMicros(small); ok {
 		t.Fatalf("start past three times the minute's starts costs %d, want it refused", fee)
+	}
+}
+
+// sharedProvider builds an adapter whose start count lives in vk under prefix
+func (f *fakeBoat) sharedProvider(t *testing.T, vk valkey.Client, prefix string) *Provider {
+	t.Helper()
+	p, err := New(Options{
+		APIKey: fakeKey, BaseURL: f.srv.URL + "/api/v1", Valkey: vk, Prefix: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestBoatStartCountIsSharedThroughValkey(t *testing.T) {
+	f := newFake(t)
+	f.setLimits(http.StatusForbidden, "")
+	vk, prefix := testenv.Valkey(t)
+	replicas := []*Provider{f.sharedProvider(t, vk, prefix), f.sharedProvider(t, vk, prefix)}
+	small := smallSize(t, replicas[0])
+	// Twelve starts split over two replicas use up the minute's included starts for both
+	for i := range 12 {
+		createSmall(t, replicas[i%2], fmt.Sprintf("key-%d", i))
+	}
+	for i, p := range replicas {
+		if fee, ok := p.StartCostMicros(small); fee != 30000 || !ok {
+			t.Fatalf("replica %d prices the 13th start at %d, %v, want the 30000 extra fee", i,
+				fee, ok)
+		}
+	}
+	ttl, err := vk.Do(t.Context(), vk.B().Pttl().Key(prefix+"boat:starts").Build()).AsInt64()
+	if err != nil || ttl <= (23*time.Hour).Milliseconds() || ttl > (24*time.Hour).Milliseconds() {
+		t.Fatalf("the shared start count expires in %dms, %v, want with the day's window", ttl,
+			err)
+	}
+	other, _ := testenv.Valkey(t)
+	elsewhere := f.sharedProvider(t, other, prefix+"other:")
+	if fee, ok := elsewhere.StartCostMicros(small); fee != 0 || !ok {
+		t.Fatalf("a replica under another prefix prices a start at %d, %v, want included", fee,
+			ok)
+	}
+}
+
+func TestBoatStartCountFallsBackWithoutValkey(t *testing.T) {
+	f := newFake(t)
+	f.setLimits(http.StatusForbidden, "")
+	gone, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{testenv.ValkeyAddr()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone.Close()
+	p := f.sharedProvider(t, gone, "bn:test:gone:")
+	small := smallSize(t, p)
+	for i := range 12 {
+		createSmall(t, p, fmt.Sprintf("key-%d", i))
+	}
+	if fee, ok := p.StartCostMicros(small); fee != 30000 || !ok {
+		t.Fatalf("with Valkey gone the 13th start costs %d, %v, want this process's own count",
+			fee, ok)
 	}
 }
