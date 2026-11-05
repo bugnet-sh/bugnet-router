@@ -221,8 +221,8 @@ Money is integer micro-USD and times are UTC.
 it now for the order's requirements. `PricePackage` takes one start package ID and the same
 requirements and answers with that package as `Estimate` would list it. The gateway asks it right
 before Payments charges a paid start. It writes nothing, spends no rate-limit token, and leaves
-`fits`, `extensions_needed` and `short_on` unset. An unknown package, or one with `extension_of`
-set, answers `InvalidArgument`.
+`fits`, `extensions_needed` and `short_on` unset. An unknown package answers `InvalidArgument`
+with reason `PACKAGE_UNKNOWN`, and one with `extension_of` set with reason `NOT_START_PACKAGE`.
 
 An unavailable start package's `unavailable_reason` is always one of these codes, never error
 text.
@@ -292,6 +292,25 @@ or file call on a placement that is not ready. A request only the provider refus
 token. When Valkey cannot answer within 500 ms, the call goes through and the router logs a
 warning. `StopPlacement` spends nothing, and stops that race on one placement in one process wait
 for the destroy already in flight instead of calling the provider again.
+
+## Error reasons
+
+Each refusal below but the missing file carries a `google.rpc.ErrorInfo` in domain
+`bugnet.router`, so the gateway tells them apart without another call. No message or detail
+holds a handle or a job ID.
+
+| Code | Reason | When |
+| --- | --- | --- |
+| `NotFound` | `HANDLE_UNKNOWN` | A call taking a handle gets a malformed one or one never issued |
+| `NotFound` | `JOB_UNKNOWN` | `WatchJob` or `CancelJob` names a job the handle's placement lacks |
+| `NotFound` | None | A file or directory that does not exist |
+| `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
+| `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
+| `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
+| `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
+| `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty |
+
+A provider failure carries the provider's code in lowercase instead, such as `rate_limited`.
 
 ## Deployment
 

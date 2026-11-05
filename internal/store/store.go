@@ -41,6 +41,8 @@ const (
 var (
 	// ErrNotFound means the requested row does not exist
 	ErrNotFound = errors.New("store: not found")
+	// ErrUnknownHandle is ErrNotFound for a lookup by handle, with the same message
+	ErrUnknownHandle = fmt.Errorf("%w", ErrNotFound)
 	// ErrStateConflict means the row is not in a state that allows the change
 	ErrStateConflict = errors.New("store: state conflict")
 )

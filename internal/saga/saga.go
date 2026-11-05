@@ -967,11 +967,11 @@ func (s *Saga) labels(id uuid.UUID) map[string]string {
 	return l
 }
 
-// hashHandle reports a malformed handle as not found, like a well formed unknown one
+// hashHandle reports a malformed handle as unknown, like a well formed one never issued
 func hashHandle(h string) ([]byte, error) {
 	sha, err := handle.Hash(h)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", store.ErrNotFound, err)
+		return nil, fmt.Errorf("%w: %w", store.ErrUnknownHandle, err)
 	}
 	return sha, nil
 }

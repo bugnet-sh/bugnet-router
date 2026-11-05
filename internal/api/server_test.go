@@ -509,6 +509,24 @@ func wantInfo(t *testing.T, err error, reason string) {
 	t.Fatalf("error %v has no ErrorInfo detail", err)
 }
 
+// wantNoInfo checks that err carries no google.rpc.ErrorInfo
+func wantNoInfo(t *testing.T, err error) {
+	t.Helper()
+	var ce *connect.Error
+	if !errors.As(err, &ce) {
+		t.Fatalf("error %v is not a Connect error", err)
+	}
+	for _, d := range ce.Details() {
+		v, derr := d.Value()
+		if derr != nil {
+			t.Fatalf("decode error detail: %v", derr)
+		}
+		if info, ok := v.(*errdetails.ErrorInfo); ok {
+			t.Fatalf("error %v carries error info %v, want none", err, info)
+		}
+	}
+}
+
 // wantRetry checks that err carries a google.rpc.RetryInfo and returns its delay
 func wantRetry(t *testing.T, err error) time.Duration {
 	t.Helper()
@@ -1611,13 +1629,17 @@ func TestErrorCodes(t *testing.T) {
 				strings.Contains(msg, "local") || strings.Contains(msg, "sbx-1") {
 				t.Errorf("%s error %q carries the provider's text", code, msg)
 			}
+			if code == "not_found" {
+				wantNoInfo(t, err)
+				continue
+			}
 			wantInfo(t, err, code)
 		}
 	})
-	t.Run("missing file is not found", func(t *testing.T) {
+	t.Run("missing file is not found without a reason", func(t *testing.T) {
 		err := readErr(h, "/root/missing.txt")
 		wantCode(t, err, connect.CodeNotFound)
-		wantInfo(t, err, "not_found")
+		wantNoInfo(t, err)
 	})
 	t.Run("provider invalid is invalid", func(t *testing.T) {
 		err := readErr(h, "/root")
@@ -1656,6 +1678,7 @@ func TestErrorCodes(t *testing.T) {
 		w, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: res.GetJobId()})
 		wantCode(t, err, connect.CodeAborted)
 		wantInfo(t, err, "job_lost")
+		quotesNone(t, err, h, res.GetJobId())
 		if string(w.stdout) != "up\n" || w.exit != nil {
 			t.Fatalf("watch of a lost job gave %q and exit %v", w.stdout, w.exit)
 		}

@@ -100,9 +100,13 @@ func (s *Store) placementWhere(ctx context.Context, where string, arg any) (Plac
 	return p, err
 }
 
-// PlacementByHandle returns the placement with this handle hash or ErrNotFound
+// PlacementByHandle returns the placement with this handle hash or ErrUnknownHandle
 func (s *Store) PlacementByHandle(ctx context.Context, sha []byte) (Placement, error) {
-	return s.placementWhere(ctx, "handle_sha256 = $1", sha)
+	p, err := s.placementWhere(ctx, "handle_sha256 = $1", sha)
+	if errors.Is(err, ErrNotFound) {
+		return Placement{}, ErrUnknownHandle
+	}
+	return p, err
 }
 
 // PlacementByID returns the placement or ErrNotFound

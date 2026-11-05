@@ -101,11 +101,14 @@ func TestCreatePlacementSameOrderReturnsExisting(t *testing.T) {
 	if err != nil || byHandle.ID != first.ID {
 		t.Fatalf("by handle: %v %v", byHandle.ID, err)
 	}
-	if _, err := s.PlacementByHandle(ctx, []byte("missing")); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("err = %v", err)
+	_, err = s.PlacementByHandle(ctx, []byte("missing"))
+	if !errors.Is(err, store.ErrUnknownHandle) || !errors.Is(err, store.ErrNotFound) ||
+		err.Error() != store.ErrNotFound.Error() {
+		t.Fatalf("by a missing handle err = %v, want ErrUnknownHandle with ErrNotFound's text", err)
 	}
-	if _, err := s.PlacementByID(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("err = %v", err)
+	_, err = s.PlacementByID(ctx, uuid.New())
+	if !errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrUnknownHandle) {
+		t.Fatalf("by a missing id err = %v, want ErrNotFound alone", err)
 	}
 }
 

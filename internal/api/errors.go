@@ -28,6 +28,14 @@ const (
 	reasonNotReady = "NOT_READY"
 	// reasonExceedsLifetime marks an extension past the provider's maximum sandbox lifetime
 	reasonExceedsLifetime = "EXCEEDS_LIFETIME"
+	// reasonHandleUnknown marks a handle the router never issued, or one that is malformed
+	reasonHandleUnknown = "HANDLE_UNKNOWN"
+	// reasonJobUnknown marks a job the handle's placement does not have
+	reasonJobUnknown = "JOB_UNKNOWN"
+	// reasonPackageUnknown marks a package the catalog lacks
+	reasonPackageUnknown = "PACKAGE_UNKNOWN"
+	// reasonNotStartPackage marks an extension package given where a start package is needed
+	reasonNotStartPackage = "NOT_START_PACKAGE"
 )
 
 // Codes a start package's unavailable_reason takes, never error text
@@ -61,8 +69,9 @@ var codes = []struct {
 	{errNotReady, connect.CodeFailedPrecondition, reasonNotReady},
 	{placement.ErrNoCandidate, connect.CodeResourceExhausted, ""},
 	{jobs.ErrTooManyJobs, connect.CodeResourceExhausted, ""},
+	{store.ErrUnknownHandle, connect.CodeNotFound, reasonHandleUnknown},
+	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},
 	{store.ErrNotFound, connect.CodeNotFound, ""},
-	{jobs.ErrNotFound, connect.CodeNotFound, ""},
 	{jobs.ErrShuttingDown, connect.CodeUnavailable, ""},
 	{errShuttingDown, connect.CodeUnavailable, ""},
 	{context.Canceled, connect.CodeCanceled, ""},
@@ -82,7 +91,7 @@ func unavailable(refusal error) string {
 	return ""
 }
 
-func invalid(format string, args ...any) error {
+func invalid(format string, args ...any) *connect.Error {
 	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(format, args...))
 }
 
@@ -141,15 +150,16 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		return connect.NewError(c.code, err)
 	}
 	if e, ok := provider.AsError(err); ok {
+		// The provider's text may name the provider or its sandbox, which the gateway never sees
+		s.d.Log.Warn("api: provider error", "code", e.Code, "err", err)
 		code, msg := connect.CodeUnavailable, "sandbox provider unavailable"
 		switch {
 		case e.Code == provider.CodeInvalid:
 			code, msg = connect.CodeInvalidArgument, "sandbox provider refused the request"
 		case e.Code == provider.CodeNotFound && fileOp:
-			code, msg = connect.CodeNotFound, "no such file or directory"
+			// No reason keeps a missing file apart from HANDLE_UNKNOWN and JOB_UNKNOWN
+			return connect.NewError(connect.CodeNotFound, errors.New("no such file or directory"))
 		}
-		// The provider's text may name the provider or its sandbox, which the gateway never sees
-		s.d.Log.Warn("api: provider error", "code", e.Code, "err", err)
 		return withInfo(connect.NewError(code, errors.New(msg)), string(e.Code))
 	}
 	s.d.Log.Error("api: internal error", "err", err)

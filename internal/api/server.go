@@ -182,9 +182,10 @@ func (s *Server) PricePackage(
 	pkg, ok := s.d.Catalog.Get(id)
 	switch {
 	case !ok:
-		return nil, invalid("unknown package %q", id)
+		return nil, withInfo(invalid("unknown package %q", id), reasonPackageUnknown)
 	case pkg.ExtensionOf != "":
-		return nil, invalid("package %q is an extension, a start needs a start package", id)
+		ce := invalid("package %q is an extension, a start needs a start package", id)
+		return nil, withInfo(ce, reasonNotStartPackage)
 	}
 	return connect.NewResponse(&routerv1.PricePackageResponse{
 		Option: s.startOption(pkg, requirements(req.Msg.GetRequirements())),
@@ -372,11 +373,11 @@ func ended(state string) bool {
 	return state == store.PlacementTerminated || state == store.PlacementFailed
 }
 
-// placement looks a handle up, reporting a malformed one as not found like an unknown one
+// placement looks a handle up, reporting a malformed one as unknown like one never issued
 func (s *Server) placement(ctx context.Context, h string) (store.Placement, error) {
 	sha, err := handle.Hash(h)
 	if err != nil {
-		return store.Placement{}, fmt.Errorf("%w: %w", store.ErrNotFound, err)
+		return store.Placement{}, fmt.Errorf("%w: %w", store.ErrUnknownHandle, err)
 	}
 	return s.d.Store.PlacementByHandle(ctx, sha)
 }
@@ -512,7 +513,7 @@ func (s *Server) WatchJob(
 		case frame.KindError:
 			if streams.Terminal(f) {
 				ce := connect.NewError(connect.CodeAborted,
-					fmt.Errorf("job %s ended with %s", job.ID, f.Reason))
+					fmt.Errorf("job ended with %s", f.Reason))
 				return withInfo(ce, f.Reason)
 			}
 			return nil
@@ -558,7 +559,7 @@ func (s *Server) job(ctx context.Context, h, jobID string) (store.Job, error) {
 	}
 	job, err := s.d.Store.JobByID(ctx, jobID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && job.PlacementID != p.ID) {
-		return store.Job{}, fmt.Errorf("%w: %s", jobs.ErrNotFound, jobID)
+		return store.Job{}, jobs.ErrNotFound
 	}
 	return job, err
 }

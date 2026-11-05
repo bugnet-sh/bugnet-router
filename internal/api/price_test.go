@@ -178,12 +178,14 @@ func TestEngineErrorIsInternalAndLogged(t *testing.T) {
 
 func TestPricePackageRefusals(t *testing.T) {
 	e := newEnv(t, options{})
-	for name, id := range map[string]string{
-		"unknown": "large-10m", "empty": "", "extension": morePkg,
+	for name, c := range map[string]struct{ id, reason string }{
+		"unknown":   {"large-10m", "PACKAGE_UNKNOWN"},
+		"empty":     {"", "PACKAGE_UNKNOWN"},
+		"extension": {morePkg, "NOT_START_PACKAGE"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := e.pricePackage(t, id, nil)
-			mustCode(t, err, connect.CodeInvalidArgument, "")
+			_, err := e.pricePackage(t, c.id, nil)
+			mustCode(t, err, connect.CodeInvalidArgument, c.reason)
 		})
 	}
 	stranger := e.clientWith(t, "Bearer wrong-token-0123456789abcdef0123456789", true)
@@ -199,7 +201,7 @@ func TestPricePackageWritesNothing(t *testing.T) {
 		e.price(t, smallPkg, nil)
 		e.price(t, gpuPkg, &routerv1.Requirements{Ssh: true})
 		_, err := e.pricePackage(t, morePkg, nil)
-		mustCode(t, err, connect.CodeInvalidArgument, "")
+		mustCode(t, err, connect.CodeInvalidArgument, "NOT_START_PACKAGE")
 	}
 	eq(t, e.rowCounts(t), rows)
 	eq(t, e.keys(t), keys)

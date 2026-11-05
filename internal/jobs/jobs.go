@@ -257,7 +257,7 @@ func (s *Service) begin(
 		}
 		left := time.Until(deadline)
 		if left <= 0 {
-			return fmt.Errorf("%w: %s was never recorded", ErrNotFound, nj.ID)
+			return fmt.Errorf("%w: never recorded", ErrNotFound)
 		}
 		select {
 		case <-ctx.Done():
@@ -442,7 +442,7 @@ func (r *reader) follow(
 			job, err := r.s.d.Store.JobByID(ctx, r.job)
 			switch {
 			case errors.Is(err, store.ErrNotFound):
-				return ending{}, fmt.Errorf("%w: %s", ErrNotFound, r.job)
+				return ending{}, ErrNotFound
 			case err != nil:
 				return ending{}, err
 			case job.State != store.JobRunning:
@@ -508,7 +508,7 @@ func (r *reader) fresh(f frame.Frame) (frame.Frame, bool) {
 func (s *Service) Cancel(ctx context.Context, p store.Placement, jobID string) (string, error) {
 	job, err := s.d.Store.JobByID(ctx, jobID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && job.PlacementID != p.ID) {
-		return "", fmt.Errorf("%w: %s", ErrNotFound, jobID)
+		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", err
