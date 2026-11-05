@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/testenv"
 )
 
@@ -51,5 +53,19 @@ func TestMigrateWithoutDatabaseURL(t *testing.T) {
 	err := run(discard, []string{"migrate"})
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_DATABASE_URL is required") {
 		t.Fatalf("migrate without a database url: %v, want an error naming it", err)
+	}
+}
+
+func TestJobDepsCarryTheOutputLimits(t *testing.T) {
+	d := jobDeps(config.Config{
+		ReplicaID: "api-a", JobOutputBudget: 1 << 20, PlacementOutputBudget: 4 << 20,
+		PlacementTailReserve: 512 << 10, MaxRunningJobs: 3,
+	}, nil, nil, nil, discard)
+	want := jobs.Deps{
+		ReplicaID: "api-a", Log: discard, JobBudget: 1 << 20, PlacementBudget: 4 << 20,
+		TailReserve: 512 << 10, MaxRunning: 3,
+	}
+	if d != want {
+		t.Fatalf("jobs deps %+v, want %+v", d, want)
 	}
 }

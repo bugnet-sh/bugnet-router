@@ -131,6 +131,10 @@ Only `router-api` reads these.
 | `BUGNET_LISTEN_ADDR` | `:8080` | API listen address |
 | `BUGNET_RUNNER_LINUX_AMD64` | required for boxd, E2B, Koyeb and Boat | Linux amd64 `bugnet-run` uploaded into their sandboxes, `make build` in `bugnet-run` writes `dist/bugnet-run-linux-amd64` |
 | `BUGNET_RUNNER_LINUX_ARM64` | empty | Linux arm64 `bugnet-run` for providers with arm64 sandboxes, none today |
+| `BUGNET_JOB_OUTPUT_BUDGET` | `8MiB` | Stream memory one job's output may take before only its tail is kept, in bytes, `KiB` or `MiB` |
+| `BUGNET_PLACEMENT_OUTPUT_BUDGET` | `32MiB` | Stream memory all of a placement's jobs may take together over its life, in bytes, `KiB` or `MiB` |
+| `BUGNET_PLACEMENT_TAIL_RESERVE` | `8MiB` | Further stream memory per placement for jobs' final 8 KiB tails once its budget is spent |
+| `BUGNET_MAX_RUNNING_JOBS` | `16` | Jobs one placement runs at once, `Exec` answers `ResourceExhausted` past that |
 
 `router-api` reads each build once at start and refuses to start when a configured provider
 needs one that is unset or unreadable.
@@ -155,16 +159,32 @@ Money is integer micro-USD and times are UTC.
 ## Job output
 
 Every frame `bugnet-run` emits goes into the job's Valkey stream until the job's output has cost
-8 MiB of stream memory, or the placement's jobs 32 MiB together. Past that the router follows the
-job with `bugnet-run attach --tail`, stores its newest 64 KiB per output every 10 s until another
-quarter of the job's budget is spent, and once more when the job ends. Once the placement's
-32 MiB are spent, a job's last 8 KiB per output, the tail `Exec` returns, is still stored when it
-ends, from a separate 8 MiB reserve per placement that only these final tails use and that
-expires with the streams, so a small command run later still shows its output. A `skip` frame
-names the offsets the stored output goes on from. `WatchJob` sends it as `skip`, `Exec` sets `truncated`
-and the job row records `output_truncated`. The whole output stays in the sandbox in
-`/tmp/bugnet/jobs/<job>/out` and `err`, which `ReadFile` reads. A placement runs at most 16 jobs
-at once, and `Exec` answers `ResourceExhausted` past that.
+`BUGNET_JOB_OUTPUT_BUDGET` of stream memory, or the placement's jobs
+`BUGNET_PLACEMENT_OUTPUT_BUDGET` together. Past that the router follows the job with
+`bugnet-run attach --tail`, stores its newest 64 KiB per output every 10 s until another quarter
+of the job's budget is spent, and once more when the job ends. Once the placement's budget is
+spent, a job's last 8 KiB per output, the tail `Exec` returns, is still stored when it ends, from
+a separate reserve per placement of `BUGNET_PLACEMENT_TAIL_RESERVE` that only these final tails
+use and that expires with the streams, so a small command run later still shows its output.
+
+A `skip` frame names the offsets the stored output goes on from. `WatchJob` sends it as `skip`,
+`Exec` sets `truncated` and the job row records `output_truncated`. The whole output stays in the
+sandbox in `/tmp/bugnet/jobs/<job>/out` and `err`, which `ReadFile` reads. A placement runs at
+most `BUGNET_MAX_RUNNING_JOBS` jobs at once, and `Exec` answers `ResourceExhausted` past that.
+
+## Deployment
+
+Valkey holds the job streams, leases and shared counters, and nothing in it may be evicted. Run it
+with `maxmemory` set and `maxmemory-policy noeviction`, so a full Valkey refuses writes, which
+the router logs, instead of dropping streams or leases, and alert on its memory well before it
+reaches `maxmemory`.
+
+The output budgets bound what the streams hold. The aggregate bound is
+`BUGNET_PLACEMENT_OUTPUT_BUDGET` times the placements running at once, plus
+`BUGNET_PLACEMENT_TAIL_RESERVE` for each, counting a placement until its streams expire 10
+minutes after its deadline. With the defaults that is 40 MiB a placement, so 100 placements at
+once take up to about 4 GiB. Size `maxmemory` from that with headroom, since Valkey's own memory
+for a stream can run up to half again over the budget's estimate.
 
 ## Events
 

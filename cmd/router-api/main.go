@@ -29,6 +29,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
+	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
@@ -131,13 +132,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 		Runners:      runners,
 		Log:          log,
 	})
-	js := jobs.New(jobs.Deps{
-		Store:     st,
-		Bus:       streams.NewBus(vk, cfg.ValkeyPrefix),
-		Registry:  reg,
-		ReplicaID: cfg.ReplicaID,
-		Log:       log,
-	})
+	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
 	var scanner sync.WaitGroup
 	// The scanner runs until jobs.Shutdown, so jobs keep being taken over while HTTP drains
 	scanner.Go(func() { js.RunScanner(context.Background()) })
@@ -182,6 +177,23 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config) error {
 	shutdown(log, hs, js, sg)
 	scanner.Wait()
 	return serveErr
+}
+
+// jobDeps gives the jobs service its dependencies and the configured output limits
+func jobDeps(
+	cfg config.Config, st *store.Store, bus *streams.Bus, reg *provider.Registry, log *slog.Logger,
+) jobs.Deps {
+	return jobs.Deps{
+		Store:           st,
+		Bus:             bus,
+		Registry:        reg,
+		ReplicaID:       cfg.ReplicaID,
+		Log:             log,
+		JobBudget:       cfg.JobOutputBudget,
+		PlacementBudget: cfg.PlacementOutputBudget,
+		TailReserve:     cfg.PlacementTailReserve,
+		MaxRunning:      cfg.MaxRunningJobs,
+	}
 }
 
 // shutdown drains HTTP, hands running jobs to peers and waits a bounded time for placing

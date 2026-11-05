@@ -37,12 +37,34 @@ type Config struct {
 	LocalRoot           string
 	LocalRunnerPath     string // host build of bugnet-run the local provider runs
 	LocalHourlyMicros   int64
+	// JobOutputBudget is what one job's output may cost its Valkey stream, in bytes
+	JobOutputBudget int64
+	// PlacementOutputBudget is what a placement's job streams may cost together, in bytes
+	PlacementOutputBudget int64
+	// PlacementTailReserve is what final tails may cost a placement past its budget, in bytes
+	PlacementTailReserve int64
+	// MaxRunningJobs bounds the jobs one placement runs at once
+	MaxRunningJobs int
 }
 
 const (
 	minHandleKeyBytes = 32
 	databaseURLEnv    = "BUGNET_DATABASE_URL"
 )
+
+// Defaults of the output limits, the jobs service's own
+const (
+	defaultJobOutputBudget       = "8MiB"
+	defaultPlacementOutputBudget = "32MiB"
+	defaultPlacementTailReserve  = "8MiB"
+	defaultMaxRunningJobs        = "16"
+)
+
+// byteUnits are the suffixes a byte size may end in
+var byteUnits = []struct {
+	suffix string
+	size   int64
+}{{"KiB", 1 << 10}, {"MiB", 1 << 20}}
 
 var providerKeyVars = []struct{ name, env string }{
 	{"boxd", "BOXD_API_KEY"},
@@ -129,6 +151,23 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf(
 			"config: BUGNET_LOCAL_HOURLY_MICROS must be a non-negative whole number")
 	}
+	for _, b := range []struct {
+		name, def string
+		into      *int64
+	}{
+		{"BUGNET_JOB_OUTPUT_BUDGET", defaultJobOutputBudget, &c.JobOutputBudget},
+		{"BUGNET_PLACEMENT_OUTPUT_BUDGET", defaultPlacementOutputBudget, &c.PlacementOutputBudget},
+		{"BUGNET_PLACEMENT_TAIL_RESERVE", defaultPlacementTailReserve, &c.PlacementTailReserve},
+	} {
+		if *b.into, err = byteSize(b.name, get(b.name, b.def)); err != nil {
+			return Config{}, err
+		}
+	}
+	c.MaxRunningJobs, err = strconv.Atoi(get("BUGNET_MAX_RUNNING_JOBS", defaultMaxRunningJobs))
+	if err != nil || c.MaxRunningJobs < 1 {
+		return Config{}, fmt.Errorf(
+			"config: BUGNET_MAX_RUNNING_JOBS must be a positive whole number")
+	}
 	c.MarginFloor, err = strconv.ParseFloat(get("BUGNET_MARGIN_FLOOR", "0.5"), 64)
 	if err != nil || math.IsNaN(c.MarginFloor) || math.IsInf(c.MarginFloor, 0) ||
 		c.MarginFloor < 0 || c.MarginFloor > 10 {
@@ -178,6 +217,24 @@ func DatabaseURLFrom(getenv func(string) (string, bool)) (string, error) {
 		return v, nil
 	}
 	return "", fmt.Errorf("config: %s is required", databaseURLEnv)
+}
+
+// byteSize reads a positive whole number of bytes, KiB or MiB, such as 65536, 64KiB or 8MiB
+func byteSize(name, raw string) (int64, error) {
+	digits, unit := raw, int64(1)
+	for _, u := range byteUnits {
+		if d, ok := strings.CutSuffix(raw, u.suffix); ok {
+			digits, unit = d, u.size
+			break
+		}
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || n < 1 || n > math.MaxInt64/unit {
+		return 0, fmt.Errorf(
+			"config: %s must be a positive whole number of bytes, optionally ending in KiB or MiB",
+			name)
+	}
+	return n * unit, nil
 }
 
 func decodeKey(name, raw string, size int) ([]byte, error) {

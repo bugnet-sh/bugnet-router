@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oynozan/bugnet-router/internal/jobs"
 )
 
 const secretToken = "0123456789abcdef0123456789abcdef"
@@ -71,6 +73,13 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if c.LocalRoot != filepath.Join(os.TempDir(), "bugnet-local") {
 		t.Fatalf("local root %q", c.LocalRoot)
 	}
+	if c.JobOutputBudget != jobs.DefaultJobBudget ||
+		c.PlacementOutputBudget != jobs.DefaultPlacementBudget ||
+		c.PlacementTailReserve != jobs.DefaultTailReserve ||
+		c.MaxRunningJobs != jobs.DefaultMaxRunning {
+		t.Fatalf("output limits %d, %d, %d and %d jobs, want the jobs service's defaults",
+			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
+	}
 	if string(c.HandleKey) != "0123456789abcdef0123456789abcdef" {
 		t.Fatal("handle key not parsed")
 	}
@@ -117,6 +126,21 @@ func TestLoadValidation(t *testing.T) {
 		"deployment with underscore":    {"BUGNET_DEPLOYMENT_ID": "blue_green"},
 		"deployment with a space":       {"BUGNET_DEPLOYMENT_ID": "blue green"},
 		"long deployment":               {"BUGNET_DEPLOYMENT_ID": strings.Repeat("d", 33)},
+		"BUGNET_JOB_OUTPUT_BUDGET":      {"BUGNET_JOB_OUTPUT_BUDGET": "0"},
+		"negative job budget":           {"BUGNET_JOB_OUTPUT_BUDGET": "-5MiB"},
+		"job budget in GB":              {"BUGNET_JOB_OUTPUT_BUDGET": "8GB"},
+		"fractional job budget":         {"BUGNET_JOB_OUTPUT_BUDGET": "1.5MiB"},
+		"job budget with a space":       {"BUGNET_JOB_OUTPUT_BUDGET": "8 MiB"},
+		"lowercase suffix":              {"BUGNET_JOB_OUTPUT_BUDGET": "8mib"},
+		"BUGNET_PLACEMENT_OUTPUT_BUDGET": {
+			"BUGNET_PLACEMENT_OUTPUT_BUDGET": "9223372036854775807MiB",
+		},
+		"zero placement budget":         {"BUGNET_PLACEMENT_OUTPUT_BUDGET": "0KiB"},
+		"BUGNET_PLACEMENT_TAIL_RESERVE": {"BUGNET_PLACEMENT_TAIL_RESERVE": "lots"},
+		"negative tail reserve":         {"BUGNET_PLACEMENT_TAIL_RESERVE": "-1"},
+		"BUGNET_MAX_RUNNING_JOBS":       {"BUGNET_MAX_RUNNING_JOBS": "0"},
+		"negative running jobs":         {"BUGNET_MAX_RUNNING_JOBS": "-3"},
+		"running jobs with a suffix":    {"BUGNET_MAX_RUNNING_JOBS": "16KiB"},
 	}
 	secrets := map[string]string{
 		"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
@@ -171,29 +195,38 @@ func TestLoadValidation(t *testing.T) {
 func TestLoadOptional(t *testing.T) {
 	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	c, err := LoadFrom(env(t, map[string]string{
-		"BUGNET_EVENT_SIGNING_KEY":     seed,
-		"BUGNET_EVENTS_URL":            "https://events.example",
-		"BUGNET_ENABLE_LOCAL_PROVIDER": "1",
-		"BUGNET_LOCAL_ROOT":            "/var/bn",
-		"BUGNET_PROVIDERS":             "local,e2b",
-		"BOXD_API_KEY":                 "bk",
-		"E2B_API_KEY":                  "ek",
-		"KOYEB_API_TOKEN":              "",
-		"BOAT_API_KEY":                 "ok",
-		"BUGNET_RUNNER_LINUX_AMD64":    "/r/amd",
-		"BUGNET_RUNNER_LINUX_ARM64":    "/r/arm",
-		"BUGNET_MARGIN_FLOOR":          "2.5",
-		"BUGNET_REPLICA_ID":            "r1",
-		"BUGNET_VALKEY_ADDR":           "v:1",
-		"BUGNET_LISTEN_ADDR":           ":9",
-		"BUGNET_WORKER_LISTEN_ADDR":    ":10",
-		"BUGNET_VALKEY_PREFIX":         "t:",
-		"BUGNET_LOCAL_RUNNER":          "/r/local",
-		"BUGNET_LOCAL_HOURLY_MICROS":   "1500",
-		"BUGNET_DEPLOYMENT_ID":         "staging-2",
+		"BUGNET_EVENT_SIGNING_KEY":       seed,
+		"BUGNET_EVENTS_URL":              "https://events.example",
+		"BUGNET_ENABLE_LOCAL_PROVIDER":   "1",
+		"BUGNET_LOCAL_ROOT":              "/var/bn",
+		"BUGNET_PROVIDERS":               "local,e2b",
+		"BOXD_API_KEY":                   "bk",
+		"E2B_API_KEY":                    "ek",
+		"KOYEB_API_TOKEN":                "",
+		"BOAT_API_KEY":                   "ok",
+		"BUGNET_RUNNER_LINUX_AMD64":      "/r/amd",
+		"BUGNET_RUNNER_LINUX_ARM64":      "/r/arm",
+		"BUGNET_MARGIN_FLOOR":            "2.5",
+		"BUGNET_REPLICA_ID":              "r1",
+		"BUGNET_VALKEY_ADDR":             "v:1",
+		"BUGNET_LISTEN_ADDR":             ":9",
+		"BUGNET_WORKER_LISTEN_ADDR":      ":10",
+		"BUGNET_VALKEY_PREFIX":           "t:",
+		"BUGNET_LOCAL_RUNNER":            "/r/local",
+		"BUGNET_LOCAL_HOURLY_MICROS":     "1500",
+		"BUGNET_DEPLOYMENT_ID":           "staging-2",
+		"BUGNET_JOB_OUTPUT_BUDGET":       "4096KiB",
+		"BUGNET_PLACEMENT_OUTPUT_BUDGET": "64MiB",
+		"BUGNET_PLACEMENT_TAIL_RESERVE":  "1000000",
+		"BUGNET_MAX_RUNNING_JOBS":        "4",
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if c.JobOutputBudget != 4<<20 || c.PlacementOutputBudget != 64<<20 ||
+		c.PlacementTailReserve != 1_000_000 || c.MaxRunningJobs != 4 {
+		t.Fatalf("output limits %d, %d, %d and %d jobs, want 4 MiB, 64 MiB, 1000000 and 4",
+			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
 	}
 	if len(c.EventSigningKey) != ed25519.PrivateKeySize || c.EventsURL != "https://events.example" {
 		t.Fatalf("event config: %+v", c)
@@ -226,6 +259,31 @@ func TestLoadOptional(t *testing.T) {
 	}
 	if c.LocalRunnerPath != "/r/local" || c.LocalHourlyMicros != 1500 {
 		t.Fatalf("local runner settings: %+v", c)
+	}
+}
+
+func TestByteSizes(t *testing.T) {
+	sizes := map[string]int64{
+		"1": 1, "8388608": 8 << 20, "8KiB": 8 << 10, "8MiB": 8 << 20, "+2MiB": 2 << 20,
+		"8796093022207MiB": 8796093022207 << 20,
+	}
+	for _, raw := range []string{
+		"", "KiB", "MiB", "0", "0MiB", "-1KiB", "8 KiB", "8kib", "8GiB", "8KB", "1e3", "0x10",
+		"8796093022208MiB",
+	} {
+		sizes[raw] = 0
+	}
+	for raw, want := range sizes {
+		got, err := byteSize("BUGNET_X", raw)
+		if want == 0 {
+			if err == nil || !strings.Contains(err.Error(), "BUGNET_X") {
+				t.Errorf("%q gave %d, %v, want an error naming the variable", raw, got, err)
+			}
+			continue
+		}
+		if err != nil || got != want {
+			t.Errorf("%q gave %d, %v, want %d", raw, got, err, want)
+		}
 	}
 }
 
