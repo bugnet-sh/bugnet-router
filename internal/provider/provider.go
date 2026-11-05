@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// DefaultGatePort is the port the bugnet-run gate listens on inside a sandbox
+const DefaultGatePort = 29417
+
 // Resources is the hardware a package needs or a size offers
 type Resources struct{ VCPU, MemoryMiB, DiskGiB, GPUCount, GPUMemoryGiB int }
 

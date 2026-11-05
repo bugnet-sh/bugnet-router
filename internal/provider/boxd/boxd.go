@@ -7,10 +7,12 @@
 // Label keys at boxd may not contain underscores, so each underscore travels as a dot and the
 // adapter refuses router keys with dots of their own. Exec takes one shell command string, which
 // package shell builds from argv with single-quote escaping, and closing either side of its
-// stream kills the command.
+// stream kills the command. Before Create returns a machine, its default proxy is pinned to the
+// gate port and boxd's own SSH is off, so no app inside it is public by accident.
 package boxd
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -23,6 +25,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +49,8 @@ const (
 	homeHost         = "boxd.sh"
 	apiPort          = "9443"
 	keyLabel         = "bugnet/key"
+	defaultProxy     = "default"
+	hibernateOffMeta = "hibernate_off"
 	namePrefix       = "bn-"
 	nameHashChars    = 20
 	maxLabelValue    = 256
@@ -91,6 +96,8 @@ type Options struct {
 	Insecure bool
 	Region   string
 	Log      *slog.Logger // slog.Default when nil
+	// GatePort is where every machine's default proxy points, provider.DefaultGatePort when 0
+	GatePort int
 }
 
 // Provider places sandboxes on boxd over one long-lived gRPC connection
@@ -99,12 +106,16 @@ type Provider struct {
 	api          boxdpb.BoxdApiClient
 	log          *slog.Logger
 	pollInterval time.Duration
+	gatePort     int
 }
 
 // New connects lazily to boxd, the first call dials the endpoint
 func New(opts Options) (*Provider, error) {
 	if opts.APIKey == "" {
 		return nil, errors.New("boxd: an API key is required")
+	}
+	if opts.GatePort < 0 || opts.GatePort > 65535 {
+		return nil, fmt.Errorf("boxd: gate port %d is not a TCP port", opts.GatePort)
 	}
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	if opts.Insecure {
@@ -124,6 +135,7 @@ func New(opts Options) (*Provider, error) {
 	}
 	return &Provider{
 		conn: conn, api: boxdpb.NewBoxdApiClient(conn), log: log, pollInterval: defaultPoll,
+		gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
 	}, nil
 }
 
@@ -156,11 +168,9 @@ func (p *Provider) Close() error { return p.conn.Close() }
 // Name returns "boxd"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports SSH, previews and egress rules, and no lifetime cap
+// Capabilities reports egress rules and the runner upload, and no lifetime cap
 func (p *Provider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{
-		SSH: true, Preview: true, EgressControl: true, NeedsRunnerUpload: true,
-	}
+	return provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true}
 }
 
 // SizeFor picks the smallest size class covering floor
@@ -201,7 +211,10 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, err
 	}
 	in := &boxdpb.CreateVmRequest{
-		Config: &boxdpb.VmConfig{Srf: &boxdpb.SrfConfig{AutoSuspendTimeoutSecs: proto.Uint32(0)}},
+		Config: &boxdpb.VmConfig{
+			Srf:     &boxdpb.SrfConfig{AutoSuspendTimeoutSecs: proto.Uint32(0)},
+			Network: &boxdpb.NetworkConfig{Ssh: proto.Bool(false)},
+		},
 		Spec: &boxdpb.MachineSpec{
 			Version: 1, Size: req.Size.Name, Labels: labels, Isolated: true,
 		},
@@ -215,6 +228,11 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	}
 
 	resp, err := p.api.CreateVm(ctx, in)
+	if networkRefused(err) {
+		// The spec may cover config.network, and then SetSsh turns SSH off instead
+		in.Config.Network = nil
+		resp, err = p.api.CreateVm(ctx, in)
+	}
 	// Lookups and the timer still run when ctx ended, since a machine may exist and bill
 	after, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterCreateLimit)
 	defer cancel()
@@ -241,12 +259,74 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	default:
 		return provider.Ref{}, classify(ctx, err)
 	}
-	if err := p.ensureTimer(after, vm, req.Lifetime); err != nil {
-		// A machine without its timer would bill until a sweep finds it
-		_, _ = p.api.DestroyVm(after, &boxdpb.DestroyVmRequest{VmId: vm.GetVmId()})
+	if err := p.closeRoutes(after, vm); err != nil {
+		p.discard(ctx, vm.GetVmId())
 		return provider.Ref{}, err
 	}
-	return newRef(vm.GetVmId()), nil
+	if err := p.ensureTimer(after, vm, req.Lifetime); err != nil {
+		// A machine without its timer would bill until a sweep finds it
+		p.discard(ctx, vm.GetVmId())
+		return provider.Ref{}, err
+	}
+	return p.stopHibernation(after, vm.GetVmId()), nil
+}
+
+// networkRefused reports a create boxd refused for its network config
+func networkRefused(err error) bool {
+	st, _ := status.FromError(err)
+	return st.Code() == codes.InvalidArgument && strings.Contains(st.Message(), "network")
+}
+
+// closeRoutes pins the default proxy to the gate port and turns boxd's own SSH off
+func (p *Provider) closeRoutes(ctx context.Context, vm *boxdpb.GetVmResponse) error {
+	id := vm.GetVmId()
+	_, err := p.api.SetProxyPort(ctx, &boxdpb.SetProxyPortRequest{
+		Vm: id, Name: defaultProxy, Port: strconv.Itoa(p.gatePort),
+	})
+	if err != nil {
+		return exposed(ctx, "pin the default proxy of", id, err)
+	}
+	if vm.GetSshDisabled() {
+		return nil
+	}
+	if _, err := p.api.SetSsh(ctx, &boxdpb.SetSshRequest{VmId: id, Enabled: false}); err != nil {
+		return exposed(ctx, "turn SSH off on", id, err)
+	}
+	return nil
+}
+
+// stopHibernation turns auto hibernation off and records in the ref whether boxd accepted
+func (p *Provider) stopHibernation(ctx context.Context, id string) provider.Ref {
+	ref := newRef(id)
+	ref.Meta[hibernateOffMeta] = "1"
+	// An idle machine hibernates after four hours, freezing a long command without traffic
+	_, err := p.api.SetAutoHibernateTimeout(ctx, &boxdpb.SetAutoHibernateTimeoutRequest{
+		VmId: id, TimeoutSecs: 0,
+	})
+	if err != nil {
+		// The machine runs and its delete-after timer still bounds it, so a refusal only warns
+		p.log.Warn("boxd kept auto hibernate on", "machine", id, "err", err)
+		ref.Meta[hibernateOffMeta] = "0"
+	}
+	return ref
+}
+
+// exposed is the error for a machine left reachable, which the saga places elsewhere
+func exposed(ctx context.Context, what, id string, err error) error {
+	return &provider.Error{
+		Code: provider.CodeInternal, CanFailOver: true,
+		Err: fmt.Errorf("boxd could not %s machine %s: %w", what, id, withCtx(ctx, err)),
+	}
+}
+
+// discard destroys a machine Create gives up on, with its own deadline since ctx may be spent
+func (p *Provider) discard(ctx context.Context, id string) {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterCreateLimit)
+	defer cancel()
+	_, err := p.api.DestroyVm(dctx, &boxdpb.DestroyVmRequest{VmId: id})
+	if err != nil && status.Code(err) != codes.NotFound {
+		p.log.Warn("boxd could not destroy a machine Create gave up on", "machine", id, "err", err)
+	}
 }
 
 // nameTaken reports a create refused for its name, which boxd answers with FailedPrecondition
@@ -333,7 +413,7 @@ func machineID(ref provider.Ref) (string, error) {
 	return ref.ID, nil
 }
 
-// WaitReady waits for status running, then for an exec to succeed, and tries to stop hibernation
+// WaitReady waits for status running, then for an exec to succeed
 func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	vmID, err := machineID(ref)
 	if err != nil {
@@ -368,14 +448,6 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 		if perr := p.pause(ctx); perr != nil {
 			return fmt.Errorf("boxd machine %s agent not up: %w, last %w", vmID, perr, err)
 		}
-	}
-	// An idle machine hibernates after four hours, freezing a long command without traffic
-	_, err = p.api.SetAutoHibernateTimeout(ctx, &boxdpb.SetAutoHibernateTimeoutRequest{
-		VmId: vmID, TimeoutSecs: 0,
-	})
-	if err != nil {
-		// The machine runs and its delete-after timer still bounds it, so a refusal only warns
-		p.log.Warn("boxd kept auto hibernate on", "machine", vmID, "err", err)
 	}
 	return nil
 }

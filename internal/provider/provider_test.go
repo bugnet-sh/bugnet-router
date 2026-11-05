@@ -96,3 +96,10 @@ func TestListingStopsAtItsLimits(t *testing.T) {
 		t.Fatal("a walk read more directories than the limit")
 	}
 }
+
+func TestDefaultGatePortIsTheSharedWireValue(t *testing.T) {
+	if provider.DefaultGatePort != 29417 {
+		t.Fatalf("gate port %d, want 29417 as bugnet-run and the edges use",
+			provider.DefaultGatePort)
+	}
+}

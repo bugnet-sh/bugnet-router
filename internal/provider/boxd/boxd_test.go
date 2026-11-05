@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -245,6 +246,140 @@ func TestBoxdCreateNameHeldByAnotherMachine(t *testing.T) {
 	}
 }
 
+func TestBoxdCreatePinsDefaultProxy(t *testing.T) {
+	f, p := newTestProvider(t)
+	ref := mustCreate(t, p, "key-1")
+	mustCreate(t, p, "key-1")
+	pin := setProxyPort{vm: ref.ID, name: "default", port: "29417"}
+	eq(t, f.proxyPins(), []setProxyPort{pin, pin})
+	vm, _ := f.vm(ref.ID)
+	eq(t, vm.proxyPort, "29417")
+}
+
+func TestBoxdCreatePinsAfterALostReply(t *testing.T) {
+	f, p := newTestProvider(t)
+	f.inject("CreateVm", fault{err: status.Error(codes.Unavailable, "reply lost"), after: true})
+	ref := mustCreate(t, p, "key-lost-pin")
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "29417"}})
+}
+
+func TestBoxdCreatePinsTheConfiguredGatePort(t *testing.T) {
+	f := newFake(t)
+	p, err := New(Options{APIKey: fakeKey, Endpoint: f.addr, Insecure: true, GatePort: 30001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	ref := mustCreate(t, p, "key-port")
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "30001"}})
+}
+
+func TestBoxdRefusesAGatePortOutOfRange(t *testing.T) {
+	for _, port := range []int{-1, 65536} {
+		if _, err := New(Options{APIKey: fakeKey, GatePort: port}); err == nil {
+			t.Errorf("New with gate port %d succeeded", port)
+		}
+	}
+}
+
+func TestBoxdCreatePinFailureDestroysMachine(t *testing.T) {
+	for _, code := range []codes.Code{codes.Internal, codes.PermissionDenied, codes.NotFound} {
+		t.Run(code.String(), func(t *testing.T) {
+			f, p := newTestProvider(t)
+			f.inject("SetProxyPort", fault{err: status.Error(code, "boom")})
+			_, err := create2x8(t, p, "key-2")
+			e, ok := provider.AsError(err)
+			eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+			eq(t, f.count(), 0)
+			eq(t, f.callCount("DestroyVm"), 1)
+		})
+	}
+}
+
+func TestBoxdCreatePinFailureOnAdoptDestroysMachine(t *testing.T) {
+	f, p := newTestProvider(t)
+	mustCreate(t, p, "key-adopt-pin")
+	f.inject("SetProxyPort", fault{err: status.Error(codes.Unavailable, "proxy busy")})
+	_, err := create2x8(t, p, "key-adopt-pin")
+	e, ok := provider.AsError(err)
+	eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+	eq(t, f.count(), 0)
+}
+
+func TestBoxdCreateTurnsSshOff(t *testing.T) {
+	f, p := newTestProvider(t)
+	ref := mustCreate(t, p, "key-3")
+	eq(t, f.creates[0].GetConfig().GetNetwork().GetSsh(), false)
+	eq(t, f.creates[0].GetConfig().GetNetwork().Ssh != nil, true)
+	eq(t, f.sshCalls(), []setSSH(nil))
+	vm, _ := f.vm(ref.ID)
+	eq(t, vm.sshOff, true)
+}
+
+func TestBoxdCreateFallsBackToSetSsh(t *testing.T) {
+	f, p := newTestProvider(t)
+	f.refuseNetworkConfig = true
+	ref := mustCreate(t, p, "key-4")
+	eq(t, f.sshCalls(), []setSSH{{vm: ref.ID, enabled: false}})
+	eq(t, f.callCount("CreateVm"), 2)
+	eq(t, f.lastCreate().GetConfig().GetNetwork() == nil, true)
+	vm, _ := f.vm(ref.ID)
+	eq(t, vm.sshOff, true)
+}
+
+func TestBoxdCreateTurnsSshOffWhenTheReplyCannotShowIt(t *testing.T) {
+	f, p := newTestProvider(t)
+	f.omitMachine = true
+	ref := mustCreate(t, p, "key-old-ssh")
+	eq(t, f.sshCalls(), []setSSH{{vm: ref.ID, enabled: false}})
+}
+
+func TestBoxdCreateSshFailureDestroysMachine(t *testing.T) {
+	f, p := newTestProvider(t)
+	f.refuseNetworkConfig = true
+	f.inject("SetSsh", fault{err: status.Error(codes.PermissionDenied, "not for api keys")})
+	_, err := create2x8(t, p, "key-ssh-fail")
+	e, ok := provider.AsError(err)
+	eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+	eq(t, f.count(), 0)
+}
+
+func TestBoxdCreateRecordsHibernateOff(t *testing.T) {
+	f, p := newTestProvider(t)
+	ref := mustCreate(t, p, "key-5")
+	eq(t, ref.Meta["hibernate_off"], "1")
+	vm, _ := f.vm(ref.ID)
+	eq(t, vm.autoHibernate, uint32(0))
+	refusals := []codes.Code{codes.PermissionDenied, codes.Unimplemented, codes.Unavailable}
+	for i, code := range refusals {
+		var logs bytes.Buffer
+		p.log = slog.New(slog.NewTextHandler(&logs, nil))
+		f.inject("SetAutoHibernateTimeout", fault{err: status.Error(code, "not for api keys")})
+		ref := mustCreate(t, p, fmt.Sprintf("key-6-%d", i))
+		eq(t, ref.Meta["hibernate_off"], "0")
+		if got := logs.String(); !strings.Contains(got, "level=WARN") ||
+			!strings.Contains(got, ref.ID) || !strings.Contains(got, "not for api keys") {
+			t.Fatalf("log %q, want a warning naming the machine and the refusal", got)
+		}
+	}
+	eq(t, f.count(), 1+len(refusals))
+}
+
+func TestBoxdCreateClosesRoutesFirstAndStopsHibernationLast(t *testing.T) {
+	f, p := newTestProvider(t)
+	f.omitMachine = true
+	mustCreate(t, p, "key-order")
+	want := []string{"CreateVm", "SetProxyPort", "SetSsh", "SetDeleteAfter",
+		"SetAutoHibernateTimeout"}
+	eq(t, f.callOrder(), want)
+}
+
+func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
+	_, p := newTestProvider(t)
+	c := p.Capabilities()
+	eq(t, c.SSH || c.Preview, false)
+}
+
 func TestBoxdCreateSetsTimerOnOldServer(t *testing.T) {
 	f := newFake(t)
 	f.omitMachine = true
@@ -294,8 +429,11 @@ func TestBoxdWaitReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	vm, _ := f.vm(ref.ID)
-	if vm.status != "running" || vm.agentDownExecs != 0 || vm.autoHibernate != 0 {
-		t.Fatalf("machine %+v, want running, probed and auto hibernate off", vm)
+	if vm.status != "running" || vm.agentDownExecs != 0 {
+		t.Fatalf("machine %+v, want running and probed", vm)
+	}
+	if n := f.callCount("SetAutoHibernateTimeout"); n != 1 {
+		t.Fatalf("auto hibernate asked %d times, want once by Create and never by WaitReady", n)
 	}
 
 	failed := f.add("failed-one", nil)
@@ -303,31 +441,6 @@ func TestBoxdWaitReady(t *testing.T) {
 	err = p.WaitReady(t.Context(), provider.Ref{Provider: "boxd", ID: failed.id})
 	if err == nil || !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("wait on a failed machine gave %v", err)
-	}
-}
-
-func TestBoxdWaitReadyWhenHibernateRefused(t *testing.T) {
-	refusals := []codes.Code{codes.PermissionDenied, codes.Unimplemented, codes.Unavailable}
-	for _, code := range refusals {
-		t.Run(code.String(), func(t *testing.T) {
-			f := newFake(t)
-			p := f.provider(t, fakeKey)
-			var logs bytes.Buffer
-			p.log = slog.New(slog.NewTextHandler(&logs, nil))
-			vm := f.add("hibernate-refused", nil)
-			f.inject("SetAutoHibernateTimeout", fault{err: status.Error(code, "not for api keys")})
-			err := p.WaitReady(t.Context(), provider.Ref{Provider: "boxd", ID: vm.id})
-			if err != nil {
-				t.Fatalf("wait with auto hibernate refused gave %v, want ready", err)
-			}
-			if n := f.callCount("SetAutoHibernateTimeout"); n != 1 {
-				t.Fatalf("auto hibernate asked %d times, want once", n)
-			}
-			if got := logs.String(); !strings.Contains(got, "level=WARN") ||
-				!strings.Contains(got, vm.id) || !strings.Contains(got, "not for api keys") {
-				t.Fatalf("log %q, want a warning naming the machine and the refusal", got)
-			}
-		})
 	}
 }
 
@@ -665,9 +778,7 @@ func TestBoxdSizesAndPrices(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 	caps := p.Capabilities()
-	want := provider.Capabilities{
-		SSH: true, Preview: true, EgressControl: true, NeedsRunnerUpload: true,
-	}
+	want := provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true}
 	if caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)
 	}

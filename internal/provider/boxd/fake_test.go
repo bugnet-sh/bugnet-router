@@ -12,6 +12,8 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,6 +59,18 @@ type fakeVM struct {
 	status         string
 	startingPolls  int
 	agentDownExecs int
+	// proxyPort is the default proxy's port, auto when boxd detects it from the guest
+	proxyPort string
+	sshOff    bool
+}
+
+// setProxyPort is one SetProxyPort call as the fake received it
+type setProxyPort struct{ vm, name, port string }
+
+// setSSH is one SetSsh call as the fake received it
+type setSSH struct {
+	vm      string
+	enabled bool
 }
 
 // fakeBoxd serves boxd's API from memory and runs Exec commands on the host, for trusted tests
@@ -69,12 +83,17 @@ type fakeBoxd struct {
 	omitMachine bool
 	// ignoreLength sends the rest of a file on FsRead whatever length was asked
 	ignoreLength bool
+	// refuseNetworkConfig refuses a CreateVm whose config sets network beside a spec
+	refuseNetworkConfig bool
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
 	nextID       int
 	faults       map[string]*fault
 	calls        map[string]int
+	order        []string
+	pins         []setProxyPort
+	sshSets      []setSSH
 	scripted     bool
 	script       []*boxdpb.ExecChunk
 	creates      []*boxdpb.CreateVmRequest
@@ -134,6 +153,7 @@ func (f *fakeBoxd) take(fullMethod string) *fault {
 	defer f.mu.Unlock()
 	name := path.Base(fullMethod)
 	f.calls[name]++
+	f.order = append(f.order, name)
 	ft := f.faults[name]
 	if ft == nil {
 		return nil
@@ -151,6 +171,13 @@ func (f *fakeBoxd) callCount(method string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[method]
+}
+
+// callOrder lists every call the fake received, oldest first
+func (f *fakeBoxd) callOrder() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.order)
 }
 
 // replyExec answers every later Exec with these chunks and a clean end instead of a command
@@ -220,6 +247,7 @@ func (f *fakeBoxd) add(name string, labels map[string]string) *fakeVM {
 	vm := &fakeVM{
 		id: fmt.Sprintf("vm-%04d", f.nextID), name: name, labels: labels,
 		created: time.Now(), autoHibernate: fakeHibernateSecs, status: "running",
+		proxyPort: "auto",
 	}
 	f.vms[vm.id] = vm
 	return vm
@@ -235,7 +263,7 @@ func toMachine(vm *fakeVM) *boxdpb.GetVmResponse {
 	m := &boxdpb.GetVmResponse{
 		VmId: vm.id, Name: vm.name, Status: vm.status, Labels: vm.labels,
 		CreatedAt: vm.created.Unix(), AutoHibernateTimeoutSecs: vm.autoHibernate,
-		Isolated: true,
+		Isolated: true, SshDisabled: vm.sshOff,
 	}
 	if !vm.deleteAt.IsZero() {
 		m.DeleteAtMs = vm.deleteAt.UnixMilli()
@@ -253,6 +281,9 @@ func (f *fakeBoxd) CreateVm(
 	case req.GetImageRef() != "" || len(req.GetLabels()) > 0 || req.GetIsolated() ||
 		req.GetConfig().GetVcpu() != 0 || req.GetConfig().GetMemoryBytes() != 0:
 		return nil, status.Error(codes.InvalidArgument, "spec: a field the spec covers is set")
+	case f.refuseNetworkConfig && req.GetConfig().GetNetwork() != nil:
+		return nil, status.Error(codes.InvalidArgument,
+			"spec: config.network is a field the spec covers")
 	case spec.GetVersion() != 1:
 		return nil, status.Error(codes.InvalidArgument, "spec.version: must be 1")
 	case !fakeSizes[spec.GetSize()]:
@@ -284,6 +315,10 @@ func (f *fakeBoxd) CreateVm(
 		status:         "starting",
 		startingPolls:  1,
 		agentDownExecs: 1,
+		proxyPort:      "auto",
+	}
+	if n := req.GetConfig().GetNetwork(); n != nil && n.Ssh != nil {
+		vm.sshOff = !n.GetSsh()
 	}
 	if vm.name == "" {
 		vm.name = "auto-" + vm.id
@@ -390,6 +425,53 @@ func (f *fakeBoxd) SetAutoHibernateTimeout(
 	}
 	vm.autoHibernate = req.GetTimeoutSecs()
 	return &boxdpb.SetAutoHibernateTimeoutResponse{}, nil
+}
+
+func (f *fakeBoxd) SetProxyPort(
+	_ context.Context, req *boxdpb.SetProxyPortRequest,
+) (*boxdpb.SetProxyPortResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pins = append(f.pins, setProxyPort{vm: req.GetVm(), name: req.GetName(), port: req.GetPort()})
+	vm, err := f.lookup(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	if req.GetName() != "default" {
+		return nil, status.Errorf(codes.NotFound, "proxy %q not found", req.GetName())
+	}
+	if n, err := strconv.Atoi(req.GetPort()); req.GetPort() != "auto" &&
+		(err != nil || n < 1 || n > 65535) {
+		return nil, status.Errorf(codes.InvalidArgument, "port: %q is not a port", req.GetPort())
+	}
+	vm.proxyPort = req.GetPort()
+	return &boxdpb.SetProxyPortResponse{}, nil
+}
+
+func (f *fakeBoxd) SetSsh(
+	_ context.Context, req *boxdpb.SetSshRequest,
+) (*boxdpb.SetSshResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sshSets = append(f.sshSets, setSSH{vm: req.GetVmId(), enabled: req.GetEnabled()})
+	vm, err := f.lookup(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	vm.sshOff = !req.GetEnabled()
+	return &boxdpb.SetSshResponse{}, nil
+}
+
+func (f *fakeBoxd) proxyPins() []setProxyPort {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.pins)
+}
+
+func (f *fakeBoxd) sshCalls() []setSSH {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.sshSets)
 }
 
 /* Exec */

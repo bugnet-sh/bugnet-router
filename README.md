@@ -73,7 +73,8 @@ scripts/live-test.sh boxd koyeb boat
 The script fails with the variable's name when a key is empty, and otherwise runs
 `go test -run Live` for each provider named, with every other setting from `config/dev.toml`
 (E2B uses its `[[e2b.templates]]`). The tests create real sandboxes and remove them again, which
-costs a little on the provider's account.
+costs a little on the provider's account. The boxd run also starts `python3 -m http.server 8000`
+in a machine and checks that its public default proxy does not serve it.
 
 ## Running locally
 
@@ -332,6 +333,10 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
+  Every machine's public default proxy is pinned to the gate port 29417 before the router uses
+  it, so no app inside is public on its own. boxd's own SSH and auto hibernation are turned off
+  too. A failed pin or SSH call destroys the machine, and the placement tries the next provider.
+  A refused hibernation call only warns, and the ref records it as `hibernate_off` `0`.
 - `e2b` runs E2B sandboxes from templates built with `deploy/e2b`, with `E2B_API_KEY`, one
   `[[e2b.templates]]` table per size, `e2b.domain` and `e2b.max_lifetime`. Without templates it
   has no sizes and is never chosen.

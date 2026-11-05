@@ -22,7 +22,7 @@ linters:
       - path: internal/provider/boxd/
         linters:
           - revive
-        text: "var-naming: method \\w*Vm\\w* should be"
+        text: "var-naming: method \\w*(Vm|Ssh)\\w* should be"
 
 formatters:
   enable:
