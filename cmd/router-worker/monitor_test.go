@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -53,6 +54,31 @@ func TestMonitorOKOnACleanDatabase(t *testing.T) {
 		if code, body := probe(st, vk, read); code != http.StatusOK || body != "ok\n" {
 			t.Errorf("monitor with %s answered %d %q, want 200 ok", name, code, body)
 		}
+	}
+}
+
+func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
+	pool := migrated(t)
+	seedPlacement(t, pool, store.PlacementReady, time.Now().Add(-time.Hour))
+	vk, _ := testenv.Valkey(t)
+	hung := func(ctx context.Context, _ valkey.Client) (vkinfo.Memory, error) {
+		<-ctx.Done()
+		return vkinfo.Memory{}, ctx.Err()
+	}
+	answered := make(chan string, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
+		monitor(discard, store.New(pool), vk, hung)(rec, req)
+		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
+	}()
+	select {
+	case got := <-answered:
+		if want := "503 1 placements are over 3 minutes past their deadline\n"; got != want {
+			t.Fatalf("monitor with a hung valkey answered %q, want %q", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("monitor with a hung valkey gave no answer within 3 s")
 	}
 }
 
