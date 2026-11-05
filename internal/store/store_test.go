@@ -561,6 +561,11 @@ func TestReadyOrTerminatingPastDeadline(t *testing.T) {
 		t.Fatalf("ReadyOrTerminatingPastDeadline = %v, %v, want %v oldest deadline first", ids,
 			err, want)
 	}
+	for cutoff, want := range map[time.Time]int{now: 2, now.Add(-time.Minute): 1} {
+		if n, err := s.PastDeadlineCount(ctx, cutoff); err != nil || n != want {
+			t.Errorf("PastDeadlineCount %v ago = %d, %v, want %d", now.Sub(cutoff), n, err, want)
+		}
+	}
 }
 
 func TestMarkPlacementTerminatingRecordsReason(t *testing.T) {

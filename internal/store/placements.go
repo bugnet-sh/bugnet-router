@@ -210,6 +210,18 @@ func (s *Store) ReadyOrTerminatingPastDeadline(
 		PlacementReady, PlacementTerminating, utc(now))
 }
 
+// PastDeadlineCount counts the placements still to end whose deadline is before cutoff
+func (s *Store) PastDeadlineCount(ctx context.Context, cutoff time.Time) (int, error) {
+	var n int
+	err := s.q.QueryRow(ctx, `
+		select count(*) from placements where state in ($1, $2) and deadline < $3`,
+		PlacementReady, PlacementTerminating, utc(cutoff)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count placements past deadline: %w", err)
+	}
+	return n, nil
+}
+
 // TerminatingSince returns terminating placements that moved there before, oldest first
 func (s *Store) TerminatingSince(ctx context.Context, before time.Time) ([]uuid.UUID, error) {
 	return s.placementIDs(ctx, "terminating since", `
