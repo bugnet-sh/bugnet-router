@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -779,6 +780,45 @@ func TestLoadFileRefusesDatesAndTimes(t *testing.T) {
 			if strings.Contains(msg, v) {
 				t.Errorf("%s: error quotes %q: %s", c.name, v, msg)
 			}
+		}
+	}
+}
+
+func TestLoadFileSyntaxErrorsNameOnlyKnownKeys(t *testing.T) {
+	const pasted = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZn="
+	for _, table := range []string{
+		"", "[limits]\n", "[boat.types]\n", "[koyeb.instance_types]\n", "[[e2b.templates]]\n",
+		"[nimbus]\n",
+	} {
+		msg := problem(t, table+pasted+"\n")
+		want := "line " + strconv.Itoa(3+strings.Count(table, "\n")) + ": not valid TOML"
+		if msg != want {
+			t.Errorf("a pasted secret after %q gave %q, want %q", table, msg, want)
+		}
+		for i := 0; i+8 <= len(pasted); i++ {
+			if strings.Contains(msg, pasted[i:i+8]) {
+				t.Errorf("a pasted secret after %q: error carries %q: %s", table, pasted[i:i+8], msg)
+			}
+		}
+	}
+	cases := []struct{ name, toml, want string }{
+		{"setting", "margin_floor = 0.5 0.6", "line 3: margin_floor is not valid TOML"},
+		{"template setting", "[[e2b.templates]]\nvcpu = 2 3",
+			"line 4: e2b.templates.vcpu is not valid TOML"},
+		{"unknown key", "nimbus_region = fra", "line 3: not valid TOML"},
+		{"key below a setting", "[limits]\nmax_running_jobs.x = 2 3", "line 4: not valid TOML"},
+		{"size", "[boat.types]\ncpu = \"small\" \"large\"", "line 4: not valid TOML"},
+		{"secret", "[boat.types]\nBOAT_API_KEY=boat_unquoted",
+			"line 4: boat.types.BOAT_API_KEY is a secret, set BOAT_API_KEY in the environment " +
+				"instead"},
+		{"secret under an unknown table", "[QUJDREVGR0hJSktM]\nE2B_API_KEY=e2b_pastedsecretvalue",
+			"line 4: E2B_API_KEY is a secret, set E2B_API_KEY in the environment instead"},
+		{"secret below a dotted key", "QUJDREVGR0hJSktM.e2b_api_key=e2b_pastedsecretvalue",
+			"line 3: e2b_api_key is a secret, set E2B_API_KEY in the environment instead"},
+	}
+	for _, c := range cases {
+		if msg := problem(t, c.toml); msg != c.want {
+			t.Errorf("%s: %q, want %q", c.name, msg, c.want)
 		}
 	}
 }

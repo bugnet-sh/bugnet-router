@@ -160,7 +160,7 @@ func (o *outliner) inner(v *unstable.Node, path []string, id string) {
 // bareKey is the bare or dotted key a line starts with
 var bareKey = regexp.MustCompile(`^\s*([A-Za-z0-9_-]+(?:\s*\.\s*[A-Za-z0-9_-]+)*)\s*=`)
 
-// syntaxError names the line TOML breaks on and its key, never what the parser saw there
+// syntaxError names the line TOML breaks on, and its key only when that is a setting or a secret
 func (o *outliner) syntaxError(err error, table []string) error {
 	data := o.p.Data()
 	// An empty highlight is the end of the document
@@ -178,10 +178,17 @@ func (o *outliner) syntaxError(err error, table []string) error {
 	for part := range strings.SplitSeq(m[1], ".") {
 		path = append(path, strings.TrimSpace(part))
 	}
-	if env, ok := secretFor(path); ok {
+	env, secret := secretFor(path)
+	switch {
+	case secret && isSetting(path[:len(path)-1]):
 		return fmt.Errorf("line %d: %s", line, secretKey(path, env))
+	case secret:
+		return fmt.Errorf("line %d: %s", line, secretKey(path[len(path)-1:], env))
+	case isSetting(path):
+		return fmt.Errorf("line %d: %s is not valid TOML", line, strings.Join(path, "."))
 	}
-	return fmt.Errorf("line %d: %s is not valid TOML", line, strings.Join(path, "."))
+	// Any other text before = may be a pasted secret, such as base64 ending in padding
+	return fmt.Errorf("line %d: not valid TOML", line)
 }
 
 /* Keys */
@@ -397,6 +404,23 @@ func schemaType(path []string) (reflect.Type, bool) {
 		}
 	}
 	return t, true
+}
+
+// isSetting says whether a path names a table or setting of the schema, never a size name
+func isSetting(path []string) bool {
+	t := reflect.TypeFor[file]()
+	for _, part := range path {
+		t = element(t)
+		if t.Kind() != reflect.Struct {
+			return false
+		}
+		f, _, ok := field(t, part)
+		if !ok {
+			return false
+		}
+		t = f.Type
+	}
+	return true
 }
 
 func valueKind(t reflect.Type) string {
