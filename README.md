@@ -265,13 +265,13 @@ for a stream can run up to half again over the budget's estimate.
 
 Point an uptime monitor at the worker's `GET /monitor` on `worker.listen_addr` every minute,
 expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeout: Postgres or
-Valkey unreachable, placements ready or terminating over 3 minutes past their deadline, which
-means the worker runs but no longer ends sandboxes, stuck outbox events, Valkey memory at 80% of
-`maxmemory` or more, and a `maxmemory-policy` other than `noeviction`. A failed connection means
-the worker is down. When `INFO memory` fails or times out while Valkey answers, `/monitor`
-reports `valkey memory is unknown`. When it answers without a field, as a managed Valkey may,
-`/monitor` checks the fields it got and logs a warning. `/healthz` is a bare liveness answer and
-`/readyz` checks only that Postgres and Valkey answer.
+Valkey unreachable, placements ready or terminating over 3 minutes past their deadline and stops
+still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
+outbox events, Valkey memory at 80% of `maxmemory` or more, and a `maxmemory-policy` other than
+`noeviction`. A failed connection means the worker is down. When `INFO memory` fails or times out
+while Valkey answers, `/monitor` reports `valkey memory is unknown`. When it answers without a
+field, as a managed Valkey may, `/monitor` checks the fields it got and logs a warning. `/healthz`
+is a bare liveness answer and `/readyz` checks only that Postgres and Valkey answer.
 
 ## Events
 

@@ -28,7 +28,7 @@ const (
 // health is what one /monitor request found, memory holding only what INFO gave
 type health struct {
 	postgresDown, valkeyDown, memoryUnknown bool
-	overdue, stuck                          int
+	overdue, ending, stuck                  int
 	memory                                  vkinfo.Memory
 }
 
@@ -42,7 +42,7 @@ func monitor(
 		var h health
 		// Both run at once so a hung Postgres cannot spend Valkey's share of the timeout
 		var wg sync.WaitGroup
-		wg.Go(func() { h.overdue, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
+		wg.Go(func() { h.overdue, h.ending, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
 		wg.Go(func() {
 			h.memory, h.valkeyDown, h.memoryUnknown = checkValkey(ctx, log, vk, read)
 		})
@@ -56,19 +56,24 @@ func monitor(
 	}
 }
 
-// checkPostgres counts overdue placements and stuck events, down when either query fails
-func checkPostgres(ctx context.Context, log *slog.Logger, st *store.Store) (int, int, bool) {
-	overdue, err := st.PastDeadlineCount(ctx, time.Now().Add(-overdueAfter))
+// checkPostgres counts placements late to end and stuck events, down when a query fails
+func checkPostgres(
+	ctx context.Context, log *slog.Logger, st *store.Store,
+) (overdue, ending, stuck int, down bool) {
+	cutoff := time.Now().Add(-overdueAfter)
+	overdue, err := st.PastDeadlineCount(ctx, cutoff)
+	if err == nil {
+		// A stop keeps the deadline, so only this count sees a stop whose destroy keeps failing
+		ending, err = st.LongTerminatingCount(ctx, cutoff)
+	}
+	if err == nil {
+		stuck, err = st.StuckOutboxCount(ctx)
+	}
 	if err != nil {
 		log.Warn("monitor cannot query postgres", "err", err)
-		return 0, 0, true
+		return 0, 0, 0, true
 	}
-	stuck, err := st.StuckOutboxCount(ctx)
-	if err != nil {
-		log.Warn("monitor cannot query postgres", "err", err)
-		return 0, 0, true
-	}
-	return overdue, stuck, false
+	return overdue, ending, stuck, false
 }
 
 // checkValkey pings Valkey and reads its memory, unknown when INFO fails rather than lacks a field
@@ -95,12 +100,21 @@ func (h health) problems() []string {
 	if h.valkeyDown {
 		out = append(out, "valkey is unreachable")
 	}
-	switch minutes := int(overdueAfter / time.Minute); {
+	minutes := int(overdueAfter / time.Minute)
+	switch {
 	case h.overdue == 1:
 		out = append(out, fmt.Sprintf("1 placement is over %d minutes past its deadline", minutes))
 	case h.overdue > 1:
 		out = append(out, fmt.Sprintf("%d placements are over %d minutes past their deadline",
 			h.overdue, minutes))
+	}
+	switch {
+	case h.ending == 1:
+		out = append(out, fmt.Sprintf("1 placement has been terminating for over %d minutes",
+			minutes))
+	case h.ending > 1:
+		out = append(out, fmt.Sprintf("%d placements have been terminating for over %d minutes",
+			h.ending, minutes))
 	}
 	switch {
 	case h.stuck == 1:

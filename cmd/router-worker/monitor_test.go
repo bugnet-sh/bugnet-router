@@ -94,6 +94,24 @@ func seedPlacement(t *testing.T, pool *pgxpool.Pool, state string, deadline time
 	}
 }
 
+// seedStopped inserts a placement terminating since since, or since before the column when zero
+func seedStopped(t *testing.T, pool *pgxpool.Pool, since, deadline time.Time) {
+	t.Helper()
+	id := uuid.New()
+	var at *time.Time
+	if !since.IsZero() {
+		at = &since
+	}
+	_, err := pool.Exec(t.Context(), `insert into placements
+		(id, handle_sha256, order_id, package_id, state, deadline, termination_reason,
+			terminating_at)
+		values ($1, $2, $3, 'pkg', $4, $5, 'stop', $6)`,
+		id, id[:], id.String(), store.PlacementTerminating, deadline, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func outboxEvent(t *testing.T, pool *pgxpool.Pool, attempts int, delivered bool) {
 	t.Helper()
 	_, err := pool.Exec(t.Context(), `insert into outbox (id, event_type, payload, attempts,
@@ -142,6 +160,18 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				seedPlacement(t, pool, store.PlacementTerminating, now.Add(-10*time.Minute))
 			}, want: "1 placement is over 3 minutes past its deadline\n"},
+		{name: "stops left terminating", postgres: true, vk: vk, read: healthy,
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				seedStopped(t, pool, now.Add(-4*time.Minute), now.Add(50*time.Minute))
+				seedStopped(t, pool, time.Time{}, now.Add(50*time.Minute))
+				seedStopped(t, pool, now.Add(-time.Minute), now.Add(50*time.Minute))
+				seedStopped(t, pool, now.Add(-10*time.Minute), now.Add(-5*time.Minute))
+			}, want: "1 placement is over 3 minutes past its deadline\n" +
+				"2 placements have been terminating for over 3 minutes\n"},
+		{name: "one stop left terminating", postgres: true, vk: vk, read: healthy,
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				seedStopped(t, pool, now.Add(-4*time.Minute), now.Add(50*time.Minute))
+			}, want: "1 placement has been terminating for over 3 minutes\n"},
 		{name: "stuck outbox events", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
