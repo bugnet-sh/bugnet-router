@@ -73,12 +73,19 @@ func (s *Server) fileStatus(err error) error {
 	return s.toConnect(err, true)
 }
 
+// fromBackend reports whether err's Connect error is a provider backend's, inside a provider error
+func fromBackend(err error) bool {
+	pe, ok := provider.AsError(err)
+	var ce *connect.Error
+	return ok && errors.As(pe.Err, &ce)
+}
+
 func (s *Server) toConnect(err error, fileOp bool) error {
 	if err == nil {
 		return nil
 	}
 	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if errors.As(err, &ce) && !fromBackend(err) {
 		return err
 	}
 	for _, c := range codes {

@@ -104,7 +104,8 @@ var small = provider.Size{
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// faulty fails reads of /fault/<code> with that provider error code and can hold readiness
+// faulty fails reads of /fault/<code> with that provider error code and can hold readiness, and
+// reads of /fault-connect/<code> with one wrapping a backend's Connect error as E2B's do
 type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
@@ -136,6 +137,12 @@ func (f faulty) ReadFile(
 	if code, ok := strings.CutPrefix(path, "/fault/"); ok {
 		return nil, false, &provider.Error{
 			Code: provider.Code(code), Err: errors.New("injected by provider local for sbx-1"),
+		}
+	}
+	if code, ok := strings.CutPrefix(path, "/fault-connect/"); ok {
+		return nil, false, &provider.Error{
+			Code: provider.Code(code), Err: connect.NewError(connect.CodeResourceExhausted,
+				errors.New("injected by provider local for sbx-1")),
 		}
 	}
 	return f.Provider.ReadFile(ctx, ref, path, offset, length)
@@ -1365,6 +1372,18 @@ func TestErrorCodes(t *testing.T) {
 		err = readErr(h, "/fault/internal")
 		wantCode(t, err, connect.CodeUnavailable)
 		wantInfo(t, err, "internal")
+	})
+	t.Run("provider error wrapping a backend's Connect error keeps its code", func(t *testing.T) {
+		for code, want := range map[string]connect.Code{
+			"invalid": connect.CodeInvalidArgument, "rate_limited": connect.CodeUnavailable,
+		} {
+			err := readErr(h, "/fault-connect/"+code)
+			wantCode(t, err, want)
+			wantInfo(t, err, code)
+			if strings.Contains(err.Error(), "injected") {
+				t.Errorf("%s error %q carries the backend's text", code, err.Error())
+			}
+		}
 	})
 	t.Run("provider error text stays in the router", func(t *testing.T) {
 		for _, code := range []string{"internal", "invalid", "not_found"} {
