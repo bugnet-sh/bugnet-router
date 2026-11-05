@@ -286,8 +286,7 @@ func (s *Server) ExtendPlacement(
 	return connect.NewResponse(&routerv1.ExtendPlacementResponse{Placement: placementMsg(p)}), nil
 }
 
-// CheckExtendPlacement answers as ExtendPlacement would for a fresh order of the package, with
-// the deadline it would set, so the gateway can ask before it takes payment
+// CheckExtendPlacement answers as ExtendPlacement would for a fresh order, with the new deadline
 func (s *Server) CheckExtendPlacement(
 	ctx context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
 ) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {

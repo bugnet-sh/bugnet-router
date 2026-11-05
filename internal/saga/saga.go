@@ -710,8 +710,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	return p, nil
 }
 
-// CheckExtend answers what Extend would decide now for a fresh order of the package, changing
-// nothing, with the deadline the placement would then have
+// CheckExtend answers as Extend would for a fresh order of the package now, changing nothing
 func (s *Saga) CheckExtend(
 	ctx context.Context, h, packageID string,
 ) (store.Placement, time.Time, error) {
@@ -739,8 +738,7 @@ type extension struct {
 	replay bool // the order already extended the placement, so the later checks were skipped
 }
 
-// checkExtend makes the checks of Extend and CheckExtend, asking replayed, when given, whether
-// the order was already applied before the ready check
+// checkExtend makes the checks Extend and CheckExtend share, asking replayed before the ready one
 func (s *Saga) checkExtend(
 	ctx context.Context, sha []byte, pkg catalog.Package,
 	replayed func(store.Placement) (bool, error),
