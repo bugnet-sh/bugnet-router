@@ -656,6 +656,50 @@ func TestTerminatingSince(t *testing.T) {
 	}
 }
 
+func TestLongTerminatingCount(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	for _, c := range []struct {
+		name               string
+		since, deadline    time.Time
+		terminating, unset bool
+	}{
+		{name: "stopped long ago", since: now.Add(-5 * time.Minute),
+			deadline: now.Add(time.Hour), terminating: true},
+		{name: "stopped before the column", deadline: now.Add(time.Hour), terminating: true,
+			unset: true},
+		{name: "stopped just now", since: now.Add(-time.Second), deadline: now.Add(time.Hour),
+			terminating: true},
+		{name: "ending past its deadline", since: now.Add(-5 * time.Minute),
+			deadline: now.Add(-10 * time.Minute), terminating: true},
+		{name: "ready", deadline: now.Add(time.Hour)},
+	} {
+		p := newPlacement(t, s, c.name)
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, c.deadline); err != nil {
+			t.Fatal(err)
+		}
+		if !c.terminating {
+			continue
+		}
+		if _, err := s.MarkPlacementTerminating(ctx, p.ID, "stop", c.since); err != nil {
+			t.Fatal(err)
+		}
+		if c.unset {
+			_, err := pool.Exec(ctx, `update placements set terminating_at = null where id = $1`,
+				p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The one past its deadline is PastDeadlineCount's
+	if n, err := s.LongTerminatingCount(ctx, now.Add(-2*time.Minute)); err != nil || n != 2 {
+		t.Fatalf("LongTerminatingCount = %d, %v, want the 2 stopped long ago", n, err)
+	}
+}
+
 func TestReleaseEndedCapacity(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	ctx := context.Background()
