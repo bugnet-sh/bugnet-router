@@ -515,6 +515,10 @@ func TestLoadFileRefusesSecrets(t *testing.T) {
 			"c2VlZA=="},
 		{`order_private_key = "cHJpdg=="`, "order_private_key", "BUGNET_ORDER_PRIVATE_KEY",
 			"cHJpdg=="},
+		{"[limits]\nE2B_API_KEY = \"ek-secret\"", "limits.E2B_API_KEY", "E2B_API_KEY",
+			"ek-secret"},
+		{"[boat.types]\nBOAT_API_KEY=boat_unquoted", "boat.types.BOAT_API_KEY", "BOAT_API_KEY",
+			"boat_unquoted"},
 	}
 	for _, c := range cases {
 		_, err := LoadFile(writeFile(t, c.toml))

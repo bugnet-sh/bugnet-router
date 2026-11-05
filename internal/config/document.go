@@ -145,8 +145,7 @@ func (o *outliner) syntaxError(err error, table []string) error {
 // sizeName is what a key of boat.types or koyeb.instance_types must look like
 var sizeName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
-// check finds keys the schema lacks or spells in another case, map keys that are not size names,
-// tables of the wrong kind and keys set twice
+// check finds unknown or miscased keys, bad size names, tables of the wrong kind and repeated keys
 func check(doc []setting) error {
 	var problems []string
 	var unknown [][]string
@@ -350,12 +349,18 @@ func unknownKey(key []string, near string) string {
 	return name + " is not a setting"
 }
 
-// secretFor finds the secret a key names, with or without BUGNET_ in front
+// secretFor finds the secret a key's whole path or last part names, BUGNET_ in front or not
 func secretFor(key []string) (string, bool) {
-	env := strings.ToUpper(strings.Join(key, "_"))
+	if len(key) == 0 {
+		return "", false
+	}
+	whole := strings.ToUpper(strings.Join(key, "_"))
+	last := strings.ToUpper(key[len(key)-1])
 	for _, s := range secretNames {
-		if env == s || "BUGNET_"+env == s {
-			return s, true
+		for _, env := range []string{whole, last} {
+			if env == s || "BUGNET_"+env == s {
+				return s, true
+			}
 		}
 	}
 	return "", false
