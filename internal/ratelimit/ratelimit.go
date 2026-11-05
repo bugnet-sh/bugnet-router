@@ -2,7 +2,6 @@
 package ratelimit
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -49,9 +48,14 @@ type Limiter struct {
 	args   []string
 }
 
-// New returns a Limiter refilling perSecond tokens a second up to burst, the defaults when zero
+// New returns a Limiter refilling perSecond tokens a second up to burst, the defaults below 1
 func New(c valkey.Client, prefix string, perSecond, burst int) *Limiter {
-	perSecond, burst = cmp.Or(perSecond, DefaultPerSecond), cmp.Or(burst, DefaultBurst)
+	if perSecond < 1 {
+		perSecond = DefaultPerSecond
+	}
+	if burst < 1 {
+		burst = DefaultBurst
+	}
 	return &Limiter{
 		c: c, prefix: prefix, args: []string{strconv.Itoa(perSecond), strconv.Itoa(burst)},
 	}

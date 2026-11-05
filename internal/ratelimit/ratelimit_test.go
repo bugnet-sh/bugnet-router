@@ -174,18 +174,23 @@ func TestBucketExpiresOnceFull(t *testing.T) {
 	}
 }
 
-func TestDefaultsWhenZero(t *testing.T) {
+func TestDefaultsBelowOne(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
-	l := ratelimit.New(vk, prefix, 0, 0)
-	id := uuid.New()
-	for i := range ratelimit.DefaultBurst {
-		if ok, _ := take(t, l, id); !ok {
-			t.Fatalf("operation %d of the default burst was refused", i+1)
+	full := time.Duration(ratelimit.DefaultBurst) * time.Second / ratelimit.DefaultPerSecond
+	for _, c := range []struct{ perSecond, burst int }{{0, 0}, {-5, -1}} {
+		id := uuid.New()
+		key := prefix + "ops:" + id.String()
+		// A bucket ahead of Valkey's clock refills from now, so its wait and expiry are exact
+		seed(t, vk, key, 0, time.Minute)
+		ok, wait := take(t, ratelimit.New(vk, prefix, c.perSecond, c.burst), id)
+		if ok || wait != time.Second/ratelimit.DefaultPerSecond {
+			t.Fatalf("%d a second and a burst of %d: empty bucket allowed %v with a wait of %v",
+				c.perSecond, c.burst, ok, wait)
 		}
-	}
-	ok, wait := take(t, l, id)
-	if ok || wait <= 0 || wait > time.Second/ratelimit.DefaultPerSecond {
-		t.Fatalf("past the default burst: allowed %v with a wait of %v", ok, wait)
+		if ttl := pttl(t, vk, key); ttl <= full-time.Second || ttl > full {
+			t.Fatalf("%d a second and a burst of %d: its bucket expires in %v, want just under %v",
+				c.perSecond, c.burst, ttl, full)
+		}
 	}
 }
 
