@@ -1404,15 +1404,21 @@ func TestErrorCodes(t *testing.T) {
 	})
 	t.Run("extension past the provider's max lifetime is a failed precondition",
 		func(t *testing.T) {
-			capped := newEnv(t, options{maxLifetime: 20 * time.Minute})
+			capped := newEnv(t, options{maxLifetime: 17 * time.Minute})
 			ch, _ := capped.readyPlacement(t)
-			_, err := capped.client.ExtendPlacement(ctx, connect.NewRequest(
+			_, extendErr := capped.client.ExtendPlacement(ctx, connect.NewRequest(
 				&routerv1.ExtendPlacementRequest{
 					Handle: ch, OrderToken: capped.extendToken(t, ch, morePkg, morePrice),
 				}))
-			wantCode(t, err, connect.CodeFailedPrecondition)
-			_, err = capped.checkExtend(t, ch, morePkg)
-			wantCode(t, err, connect.CodeFailedPrecondition)
+			wantCode(t, extendErr, connect.CodeFailedPrecondition)
+			_, checkErr := capped.checkExtend(t, ch, morePkg)
+			wantCode(t, checkErr, connect.CodeFailedPrecondition)
+			// The limit can come from the settings file, which the gateway never sees
+			for _, err := range []error{extendErr, checkErr} {
+				if strings.Contains(err.Error(), "17m") {
+					t.Errorf("refusal %q quotes the provider's max lifetime", err.Error())
+				}
+			}
 		})
 	t.Run("file over 256 KiB is invalid", func(t *testing.T) {
 		_, err := e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{

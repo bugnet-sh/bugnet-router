@@ -777,8 +777,8 @@ func (s *Saga) checkExtend(
 func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
 	limit := prov.Capabilities().MaxLifetime
 	if life := deadline.Add(lifetimeSlack).Sub(p.CreatedAt); limit > 0 && life > limit {
-		return fmt.Errorf("%w: %v from creation, the limit is %v", ErrExceedsLifetime,
-			life.Round(time.Second), limit)
+		// The limit can come from the settings file, so the refusal the caller sees leaves it out
+		return fmt.Errorf("%w: %v from creation", ErrExceedsLifetime, life.Round(time.Second))
 	}
 	return nil
 }
