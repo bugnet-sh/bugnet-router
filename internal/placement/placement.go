@@ -4,6 +4,7 @@ package placement
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"math/big"
 	"slices"
 	"time"
@@ -14,6 +15,9 @@ import (
 
 // ErrNoCandidate means no provider can host the package under the given constraints
 var ErrNoCandidate = errors.New("placement: no candidate provider")
+
+// ErrNoCapableProvider is an ErrNoCandidate where no configured provider has the capabilities
+var ErrNoCapableProvider = fmt.Errorf("%w, none has the capabilities", ErrNoCandidate)
 
 const (
 	slowReadyThreshold = 10 * time.Second
@@ -59,7 +63,8 @@ func New(reg *provider.Registry, health Health) *Engine {
 // Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
-	needGPU := in.Requirements.GPU || pk.Resources.GPUCount > 0
+	req := in.Requirements
+	req.GPU = req.GPU || pk.Resources.GPUCount > 0
 	need := time.Duration(pk.Minutes)*time.Minute + lifetimeSlack
 	var rs []ranked
 	for _, p := range e.reg.Ordered() {
@@ -68,9 +73,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 			continue
 		}
 		caps := p.Capabilities()
-		if (in.Requirements.SSH && !caps.SSH) ||
-			(in.Requirements.Preview && !caps.Preview) ||
-			(needGPU && !caps.GPU) {
+		if !capable(caps, req) {
 			continue
 		}
 		if caps.MaxLifetime != 0 && caps.MaxLifetime < need {
@@ -103,7 +106,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
 	}
 	if len(rs) == 0 {
-		return nil, ErrNoCandidate
+		return nil, e.noCandidate(req)
 	}
 	/* Ordering */
 	// A stable sort leaves equal costs in the order the providers setting lists them
@@ -115,6 +118,24 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		out[i] = r.Candidate
 	}
 	return out, nil
+}
+
+// capable reports whether caps covers every capability req asks for
+func capable(caps provider.Capabilities, req Requirements) bool {
+	return (!req.SSH || caps.SSH) && (!req.Preview || caps.Preview) && (!req.GPU || caps.GPU)
+}
+
+// noCandidate is ErrNoCapableProvider when req asks for a capability no provider has at all
+func (e *Engine) noCandidate(req Requirements) error {
+	if req == (Requirements{}) {
+		return ErrNoCandidate
+	}
+	for _, p := range e.reg.Ordered() {
+		if capable(p.Capabilities(), req) {
+			return ErrNoCandidate
+		}
+	}
+	return ErrNoCapableProvider
 }
 
 // ranked keeps a slow rank read once, a ready time recorded mid-sort would break the comparator

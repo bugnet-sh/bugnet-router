@@ -363,10 +363,63 @@ func TestCandidatesForSSHOrPreviewFindNone(t *testing.T) {
 	got, err := e.Candidates(plain)
 	eq(t, err, nil)
 	eq(t, len(got), 4)
-	_, err = e.Candidates(in(Requirements{SSH: true}))
-	eq(t, errors.Is(err, ErrNoCandidate), true)
-	_, err = e.Candidates(in(Requirements{Preview: true}))
-	eq(t, errors.Is(err, ErrNoCandidate), true)
+	for _, r := range []Requirements{{SSH: true}, {Preview: true}} {
+		_, err = e.Candidates(in(r))
+		eq(t, errors.Is(err, ErrNoCapableProvider), true)
+		eq(t, errors.Is(err, ErrNoCandidate), true)
+	}
+}
+
+func TestNoCapableProviderLooksOnlyAtCapabilities(t *testing.T) {
+	ssh := capsProvider{
+		Provider: newLocal(t, "ssh", 1000, time.Second),
+		caps:     provider.Capabilities{SSH: true, MaxLifetime: time.Hour},
+	}
+	plain := newLocal(t, "plain", 1000, time.Second)
+	gpuPkg := pkg(10, 100000)
+	gpuPkg.Resources.GPUCount = 1
+	big := pkg(10, 100000)
+	big.Resources.VCPU = 64
+	sshOnly := Requirements{SSH: true}
+	for _, c := range []struct {
+		name    string
+		e       *Engine
+		in      Inputs
+		capable bool
+	}{
+		{"ssh unhealthy", engine(fakeHealth{down: map[string]bool{"ssh": true}}, plain, ssh),
+			Inputs{Package: pkg(10, 100000), Requirements: sshOnly}, true},
+		{"ssh excluded", engine(fakeHealth{}, plain, ssh), Inputs{
+			Package: pkg(10, 100000), Requirements: sshOnly, Exclude: map[string]bool{"ssh": true},
+		}, true},
+		{"ssh past its lifetime", engine(fakeHealth{}, plain, ssh),
+			Inputs{Package: pkg(56, 100000), Requirements: sshOnly}, true},
+		{"below the margin floor", engine(fakeHealth{}, plain),
+			Inputs{Package: pkg(10, 200), MarginFloor: 0.5}, true},
+		{"no size", engine(fakeHealth{}, plain), Inputs{Package: big}, true},
+		{"every provider unhealthy", engine(fakeHealth{down: map[string]bool{"plain": true}},
+			plain), Inputs{Package: pkg(10, 100000)}, true},
+		{"no ssh", engine(fakeHealth{}, plain), Inputs{
+			Package: pkg(10, 100000), Requirements: sshOnly,
+		}, false},
+		{"no preview", engine(fakeHealth{}, plain, ssh), Inputs{
+			Package: pkg(10, 100000), Requirements: Requirements{Preview: true},
+		}, false},
+		{"no gpu for a gpu package", engine(fakeHealth{}, plain, ssh),
+			Inputs{Package: gpuPkg}, false},
+		{"no gpu asked for", engine(fakeHealth{}, plain, ssh),
+			Inputs{Package: pkg(10, 100000), Requirements: Requirements{GPU: true}}, false},
+		{"no providers and no need", engine(fakeHealth{}), Inputs{Package: pkg(10, 100000)}, true},
+		{"no providers", engine(fakeHealth{}), Inputs{
+			Package: pkg(10, 100000), Requirements: sshOnly,
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := c.e.Candidates(c.in)
+			eq(t, errors.Is(err, ErrNoCandidate), true)
+			eq(t, errors.Is(err, ErrNoCapableProvider), !c.capable)
+		})
+	}
 }
 
 func TestCandidatesSkipUnhealthyAndExcluded(t *testing.T) {
