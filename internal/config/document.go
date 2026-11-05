@@ -280,7 +280,10 @@ func fit(s setting) (problem string, unknown bool) {
 		switch t.Kind() {
 		case reflect.Map:
 			key := strings.Join(s.path[:i+1], ".")
+			env, secret := secretFor(s.path[:i+1])
 			switch {
+			case secret && !sizeName.MatchString(part):
+				return secretKey(s.path[:i+1], env), false
 			case !sizeName.MatchString(part):
 				return key + " is not a size name, size names are lowercase letters, digits " +
 					"and hyphens", false

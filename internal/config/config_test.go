@@ -520,6 +520,14 @@ func TestLoadFileRefusesSecrets(t *testing.T) {
 			"ek-secret"},
 		{"[boat.types]\nBOAT_API_KEY=boat_unquoted", "boat.types.BOAT_API_KEY", "BOAT_API_KEY",
 			"boat_unquoted"},
+		{"[boat.types]\nE2B_API_KEY = \"ek-secret\"", "boat.types.E2B_API_KEY", "E2B_API_KEY",
+			"ek-secret"},
+		{"[boat.types]\n\"E2B_API_KEY\" = \"ek-secret\"", "boat.types.E2B_API_KEY",
+			"E2B_API_KEY", "ek-secret"},
+		{"[koyeb.instance_types]\n'koyeb_api_token' = \"kt-secret\"",
+			"koyeb.instance_types.koyeb_api_token", "KOYEB_API_TOKEN", "kt-secret"},
+		{"[boat]\ntypes = { BOAT_API_KEY = \"ok-secret\" }", "boat.types.BOAT_API_KEY",
+			"BOAT_API_KEY", "ok-secret"},
 	}
 	for _, c := range cases {
 		_, err := LoadFile(writeFile(t, c.toml))
@@ -580,8 +588,7 @@ func TestLoadFileChecksSizeNames(t *testing.T) {
 			rest,
 	} {
 		_, err := LoadFile(writeFile(t, content))
-		want := table + ".E2B_API_KEY is not a size name, size names are lowercase letters, " +
-			"digits and hyphens"
+		want := table + ".E2B_API_KEY is a secret, set E2B_API_KEY in the environment instead"
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("a secret pasted into %s gave %v, want %q", table, err, want)
 			continue
