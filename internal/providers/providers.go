@@ -26,7 +26,7 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 	GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32,
 }}
 
-// Build returns the configured providers in preference order, sharing state across replicas in vk
+// Build returns the configured providers in their listed order, sharing state across replicas in vk
 func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 	var ps []provider.Provider
 	for _, name := range cfg.Providers {

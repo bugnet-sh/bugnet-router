@@ -40,7 +40,7 @@ func TestAsErrorFindsWrappedError(t *testing.T) {
 	}
 }
 
-func TestRegistryKeepsPreferenceOrder(t *testing.T) {
+func TestRegistryKeepsConfiguredOrder(t *testing.T) {
 	b := local.New(local.Options{Name: "b", Root: t.TempDir()})
 	a := local.New(local.Options{Name: "a", Root: t.TempDir()})
 	reg := provider.NewRegistry([]provider.Provider{b, a})

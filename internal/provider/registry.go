@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// Registry holds the configured providers by name and in preference order
+// Registry holds the configured providers by name and in their configured order
 type Registry struct {
 	order  []Provider
 	byName map[string]Provider
@@ -29,7 +29,7 @@ func (r *Registry) Get(name string) (Provider, bool) {
 	return p, ok
 }
 
-// Ordered returns the providers most preferred first
+// Ordered returns the providers in the order they were configured
 func (r *Registry) Ordered() []Provider {
 	return slices.Clone(r.order)
 }

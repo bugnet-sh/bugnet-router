@@ -352,7 +352,7 @@ func (f file) config() (Config, error) {
 	return c, nil
 }
 
-// providerList checks the preference order, the default when the file names none
+// providerList checks the providers to use, the default when the file names none
 func providerList(given *[]string, c Config) ([]string, error) {
 	names := defaultProviders
 	if given != nil {
