@@ -1649,9 +1649,15 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		}
 	}
 	uncounted("with the bucket spent")
-	_, err := e.client.Exec(ctx, connect.NewRequest(&routerv1.ExecRequest{Handle: busy}))
-	wantCode(t, err, connect.CodeInvalidArgument)
-	_, err = e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
+	for _, req := range []*routerv1.ExecRequest{
+		{Handle: busy},
+		{Handle: busy, Argv: []string{"true"}, Env: map[string]string{"": "x"}},
+		{Handle: busy, Argv: []string{"true"}, Env: map[string]string{"A=B": "x"}},
+	} {
+		_, err := e.client.Exec(ctx, connect.NewRequest(req))
+		wantCode(t, err, connect.CodeInvalidArgument)
+	}
+	_, err := e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
 		Handle: busy, Path: "/root/setuid", Data: []byte("x"), Mode: 0o4755,
 	}))
 	wantCode(t, err, connect.CodeInvalidArgument)

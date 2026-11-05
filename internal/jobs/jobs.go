@@ -202,10 +202,8 @@ func (s *Service) Exec(
 	if len(argv) == 0 {
 		return ExecResult{}, fmt.Errorf("%w: no argv", ErrInvalid)
 	}
-	for k := range env {
-		if k == "" || strings.Contains(k, "=") {
-			return ExecResult{}, fmt.Errorf("%w: env key %q", ErrInvalid, k)
-		}
+	if err := CheckEnv(env); err != nil {
+		return ExecResult{}, err
 	}
 	prov, err := s.provider(p)
 	if err != nil {
@@ -227,6 +225,16 @@ func (s *Service) Exec(
 		return ExecResult{}, err
 	}
 	return s.collect(ctx, nj.ID, until, deadline)
+}
+
+// CheckEnv refuses a command environment with an empty key or a key holding an equals sign
+func CheckEnv(env map[string]string) error {
+	for k := range env {
+		if k == "" || strings.Contains(k, "=") {
+			return fmt.Errorf("%w: env key %q", ErrInvalid, k)
+		}
+	}
+	return nil
 }
 
 // begin records and starts the job, or waits until the Exec holding its lease has recorded it

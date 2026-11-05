@@ -380,6 +380,9 @@ func (s *Server) Exec(
 	if len(m.GetArgv()) == 0 {
 		return nil, invalid("argv is required")
 	}
+	if err := jobs.CheckEnv(m.GetEnv()); err != nil {
+		return nil, s.status(err)
+	}
 	until, err := untilOf(m.GetUntil())
 	if err != nil {
 		return nil, err
