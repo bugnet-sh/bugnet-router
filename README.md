@@ -18,6 +18,7 @@ settings from a TOML file and their secrets from the environment.
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Per-placement operation limit in Valkey |
+| `internal/vkinfo` | Valkey's memory and `maxmemory-policy` from `INFO memory` |
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
@@ -35,7 +36,7 @@ settings from a TOML file and their secrets from the environment.
 
 - Go 1.27
 - Postgres 18 on `localhost:5432`, the current user a superuser
-- Valkey 9 on `localhost:6379`
+- Valkey 9 on `localhost:6379`, at its default `maxmemory-policy noeviction`
 - `bugnet-run` and `bugnet-proto` checked out next to this repository, `go.mod` points at them
   with `replace` until they are published
 
@@ -250,8 +251,10 @@ warning.
 
 Valkey holds the job streams, leases and shared counters, and nothing in it may be evicted. Run it
 with `maxmemory` set and `maxmemory-policy noeviction`, so a full Valkey refuses writes, which
-the router logs, instead of dropping streams or leases, and alert on its memory well before it
-reaches `maxmemory`.
+the router logs, instead of dropping streams or leases. `router-api` and `router-worker` refuse to
+start with `valkey: maxmemory-policy is X, the router needs noeviction` when `INFO memory`
+reports any other policy, and start with a warning when it reports no `maxmemory` or cannot be
+read.
 
 The output budgets bound what the streams hold. The aggregate bound is
 `limits.placement_output_budget` times the placements running at once, plus
@@ -259,6 +262,15 @@ The output budgets bound what the streams hold. The aggregate bound is
 minutes after its deadline. With the defaults that is 40 MiB a placement, so 100 placements at
 once take up to about 4 GiB. Size `maxmemory` from that with headroom, since Valkey's own memory
 for a stream can run up to half again over the budget's estimate.
+
+Point an uptime monitor at the worker's `GET /monitor` on `worker.listen_addr` every minute,
+expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeout: Postgres or
+Valkey unreachable, placements ready or terminating over 3 minutes past their deadline, which
+means the worker runs but no longer ends sandboxes, stuck outbox events, Valkey memory at 80% of
+`maxmemory` or more, and a `maxmemory-policy` other than `noeviction`. A failed connection means
+the worker is down. When `INFO memory` cannot be read, `/monitor` skips the memory and policy
+checks and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only that
+Postgres and Valkey answer.
 
 ## Events
 
@@ -282,9 +294,9 @@ An event is retried until it is delivered, 2^n seconds after its nth failure and
 5 minutes. An event that failed 10 times or more is stuck. The worker logs `outbox event keeps
 failing` at error level at its 10th failure, and the watch logs `outbox holds stuck events` at
 error level with their count whenever it changes and every 10 minutes while any is undelivered,
-which is the signal to alert on. `router-worker outbox-redrive` (which reads only
-`BUGNET_DATABASE_URL`) gives every stuck event its attempts back so it is sent at once, for
-example after the events endpoint is fixed.
+which is the signal to alert on, and `/monitor` reports their count. `router-worker
+outbox-redrive` (which reads only `BUGNET_DATABASE_URL`) gives every stuck event its attempts back
+so it is sent at once, for example after the events endpoint is fixed.
 
 ## Providers
 

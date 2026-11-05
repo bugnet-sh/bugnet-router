@@ -14,7 +14,7 @@ events_url = ""               # signed events stay pending in the outbox when em
 listen_addr = ":8080"         # router-api serves the Connect API here
 
 [worker]
-listen_addr = ":8081"         # /healthz and /readyz
+listen_addr = ":8081"         # /healthz, /readyz and /monitor
 
 [valkey]
 addr = "127.0.0.1:6379"       # Valkey address
