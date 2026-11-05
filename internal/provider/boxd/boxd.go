@@ -106,6 +106,7 @@ type Provider struct {
 	api          boxdpb.BoxdApiClient
 	log          *slog.Logger
 	pollInterval time.Duration
+	afterCreate  time.Duration
 	gatePort     int
 }
 
@@ -135,7 +136,7 @@ func New(opts Options) (*Provider, error) {
 	}
 	return &Provider{
 		conn: conn, api: boxdpb.NewBoxdApiClient(conn), log: log, pollInterval: defaultPoll,
-		gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
+		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
 	}, nil
 }
 
@@ -234,7 +235,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		resp, err = p.api.CreateVm(ctx, in)
 	}
 	// Lookups and the timer still run when ctx ended, since a machine may exist and bill
-	after, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterCreateLimit)
+	after, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.afterCreate)
 	defer cancel()
 	var vm *boxdpb.GetVmResponse
 	switch code := status.Code(err); {
@@ -321,7 +322,7 @@ func exposed(ctx context.Context, what, id string, err error) error {
 
 // discard destroys a machine Create gives up on, with its own deadline since ctx may be spent
 func (p *Provider) discard(ctx context.Context, id string) {
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterCreateLimit)
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.afterCreate)
 	defer cancel()
 	_, err := p.api.DestroyVm(dctx, &boxdpb.DestroyVmRequest{VmId: id})
 	if err != nil && status.Code(err) != codes.NotFound {
