@@ -4,8 +4,10 @@
 # Settings come from the TOML file given as the first argument, config/dev.toml by default, with
 # a path relative to the repository root. Secrets come from .env and from .env.keys, which this
 # script writes with bugnet-dev keys when it is missing. Both processes read bin/dev.toml, the
-# settings with order_token_public_key in front. Binaries are built into bin/ and every process
-# logs to bin/logs/. Ctrl-C sends SIGTERM to both processes and waits for them to drain.
+# settings with the generated order_token_public_key in front, and with any top-level
+# order_token_public_key line of the settings file dropped, so a copy of config/example.toml
+# works too. Binaries are built into bin/ and every process logs to bin/logs/. Ctrl-C sends
+# SIGTERM to both processes and waits for them to drain.
 # shellcheck disable=SC1091,SC2329
 set -euo pipefail
 # Job control puts each process in its own group, so Ctrl-C reaches only this script
@@ -40,7 +42,8 @@ pubkey=$(bin/bugnet-dev pubkey)
 # TOML top-level keys must come before every table, so the key goes first
 {
 	printf 'order_token_public_key = "%s"\n\n' "$pubkey"
-	cat "$config"
+	awk '/^[[:space:]]*\[/ { table = 1 }
+		table || !/^[[:space:]]*order_token_public_key[[:space:]]*=/' "$config"
 } >bin/dev.toml
 
 if ! bin/router-api migrate >>bin/logs/migrate.log 2>&1; then

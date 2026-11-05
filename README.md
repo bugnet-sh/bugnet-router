@@ -85,8 +85,8 @@ scripts/dev-up.sh
 from `config/dev.toml`, or from the file given as `dev-up.sh`'s argument. `dev-up.sh` builds the
 binaries into `bin/`, writes fresh router secrets to `.env.keys` with
 `bin/bugnet-dev keys > .env.keys` when that file is missing, writes `bin/dev.toml` as the
-settings file with `order_token_public_key` from `bin/bugnet-dev pubkey` in front, migrates the
-database and starts one `router-api` and one `router-worker` with `-config bin/dev.toml` on the
+settings file with `order_token_public_key` from `bin/bugnet-dev pubkey` in front, in place of
+any top-level `order_token_public_key` the file has, migrates the database and starts one `router-api` and one `router-worker` with `-config bin/dev.toml` on the
 local provider. Logs go to `bin/logs/`. Ctrl-C stops both. Delete `.env.keys` to get new
 secrets. Both `.env` and `.env.keys` are ignored by git.
 
