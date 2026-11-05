@@ -1,8 +1,14 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,10 +21,24 @@ import (
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// serveOnly are the variables serving requires and migrating does not
-var serveOnly = []string{
-	"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_TOKEN_PUBLIC_KEY", "BUGNET_PACKAGES_FILE",
-	"BUGNET_HANDLE_KEY",
+// serveOnly are the secrets serving requires and migrating does not
+var serveOnly = []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY"}
+
+// settingsFile writes a settings file router-api can serve with
+func settingsFile(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "settings.toml")
+	content := `order_token_public_key = "` + base64.StdEncoding.EncodeToString(pub) + `"
+packages_file = "packages.json"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestMigrateNeedsOnlyDatabaseURL(t *testing.T) {
@@ -42,9 +62,26 @@ func TestMigrateNeedsOnlyDatabaseURL(t *testing.T) {
 		}
 	}
 
-	err = run(discard, nil)
+	err = run(discard, []string{"-config", settingsFile(t)})
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_INTERNAL_TOKEN is required") {
 		t.Fatalf("serve with only the database url: %v, want the full configuration", err)
+	}
+}
+
+func TestServeNeedsASettingsFile(t *testing.T) {
+	for _, args := range [][]string{
+		nil, {"-config"}, {"-config", ""}, {"serve"}, {"-config", "a.toml", "extra"},
+		{"migrate", "-config", "a.toml"}, {"-listen", ":8080"},
+	} {
+		if err := run(discard, args); !errors.Is(err, errUsage) ||
+			!strings.Contains(err.Error(), "-config FILE") {
+			t.Errorf("run %q gave %v, want the usage", args, err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "absent.toml")
+	if err := run(discard, []string{"--config", missing}); err == nil ||
+		!strings.Contains(err.Error(), missing) {
+		t.Fatalf("run with a missing settings file gave %v, want an error naming it", err)
 	}
 }
 

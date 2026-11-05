@@ -1,14 +1,16 @@
 // Command router-worker works the router's River jobs for placement deadlines, the watch, the
 // sweep and the outbox, and with the outbox-redrive argument sends stuck outbox events at once.
 //
-// It builds every service from the environment, starts the River client and answers /healthz
-// and /readyz over HTTP. On SIGTERM or SIGINT it stops fetching jobs, gives running ones a
-// bounded time before cancelling them, waits a bounded time for the saga, and exits.
+// router-worker -config FILE builds every service from the settings in FILE and the secrets in
+// the environment, starts the River client and answers /healthz and /readyz over HTTP. On
+// SIGTERM or SIGINT it stops fetching jobs, gives running ones a bounded time before cancelling
+// them, waits a bounded time for the saga, and exits.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,10 +50,18 @@ func main() {
 	}
 }
 
+var errUsage = errors.New("usage: router-worker -config FILE, or router-worker outbox-redrive")
+
 func run(log *slog.Logger, args ...string) error {
 	redrive := len(args) == 1 && args[0] == "outbox-redrive"
-	if len(args) > 0 && !redrive {
-		return errors.New("usage: router-worker [outbox-redrive]")
+	var path string
+	if !redrive {
+		fs := flag.NewFlagSet("router-worker", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		fs.StringVar(&path, "config", "", "settings file")
+		if err := fs.Parse(args); err != nil || fs.NArg() > 0 || path == "" {
+			return errUsage
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -60,7 +70,7 @@ func run(log *slog.Logger, args ...string) error {
 	if redrive {
 		return redriveOutbox(ctx, log)
 	}
-	cfg, err := config.Load()
+	cfg, err := config.Load(path, os.LookupEnv)
 	if err != nil {
 		return err
 	}

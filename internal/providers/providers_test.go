@@ -18,15 +18,30 @@ import (
 	"github.com/oynozan/bugnet-router/internal/providers"
 )
 
+// load reads a settings file with the given content, the keys stand in for the environment
+func load(t *testing.T, content string, keys map[string]string) config.Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "settings.toml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ProviderKeys = keys
+	return cfg
+}
+
 func localConfig(t *testing.T) config.Config {
 	t.Helper()
-	return config.Config{
-		Providers:         []string{"local"},
-		LocalEnabled:      true,
-		LocalRoot:         t.TempDir(),
-		LocalRunnerPath:   "/opt/bugnet-run",
-		LocalHourlyMicros: 2500,
-	}
+	return load(t, `providers = ["local"]
+[local]
+enabled = true
+root = "`+t.TempDir()+`"
+runner = "/opt/bugnet-run"
+hourly_micros = 2500
+`, nil)
 }
 
 func TestBuildLocal(t *testing.T) {
@@ -62,10 +77,8 @@ func TestBuildLocalRefusesUnlessEnabled(t *testing.T) {
 }
 
 func TestBuildBoxd(t *testing.T) {
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"boxd"},
-		ProviderKeys: map[string]string{"boxd": "bxd_test"},
-	}, nil)
+	cfg := load(t, `providers = ["boxd"]`, map[string]string{"boxd": "bxd_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,12 +98,12 @@ func TestBuildBoxdEndpointOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lis.Close() })
-	t.Setenv("BUGNET_BOXD_ENDPOINT", lis.Addr().String())
-	t.Setenv("BUGNET_BOXD_REGION", "nyc")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"boxd"},
-		ProviderKeys: map[string]string{"boxd": "bxd_test"},
-	}, nil)
+	cfg := load(t, `providers = ["boxd"]
+[boxd]
+region = "nyc"
+endpoint = "`+lis.Addr().String()+`"
+`, map[string]string{"boxd": "bxd_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,26 +120,42 @@ func TestBuildBoxdEndpointOverride(t *testing.T) {
 	_ = lis.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
 	conn, err := lis.Accept()
 	if err != nil {
-		t.Fatalf("boxd never dialled BUGNET_BOXD_ENDPOINT: %v", err)
+		t.Fatalf("boxd never dialled boxd.endpoint: %v", err)
 	}
 	_ = conn.Close()
 }
 
 func TestBuildBoxdNeedsKey(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"boxd"}}, nil)
+	_, err := providers.Build(load(t, `providers = ["boxd"]`, nil), nil)
 	if err == nil || !strings.Contains(err.Error(), "BOXD_API_KEY") {
 		t.Fatalf("build boxd without a key: %v", err)
 	}
 }
 
+// e2bTemplates are the two sizes deploy/e2b builds
+const e2bTemplates = `
+[[e2b.templates]]
+size = "2x2"
+template = "bugnet-2x2"
+vcpu = 2
+memory_mib = 2048
+disk_gib = 10
+
+[[e2b.templates]]
+size = "4x8"
+template = "bugnet-4x8"
+vcpu = 4
+memory_mib = 8192
+disk_gib = 10
+`
+
 func TestBuildE2B(t *testing.T) {
-	t.Setenv("BUGNET_E2B_TEMPLATES", "2x2=bugnet-2x2:2:2048:10,4x8=bugnet-4x8:4:8192:10")
-	t.Setenv("BUGNET_E2B_DOMAIN", "e2b-juliett.dev")
-	t.Setenv("BUGNET_E2B_MAX_LIFETIME", "24h")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"e2b"},
-		ProviderKeys: map[string]string{"e2b": "e2b_test"},
-	}, nil)
+	cfg := load(t, `providers = ["e2b"]
+[e2b]
+domain = "e2b-juliett.dev"
+max_lifetime = "24h"
+`+e2bTemplates, map[string]string{"e2b": "e2b_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,15 +179,8 @@ func TestBuildE2BDefaults(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	for _, env := range []string{
-		"BUGNET_E2B_TEMPLATES", "BUGNET_E2B_DOMAIN", "BUGNET_E2B_MAX_LIFETIME",
-	} {
-		t.Setenv(env, "")
-	}
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"e2b"},
-		ProviderKeys: map[string]string{"e2b": "e2b_test"},
-	}, nil)
+	cfg := load(t, `providers = ["e2b"]`, map[string]string{"e2b": "e2b_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,45 +192,40 @@ func TestBuildE2BDefaults(t *testing.T) {
 		t.Errorf("e2b without templates offers %+v", s)
 	}
 	if got := logs.String(); !strings.Contains(got, "level=WARN") ||
-		!strings.Contains(got, "BUGNET_E2B_TEMPLATES") {
-		t.Errorf("log %q, want a warning naming BUGNET_E2B_TEMPLATES", got)
+		!strings.Contains(got, "e2b.templates") {
+		t.Errorf("log %q, want a warning naming e2b.templates", got)
 	}
 }
 
 func TestBuildE2BRejectsBadConfig(t *testing.T) {
-	cases := []struct {
-		name, env, value string
-	}{
-		{"no key", "", ""},
-		{"bad templates", "BUGNET_E2B_TEMPLATES", "2x2=bugnet-2x2:2:2048"},
-		{"bad lifetime", "BUGNET_E2B_MAX_LIFETIME", "an hour"},
-		{"negative lifetime", "BUGNET_E2B_MAX_LIFETIME", "-1h"},
+	_, err := providers.Build(load(t, `providers = ["e2b"]`+e2bTemplates, nil), nil)
+	if err == nil || !strings.Contains(err.Error(), "E2B_API_KEY") {
+		t.Fatalf("build e2b without a key: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			keys := map[string]string{"e2b": "e2b_test"}
-			want := c.env
-			if c.env == "" {
-				keys, want = nil, "E2B_API_KEY"
-			} else {
-				t.Setenv(c.env, c.value)
-			}
-			cfg := config.Config{Providers: []string{"e2b"}, ProviderKeys: keys}
-			_, err := providers.Build(cfg, nil)
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("build gave %v, want an error naming %s", err, want)
-			}
-		})
+	for name, table := range map[string]string{
+		"no vCPU":     "size = \"2x2\"\ntemplate = \"bugnet-2x2\"\nmemory_mib = 2048",
+		"no template": "size = \"2x2\"\nvcpu = 2\nmemory_mib = 2048",
+		"no size":     "template = \"bugnet-2x2\"\nvcpu = 2\nmemory_mib = 2048",
+	} {
+		cfg := load(t, "providers = [\"e2b\"]\n[[e2b.templates]]\n"+table,
+			map[string]string{"e2b": "e2b_test"})
+		_, err := providers.Build(cfg, nil)
+		if err == nil || !strings.Contains(err.Error(), "e2b.templates") {
+			t.Errorf("%s: build gave %v, want an error naming e2b.templates", name, err)
+		}
+	}
+	again := "[[e2b.templates]]\nsize = \"2x2\"\ntemplate = \"other\"\nvcpu = 2\nmemory_mib = 2048"
+	twice := load(t, "providers = [\"e2b\"]\n"+e2bTemplates+again,
+		map[string]string{"e2b": "e2b_test"})
+	if _, err := providers.Build(twice, nil); err == nil ||
+		!strings.Contains(err.Error(), "e2b.templates") {
+		t.Errorf("a size twice: build gave %v, want an error naming e2b.templates", err)
 	}
 }
 
 func TestBuildKoyeb(t *testing.T) {
-	t.Setenv("BUGNET_KOYEB_REGION", "")
-	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"koyeb"},
-		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	}, nil)
+	cfg := load(t, `providers = ["koyeb"]`, map[string]string{"koyeb": "koyeb_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,19 +245,20 @@ func TestBuildKoyeb(t *testing.T) {
 }
 
 func TestBuildKoyebInstanceTypes(t *testing.T) {
-	t.Setenv("BUGNET_KOYEB_REGION", "par")
-	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "cpu=large")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"koyeb"},
-		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	}, nil)
+	cfg := load(t, `providers = ["koyeb"]
+[koyeb]
+region = "par"
+[koyeb.instance_types]
+cpu = "large"
+`, map[string]string{"koyeb": "koyeb_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p, _ := reg.Get("koyeb")
 	size, ok := p.SizeFor(provider.Resources{})
 	if !ok || size.Name != "cpu" || size.Resources.VCPU != 4 {
-		t.Fatalf("size from BUGNET_KOYEB_INSTANCE_TYPES: %+v, %v", size, ok)
+		t.Fatalf("size from koyeb.instance_types: %+v, %v", size, ok)
 	}
 	if s, ok := p.SizeFor(provider.Resources{GPUCount: 1}); ok || p.Capabilities().GPU {
 		t.Fatalf("configured sizes without a GPU offer %+v and capabilities %+v", s,
@@ -249,26 +267,21 @@ func TestBuildKoyebInstanceTypes(t *testing.T) {
 }
 
 func TestBuildKoyebRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"koyeb"}}, nil)
+	_, err := providers.Build(load(t, `providers = ["koyeb"]`, nil), nil)
 	if err == nil || !strings.Contains(err.Error(), "KOYEB_API_TOKEN") {
 		t.Fatalf("build koyeb without a token: %v", err)
 	}
-	t.Setenv("BUGNET_KOYEB_INSTANCE_TYPES", "cpu=nano")
-	_, err = providers.Build(config.Config{
-		Providers:    []string{"koyeb"},
-		ProviderKeys: map[string]string{"koyeb": "koyeb_test"},
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "BUGNET_KOYEB_INSTANCE_TYPES") {
+	cfg := load(t, "providers = [\"koyeb\"]\n[koyeb.instance_types]\ncpu = \"nano\"",
+		map[string]string{"koyeb": "koyeb_test"})
+	_, err = providers.Build(cfg, nil)
+	if err == nil || !strings.Contains(err.Error(), "koyeb.instance_types") {
 		t.Fatalf("build koyeb with an unknown instance type: %v", err)
 	}
 }
 
 func TestBuildBoat(t *testing.T) {
-	t.Setenv("BUGNET_BOAT_TYPES", "")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"boat"},
-		ProviderKeys: map[string]string{"boat": "boat_test"},
-	}, nil)
+	cfg := load(t, `providers = ["boat"]`, map[string]string{"boat": "boat_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,18 +301,19 @@ func TestBuildBoat(t *testing.T) {
 }
 
 func TestBuildBoatTypes(t *testing.T) {
-	t.Setenv("BUGNET_BOAT_TYPES", "cpu2=small,cpu8=large")
-	reg, err := providers.Build(config.Config{
-		Providers:    []string{"boat"},
-		ProviderKeys: map[string]string{"boat": "boat_test"},
-	}, nil)
+	cfg := load(t, `providers = ["boat"]
+[boat.types]
+cpu2 = "small"
+cpu8 = "large"
+`, map[string]string{"boat": "boat_test"})
+	reg, err := providers.Build(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p, _ := reg.Get("boat")
 	size, ok := p.SizeFor(provider.Resources{VCPU: 3})
 	if !ok || size.Name != "cpu8" || size.Resources.VCPU != 8 {
-		t.Fatalf("size from BUGNET_BOAT_TYPES: %+v, %v", size, ok)
+		t.Fatalf("size from boat.types: %+v, %v", size, ok)
 	}
 	if s, ok := p.SizeFor(provider.Resources{VCPU: 16}); ok {
 		t.Fatalf("configured sizes offer %+v", s)
@@ -307,16 +321,14 @@ func TestBuildBoatTypes(t *testing.T) {
 }
 
 func TestBuildBoatRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"boat"}}, nil)
+	_, err := providers.Build(load(t, `providers = ["boat"]`, nil), nil)
 	if err == nil || !strings.Contains(err.Error(), "BOAT_API_KEY") {
 		t.Fatalf("build boat without a key: %v", err)
 	}
-	t.Setenv("BUGNET_BOAT_TYPES", "cpu=tiny")
-	_, err = providers.Build(config.Config{
-		Providers:    []string{"boat"},
-		ProviderKeys: map[string]string{"boat": "boat_test"},
-	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "BUGNET_BOAT_TYPES") {
+	cfg := load(t, "providers = [\"boat\"]\n[boat.types]\ncpu = \"tiny\"",
+		map[string]string{"boat": "boat_test"})
+	_, err = providers.Build(cfg, nil)
+	if err == nil || !strings.Contains(err.Error(), "boat.types") {
 		t.Fatalf("build boat with an unknown type: %v", err)
 	}
 }
@@ -358,9 +370,9 @@ func TestRunnersReadsTheBuildsUploadingProvidersNeed(t *testing.T) {
 	}
 
 	_, err = providers.Runners(config.Config{}, reg)
-	if err == nil || !strings.Contains(err.Error(), "BUGNET_RUNNER_LINUX_AMD64") ||
+	if err == nil || !strings.Contains(err.Error(), "runner.linux_amd64") ||
 		!strings.Contains(err.Error(), "up") {
-		t.Fatalf("runners without the build gave %v, want an error naming the variable and up", err)
+		t.Fatalf("runners without the build gave %v, want an error naming the key and up", err)
 	}
 	missing := config.Config{RunnerLinuxAMD64: filepath.Join(dir, "missing")}
 	if _, err := providers.Runners(missing, reg); err == nil {
@@ -368,8 +380,8 @@ func TestRunnersReadsTheBuildsUploadingProvidersNeed(t *testing.T) {
 	}
 	arm := provider.NewRegistry([]provider.Provider{uploading{newLocal("arm"), "arm64"}})
 	_, err = providers.Runners(config.Config{RunnerLinuxAMD64: amd}, arm)
-	if err == nil || !strings.Contains(err.Error(), "BUGNET_RUNNER_LINUX_ARM64") {
-		t.Fatalf("runners for an arm64 provider gave %v, want the arm64 variable named", err)
+	if err == nil || !strings.Contains(err.Error(), "runner.linux_arm64") {
+		t.Fatalf("runners for an arm64 provider gave %v, want the arm64 key named", err)
 	}
 	if none, err := providers.Runners(config.Config{}, provider.NewRegistry(
 		[]provider.Provider{newLocal("plain")})); err != nil || len(none) != 0 {

@@ -4,10 +4,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oynozan/bugnet-router/internal/jobs"
 )
@@ -15,6 +19,17 @@ import (
 const secretToken = "0123456789abcdef0123456789abcdef"
 
 var handleKeyB64 = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+
+// secrets are the environment of a valid Load, with a password in the database URL
+var secrets = map[string]string{
+	"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
+	"BUGNET_INTERNAL_TOKEN": secretToken,
+	"BUGNET_HANDLE_KEY":     handleKeyB64,
+	"BOXD_API_KEY":          "bk-secret",
+	"E2B_API_KEY":           "ek-secret",
+	"KOYEB_API_TOKEN":       "kt-secret",
+	"BOAT_API_KEY":          "ok-secret",
+}
 
 func pubB64(t *testing.T) string {
 	t.Helper()
@@ -25,14 +40,27 @@ func pubB64(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(pub)
 }
 
-func env(t *testing.T, over map[string]string) func(string) (string, bool) {
-	m := map[string]string{
-		"BUGNET_DATABASE_URL":           "postgres://localhost/x",
-		"BUGNET_INTERNAL_TOKEN":         secretToken,
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY": pubB64(t),
-		"BUGNET_PACKAGES_FILE":          "/etc/packages.json",
-		"BUGNET_HANDLE_KEY":             handleKeyB64,
+// writeFile writes a settings file into a fresh directory and returns its path
+func writeFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "settings.toml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	return path
+}
+
+// serving is the start of a file Load accepts, two top-level lines so tables may follow
+func serving(t *testing.T) string {
+	t.Helper()
+	return `order_token_public_key = "` + pubB64(t) + `"
+packages_file = "/etc/packages.json"
+`
+}
+
+// env looks up vars, with "-" dropping a variable from secrets
+func env(over map[string]string) func(string) (string, bool) {
+	m := maps.Clone(secrets)
 	for k, v := range over {
 		if v == "-" {
 			delete(m, k)
@@ -43,8 +71,8 @@ func env(t *testing.T, over map[string]string) func(string) (string, bool) {
 	return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
 }
 
-func TestLoadDefaultsAndRequired(t *testing.T) {
-	c, err := LoadFrom(env(t, nil))
+func TestLoadFileDefaults(t *testing.T) {
+	c, err := LoadFile(writeFile(t, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,14 +92,21 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 	if !strings.HasPrefix(c.ReplicaID, host) || c.ReplicaID == host {
 		t.Fatalf("replica id %q", c.ReplicaID)
 	}
-	if c.EventSigningKey != nil || c.LocalEnabled || len(c.ProviderKeys) != 0 {
-		t.Fatalf("optional fields set: %+v", c)
+	if c.OrderTokenPublicKey != nil || c.PackagesFile != "" || c.EventsURL != "" {
+		t.Fatalf("optional settings set: %+v", c)
 	}
-	if c.LocalRunnerPath != "" || c.LocalHourlyMicros != 0 {
+	if c.DatabaseURL != "" || c.InternalToken != "" || c.HandleKey != nil ||
+		c.EventSigningKey != nil || len(c.ProviderKeys) != 0 {
+		t.Fatalf("secrets set by LoadFile: %+v", c)
+	}
+	if c.LocalEnabled || c.LocalRunnerPath != "" || c.LocalHourlyMicros != 0 {
 		t.Fatalf("local runner settings: %+v", c)
 	}
 	if c.LocalRoot != filepath.Join(os.TempDir(), "bugnet-local") {
 		t.Fatalf("local root %q", c.LocalRoot)
+	}
+	if c.RunnerLinuxAMD64 != "" || c.RunnerLinuxARM64 != "" {
+		t.Fatalf("runner builds: %+v", c)
 	}
 	if c.JobOutputBudget != jobs.DefaultJobBudget ||
 		c.PlacementOutputBudget != jobs.DefaultPlacementBudget ||
@@ -80,185 +115,483 @@ func TestLoadDefaultsAndRequired(t *testing.T) {
 		t.Fatalf("output limits %d, %d, %d and %d jobs, want the jobs service's defaults",
 			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
 	}
-	if string(c.HandleKey) != "0123456789abcdef0123456789abcdef" {
-		t.Fatal("handle key not parsed")
+	if c.Boxd != (Boxd{Region: "fra"}) || c.Koyeb.Region != "fra" ||
+		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil {
+		t.Fatalf("provider defaults: %+v, %+v, %+v", c.Boxd, c.Koyeb, c.Boat)
 	}
-	if len(c.OrderTokenPublicKey) != ed25519.PublicKeySize {
-		t.Fatal("public key not parsed")
-	}
-	for _, name := range []string{
-		"BUGNET_DATABASE_URL", "BUGNET_INTERNAL_TOKEN",
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY", "BUGNET_PACKAGES_FILE", "BUGNET_HANDLE_KEY",
-	} {
-		_, err := LoadFrom(env(t, map[string]string{name: "-"}))
-		if err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("missing %s: %v", name, err)
-		}
+	if c.E2B.Domain != "" || c.E2B.MaxLifetime != 0 || c.E2B.Templates != nil {
+		t.Fatalf("e2b defaults: %+v", c.E2B)
 	}
 }
 
-func TestLoadValidation(t *testing.T) {
-	shortKey := base64.StdEncoding.EncodeToString([]byte("short"))
-	short := "BUGNET_INTERNAL_TOKEN"
-	bad := map[string]map[string]string{
-		short:                           {short: "tooshort-secret"},
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY": {"BUGNET_ORDER_TOKEN_PUBLIC_KEY": shortKey},
-		"BUGNET_HANDLE_KEY":             {"BUGNET_HANDLE_KEY": shortKey},
-		"handle key not base64":         {"BUGNET_HANDLE_KEY": "!!not-base64!!"},
-		"BUGNET_MARGIN_FLOOR":           {"BUGNET_MARGIN_FLOOR": "11"},
-		"negative margin":               {"BUGNET_MARGIN_FLOOR": "-0.1"},
-		"non-numeric margin":            {"BUGNET_MARGIN_FLOOR": "abc"},
-		"NaN margin":                    {"BUGNET_MARGIN_FLOOR": "NaN"},
-		"+Inf margin":                   {"BUGNET_MARGIN_FLOOR": "+Inf"},
-		"-Inf margin":                   {"BUGNET_MARGIN_FLOOR": "-Inf"},
-		"BUGNET_EVENT_SIGNING_KEY":      {"BUGNET_EVENT_SIGNING_KEY": "AAAA"},
-		"BUGNET_PROVIDERS":              {"BUGNET_PROVIDERS": "koyeb,nope"},
-		"duplicate providers":           {"BUGNET_PROVIDERS": "boat,e2b,boat"},
-		"trailing comma":                {"BUGNET_PROVIDERS": "boat,"},
-		"empty entry":                   {"BUGNET_PROVIDERS": "boat,,e2b"},
-		"local":                         {"BUGNET_PROVIDERS": "boat,local"},
-		"BUGNET_LOCAL_RUNNER": {
-			"BUGNET_PROVIDERS": "e2b,local", "BUGNET_ENABLE_LOCAL_PROVIDER": "1",
-		},
-		"BUGNET_LOCAL_HOURLY_MICROS":    {"BUGNET_LOCAL_HOURLY_MICROS": "-1"},
-		"non-numeric local hourly cost": {"BUGNET_LOCAL_HOURLY_MICROS": "1.5"},
-		"BUGNET_DEPLOYMENT_ID":          {"BUGNET_DEPLOYMENT_ID": "Prod"},
-		"deployment with underscore":    {"BUGNET_DEPLOYMENT_ID": "blue_green"},
-		"deployment with a space":       {"BUGNET_DEPLOYMENT_ID": "blue green"},
-		"long deployment":               {"BUGNET_DEPLOYMENT_ID": strings.Repeat("d", 33)},
-		"BUGNET_JOB_OUTPUT_BUDGET":      {"BUGNET_JOB_OUTPUT_BUDGET": "0"},
-		"negative job budget":           {"BUGNET_JOB_OUTPUT_BUDGET": "-5MiB"},
-		"job budget in GB":              {"BUGNET_JOB_OUTPUT_BUDGET": "8GB"},
-		"fractional job budget":         {"BUGNET_JOB_OUTPUT_BUDGET": "1.5MiB"},
-		"job budget with a space":       {"BUGNET_JOB_OUTPUT_BUDGET": "8 MiB"},
-		"lowercase suffix":              {"BUGNET_JOB_OUTPUT_BUDGET": "8mib"},
-		"BUGNET_PLACEMENT_OUTPUT_BUDGET": {
-			"BUGNET_PLACEMENT_OUTPUT_BUDGET": "9223372036854775807MiB",
-		},
-		"zero placement budget":         {"BUGNET_PLACEMENT_OUTPUT_BUDGET": "0KiB"},
-		"BUGNET_PLACEMENT_TAIL_RESERVE": {"BUGNET_PLACEMENT_TAIL_RESERVE": "lots"},
-		"negative tail reserve":         {"BUGNET_PLACEMENT_TAIL_RESERVE": "-1"},
-		"BUGNET_MAX_RUNNING_JOBS":       {"BUGNET_MAX_RUNNING_JOBS": "0"},
-		"negative running jobs":         {"BUGNET_MAX_RUNNING_JOBS": "-3"},
-		"running jobs with a suffix":    {"BUGNET_MAX_RUNNING_JOBS": "16KiB"},
-	}
-	secrets := map[string]string{
-		"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
-		"BUGNET_INTERNAL_TOKEN": secretToken,
-		"BUGNET_HANDLE_KEY":     handleKeyB64,
-		"BOXD_API_KEY":          "bk",
-		"E2B_API_KEY":           "ek",
-		"KOYEB_API_TOKEN":       "kt",
-		"BOAT_API_KEY":          "ok",
-	}
-	for name, over := range bad {
-		all := map[string]string{}
-		for k, v := range secrets {
-			all[k] = v
-		}
-		for k, v := range over {
-			all[k] = v
-		}
-		_, err := LoadFrom(env(t, all))
-		if err == nil {
-			t.Errorf("%s: expected error", name)
-			continue
-		}
-		if strings.HasPrefix(name, "BUGNET_") && !strings.Contains(err.Error(), name) {
-			t.Errorf("%s: error does not name the variable: %v", name, err)
-		}
-		for k, v := range all {
-			if strings.Contains(err.Error(), v) {
-				t.Errorf("%s: error echoes value of %s: %v", name, k, err)
-			}
-		}
-	}
-	for _, miss := range []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY"} {
-		over := map[string]string{miss: "-"}
-		for k, v := range secrets {
-			if k != miss {
-				over[k] = v
-			}
-		}
-		_, err := LoadFrom(env(t, over))
-		if err == nil {
-			t.Fatalf("missing %s accepted", miss)
-		}
-		for _, v := range secrets {
-			if strings.Contains(err.Error(), v) {
-				t.Errorf("missing %s: error echoes a secret: %v", miss, err)
-			}
-		}
-	}
-}
-
-func TestLoadOptional(t *testing.T) {
-	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	c, err := LoadFrom(env(t, map[string]string{
-		"BUGNET_EVENT_SIGNING_KEY":       seed,
-		"BUGNET_EVENTS_URL":              "https://events.example",
-		"BUGNET_ENABLE_LOCAL_PROVIDER":   "1",
-		"BUGNET_LOCAL_ROOT":              "/var/bn",
-		"BUGNET_PROVIDERS":               "local,e2b",
-		"BOXD_API_KEY":                   "bk",
-		"E2B_API_KEY":                    "ek",
-		"KOYEB_API_TOKEN":                "",
-		"BOAT_API_KEY":                   "ok",
-		"BUGNET_RUNNER_LINUX_AMD64":      "/r/amd",
-		"BUGNET_RUNNER_LINUX_ARM64":      "/r/arm",
-		"BUGNET_MARGIN_FLOOR":            "2.5",
-		"BUGNET_REPLICA_ID":              "r1",
-		"BUGNET_VALKEY_ADDR":             "v:1",
-		"BUGNET_LISTEN_ADDR":             ":9",
-		"BUGNET_WORKER_LISTEN_ADDR":      ":10",
-		"BUGNET_VALKEY_PREFIX":           "t:",
-		"BUGNET_LOCAL_RUNNER":            "/r/local",
-		"BUGNET_LOCAL_HOURLY_MICROS":     "1500",
-		"BUGNET_DEPLOYMENT_ID":           "staging-2",
-		"BUGNET_JOB_OUTPUT_BUDGET":       "4096KiB",
-		"BUGNET_PLACEMENT_OUTPUT_BUDGET": "64MiB",
-		"BUGNET_PLACEMENT_TAIL_RESERVE":  "1000000",
-		"BUGNET_MAX_RUNNING_JOBS":        "4",
-	}))
+func TestLoadFileEmptyStringsMeanDefaults(t *testing.T) {
+	c, err := LoadFile(writeFile(t, `deployment_id = ""
+replica_id = ""
+[api]
+listen_addr = ""
+[worker]
+listen_addr = ""
+[valkey]
+addr = ""
+prefix = ""
+[limits]
+job_output_budget = ""
+[local]
+root = ""
+[boxd]
+region = ""
+[koyeb]
+region = ""
+`))
 	if err != nil {
 		t.Fatal(err)
+	}
+	empty, err := LoadFile(writeFile(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c, empty) {
+		t.Fatalf("empty strings gave %+v, want the defaults %+v", c, empty)
+	}
+}
+
+func TestLoadFileSettings(t *testing.T) {
+	pub := pubB64(t)
+	c, err := LoadFile(writeFile(t, `order_token_public_key = "`+pub+`"
+packages_file = "/p/packages.json"
+providers = ["local", "e2b"]
+margin_floor = 2
+deployment_id = "staging-2"
+replica_id = "r1"
+events_url = "https://events.example"
+
+[api]
+listen_addr = ":9"
+
+[worker]
+listen_addr = ":10"
+
+[valkey]
+addr = "v:1"
+prefix = "t:"
+
+[runner]
+linux_amd64 = "/r/amd"
+linux_arm64 = "/r/arm"
+
+[limits]
+job_output_budget = "4096KiB"
+placement_output_budget = "64MiB"
+placement_tail_reserve = "1000000"
+max_running_jobs = 4
+
+[local]
+enabled = true
+root = "/var/bn"
+runner = "/r/local"
+hourly_micros = 1500
+
+[boxd]
+region = "nyc"
+endpoint = "boxd.example:9443"
+
+[e2b]
+domain = "e2b-juliett.dev"
+max_lifetime = "24h"
+
+[[e2b.templates]]
+size = "2x2"
+template = "bugnet-2x2"
+vcpu = 2
+memory_mib = 2048
+disk_gib = 10
+
+[[e2b.templates]]
+size = "4x8"
+template = "team/bugnet-4x8:v1"
+vcpu = 4
+memory_mib = 8192
+disk_gib = 20
+
+[koyeb]
+region = "par"
+
+[koyeb.instance_types]
+cpu = "medium"
+gpu = "gpu-nvidia-rtx-4000-sff-ada"
+
+[boat.types]
+cpu2 = "small"
+cpu8 = "large"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base64.StdEncoding.EncodeToString(c.OrderTokenPublicKey) != pub ||
+		c.PackagesFile != "/p/packages.json" || c.EventsURL != "https://events.example" {
+		t.Fatalf("top-level settings: %+v", c)
+	}
+	if !slices.Equal(c.Providers, []string{"local", "e2b"}) || c.MarginFloor != 2 ||
+		c.DeploymentID != "staging-2" || c.ReplicaID != "r1" {
+		t.Fatalf("placement settings: %+v", c)
+	}
+	if c.ListenAddr != ":9" || c.WorkerListenAddr != ":10" || c.ValkeyAddr != "v:1" ||
+		c.ValkeyPrefix != "t:" {
+		t.Fatalf("addresses: %+v", c)
+	}
+	if c.RunnerLinuxAMD64 != "/r/amd" || c.RunnerLinuxARM64 != "/r/arm" {
+		t.Fatalf("runner builds: %+v", c)
 	}
 	if c.JobOutputBudget != 4<<20 || c.PlacementOutputBudget != 64<<20 ||
 		c.PlacementTailReserve != 1_000_000 || c.MaxRunningJobs != 4 {
 		t.Fatalf("output limits %d, %d, %d and %d jobs, want 4 MiB, 64 MiB, 1000000 and 4",
 			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
 	}
-	if len(c.EventSigningKey) != ed25519.PrivateKeySize || c.EventsURL != "https://events.example" {
-		t.Fatalf("event config: %+v", c)
+	if !c.LocalEnabled || c.LocalRoot != "/var/bn" || c.LocalRunnerPath != "/r/local" ||
+		c.LocalHourlyMicros != 1500 {
+		t.Fatalf("local settings: %+v", c)
 	}
-	if !c.LocalEnabled || c.LocalRoot != "/var/bn" || c.MarginFloor != 2.5 || c.ReplicaID != "r1" {
-		t.Fatalf("%+v", c)
+	if c.Boxd != (Boxd{Region: "nyc", Endpoint: "boxd.example:9443"}) {
+		t.Fatalf("boxd settings: %+v", c.Boxd)
 	}
-	if c.ListenAddr != ":9" || c.WorkerListenAddr != ":10" {
-		t.Fatalf("listen addrs %q and %q", c.ListenAddr, c.WorkerListenAddr)
+	wantTemplates := []E2BTemplate{
+		{Size: "2x2", Template: "bugnet-2x2", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
+		{Size: "4x8", Template: "team/bugnet-4x8:v1", VCPU: 4, MemoryMiB: 8192, DiskGiB: 20},
 	}
-	if c.DeploymentID != "staging-2" {
-		t.Fatalf("deployment id %q, want staging-2", c.DeploymentID)
+	if c.E2B.Domain != "e2b-juliett.dev" || c.E2B.MaxLifetime != 24*time.Hour ||
+		!slices.Equal(c.E2B.Templates, wantTemplates) {
+		t.Fatalf("e2b settings: %+v", c.E2B)
+	}
+	wantTypes := map[string]string{"cpu": "medium", "gpu": "gpu-nvidia-rtx-4000-sff-ada"}
+	if c.Koyeb.Region != "par" || !maps.Equal(c.Koyeb.InstanceTypes, wantTypes) {
+		t.Fatalf("koyeb settings: %+v", c.Koyeb)
+	}
+	if !maps.Equal(c.Boat.Types, map[string]string{"cpu2": "small", "cpu8": "large"}) {
+		t.Fatalf("boat settings: %+v", c.Boat)
 	}
 	long := strings.Repeat("d", 32)
-	if c, err := LoadFrom(env(t, map[string]string{"BUGNET_DEPLOYMENT_ID": long})); err != nil ||
+	if c, err := LoadFile(writeFile(t, `deployment_id = "`+long+`"`)); err != nil ||
 		c.DeploymentID != long {
 		t.Fatalf("32 character deployment id %q, %v", c.DeploymentID, err)
 	}
-	want := map[string]string{"boxd": "bk", "e2b": "ek", "boat": "ok"}
-	if len(c.ProviderKeys) != 3 {
-		t.Fatalf("keys: %v", c.ProviderKeys)
+}
+
+func TestLoadFileMakesRelativePathsAbsolute(t *testing.T) {
+	path := writeFile(t, `packages_file = "config/packages.json"
+providers = ["local"]
+[runner]
+linux_amd64 = "../dist/amd"
+linux_arm64 = "dist/arm"
+[local]
+enabled = true
+root = "bin/local"
+runner = "./bin/bugnet-run"
+`)
+	t.Chdir(t.TempDir())
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for k, v := range want {
-		if c.ProviderKeys[k] != v {
-			t.Fatalf("key %s: %v", k, c.ProviderKeys)
+	c, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for got, rel := range map[string]string{
+		c.PackagesFile: "config/packages.json", c.RunnerLinuxAMD64: "../dist/amd",
+		c.RunnerLinuxARM64: "dist/arm", c.LocalRoot: "bin/local",
+		c.LocalRunnerPath: "bin/bugnet-run",
+	} {
+		if want := filepath.Join(wd, rel); got != want {
+			t.Errorf("%s resolved to %s, want %s", rel, got, want)
 		}
 	}
-	if c.RunnerLinuxAMD64 != "/r/amd" || c.RunnerLinuxARM64 != "/r/arm" {
-		t.Fatalf("%+v", c)
+}
+
+func TestLoadNeedsThePublicKeyAndCatalog(t *testing.T) {
+	pubLine := `order_token_public_key = "` + pubB64(t) + `"` + "\n"
+	catalogLine := `packages_file = "/etc/packages.json"` + "\n"
+	if _, err := LoadFile(writeFile(t, catalogLine)); err != nil {
+		t.Fatalf("LoadFile without the public key: %v", err)
 	}
-	if c.LocalRunnerPath != "/r/local" || c.LocalHourlyMicros != 1500 {
-		t.Fatalf("local runner settings: %+v", c)
+	for key, content := range map[string]string{
+		"order_token_public_key": catalogLine,
+		"packages_file":          pubLine,
+	} {
+		path := writeFile(t, content)
+		_, err := Load(path, env(nil))
+		if err == nil || !strings.Contains(err.Error(), key+" is required") ||
+			!strings.Contains(err.Error(), path) {
+			t.Errorf("Load without %s: %v, want an error naming it and the file", key, err)
+		}
+	}
+	c, err := Load(writeFile(t, pubLine+catalogLine), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DatabaseURL != secrets["BUGNET_DATABASE_URL"] || c.InternalToken != secretToken ||
+		string(c.HandleKey) != "0123456789abcdef0123456789abcdef" ||
+		len(c.OrderTokenPublicKey) != ed25519.PublicKeySize || c.EventSigningKey != nil {
+		t.Fatalf("secrets: %+v", c)
+	}
+	want := map[string]string{
+		"boxd": "bk-secret", "e2b": "ek-secret", "koyeb": "kt-secret", "boat": "ok-secret",
+	}
+	if !maps.Equal(c.ProviderKeys, want) {
+		t.Fatalf("provider keys %v", c.ProviderKeys)
+	}
+}
+
+func TestLoadSecrets(t *testing.T) {
+	path := writeFile(t, serving(t))
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	c, err := Load(path, env(map[string]string{
+		"BUGNET_EVENT_SIGNING_KEY": seed, "KOYEB_API_TOKEN": "", "BOXD_API_KEY": "-",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.EventSigningKey) != ed25519.PrivateKeySize {
+		t.Fatalf("event signing key %v", c.EventSigningKey)
+	}
+	if !maps.Equal(c.ProviderKeys, map[string]string{"e2b": "ek-secret", "boat": "ok-secret"}) {
+		t.Fatalf("provider keys %v, want only the ones set", c.ProviderKeys)
+	}
+
+	shortKey := base64.StdEncoding.EncodeToString([]byte("short"))
+	bad := map[string]map[string]string{
+		"BUGNET_DATABASE_URL":           {"BUGNET_DATABASE_URL": "-"},
+		"BUGNET_INTERNAL_TOKEN":         {"BUGNET_INTERNAL_TOKEN": "tooshort-secret"},
+		"BUGNET_HANDLE_KEY":             {"BUGNET_HANDLE_KEY": shortKey},
+		"handle key not base64":         {"BUGNET_HANDLE_KEY": "!!not-base64!!"},
+		"BUGNET_EVENT_SIGNING_KEY":      {"BUGNET_EVENT_SIGNING_KEY": "AAAA"},
+		"missing token":                 {"BUGNET_INTERNAL_TOKEN": "-"},
+		"empty token":                   {"BUGNET_INTERNAL_TOKEN": ""},
+		"missing handle key":            {"BUGNET_HANDLE_KEY": "-"},
+		"empty database url":            {"BUGNET_DATABASE_URL": ""},
+		"short token with the rest set": {"BUGNET_INTERNAL_TOKEN": "x"},
+	}
+	for name, over := range bad {
+		_, err := Load(path, env(over))
+		if err == nil {
+			t.Errorf("%s: expected an error", name)
+			continue
+		}
+		if strings.HasPrefix(name, "BUGNET_") && !strings.Contains(err.Error(), name) {
+			t.Errorf("%s: error does not name the variable: %v", name, err)
+		}
+		noSecrets(t, name, err, over)
+	}
+}
+
+// noSecrets fails the test when err carries the value of a secret
+func noSecrets(t *testing.T, name string, err error, over map[string]string) {
+	t.Helper()
+	for k, v := range secrets {
+		if strings.Contains(err.Error(), v) {
+			t.Errorf("%s: error echoes the value of %s: %v", name, k, err)
+		}
+	}
+	for k, v := range over {
+		if len(v) > 1 && strings.Contains(err.Error(), v) {
+			t.Errorf("%s: error echoes the value of %s: %v", name, k, err)
+		}
+	}
+}
+
+func TestLoadFileValidation(t *testing.T) {
+	cases := []struct {
+		name, toml, want string
+	}{
+		{"margin above 10", `margin_floor = 11`, "margin_floor must be a finite number"},
+		{"negative margin", `margin_floor = -0.1`, "margin_floor"},
+		{"non-numeric margin", `margin_floor = "abc"`, "margin_floor must be a number"},
+		{"NaN margin", `margin_floor = nan`, "margin_floor"},
+		{"+Inf margin", `margin_floor = +inf`, "margin_floor"},
+		{"-Inf margin", `margin_floor = -inf`, "margin_floor"},
+		{"unknown provider", `providers = ["koyeb", "nope"]`, `unknown provider "nope"`},
+		{"duplicate providers", `providers = ["boat", "e2b", "boat"]`, `"boat" more than once`},
+		{"empty entry", `providers = ["boat", "", "e2b"]`, "providers has an empty entry"},
+		{"empty providers", `providers = []`, "providers must name at least one provider"},
+		{"providers as a string", `providers = "boat,e2b"`, "providers must be an array"},
+		{"local not enabled", `providers = ["boat", "local"]`, "local.enabled is not true"},
+		{"local without runner", "providers = [\"e2b\", \"local\"]\n[local]\nenabled = true",
+			"local.runner is not set"},
+		{"negative local hourly cost", "[local]\nhourly_micros = -1", "local.hourly_micros"},
+		{"fractional local hourly cost", "[local]\nhourly_micros = 1.5", "line 4"},
+		{"local enabled as a number", "[local]\nenabled = 1", "local.enabled must be true or"},
+		{"uppercase deployment", `deployment_id = "Prod"`, "deployment_id"},
+		{"deployment with underscore", `deployment_id = "blue_green"`, "deployment_id"},
+		{"deployment with a space", `deployment_id = "blue green"`, "deployment_id"},
+		{"long deployment", `deployment_id = "` + strings.Repeat("d", 33) + `"`,
+			"deployment_id"},
+		{"zero job budget", "[limits]\njob_output_budget = \"0\"",
+			"limits.job_output_budget must be 1 byte to 1 TiB"},
+		{"negative job budget", "[limits]\njob_output_budget = \"-5MiB\"",
+			"limits.job_output_budget"},
+		{"job budget in GB", "[limits]\njob_output_budget = \"8GB\"", "limits.job_output_budget"},
+		{"fractional job budget", "[limits]\njob_output_budget = \"1.5MiB\"",
+			"limits.job_output_budget"},
+		{"job budget with a space", "[limits]\njob_output_budget = \"8 MiB\"",
+			"limits.job_output_budget"},
+		{"lowercase suffix", "[limits]\njob_output_budget = \"8mib\"", "limits.job_output_budget"},
+		{"job budget as a number", "[limits]\njob_output_budget = 8388608",
+			"limits.job_output_budget must be a string"},
+		{"huge placement budget",
+			"[limits]\nplacement_output_budget = \"9223372036854775807MiB\"",
+			"limits.placement_output_budget"},
+		{"zero placement budget", "[limits]\nplacement_output_budget = \"0KiB\"",
+			"limits.placement_output_budget"},
+		{"tail reserve in words", "[limits]\nplacement_tail_reserve = \"lots\"",
+			"limits.placement_tail_reserve"},
+		{"negative tail reserve", "[limits]\nplacement_tail_reserve = \"-1\"",
+			"limits.placement_tail_reserve"},
+		{"zero running jobs", "[limits]\nmax_running_jobs = 0",
+			"limits.max_running_jobs must be a positive whole number"},
+		{"negative running jobs", "[limits]\nmax_running_jobs = -3", "limits.max_running_jobs"},
+		{"running jobs with a suffix", "[limits]\nmax_running_jobs = \"16KiB\"",
+			"limits.max_running_jobs must be a whole number"},
+		{"lifetime in words", "[e2b]\nmax_lifetime = \"an hour\"", "e2b.max_lifetime"},
+		{"negative lifetime", "[e2b]\nmax_lifetime = \"-1h\"", "e2b.max_lifetime"},
+		{"zero lifetime", "[e2b]\nmax_lifetime = \"0s\"", "e2b.max_lifetime"},
+		{"template vcpu in words", "[[e2b.templates]]\nsize = \"2x2\"\nvcpu = \"two\"",
+			"e2b.templates.vcpu must be a whole number"},
+		{"instance type as a number", "[koyeb.instance_types]\ncpu = 1",
+			"koyeb.instance_types must be a table of strings"},
+		{"size named twice", "[boat.types]\ncpu = \"small\"\ncpu = \"large\"", "cpu"},
+		{"listen address as a number", "[api]\nlisten_addr = 8080",
+			"api.listen_addr must be a string"},
+		{"top-level listen address", `listen_addr = ":8080"`, "listen_addr is not a setting"},
+		{"misspelt key", "[limits]\nmax_jobs = 4", "line 4: limits.max_jobs is not a setting"},
+		{"unknown table", "[nimbus]\nregion = \"fra\"", "nimbus is not a setting"},
+		{"template key", "[[e2b.templates]]\nmemory = 2048", "e2b.templates.memory is not"},
+		{"syntax error", "margin_floor = ", "line 3"},
+	}
+	for _, c := range cases {
+		path := writeFile(t, serving(t)+c.toml)
+		_, err := Load(path, env(nil))
+		if err == nil || !strings.Contains(err.Error(), c.want) ||
+			!strings.HasPrefix(err.Error(), "config: "+path+": ") {
+			t.Errorf("%s: %v, want an error on %s with %q", c.name, err, path, c.want)
+			continue
+		}
+		noSecrets(t, c.name, err, nil)
+	}
+	shortKey := base64.StdEncoding.EncodeToString([]byte("short"))
+	for _, key := range []string{shortKey, "!!"} {
+		_, err := LoadFile(writeFile(t, `order_token_public_key = "`+key+`"`))
+		if err == nil ||
+			!strings.Contains(err.Error(), "order_token_public_key must be base64 of 32 bytes") {
+			t.Errorf("public key %q: %v, want an error naming order_token_public_key", key, err)
+		}
+	}
+}
+
+func TestLoadFileRefusesSecrets(t *testing.T) {
+	cases := []struct {
+		toml, key, env, value string
+	}{
+		{`internal_token = "` + secretToken + `"`, "internal_token",
+			"BUGNET_INTERNAL_TOKEN", secretToken},
+		{`BUGNET_HANDLE_KEY = "` + handleKeyB64 + `"`, "BUGNET_HANDLE_KEY",
+			"BUGNET_HANDLE_KEY", handleKeyB64},
+		{`database_url = "postgres://user:dbpass@localhost/x"`, "database_url",
+			"BUGNET_DATABASE_URL", "dbpass"},
+		{"[e2b]\napi_key = \"ek-secret\"", "e2b.api_key", "E2B_API_KEY", "ek-secret"},
+		{"[koyeb]\napi_token = \"kt-secret\"", "koyeb.api_token", "KOYEB_API_TOKEN",
+			"kt-secret"},
+		{`event_signing_key = "c2VlZA=="`, "event_signing_key", "BUGNET_EVENT_SIGNING_KEY",
+			"c2VlZA=="},
+		{`order_private_key = "cHJpdg=="`, "order_private_key", "BUGNET_ORDER_PRIVATE_KEY",
+			"cHJpdg=="},
+	}
+	for _, c := range cases {
+		_, err := LoadFile(writeFile(t, c.toml))
+		want := c.key + " is a secret, set " + c.env + " in the environment instead"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s in the file gave %v, want %q", c.key, err, want)
+			continue
+		}
+		if strings.Contains(err.Error(), c.value) {
+			t.Errorf("%s in the file: error echoes its value: %v", c.key, err)
+		}
+	}
+	_, err := LoadFile(writeFile(t, "internal_token = \""+secretToken+"\"\n[limits]\nfoo = 1"))
+	if err == nil || !strings.Contains(err.Error(), "line 1: internal_token is a secret") ||
+		!strings.Contains(err.Error(), "line 3: limits.foo is not a setting") ||
+		strings.Contains(err.Error(), secretToken) {
+		t.Fatalf("two unknown keys gave %v, want both named and no value", err)
+	}
+}
+
+func TestLoadFileMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent.toml")
+	_, err := LoadFile(path)
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("missing file gave %v, want an error naming it", err)
+	}
+}
+
+// committed reads a settings file of the repository with a generated order token key
+func committed(t *testing.T, name string) Config {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(filepath.Join("..", "..", "config", name)); err != nil {
+		t.Fatalf("config/%s as committed: %v", name, err)
+	}
+	line := `order_token_public_key = "` + pubB64(t) + `"`
+	content := string(raw)
+	if strings.Contains(content, `order_token_public_key = ""`) {
+		content = strings.Replace(content, `order_token_public_key = ""`, line, 1)
+	} else {
+		// dev-up puts the key in front, since top-level keys must precede every table
+		content = line + "\n\n" + content
+	}
+	c, err := LoadFile(writeFile(t, content))
+	if err != nil {
+		t.Fatalf("config/%s with an order token key: %v", name, err)
+	}
+	return c
+}
+
+func TestCommittedFilesLoad(t *testing.T) {
+	dev := committed(t, "dev.toml")
+	if !slices.Equal(dev.Providers, []string{"local"}) || !dev.LocalEnabled ||
+		dev.ValkeyPrefix != "bn:dev:" || dev.ListenAddr != "127.0.0.1:8080" ||
+		dev.WorkerListenAddr != "127.0.0.1:8081" {
+		t.Fatalf("config/dev.toml: %+v", dev)
+	}
+	for path, suffix := range map[string]string{
+		dev.PackagesFile: "/config/dev-packages.json", dev.LocalRoot: "/bin/local",
+		dev.LocalRunnerPath:  "/bin/bugnet-run",
+		dev.RunnerLinuxAMD64: "/bugnet-run/dist/bugnet-run-linux-amd64",
+	} {
+		if !filepath.IsAbs(path) || !strings.HasSuffix(path, suffix) {
+			t.Errorf("config/dev.toml path %s, want an absolute path ending in %s", path, suffix)
+		}
+	}
+	if len(dev.E2B.Templates) != 2 {
+		t.Errorf("config/dev.toml e2b templates %+v, want both deploy/e2b builds", dev.E2B)
+	}
+
+	example := committed(t, "example.toml")
+	if len(example.E2B.Templates) != 2 {
+		t.Errorf("config/example.toml e2b templates %+v, want both deploy/e2b builds",
+			example.E2B)
+	}
+	empty, err := LoadFile(writeFile(t, `order_token_public_key = "`+
+		base64.StdEncoding.EncodeToString(example.OrderTokenPublicKey)+`"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	example.E2B.Templates = nil
+	if len(example.Koyeb.InstanceTypes) == 0 && len(example.Boat.Types) == 0 {
+		example.Koyeb.InstanceTypes, example.Boat.Types = nil, nil
+	}
+	if !reflect.DeepEqual(example, empty) {
+		t.Errorf("config/example.toml gave %+v, want the defaults %+v", example, empty)
 	}
 }
 
@@ -274,27 +607,16 @@ func TestByteSizes(t *testing.T) {
 		sizes[raw] = 0
 	}
 	for raw, want := range sizes {
-		got, err := byteSize("BUGNET_X", raw)
+		got, err := byteSize("limits.x", raw)
 		if want == 0 {
-			if err == nil || !strings.Contains(err.Error(), "BUGNET_X") {
-				t.Errorf("%q gave %d, %v, want an error naming the variable", raw, got, err)
+			if err == nil || !strings.Contains(err.Error(), "limits.x") {
+				t.Errorf("%q gave %d, %v, want an error naming the key", raw, got, err)
 			}
 			continue
 		}
 		if err != nil || got != want {
 			t.Errorf("%q gave %d, %v, want %d", raw, got, err, want)
 		}
-	}
-}
-
-func TestLoadUsesProcessEnv(t *testing.T) {
-	t.Setenv("BUGNET_DATABASE_URL", "postgres://localhost/x")
-	t.Setenv("BUGNET_INTERNAL_TOKEN", secretToken)
-	t.Setenv("BUGNET_ORDER_TOKEN_PUBLIC_KEY", pubB64(t))
-	t.Setenv("BUGNET_PACKAGES_FILE", "/p.json")
-	t.Setenv("BUGNET_HANDLE_KEY", handleKeyB64)
-	if _, err := Load(); err != nil {
-		t.Fatal(err)
 	}
 }
 

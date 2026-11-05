@@ -11,23 +11,31 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
+	"github.com/oynozan/bugnet-router/internal/provider/livetest"
 )
 
 const liveTimeout = 3 * time.Minute
 
-// liveProvider talks to the real E2B and skips the test without a key and built templates
+// liveProvider talks to the real E2B with the config/dev.toml settings, skipping without a key
 func liveProvider(t *testing.T) *Provider {
 	t.Helper()
-	key, list := os.Getenv("E2B_API_KEY"), os.Getenv("BUGNET_E2B_TEMPLATES")
-	if key == "" || list == "" {
-		t.Skip("E2B_API_KEY and BUGNET_E2B_TEMPLATES are not both set")
+	key := os.Getenv("E2B_API_KEY")
+	if key == "" {
+		t.Skip("E2B_API_KEY is not set")
 	}
-	templates, err := ParseTemplates(list)
-	if err != nil {
-		t.Fatal(err)
+	cfg := livetest.Settings(t).E2B
+	if len(cfg.Templates) == 0 {
+		t.Skip("config/dev.toml has no e2b.templates")
+	}
+	var templates []Template
+	for _, tm := range cfg.Templates {
+		templates = append(templates, Template{
+			Name: tm.Size, TemplateID: tm.Template, VCPU: tm.VCPU, MemoryMiB: tm.MemoryMiB,
+			DiskGiB: tm.DiskGiB,
+		})
 	}
 	p, err := New(Options{
-		APIKey: key, Domain: os.Getenv("BUGNET_E2B_DOMAIN"), Templates: templates,
+		APIKey: key, Domain: cfg.Domain, Templates: templates, MaxLifetime: cfg.MaxLifetime,
 	})
 	if err != nil {
 		t.Fatal(err)

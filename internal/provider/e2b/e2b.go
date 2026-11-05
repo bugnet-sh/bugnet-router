@@ -113,41 +113,6 @@ func (t Template) size() provider.Size {
 	}}
 }
 
-// ParseTemplates reads comma-separated size=templateID entries, then vcpu, memMiB and diskGiB
-func ParseTemplates(s string) ([]Template, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
-	}
-	var out []Template
-	for _, entry := range strings.Split(s, ",") {
-		entry = strings.TrimSpace(entry)
-		name, spec, ok := strings.Cut(entry, "=")
-		parts := strings.Split(spec, ":")
-		if !ok || len(parts) < 4 {
-			return nil, fmt.Errorf("e2b: template %q is not name=templateID:vcpu:memMiB:diskGiB",
-				entry)
-		}
-		// A template ID may end in a tag after a colon, so the numbers are read from the end
-		n := len(parts) - 3
-		var nums [3]int
-		for i, p := range parts[n:] {
-			v, err := strconv.Atoi(p)
-			if err != nil {
-				return nil, fmt.Errorf("e2b: template %q: %w", entry, err)
-			}
-			nums[i] = v
-		}
-		out = append(out, Template{
-			Name: name, TemplateID: strings.Join(parts[:n], ":"),
-			VCPU: nums[0], MemoryMiB: nums[1], DiskGiB: nums[2],
-		})
-	}
-	if err := validate(out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func validate(templates []Template) error {
 	seen := map[string]bool{}
 	for _, t := range templates {

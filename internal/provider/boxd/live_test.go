@@ -11,18 +11,20 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
+	"github.com/oynozan/bugnet-router/internal/provider/livetest"
 )
 
 const liveTimeout = 3 * time.Minute
 
-// liveProvider talks to the real boxd in Frankfurt and skips the test without BOXD_API_KEY
+// liveProvider talks to the real boxd with the config/dev.toml settings, skipping without a key
 func liveProvider(t *testing.T) *Provider {
 	t.Helper()
 	key := os.Getenv("BOXD_API_KEY")
 	if key == "" {
 		t.Skip("BOXD_API_KEY is not set")
 	}
-	p, err := New(Options{APIKey: key, Region: "fra"})
+	cfg := livetest.Settings(t).Boxd
+	p, err := New(Options{APIKey: key, Region: cfg.Region, Endpoint: cfg.Endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}

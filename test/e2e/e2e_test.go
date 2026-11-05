@@ -1,10 +1,11 @@
 // End-to-end tests run the built router binaries against the local Postgres and Valkey.
 //
 // TestMain builds bugnet-run, router-api, router-worker and bugnet-dev once. Each test starts
-// its own stack with a fresh database and Valkey prefix, keys from bugnet-dev keys, two
-// router-api replicas and one router-worker on the local provider, and an events receiver that
-// checks every signature. Cleanup stops every process with SIGTERM, then SIGKILL after 10 s, and
-// fails the test when a bugnet-run process under the stack's local root is still alive.
+// its own stack with a fresh database and Valkey prefix, secrets from bugnet-dev keys, two
+// router-api replicas and one router-worker on the local provider, each with its own settings
+// file, and an events receiver that checks every signature. Cleanup stops every process with
+// SIGTERM, then SIGKILL after 10 s, and fails the test when a bugnet-run process under the
+// stack's local root is still alive.
 package e2e
 
 import (
@@ -68,10 +69,10 @@ const (
 	logTail      = 60
 )
 
-// keyNames are the lines bugnet-dev keys must print
+// keyNames are the secrets bugnet-dev keys must print
 var keyNames = []string{
-	"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_TOKEN_PUBLIC_KEY", "BUGNET_ORDER_PRIVATE_KEY",
-	"BUGNET_HANDLE_KEY", "BUGNET_EVENT_SIGNING_KEY", "BUGNET_EVENT_PUBLIC_KEY",
+	"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_PRIVATE_KEY", "BUGNET_HANDLE_KEY",
+	"BUGNET_EVENT_SIGNING_KEY",
 }
 
 var bin struct{ runner, api, worker, dev string }
@@ -315,9 +316,10 @@ func TestE2EOwnerCrashNoGap(t *testing.T) {
 type stack struct {
 	root     string            // local provider root every process shares
 	packages string            // catalog file
+	prefix   string            // Valkey key prefix
 	keys     map[string]string // what bugnet-dev keys printed
 	priv     ed25519.PrivateKey
-	env      []string // environment of every router process
+	env      []string // environment of every router process, the secrets only
 	events   *receiver
 	procs    []*proc
 	a, b     *proc // router-api replicas
@@ -327,29 +329,20 @@ func startStack(t *testing.T) *stack {
 	t.Helper()
 	dbURL := testenv.DatabaseURL(t)
 	_, prefix := testenv.Valkey(t)
-	s := &stack{root: t.TempDir(), keys: devKeys(t)}
+	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t)}
 	seed := decodeKey(t, s.keys, "BUGNET_ORDER_PRIVATE_KEY", ed25519.SeedSize)
 	s.priv = ed25519.NewKeyFromSeed(seed)
-	s.events = newReceiver(t, decodeKey(t, s.keys, "BUGNET_EVENT_PUBLIC_KEY",
-		ed25519.PublicKeySize))
+	eventSeed := decodeKey(t, s.keys, "BUGNET_EVENT_SIGNING_KEY", ed25519.SeedSize)
+	s.events = newReceiver(t, ed25519.NewKeyFromSeed(eventSeed).Public().(ed25519.PublicKey))
 	s.packages = filepath.Join(t.TempDir(), "packages.json")
 	if err := os.WriteFile(s.packages, []byte(catalogJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.env = append(hostEnv(),
 		"BUGNET_DATABASE_URL="+dbURL,
-		"BUGNET_VALKEY_ADDR="+valkeyAddr(),
-		"BUGNET_VALKEY_PREFIX="+prefix,
 		"BUGNET_INTERNAL_TOKEN="+s.keys["BUGNET_INTERNAL_TOKEN"],
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY="+s.keys["BUGNET_ORDER_TOKEN_PUBLIC_KEY"],
 		"BUGNET_HANDLE_KEY="+s.keys["BUGNET_HANDLE_KEY"],
 		"BUGNET_EVENT_SIGNING_KEY="+s.keys["BUGNET_EVENT_SIGNING_KEY"],
-		"BUGNET_EVENTS_URL="+s.events.url,
-		"BUGNET_PACKAGES_FILE="+s.packages,
-		"BUGNET_PROVIDERS=local",
-		"BUGNET_ENABLE_LOCAL_PROVIDER=1",
-		"BUGNET_LOCAL_ROOT="+s.root,
-		"BUGNET_LOCAL_RUNNER="+bin.runner,
 	)
 
 	migrate := exec.Command(bin.api, "migrate")
@@ -360,9 +353,9 @@ func startStack(t *testing.T) *stack {
 
 	logs := t.TempDir()
 	t.Cleanup(func() { s.stop(t) })
-	s.a = s.start(t, logs, "api-a", bin.api, "BUGNET_LISTEN_ADDR")
-	s.b = s.start(t, logs, "api-b", bin.api, "BUGNET_LISTEN_ADDR")
-	s.start(t, logs, "worker", bin.worker, "BUGNET_WORKER_LISTEN_ADDR")
+	s.a = s.start(t, logs, "api-a", bin.api, "api")
+	s.b = s.start(t, logs, "api-b", bin.api, "api")
+	s.start(t, logs, "worker", bin.worker, "worker")
 	for _, p := range s.procs {
 		p.waitReady(t)
 	}
@@ -382,6 +375,36 @@ func devKeys(t *testing.T) map[string]string {
 		}
 	}
 	return keys
+}
+
+// settings writes the settings file of the process name, listening on addr in table
+func (s *stack) settings(t *testing.T, name, table, addr string) string {
+	t.Helper()
+	pub := s.priv.Public().(ed25519.PublicKey)
+	content := fmt.Sprintf(`order_token_public_key = %q
+packages_file = %q
+providers = ["local"]
+replica_id = %q
+events_url = %q
+
+[%s]
+listen_addr = %q
+
+[valkey]
+addr = %q
+prefix = %q
+
+[local]
+enabled = true
+root = %q
+runner = %q
+`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
+		valkeyAddr(), s.prefix, s.root, bin.runner)
+	path := filepath.Join(t.TempDir(), name+".toml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func decodeKey(t *testing.T, keys map[string]string, name string, size int) []byte {
@@ -429,28 +452,30 @@ type proc struct {
 	name    string
 	cmd     *exec.Cmd
 	url     string
+	config  string // settings file
 	log     string
 	done    chan struct{}
 	waitErr error
 	killed  atomic.Bool
 }
 
-// start runs a router binary listening on a free port named by addrVar
-func (s *stack) start(t *testing.T, logs, name, binary, addrVar string) *proc {
+// start runs a router binary listening on a free port, set in the settings table named table
+func (s *stack) start(t *testing.T, logs, name, binary, table string) *proc {
 	t.Helper()
 	addr := freeAddr(t)
+	config := s.settings(t, name, table, addr)
 	log, err := os.Create(filepath.Join(logs, name+".log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	cmd := exec.Command(binary)
-	cmd.Env = append(slices.Clone(s.env), addrVar+"="+addr, "BUGNET_REPLICA_ID="+name)
+	cmd := exec.Command(binary, "-config", config)
+	cmd.Env = s.env
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", name, err)
 	}
-	p := &proc{name: name, cmd: cmd, url: "http://" + addr, log: log.Name(),
+	p := &proc{name: name, cmd: cmd, url: "http://" + addr, config: config, log: log.Name(),
 		done: make(chan struct{})}
 	go func() {
 		p.waitErr = cmd.Wait()

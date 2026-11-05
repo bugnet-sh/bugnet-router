@@ -11,22 +11,19 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
+	"github.com/oynozan/bugnet-router/internal/provider/livetest"
 )
 
 const liveTimeout = 3 * time.Minute
 
-// liveProvider talks to the real Boat and skips the test without a key
+// liveProvider talks to the real Boat with the config/dev.toml settings, skipping without a key
 func liveProvider(t *testing.T) *Provider {
 	t.Helper()
 	key := os.Getenv("BOAT_API_KEY")
 	if key == "" {
 		t.Skip("BOAT_API_KEY is not set")
 	}
-	types, err := ParseTypes(os.Getenv("BUGNET_BOAT_TYPES"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := New(Options{APIKey: key, TypeBySize: types})
+	p, err := New(Options{APIKey: key, TypeBySize: livetest.Settings(t).Boat.Types})
 	if err != nil {
 		t.Fatal(err)
 	}

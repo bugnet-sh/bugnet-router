@@ -1218,7 +1218,7 @@ func TestOutboxWithoutURLKeepsEventsAndWarnsOnce(t *testing.T) {
 	if row := e.outboxRow(t, id); row.deliveredAt != nil || row.attempts != 0 {
 		t.Fatalf("row %+v, want pending and untried", row)
 	}
-	if n := strings.Count(logs.String(), "BUGNET_EVENTS_URL is not set"); n != 1 {
+	if n := strings.Count(logs.String(), "events_url is not set"); n != 1 {
 		t.Fatalf("missing url warned %d times, want once\n%s", n, logs.String())
 	}
 }

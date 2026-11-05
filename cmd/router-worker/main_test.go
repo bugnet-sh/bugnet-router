@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -41,14 +43,15 @@ func b64(t *testing.T, n int) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-// setEnv sets every variable the worker needs, with the local provider and no events URL
-func setEnv(t *testing.T, databaseURL, prefix string) {
+// setup writes the worker's settings file, local provider and no events URL, and sets its secrets
+func setup(t *testing.T, databaseURL, prefix, extra string) string {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	packages := filepath.Join(t.TempDir(), "packages.json")
+	dir := t.TempDir()
+	packages := filepath.Join(dir, "packages.json")
 	if err := os.WriteFile(packages, []byte(packagesJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -56,32 +59,61 @@ func setEnv(t *testing.T, databaseURL, prefix string) {
 	if valkeyAddr == "" {
 		valkeyAddr = "localhost:6379"
 	}
+	settings := fmt.Sprintf(`order_token_public_key = %q
+packages_file = %q
+providers = ["local"]
+%s
+[worker]
+listen_addr = "127.0.0.1:0"
+
+[valkey]
+addr = %q
+prefix = %q
+
+[local]
+enabled = true
+root = %q
+runner = %q
+`, base64.StdEncoding.EncodeToString(pub), packages, extra, valkeyAddr, prefix,
+		t.TempDir(), filepath.Join(dir, "bugnet-run"))
+	path := filepath.Join(dir, "settings.toml")
+	if err := os.WriteFile(path, []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for k, v := range map[string]string{
-		"BUGNET_DATABASE_URL":           databaseURL,
-		"BUGNET_INTERNAL_TOKEN":         strings.Repeat("t", 32),
-		"BUGNET_ORDER_TOKEN_PUBLIC_KEY": base64.StdEncoding.EncodeToString(pub),
-		"BUGNET_PACKAGES_FILE":          packages,
-		"BUGNET_HANDLE_KEY":             b64(t, 32),
-		"BUGNET_EVENT_SIGNING_KEY":      b64(t, ed25519.SeedSize),
-		"BUGNET_EVENTS_URL":             "",
-		"BUGNET_VALKEY_ADDR":            valkeyAddr,
-		"BUGNET_VALKEY_PREFIX":          prefix,
-		"BUGNET_PROVIDERS":              "local",
-		"BUGNET_ENABLE_LOCAL_PROVIDER":  "1",
-		"BUGNET_LOCAL_ROOT":             t.TempDir(),
-		"BUGNET_LOCAL_RUNNER":           filepath.Join(t.TempDir(), "bugnet-run"),
-		"BUGNET_WORKER_LISTEN_ADDR":     "127.0.0.1:0",
+		"BUGNET_DATABASE_URL":      databaseURL,
+		"BUGNET_INTERNAL_TOKEN":    strings.Repeat("t", 32),
+		"BUGNET_HANDLE_KEY":        b64(t, 32),
+		"BUGNET_EVENT_SIGNING_KEY": b64(t, ed25519.SeedSize),
 	} {
 		t.Setenv(k, v)
 	}
+	return path
 }
 
 func TestRunRequiresEventSigningKey(t *testing.T) {
-	setEnv(t, "postgres://localhost:1/unused", "bn:unused:")
+	path := setup(t, "postgres://localhost:1/unused", "bn:unused:", "")
 	t.Setenv("BUGNET_EVENT_SIGNING_KEY", "")
-	err := run(discard)
+	err := run(discard, "-config", path)
 	if err == nil || !strings.Contains(err.Error(), "BUGNET_EVENT_SIGNING_KEY") {
 		t.Fatalf("run without a signing key: %v, want an error naming it", err)
+	}
+}
+
+func TestRunNeedsASettingsFile(t *testing.T) {
+	for _, args := range [][]string{
+		nil, {"-config"}, {"work"}, {"-config", "a.toml", "extra"},
+		{"outbox-redrive", "-config", "a.toml"},
+	} {
+		if err := run(discard, args...); !errors.Is(err, errUsage) ||
+			!strings.Contains(err.Error(), "-config FILE") {
+			t.Errorf("run %q gave %v, want the usage", args, err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "absent.toml")
+	if err := run(discard, "-config", missing); err == nil ||
+		!strings.Contains(err.Error(), missing) {
+		t.Fatalf("run with a missing settings file gave %v, want an error naming it", err)
 	}
 }
 
@@ -100,9 +132,8 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	_, prefix := testenv.Valkey(t)
-	setEnv(t, url, prefix)
-	t.Setenv("BUGNET_DEPLOYMENT_ID", "blue")
-	cfg, err := config.Load()
+	path := setup(t, url, prefix, `deployment_id = "blue"`)
+	cfg, err := config.Load(path, os.LookupEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +236,7 @@ func TestRedriveOutboxNeedsOnlyDatabaseURL(t *testing.T) {
 		store.MaxOutboxAttempts).Scan(&stuck); err != nil || stuck != 0 {
 		t.Fatalf("%d stuck events after the redrive, %v, want none", stuck, err)
 	}
-	if err := run(discard, "nonsense"); err == nil || !strings.Contains(err.Error(), "usage") {
+	if err := run(discard, "nonsense"); !errors.Is(err, errUsage) {
 		t.Fatalf("an unknown argument gave %v, want the usage", err)
 	}
 }

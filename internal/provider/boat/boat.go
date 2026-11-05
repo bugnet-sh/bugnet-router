@@ -84,28 +84,6 @@ type size struct {
 	typ  machineType
 }
 
-// ParseTypes reads comma-separated size=type entries, where type is one of Boat's machine types
-func ParseTypes(s string) (map[string]string, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
-	}
-	out := map[string]string{}
-	for _, entry := range strings.Split(s, ",") {
-		name, typ, ok := strings.Cut(strings.TrimSpace(entry), "=")
-		if !ok || name == "" || typ == "" {
-			return nil, fmt.Errorf("boat: type %q is not size=type", entry)
-		}
-		if _, dup := out[name]; dup {
-			return nil, fmt.Errorf("boat: size %s is named twice", name)
-		}
-		out[name] = typ
-	}
-	if _, err := sizesFor(out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // sizesFor orders the sizes cheapest first, every machine type under its own name when empty
 func sizesFor(bySize map[string]string) ([]size, error) {
 	var out []size

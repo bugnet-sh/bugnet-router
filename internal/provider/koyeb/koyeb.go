@@ -119,28 +119,6 @@ type size struct {
 
 func (s size) gpu() bool { return s.typ.resources.GPUCount > 0 }
 
-// ParseInstanceTypes reads comma-separated size=instanceType entries
-func ParseInstanceTypes(s string) (map[string]string, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
-	}
-	out := map[string]string{}
-	for _, entry := range strings.Split(s, ",") {
-		name, typ, ok := strings.Cut(strings.TrimSpace(entry), "=")
-		if !ok || name == "" || typ == "" {
-			return nil, fmt.Errorf("koyeb: instance type %q is not size=type", entry)
-		}
-		if _, dup := out[name]; dup {
-			return nil, fmt.Errorf("koyeb: size %s is named twice", name)
-		}
-		out[name] = typ
-	}
-	if _, err := sizesFor(out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // sizesFor orders the sizes cheapest first, every instance type under its own name when empty
 func sizesFor(bySize map[string]string) ([]size, error) {
 	var out []size

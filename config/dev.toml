@@ -1,0 +1,38 @@
+# Settings scripts/dev-up.sh runs with, on the local provider only. dev-up.sh adds
+# order_token_public_key in front and writes the result to bin/dev.toml. Secrets live in .env and
+# .env.keys, never here. Paths are relative to the repository root, where dev-up.sh runs, and
+# config/example.toml lists every setting.
+
+packages_file = "config/dev-packages.json"
+providers = ["local"]         # add e2b, boat, koyeb or boxd here with its key in .env
+
+[api]
+listen_addr = "127.0.0.1:8080"
+
+[worker]
+listen_addr = "127.0.0.1:8081"
+
+[valkey]
+prefix = "bn:dev:"
+
+[runner]
+linux_amd64 = "../bugnet-run/dist/bugnet-run-linux-amd64"   # make build in bugnet-run writes it
+
+[local]
+enabled = true                # runs commands on this machine, never give it untrusted code
+root = "bin/local"
+runner = "bin/bugnet-run"
+
+[[e2b.templates]]
+size = "2x2"
+template = "bugnet-2x2"
+vcpu = 2
+memory_mib = 2048
+disk_gib = 10
+
+[[e2b.templates]]
+size = "4x8"
+template = "bugnet-4x8"
+vcpu = 4
+memory_mib = 8192
+disk_gib = 10

@@ -946,27 +946,37 @@ func TestE2BOptions(t *testing.T) {
 	}
 }
 
-func TestParseTemplates(t *testing.T) {
-	got, err := ParseTemplates(" 2x2=bugnet-2x2:2:2048:10 , 4x8=team/bugnet-4x8:v1:4:8192:20")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []Template{
+func TestNewChecksTemplates(t *testing.T) {
+	good := []Template{
 		{Name: "2x2", TemplateID: "bugnet-2x2", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
 		{Name: "4x8", TemplateID: "team/bugnet-4x8:v1", VCPU: 4, MemoryMiB: 8192, DiskGiB: 20},
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("parsed %+v, want %+v", got, want)
+	p, err := New(Options{APIKey: "k", Templates: good})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got, err := ParseTemplates(""); err != nil || len(got) != 0 {
-		t.Fatalf("empty list gave %+v, %v", got, err)
+	if size, ok := p.SizeFor(provider.Resources{VCPU: 3}); !ok || size.Name != "4x8" {
+		t.Fatalf("size for 3 vCPU %+v, %v, want 4x8", size, ok)
 	}
-	for _, s := range []string{
-		"2x2", "2x2=bugnet:2:2048", "2x2=bugnet:two:2048:10", "=bugnet:2:2048:10",
-		"2x2=:2:2048:10", "2x2=a:2:2048:10,2x2=b:4:4096:10", "2x2=a:2:2048:10,",
-	} {
-		if _, err := ParseTemplates(s); err == nil {
-			t.Errorf("ParseTemplates(%q) succeeded", s)
+	if p, err := New(Options{APIKey: "k"}); err != nil || len(p.templates) != 0 {
+		t.Fatalf("no templates gave %+v, %v", p, err)
+	}
+	bad := map[string][]Template{
+		"no name":        {{TemplateID: "bugnet", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}},
+		"no template ID": {{Name: "2x2", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}},
+		"no vCPU":        {{Name: "2x2", TemplateID: "bugnet", MemoryMiB: 2048, DiskGiB: 10}},
+		"no memory":      {{Name: "2x2", TemplateID: "bugnet", VCPU: 2, DiskGiB: 10}},
+		"negative disk": {
+			{Name: "2x2", TemplateID: "bugnet", VCPU: 2, MemoryMiB: 2048, DiskGiB: -1},
+		},
+		"a size twice": {
+			{Name: "2x2", TemplateID: "a", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
+			{Name: "2x2", TemplateID: "b", VCPU: 4, MemoryMiB: 4096, DiskGiB: 10},
+		},
+	}
+	for name, templates := range bad {
+		if _, err := New(Options{APIKey: "k", Templates: templates}); err == nil {
+			t.Errorf("New with %s succeeded", name)
 		}
 	}
 }

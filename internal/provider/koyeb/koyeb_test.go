@@ -1304,6 +1304,10 @@ func TestKoyebOptions(t *testing.T) {
 			APIToken: "t", InstanceTypeBySize: map[string]string{"a": "eco-large"},
 		},
 		"a size without name": {APIToken: "t", InstanceTypeBySize: map[string]string{"": "small"}},
+		"a size without type": {APIToken: "t", InstanceTypeBySize: map[string]string{"cpu": ""}},
+		"an unknown type": {
+			APIToken: "t", InstanceTypeBySize: map[string]string{"cpu": "nano"},
+		},
 	}
 	for name, opts := range bad {
 		if _, err := New(opts); err == nil {
@@ -1314,23 +1318,19 @@ func TestKoyebOptions(t *testing.T) {
 	if err != nil || p.region != "par" {
 		t.Fatalf("region option gave %+v, %v", p, err)
 	}
-}
-
-func TestParseInstanceTypes(t *testing.T) {
-	got, err := ParseInstanceTypes(" cpu=medium , gpu=gpu-nvidia-rtx-4000-sff-ada")
-	want := map[string]string{"cpu": "medium", "gpu": "gpu-nvidia-rtx-4000-sff-ada"}
-	if err != nil || !maps.Equal(got, want) {
-		t.Fatalf("parsed %v, %v, want %v", got, err, want)
+	p, err = New(Options{APIToken: "t", InstanceTypeBySize: map[string]string{
+		"cpu": "medium", "gpu": "gpu-nvidia-rtx-4000-sff-ada",
+	}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got, err := ParseInstanceTypes(""); err != nil || len(got) != 0 {
-		t.Fatalf("empty list gave %v, %v", got, err)
+	names := []string{}
+	for _, s := range p.sizes {
+		names = append(names, s.name+"="+s.typ.id)
 	}
-	for _, s := range []string{
-		"cpu", "=medium", "cpu=", "cpu=medium,cpu=large", "cpu=medium,", "cpu=nano",
-	} {
-		if _, err := ParseInstanceTypes(s); err == nil {
-			t.Errorf("ParseInstanceTypes(%q) succeeded", s)
-		}
+	if want := []string{"cpu=medium", "gpu=gpu-nvidia-rtx-4000-sff-ada"}; !slices.Equal(
+		names, want) {
+		t.Fatalf("sizes %v, want %v", names, want)
 	}
 }
 

@@ -9,6 +9,7 @@ require (
 	github.com/oapi-codegen/runtime v1.8.0
 	github.com/oynozan/bugnet-proto v0.1.0
 	github.com/oynozan/bugnet-run v0.1.2
+	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.51.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.0

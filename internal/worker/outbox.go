@@ -39,7 +39,7 @@ func (ow *outboxWorker) Work(ctx context.Context, _ *river.Job[jobargs.Outbox]) 
 func (w *Worker) deliverOutbox(ctx context.Context) error {
 	if w.d.EventsURL == "" {
 		w.noURL.Do(func() {
-			w.log.Warn("BUGNET_EVENTS_URL is not set, outbox events stay pending")
+			w.log.Warn("events_url is not set, outbox events stay pending")
 		})
 		return nil
 	}

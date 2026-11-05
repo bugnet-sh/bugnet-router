@@ -11,18 +11,22 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
+	"github.com/oynozan/bugnet-router/internal/provider/livetest"
 )
 
 const liveTimeout = 5 * time.Minute
 
-// liveProvider talks to the real Koyeb in fra and skips the test without a token
+// liveProvider talks to the real Koyeb with the config/dev.toml settings, skipping without a token
 func liveProvider(t *testing.T) *Provider {
 	t.Helper()
 	token := os.Getenv("KOYEB_API_TOKEN")
 	if token == "" {
 		t.Skip("KOYEB_API_TOKEN is not set")
 	}
-	p, err := New(Options{APIToken: token, Region: "fra"})
+	cfg := livetest.Settings(t).Koyeb
+	p, err := New(Options{
+		APIToken: token, Region: cfg.Region, InstanceTypeBySize: cfg.InstanceTypes,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

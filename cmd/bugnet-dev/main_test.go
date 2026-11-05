@@ -58,8 +58,14 @@ func TestKeysMakeAValidConfig(t *testing.T) {
 		vars[k] = v
 	}
 	vars["BUGNET_DATABASE_URL"] = "postgres://localhost/unused"
-	vars["BUGNET_PACKAGES_FILE"] = "packages.json"
-	cfg, err := config.LoadFrom(func(name string) (string, bool) {
+	settings := filepath.Join(t.TempDir(), "settings.toml")
+	content := `order_token_public_key = "` + vars["BUGNET_ORDER_TOKEN_PUBLIC_KEY"] + `"
+packages_file = "packages.json"
+`
+	if err := os.WriteFile(settings, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(settings, func(name string) (string, bool) {
 		v, ok := vars[name]
 		return v, ok
 	})

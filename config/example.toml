@@ -1,0 +1,65 @@
+# Every setting of router-api and router-worker at its default. Secrets never go in a settings
+# file, they come only from the environment. Relative paths resolve against the working directory.
+
+order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, required to serve
+packages_file = ""            # package catalog JSON, required
+providers = ["koyeb", "boat", "e2b", "boxd"]   # preference order, absent = this default
+margin_floor = 0.5            # 0 to 10, finite
+deployment_id = "main"        # ^[a-z0-9-]{1,32}$
+replica_id = ""               # host-pid when empty
+events_url = ""               # signed events stay pending in the outbox when empty
+
+[api]
+listen_addr = ":8080"         # router-api serves the Connect API here
+
+[worker]
+listen_addr = ":8081"         # /healthz and /readyz
+
+[valkey]
+addr = "127.0.0.1:6379"       # Valkey address
+prefix = "bn:"                # prefix of every Valkey key
+
+[runner]
+linux_amd64 = ""              # bugnet-run build uploaded to boxd, E2B, Koyeb and Boat sandboxes
+linux_arm64 = ""              # bugnet-run build for providers with arm64 sandboxes, none yet
+
+[limits]
+job_output_budget = "8MiB"        # bytes, KiB or MiB, 1 byte to 1 TiB, a job's stream memory
+placement_output_budget = "32MiB" # stream memory of all of a placement's jobs together
+placement_tail_reserve = "8MiB"   # further stream memory per placement for final tails
+max_running_jobs = 16             # positive integer
+
+[local]
+enabled = false               # must be true for the local provider, it runs commands on the host
+root = ""                     # $TMPDIR/bugnet-local when empty
+runner = ""                   # required when providers has "local"
+hourly_micros = 0             # >= 0
+
+[boxd]
+region = "fra"                # served at <region>.boxd.sh:9443 outside fra
+endpoint = ""                 # overrides the region's endpoint
+
+[e2b]
+domain = ""                   # e2b.app when empty
+max_lifetime = ""             # Go duration, empty = adapter default (1h Hobby), "24h" on Pro
+
+[[e2b.templates]]             # one table per size, the two that deploy/e2b builds
+size = "2x2"                  # size name the router sells
+template = "bugnet-2x2"       # template name or ID on the E2B account
+vcpu = 2                      # vCPUs the template was built with
+memory_mib = 2048             # memory the template was built with
+disk_gib = 10                 # disk the plan grants, 10 on Hobby and 20 on Pro
+
+[[e2b.templates]]
+size = "4x8"
+template = "bugnet-4x8"
+vcpu = 4
+memory_mib = 8192
+disk_gib = 10
+
+[koyeb]
+region = "fra"                # region every Koyeb sandbox runs in
+
+[koyeb.instance_types]        # size = instance type, every fra type when empty
+
+[boat.types]                  # size = machine type, every type when empty

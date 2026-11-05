@@ -1,16 +1,19 @@
 // Command router-api serves the Sandbox Router API, and with the migrate argument migrates the
 // database and exits.
 //
-// Serving builds every service from the environment, runs the jobs scanner that takes over
-// commands from replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted
-// HTTP/2. On SIGTERM or SIGINT it stops accepting requests, ends long polls and streams, hands
-// its jobs to peers, waits a bounded time for placements still being placed, and exits.
+// router-api -config FILE serves with the settings in FILE and the secrets in the environment.
+// Serving builds every service from them, runs the jobs scanner that takes over commands from
+// replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted HTTP/2. On
+// SIGTERM or SIGINT it stops accepting requests, ends long polls and streams, hands its jobs to
+// peers, waits a bounded time for placements still being placed, and exits.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -50,10 +53,18 @@ func main() {
 	}
 }
 
+var errUsage = errors.New("usage: router-api -config FILE, or router-api migrate")
+
 func run(log *slog.Logger, args []string) error {
 	migrate := len(args) == 1 && args[0] == "migrate"
-	if len(args) > 0 && !migrate {
-		return errors.New("usage: router-api [migrate]")
+	var path string
+	if !migrate {
+		fs := flag.NewFlagSet("router-api", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		fs.StringVar(&path, "config", "", "settings file")
+		if err := fs.Parse(args); err != nil || fs.NArg() > 0 || path == "" {
+			return errUsage
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
@@ -62,7 +73,7 @@ func run(log *slog.Logger, args []string) error {
 	if migrate {
 		return migrateDatabase(ctx, log)
 	}
-	cfg, err := config.Load()
+	cfg, err := config.Load(path, os.LookupEnv)
 	if err != nil {
 		return err
 	}

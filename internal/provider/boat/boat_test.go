@@ -1238,28 +1238,14 @@ func TestBoatSizesAndPrices(t *testing.T) {
 
 func TestBoatOptions(t *testing.T) {
 	bad := map[string]Options{
-		"no key":       {},
-		"unknown type": {APIKey: fakeKey, TypeBySize: map[string]string{"a": "tiny"}},
-		"unnamed size": {APIKey: fakeKey, TypeBySize: map[string]string{"": "small"}},
+		"no key":            {},
+		"unknown type":      {APIKey: fakeKey, TypeBySize: map[string]string{"a": "tiny"}},
+		"unnamed size":      {APIKey: fakeKey, TypeBySize: map[string]string{"": "small"}},
+		"size without type": {APIKey: fakeKey, TypeBySize: map[string]string{"cpu2": ""}},
 	}
 	for name, opts := range bad {
 		if _, err := New(opts); err == nil {
 			t.Errorf("%s: New accepted %+v", name, opts)
-		}
-	}
-}
-
-func TestParseTypes(t *testing.T) {
-	got, err := ParseTypes(" cpu2=small, cpu8=large ")
-	if err != nil || !maps.Equal(got, map[string]string{"cpu2": "small", "cpu8": "large"}) {
-		t.Fatalf("parse gave %v, %v", got, err)
-	}
-	if got, err := ParseTypes(""); err != nil || got != nil {
-		t.Fatalf("empty parse gave %v, %v", got, err)
-	}
-	for _, s := range []string{"cpu2", "cpu2=tiny", "cpu2=small,cpu2=large", "=small"} {
-		if _, err := ParseTypes(s); err == nil {
-			t.Errorf("ParseTypes(%q) accepted it", s)
 		}
 	}
 }
