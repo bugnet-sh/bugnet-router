@@ -741,7 +741,7 @@ func TestCommittedFilesLoad(t *testing.T) {
 	}
 	if !slices.Equal(dev.Providers, []string{"local"}) || !dev.LocalEnabled ||
 		dev.ValkeyPrefix != "bn:dev:" || dev.ListenAddr != "127.0.0.1:8080" ||
-		dev.WorkerListenAddr != "127.0.0.1:8081" {
+		dev.WorkerListenAddr != "127.0.0.1:8081" || dev.DeploymentID != "dev" {
 		t.Fatalf("config/dev.toml: %+v", dev)
 	}
 	for path, suffix := range map[string]string{

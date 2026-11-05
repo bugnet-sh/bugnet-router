@@ -187,6 +187,11 @@ Relative paths resolve against the working directory the binary starts in. Servi
 `[boxd]`, `[e2b]`, `[koyeb]` and `[boat]`, and the local provider starts only with
 `local.enabled = true`.
 
+Each router that shares a provider account needs its own `deployment_id`. Every sandbox carries
+its router's deployment, and a router's sweep destroys the sandboxes of its deployment that its
+own database does not need, so two routers with the same `deployment_id` destroy each other's
+sandboxes. `config/dev.toml` uses `dev`, the default is `main`.
+
 `router-api` reads each `[runner]` build once at start and refuses to start when a configured
 provider needs one that is unset or unreadable. `make build` in `bugnet-run` writes
 `dist/bugnet-run-linux-amd64`.

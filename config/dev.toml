@@ -5,6 +5,7 @@
 
 packages_file = "config/dev-packages.json"
 providers = ["local"]         # add e2b, boat, koyeb or boxd here with its key in .env
+deployment_id = "dev"         # its sweep never destroys main's sandboxes on a shared account
 
 [api]
 listen_addr = "127.0.0.1:8080"
