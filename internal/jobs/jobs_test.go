@@ -1475,6 +1475,9 @@ func covered(t *testing.T, entries []streams.Entry) (int64, int) {
 // tailCost is what one stored snapshot of a flooding job's newest output may cost
 var tailCost = 2 * streams.Cost(frame.Frame{Data: make([]byte, 64<<10)})
 
+// finalTailCost is what the 8 KiB final tail of one output costs the placement's reserve
+var finalTailCost = streams.Cost(frame.Frame{Data: make([]byte, 8<<10)})
+
 // floodScript prints start, then bursts of a and b on stdout and stderr, then end on stdout
 func floodScript(bursts, outBurst, errBurst int) ([]string, int64, int64) {
 	errPart := ""
@@ -1768,13 +1771,106 @@ func TestPlacementBudgetBoundsAllItsJobs(t *testing.T) {
 		cost, _ := covered(t, e.streamed(t, res.JobID))
 		total += cost
 		job := waitFinished(t, e.store, res.JobID)
-		if i == 2 && (!res.Truncated || !job.OutputTruncated || job.StdoutBytes != 150008) {
-			t.Fatalf("a job past the placement's budget gave truncated %v and row %+v",
-				res.Truncated, job)
+		if i == 2 && (!res.Truncated || !job.OutputTruncated || job.StdoutBytes != 150008 ||
+			!strings.HasSuffix(string(res.StdoutTail), "c\ndone 2\n")) {
+			t.Fatalf("a job past the placement's budget gave truncated %v, tail %q and row %+v",
+				res.Truncated, res.StdoutTail[max(len(res.StdoutTail)-20, 0):], job)
 		}
 	}
-	if total > budget {
-		t.Fatalf("three jobs stored output costing %d, over the placement's %d", total, budget)
+	// Past the budget only the final tails of the two later jobs are kept, from the reserve
+	if most := int64(budget) + 2*finalTailCost; total > most {
+		t.Fatalf("three jobs stored output costing %d, over the placement's %d and two tails",
+			total, most)
+	}
+}
+
+func TestFinalTailOutlivesThePlacementBudget(t *testing.T) {
+	e := newEnv(t)
+	const budget = 64 << 10
+	reserve := 2*finalTailCost + 1000
+	s := e.serviceDeps(t, jobs.Deps{
+		ReplicaID: "r1", PlacementBudget: budget, TailReserve: reserve,
+	})
+	ctx := t.Context()
+	counter := func(name string) int64 {
+		t.Helper()
+		key := e.prefix + "placement:" + e.place.ID.String() + ":" + name
+		n, err := e.vk.Do(ctx, e.vk.B().Get().Key(key).Build()).AsInt64()
+		if err != nil && !valkey.IsValkeyNil(err) {
+			t.Fatal(err)
+		}
+		return n
+	}
+	var total int64
+	run := func(script string) jobs.ExecResult {
+		t.Helper()
+		res := e.exec(t, s, []string{"sh", "-c", script}, "", 30*time.Second, jobs.Until{})
+		if res.State != store.JobExited {
+			t.Fatalf("%q is %s, want exited", script, res.State)
+		}
+		cost, _ := covered(t, e.streamed(t, res.JobID))
+		total += cost
+		return res
+	}
+
+	fill := run("head -c 200000 /dev/zero | tr '\\0' f")
+	if !fill.Truncated || len(fill.StdoutTail) != 8<<10 ||
+		strings.Trim(string(fill.StdoutTail), "f") != "" {
+		t.Fatalf("the job filling the budget gave truncated %v and a %d byte tail, want its "+
+			"last 8 KiB", fill.Truncated, len(fill.StdoutTail))
+	}
+	if spent := counter("out"); spent < budget-finalTailCost {
+		t.Fatalf("the budget counter holds %d after the fill, want the %d budget spent", spent,
+			budget)
+	}
+
+	done := run("echo done")
+	if string(done.StdoutTail) != "done\n" || done.Truncated {
+		t.Fatalf("echo done past the budget gave tail %q truncated %v, want done whole",
+			done.StdoutTail, done.Truncated)
+	}
+	if job := waitFinished(t, e.store, done.JobID); job.OutputTruncated || job.StdoutBytes != 5 {
+		t.Fatalf("echo done recorded %+v, want 5 bytes and nothing left out", job)
+	}
+	if got := output(t, watch(t, s, done.JobID, "", jobs.Until{}), frame.KindStdout); got !=
+		"done\n" {
+		t.Fatalf("watching echo done gave %q, want done", got)
+	}
+
+	// The reserve holds two long tails and a little more, so a few long jobs spend it
+	tailed := 0
+	var last jobs.ExecResult
+	for i := range 5 {
+		last = run(fmt.Sprintf("head -c 20000 /dev/zero | tr '\\0' g; echo; echo end %d", i))
+		if !last.Truncated {
+			t.Fatalf("job %d of 20007 bytes past the budget is not truncated", i)
+		}
+		switch {
+		case len(last.StdoutTail) == 0:
+		case tailed < i:
+			t.Fatalf("job %d kept a tail after job %d found the reserve spent", i, tailed)
+		case len(last.StdoutTail) != 8<<10 ||
+			!strings.HasSuffix(string(last.StdoutTail), fmt.Sprintf("g\nend %d\n", i)):
+			t.Fatalf("job %d past the budget gave a %d byte tail, want its last 8 KiB", i,
+				len(last.StdoutTail))
+		default:
+			tailed++
+		}
+	}
+	if tailed == 0 || len(last.StdoutTail) != 0 {
+		t.Fatalf("%d long jobs kept their tail and the last one %d bytes, want the reserve "+
+			"to keep some and then refuse", tailed, len(last.StdoutTail))
+	}
+	if job := waitFinished(t, e.store, last.JobID); !job.OutputTruncated ||
+		job.StdoutBytes != 20007 {
+		t.Fatalf("the job past the reserve recorded %+v, want all 20007 bytes and truncated", job)
+	}
+	if used := counter("tail"); used > reserve || used < finalTailCost {
+		t.Fatalf("the reserve counter holds %d, want the tails it kept within %d", used, reserve)
+	}
+	if most := int64(budget) + reserve; total > most {
+		t.Fatalf("the placement's streams hold output costing %d, want at most the budget and "+
+			"the reserve, %d", total, most)
 	}
 }
 

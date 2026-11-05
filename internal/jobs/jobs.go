@@ -11,7 +11,8 @@
 // Output is bounded per job and per placement. Past either budget the owner follows the job by
 // its newest 64 KiB, stores that tail every 10 s while an allowance lasts and once more at the
 // end, and marks the output it left out with skip frames, the whole output staying in the
-// sandbox's job files.
+// sandbox's job files. A job's final 8 KiB per output is kept even past the placement's budget,
+// from a tail reserve of the placement's own, so a later small command still shows its output.
 package jobs
 
 import (
@@ -69,6 +70,7 @@ var floodEvery = 10 * time.Second
 const (
 	DefaultJobBudget       = 8 << 20
 	DefaultPlacementBudget = 32 << 20
+	DefaultTailReserve     = 8 << 20
 	DefaultMaxRunning      = 16
 )
 
@@ -102,6 +104,8 @@ type Deps struct {
 	JobBudget int64
 	// PlacementBudget is what a placement's job streams may cost together, a default when zero
 	PlacementBudget int64
+	// TailReserve is what final tails may cost a placement past its budget, a default when zero
+	TailReserve int64
 	// MaxRunning bounds the jobs one placement runs at once, DefaultMaxRunning when zero
 	MaxRunning int
 }
@@ -124,6 +128,7 @@ func New(deps Deps) *Service {
 	}
 	deps.JobBudget = cmp.Or(deps.JobBudget, DefaultJobBudget)
 	deps.PlacementBudget = cmp.Or(deps.PlacementBudget, DefaultPlacementBudget)
+	deps.TailReserve = cmp.Or(deps.TailReserve, DefaultTailReserve)
 	deps.MaxRunning = cmp.Or(deps.MaxRunning, DefaultMaxRunning)
 	ctx, stop := context.WithCancel(context.Background())
 	return &Service{d: deps, ctx: ctx, stop: stop, owners: map[string]*owner{}}
@@ -817,6 +822,7 @@ func (o *owner) leaseNow() streams.Lease {
 	l.StreamExpiry = expiry(o.deadline)
 	o.mu.Unlock()
 	l.Placement, l.PlacementBudget = o.place.ID.String(), o.s.d.PlacementBudget
+	l.PlacementReserve = o.s.d.TailReserve
 	return l
 }
 
@@ -1074,7 +1080,7 @@ func (o *owner) snapshot(final bool) bool {
 	from := [2]int64{
 		o.offsets[0] - int64(len(o.held[0])), o.offsets[1] - int64(len(o.held[1])),
 	}
-	if !o.skipStream(from) {
+	if o.skipStream(from) != nil {
 		return false
 	}
 	for i, kind := range []frame.Kind{frame.KindStdout, frame.KindStderr} {
@@ -1083,9 +1089,15 @@ func (o *owner) snapshot(final bool) bool {
 		}
 		f := frame.Frame{Kind: kind, Offset: from[i], Data: o.held[i]}
 		err := o.append(f)
+		if errors.Is(err, streams.ErrOverBudget) && final {
+			f, err = o.finalTail(i, f)
+		}
 		if errors.Is(err, streams.ErrOverBudget) {
 			// The placement's budget is spent, so the stream only says what it left out
 			o.spent = true
+			if final {
+				continue
+			}
 			break
 		}
 		if err != nil {
@@ -1095,20 +1107,33 @@ func (o *owner) snapshot(final bool) bool {
 		o.stream[i] = o.offsets[i]
 	}
 	o.held = [2][]byte{}
-	return o.skipStream(o.offsets)
+	return o.skipStream(o.offsets) == nil
+}
+
+// finalTail stores the newest tailSize bytes of f, the tail Exec returns, from the tail reserve
+func (o *owner) finalTail(i int, f frame.Frame) (frame.Frame, error) {
+	if cut := len(f.Data) - tailSize; cut > 0 {
+		f.Data, f.Offset = f.Data[cut:], f.Offset+int64(cut)
+		to := o.stream
+		to[i] = f.Offset
+		if err := o.skipStream(to); err != nil {
+			return f, err
+		}
+	}
+	return f, o.appendTo(f, true)
 }
 
 // skipStream appends a skip frame moving the stream's offsets to to, when they lie behind it
-func (o *owner) skipStream(to [2]int64) bool {
+func (o *owner) skipStream(to [2]int64) error {
 	if to[0] <= o.stream[0] && to[1] <= o.stream[1] {
-		return true
+		return nil
 	}
 	to = [2]int64{max(to[0], o.stream[0]), max(to[1], o.stream[1])}
-	if o.append(frame.Frame{Kind: frame.KindSkip, Out: to[0], Err: to[1]}) != nil {
-		return false
+	if err := o.append(frame.Frame{Kind: frame.KindSkip, Out: to[0], Err: to[1]}); err != nil {
+		return err
 	}
 	o.stream, o.skipped = to, true
-	return true
+	return nil
 }
 
 // skips reports whether f lies past output the stream lacks
@@ -1145,8 +1170,16 @@ func (o *owner) unseen(f frame.Frame) (frame.Frame, bool) {
 }
 
 // append adds f to the stream, ErrOverBudget refusing output or a heartbeat past the budget
-func (o *owner) append(f frame.Frame) error {
-	if _, err := o.leaseNow().Append(o.ctx, f); err != nil {
+func (o *owner) append(f frame.Frame) error { return o.appendTo(f, false) }
+
+// appendTo adds f, letting the placement's tail reserve take it when it is output of a final tail
+func (o *owner) appendTo(f frame.Frame, tail bool) error {
+	l := o.leaseNow()
+	add := l.Append
+	if tail {
+		add = l.AppendTail
+	}
+	if _, err := add(o.ctx, f); err != nil {
 		if !errors.Is(err, streams.ErrLeaseLost) && !errors.Is(err, streams.ErrOverBudget) {
 			o.warn("append job frame", err)
 		}

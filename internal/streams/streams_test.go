@@ -498,6 +498,67 @@ func TestAppendKeepsToThePlacementBudget(t *testing.T) {
 	}
 }
 
+func TestAppendTailUsesThePlacementReserve(t *testing.T) {
+	b, vk, prefix := newBus(t)
+	ctx := t.Context()
+	l := acquire(t, b, "j1", "r1")
+	l.Placement, l.PlacementBudget = "p1", streams.Cost(out(0, "x"))
+	l.PlacementReserve = 2 * streams.Cost(out(0, "y"))
+	l.StreamExpiry = time.Now().Add(time.Hour)
+	if _, err := l.Append(ctx, out(0, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(ctx, out(1, "y")); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("output past the budget gave %v, want ErrOverBudget", err)
+	}
+	for i, data := range []string{"y", "z"} {
+		if _, err := l.AppendTail(ctx, out(int64(1+i), data)); err != nil {
+			t.Fatalf("final tail %q past the budget gave %v, want it kept from the reserve", data,
+				err)
+		}
+	}
+	if _, err := l.AppendTail(ctx, out(3, "w")); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("a final tail past the reserve gave %v, want ErrOverBudget", err)
+	}
+	beat := frame.Frame{Kind: frame.KindHeartbeat, Out: 3}
+	if _, err := l.AppendTail(ctx, beat); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("a heartbeat through AppendTail gave %v, want the reserve kept for output", err)
+	}
+	spent, err := vk.Do(ctx, vk.B().Get().Key(prefix+"placement:p1:out").Build()).AsInt64()
+	if err != nil || spent != streams.Cost(out(0, "x")) {
+		t.Fatalf("budget counter holds %d, %v, want only the output within the budget", spent, err)
+	}
+	tails, err := vk.Do(ctx, vk.B().Get().Key(prefix+"placement:p1:tail").Build()).AsInt64()
+	if err != nil || tails != l.PlacementReserve {
+		t.Fatalf("reserve counter holds %d, %v, want the two tails at %d", tails, err,
+			l.PlacementReserve)
+	}
+	ttl, err := vk.Do(ctx, vk.B().Pttl().Key(prefix+"placement:p1:tail").Build()).AsInt64()
+	if err != nil || ttl < (59*time.Minute).Milliseconds() || ttl > time.Hour.Milliseconds() {
+		t.Fatalf("reserve counter expires in %dms, %v, want with the streams in an hour", ttl, err)
+	}
+	if n, err := vk.Do(ctx, vk.B().Xlen().Key(prefix+"job:j1:s").Build()).AsInt64(); err != nil ||
+		n != 3 {
+		t.Fatalf("stream holds %d entries, %v, want the output and the two tails", n, err)
+	}
+
+	within := acquire(t, b, "j2", "r1")
+	within.Placement, within.PlacementBudget = "p2", 1<<20
+	within.PlacementReserve = 1 << 20
+	if _, err := within.AppendTail(ctx, out(0, "x")); err != nil {
+		t.Fatal(err)
+	}
+	exists := vk.B().Exists().Key(prefix + "placement:p2:tail").Build()
+	if n, err := vk.Do(ctx, exists).AsInt64(); err != nil || n != 0 {
+		t.Fatalf("a tail within the budget touched the reserve: %d, %v", n, err)
+	}
+	none := acquire(t, b, "j3", "r1")
+	none.Placement, none.PlacementBudget = "p1", l.PlacementBudget
+	if _, err := none.AppendTail(ctx, out(0, "v")); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("a tail past the budget with no reserve gave %v, want ErrOverBudget", err)
+	}
+}
+
 func TestAppendTrimsAStreamPastItsLength(t *testing.T) {
 	streams.SetMaxEntries(t, 10)
 	b, vk, prefix := newBus(t)

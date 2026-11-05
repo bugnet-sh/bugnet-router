@@ -4,11 +4,13 @@
 // Keys, all under the prefix, are job:<id>:s (the stream, one JSON frame per entry in field f),
 // job:<id>:owner (<replica>:<epoch>, expiring with the lease), job:<id>:epoch (a counter that
 // gives every new owner a fresh value), job:<id>:cancel (set when a cancel was asked for),
-// placement:<id>:out (what the placement's job streams cost so far) and jobs:leases (a sorted set
-// of job ids scored by lease expiry in Unix ms). Every write that needs the lease runs as a Lua
-// script that first checks the owner value, so an owner whose lease expired can never append
-// after a peer took over. An append refuses output and heartbeats once the placement's streams
-// would cost more than its budget, and trims a stream past a length the budgets keep it far below.
+// placement:<id>:out (what the placement's job streams cost so far), placement:<id>:tail (what
+// final tails stored past that budget cost) and jobs:leases (a sorted set of job ids scored by
+// lease expiry in Unix ms). Every write that needs the lease runs as a Lua script that first
+// checks the owner value, so an owner whose lease expired can never append after a peer took
+// over. An append refuses output and heartbeats once the placement's streams would cost more than
+// its budget, except that a job's final tail may still use the placement's tail reserve, and
+// trims a stream past a length the budgets keep it far below.
 package streams
 
 import (
@@ -117,18 +119,26 @@ return 1
 
 var appendScript = valkey.NewLuaScript(`
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return false end
-local cost, budget = tonumber(ARGV[4]), tonumber(ARGV[5])
+local cost, budget, reserve = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[8])
+local counter = KEYS[4]
 if budget > 0 and ARGV[6] == '1' and
 	tonumber(redis.call('GET', KEYS[4]) or '0') + cost > budget then
-	return 'over'
+	if reserve <= 0 or tonumber(redis.call('GET', KEYS[5]) or '0') + cost > reserve then
+		return 'over'
+	end
+	counter = KEYS[5]
 end
 local id = redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[7], '*', 'f', ARGV[2])
-if budget > 0 then redis.call('INCRBY', KEYS[4], cost) end
+if budget > 0 then redis.call('INCRBY', counter, cost) end
 if ARGV[3] ~= '0' then
 	redis.call('PEXPIREAT', KEYS[2], ARGV[3])
 	redis.call('PEXPIREAT', KEYS[3], ARGV[3])
-	if budget > 0 and redis.call('PEXPIRETIME', KEYS[4]) < tonumber(ARGV[3]) then
-		redis.call('PEXPIREAT', KEYS[4], ARGV[3])
+	if budget > 0 then
+		for _, key in ipairs({KEYS[4], counter}) do
+			if redis.call('PEXPIRETIME', key) < tonumber(ARGV[3]) then
+				redis.call('PEXPIREAT', key, ARGV[3])
+			end
+		end
 	end
 end
 return id
@@ -144,6 +154,8 @@ type Lease struct {
 	// Placement names the job's placement, whose streams share PlacementBudget unless it is zero
 	Placement       string
 	PlacementBudget int64
+	// PlacementReserve is what final tails may cost the placement past its budget, none when zero
+	PlacementReserve int64
 }
 
 // AcquireLease claims the job for replica unless someone holds it, reporting false when held
@@ -214,6 +226,15 @@ func (l Lease) giveUp(ctx context.Context, what, expiry string) error {
 
 // Append adds f and returns its entry ID, ErrLeaseLost from a stale owner or ErrOverBudget
 func (l Lease) Append(ctx context.Context, f frame.Frame) (string, error) {
+	return l.append(ctx, f, false)
+}
+
+// AppendTail adds output of a job's final tail, which may use the placement's tail reserve
+func (l Lease) AppendTail(ctx context.Context, f frame.Frame) (string, error) {
+	return l.append(ctx, f, true)
+}
+
+func (l Lease) append(ctx context.Context, f frame.Frame, tail bool) (string, error) {
 	raw, err := json.Marshal(f)
 	if err != nil {
 		return "", fmt.Errorf("encode frame: %w", err)
@@ -223,19 +244,28 @@ func (l Lease) Append(ctx context.Context, f frame.Frame) (string, error) {
 		expiry = unixMs(l.StreamExpiry)
 	}
 	b := l.bus
-	budgetKey, budget := b.key(l.job, "s"), int64(0)
+	budgetKey, reserveKey := b.key(l.job, "s"), b.key(l.job, "s")
+	budget, reserve := int64(0), int64(0)
 	if l.Placement != "" && l.PlacementBudget > 0 {
 		budgetKey, budget = b.prefix+"placement:"+l.Placement+":out", l.PlacementBudget
+		reserveKey = b.prefix + "placement:" + l.Placement + ":tail"
+	}
+	output := f.Kind == frame.KindStdout || f.Kind == frame.KindStderr
+	if tail && output {
+		reserve = l.PlacementReserve
 	}
 	// Skip and final frames are always kept, since readers learn from them what output is missing
 	refusable := "0"
-	if f.Kind == frame.KindStdout || f.Kind == frame.KindStderr || f.Kind == frame.KindHeartbeat {
+	if output || f.Kind == frame.KindHeartbeat {
 		refusable = "1"
 	}
-	keys := []string{b.key(l.job, "owner"), b.key(l.job, "s"), b.key(l.job, "epoch"), budgetKey}
+	keys := []string{
+		b.key(l.job, "owner"), b.key(l.job, "s"), b.key(l.job, "epoch"), budgetKey, reserveKey,
+	}
 	args := []string{
 		l.owner, string(raw), expiry, strconv.FormatInt(Cost(f), 10),
 		strconv.FormatInt(budget, 10), refusable, strconv.FormatInt(maxEntries, 10),
+		strconv.FormatInt(reserve, 10),
 	}
 	id, err := appendScript.Exec(ctx, b.c, keys, args).ToString()
 	switch {
