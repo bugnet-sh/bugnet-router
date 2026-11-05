@@ -457,7 +457,7 @@ var secretNames = []string{
 	"BUGNET_ORDER_PRIVATE_KEY", "BOXD_API_KEY", "E2B_API_KEY", "KOYEB_API_TOKEN", "BOAT_API_KEY",
 }
 
-// describe names the key and line of a decode error and never quotes go-toml or the document
+// describe names the line and key go-toml puts a decode error at, quoting no go-toml text or value
 func describe(err error, doc []setting) string {
 	var missing *toml.StrictMissingError
 	if errors.As(err, &missing) {
@@ -470,7 +470,8 @@ func describe(err error, doc []setting) string {
 	}
 	var de *toml.DecodeError
 	if !errors.As(err, &de) {
-		return "a key or table is set twice or as two kinds of value"
+		// go-toml gives no position for this error, and check leaves no known cause of one
+		return "a value does not fit its setting"
 	}
 	row, column := de.Position()
 	// The error is about the last key written before its position
