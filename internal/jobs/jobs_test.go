@@ -1887,6 +1887,9 @@ func TestExecRefusesPastTheRunningJobLimit(t *testing.T) {
 	if !errors.Is(err, jobs.ErrTooManyJobs) {
 		t.Fatalf("a third running job gave %v, want ErrTooManyJobs", err)
 	}
+	if want := "jobs: the placement runs as many jobs as it may, 2 at once"; err.Error() != want {
+		t.Fatalf("a third running job says %q, want %q", err, want)
+	}
 	if res := e.exec(t, s, []string{"sh", "-c", "echo up; sleep 30"}, "key-0", time.Second,
 		up); res.State != store.JobRunning {
 		t.Fatalf("a repeated key of a running job gave %s, want it attached", res.State)

@@ -278,7 +278,7 @@ func (s *Service) start(
 	job, _, err := s.d.Store.CreateJob(ctx, nj)
 	if errors.Is(err, store.ErrJobLimit) {
 		s.giveBack(lease, true)
-		return fmt.Errorf("%w: %w", ErrTooManyJobs, err)
+		return fmt.Errorf("%w, %d at once", ErrTooManyJobs, nj.Limit)
 	}
 	if err != nil {
 		s.giveBack(lease, true)
