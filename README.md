@@ -243,7 +243,8 @@ expires once it is full again. A call that finds it empty answers `ResourceExhau
 `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls
 spend nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec`
 or file call on a placement that is not ready. A request only the provider refuses has spent its
-token. When Valkey cannot answer, the call goes through and the router logs a warning.
+token. When Valkey cannot answer within 500 ms, the call goes through and the router logs a
+warning.
 
 ## Deployment
 
