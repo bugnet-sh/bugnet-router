@@ -43,6 +43,8 @@ const (
 	smallPrice = 50000
 	morePkg    = "small-10m-more"
 	morePrice  = 45000
+	shortPkg   = "small-10m-5"
+	shortPrice = 25000
 	longPkg    = "small-30m"
 )
 
@@ -51,6 +53,8 @@ const catalogJSON = `{"packages": [
 		"minutes": 10, "price_micros": 50000},
 	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
 		"minutes": 10, "price_micros": 45000, "extension_of": "small-10m"},
+	{"id": "small-10m-5", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 5, "price_micros": 25000, "extension_of": "small-10m"},
 	{"id": "small-30m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
 		"minutes": 30, "price_micros": 120000}
 ]}`
@@ -1740,6 +1744,20 @@ func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	}
 	if n := e.pendingOutbox(t); n != outbox+1 {
 		t.Fatalf("%d pending outbox events after the extension, want %d", n, outbox+1)
+	}
+}
+
+func TestCheckExtendAddsTheCheckedPackagesMinutes(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeReady(t, "order-1")
+	want := p.Deadline.Add(5 * time.Minute)
+	if _, deadline, err := e.saga.CheckExtend(t.Context(), h, shortPkg); err != nil ||
+		!deadline.Equal(want) {
+		t.Fatalf("check of a 5-minute extension gave %v, %v, want %v", deadline, err, want)
+	}
+	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", shortPkg, shortPrice, h))
+	if err != nil || !got.Deadline.Equal(want) {
+		t.Fatalf("5-minute extension gave %v, %v, want %v", got.Deadline, err, want)
 	}
 }
 
