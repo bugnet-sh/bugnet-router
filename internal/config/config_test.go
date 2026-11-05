@@ -906,7 +906,7 @@ func committed(t *testing.T, name string) string {
 }
 
 // orderKeyLine is a top-level order_token_public_key line, which dev-up.sh drops and replaces
-var orderKeyLine = regexp.MustCompile(`(?m)^[ \t]*order_token_public_key[ \t]*=`)
+var orderKeyLine = regexp.MustCompile(`(?m)^[ \t]*["']?order_token_public_key["']?[ \t]*=`)
 
 func TestCommittedFilesLoad(t *testing.T) {
 	raw := committed(t, "dev.toml")

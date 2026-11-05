@@ -43,7 +43,7 @@ pubkey=$(bin/bugnet-dev pubkey)
 {
 	printf 'order_token_public_key = "%s"\n\n' "$pubkey"
 	awk '/^[[:space:]]*\[/ { table = 1 }
-		table || !/^[[:space:]]*order_token_public_key[[:space:]]*=/' "$config"
+		table || !/^[[:space:]]*["\047]?order_token_public_key["\047]?[[:space:]]*=/' "$config"
 } >bin/dev.toml
 
 if ! bin/router-api migrate >>bin/logs/migrate.log 2>&1; then
