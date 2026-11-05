@@ -44,8 +44,8 @@ func without(field string) string {
 
 func TestParseNamesAMissingFieldAndKeepsTheRest(t *testing.T) {
 	for field, want := range map[string]vkinfo.Memory{
-		"used_memory":      {Max: 4294967296, Policy: "noeviction"},
-		"maxmemory":        {Used: 2317312, Policy: "noeviction"},
+		"used_memory":      {Used: -1, Max: 4294967296, Policy: "noeviction"},
+		"maxmemory":        {Used: 2317312, Max: -1, Policy: "noeviction"},
 		"maxmemory_policy": {Used: 2317312, Max: 4294967296},
 	} {
 		m, err := vkinfo.Parse(without(field))
@@ -60,7 +60,7 @@ func TestParseNamesAMissingFieldAndKeepsTheRest(t *testing.T) {
 func TestParseRefusesANonNumber(t *testing.T) {
 	text := strings.Replace(sample, "maxmemory:4294967296", "maxmemory:lots", 1)
 	m, err := vkinfo.Parse(text)
-	want := vkinfo.Memory{Used: 2317312, Policy: "noeviction"}
+	want := vkinfo.Memory{Used: 2317312, Max: -1, Policy: "noeviction"}
 	if !errors.Is(err, vkinfo.ErrIncomplete) || !strings.Contains(err.Error(), "maxmemory") ||
 		m != want {
 		t.Fatalf("Parse with a non-number maxmemory = %+v, %v, want %+v and an error naming it",
@@ -85,39 +85,58 @@ func parsed(info string) vkinfo.Reader {
 	return func(context.Context, valkey.Client) (vkinfo.Memory, error) { return vkinfo.Parse(info) }
 }
 
+const noMaxWarning = `msg="valkey has no maxmemory, so /monitor cannot alert on memory"`
+
 func TestCheckStart(t *testing.T) {
+	opt := valkey.ClientOption{InitAddress: []string{testenv.ValkeyAddr()}}
+	closed, err := valkey.NewClient(opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	noMax := strings.Replace(sample, "maxmemory:4294967296", "maxmemory:0", 1)
 	for _, c := range []struct {
-		name    string
-		read    vkinfo.Reader
-		refusal string
-		warning string
+		name     string
+		client   valkey.Client
+		read     vkinfo.Reader
+		refusal  string
+		warnings []string
 	}{
-		{"noeviction with maxmemory", fixed(vkinfo.Memory{Used: 1, Max: 2, Policy: "noeviction"},
-			nil), "", ""},
-		{"evicting", fixed(vkinfo.Memory{Max: 2, Policy: "allkeys-lru"}, nil),
-			"valkey: maxmemory-policy is allkeys-lru, the router needs noeviction", ""},
-		{"no maxmemory", fixed(vkinfo.Memory{Used: 1, Policy: "noeviction"}, nil), "",
-			"valkey has no maxmemory, so /monitor cannot alert on memory"},
-		{"unreadable", fixed(vkinfo.Memory{}, errors.New("no maxmemory_policy")), "",
-			"no maxmemory_policy"},
-		{"evicting without maxmemory", parsed(strings.Replace(without("maxmemory"),
+		{name: "noeviction with maxmemory",
+			read: fixed(vkinfo.Memory{Used: 1, Max: 2, Policy: "noeviction"}, nil)},
+		{name: "evicting", read: fixed(vkinfo.Memory{Max: 2, Policy: "allkeys-lru"}, nil),
+			refusal: "valkey: maxmemory-policy is allkeys-lru, the router needs noeviction"},
+		{name: "no maxmemory", read: parsed(noMax), warnings: []string{noMaxWarning}},
+		{name: "unreadable", client: closed, read: vkinfo.Read,
+			warnings: []string{"cannot be read in full"}},
+		{name: "evicting without maxmemory", read: parsed(strings.Replace(without("maxmemory"),
 			"noeviction", "allkeys-lru", 1)),
-			"valkey: maxmemory-policy is allkeys-lru, the router needs noeviction", ""},
-		{"noeviction without used_memory", parsed(without("used_memory")), "", "no used_memory"},
+			refusal: "valkey: maxmemory-policy is allkeys-lru, the router needs noeviction"},
+		{name: "noeviction without used_memory", read: parsed(without("used_memory")),
+			warnings: []string{"no used_memory"}},
+		{name: "maxmemory 0 without used_memory", read: parsed(strings.Replace(noMax,
+			"used_memory:2317312\r\n", "", 1)), warnings: []string{"no used_memory", noMaxWarning}},
+		{name: "maxmemory hidden", read: parsed(without("maxmemory")),
+			warnings: []string{"incomplete: no maxmemory"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logs bytes.Buffer
 			log := slog.New(slog.NewTextHandler(&logs, nil))
 			var refusal string
-			if err := vkinfo.CheckStart(t.Context(), log, nil, c.read); err != nil {
+			if err := vkinfo.CheckStart(t.Context(), log, c.client, c.read); err != nil {
 				refusal = err.Error()
 			}
 			if refusal != c.refusal {
 				t.Fatalf("CheckStart refused with %q, want %q", refusal, c.refusal)
 			}
-			warned := strings.Contains(logs.String(), "level=WARN")
-			if warned != (c.warning != "") || !strings.Contains(logs.String(), c.warning) {
-				t.Fatalf("CheckStart logged %q, want a warning with %q", logs.String(), c.warning)
+			lines := strings.Count(logs.String(), "level=WARN")
+			if lines != len(c.warnings) {
+				t.Fatalf("CheckStart logged %q, want warnings with %q", logs.String(), c.warnings)
+			}
+			for _, w := range c.warnings {
+				if !strings.Contains(logs.String(), w) {
+					t.Fatalf("CheckStart logged %q, want a warning with %q", logs.String(), w)
+				}
 			}
 		})
 	}

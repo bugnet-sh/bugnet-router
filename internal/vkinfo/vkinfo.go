@@ -21,7 +21,7 @@ var ErrIncomplete = errors.New("valkey info memory is incomplete")
 
 const checkTimeout = 2 * time.Second
 
-// Memory is Valkey's memory in use and its maxmemory in bytes, 0 when unset, and its policy
+// Memory is Valkey's used memory and maxmemory in bytes, -1 when INFO lacks one, and its policy
 type Memory struct {
 	Used, Max int64
 	Policy    string
@@ -34,7 +34,7 @@ type Reader func(context.Context, valkey.Client) (Memory, error)
 func Read(ctx context.Context, c valkey.Client) (Memory, error) {
 	info, err := c.Do(ctx, c.B().Info().Section("memory").Build()).ToString()
 	if err != nil {
-		return Memory{}, fmt.Errorf("valkey info memory: %w", err)
+		return Memory{Used: -1, Max: -1}, fmt.Errorf("valkey info memory: %w", err)
 	}
 	return Parse(info)
 }
@@ -60,11 +60,11 @@ func Parse(info string) (Memory, error) {
 func number(fields map[string]string, key string) (int64, error) {
 	v, ok := fields[key]
 	if !ok {
-		return 0, fmt.Errorf("%w: no %s", ErrIncomplete, key)
+		return -1, fmt.Errorf("%w: no %s", ErrIncomplete, key)
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %s is not an integer", ErrIncomplete, key)
+		return -1, fmt.Errorf("%w: %s is not an integer", ErrIncomplete, key)
 	}
 	return n, nil
 }
@@ -74,12 +74,13 @@ func CheckStart(ctx context.Context, log *slog.Logger, c valkey.Client, read Rea
 	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	m, err := read(ctx, c)
-	switch {
-	case m.Policy != "" && m.Policy != NoEviction:
+	if m.Policy != "" && m.Policy != NoEviction {
 		return fmt.Errorf("valkey: maxmemory-policy is %s, the router needs noeviction", m.Policy)
-	case err != nil:
+	}
+	if err != nil {
 		log.Warn("valkey info memory cannot be read in full, starting anyway", "err", err)
-	case m.Max == 0:
+	}
+	if m.Max == 0 {
 		log.Warn("valkey has no maxmemory, so /monitor cannot alert on memory")
 	}
 	return nil
