@@ -17,6 +17,7 @@ settings from a TOML file and their secrets from the environment.
 | `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
+| `internal/ratelimit` | Per-placement operation limit in Valkey |
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
@@ -231,6 +232,18 @@ A `skip` frame names the offsets the stored output goes on from. `WatchJob` send
 `Exec` sets `truncated` and the job row records `output_truncated`. The whole output stays in the
 sandbox in `/tmp/bugnet/jobs/<job>/out` and `err`, which `ReadFile` reads. A placement runs at
 most `limits.max_running_jobs` jobs at once, and `Exec` answers `ResourceExhausted` past that.
+
+## Operation limit
+
+Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile` and `ListFiles` calls spend one
+token from a bucket that every `router-api` replica shares, `ops:<placement id>` under
+`valkey.prefix`. It holds `limits.sandbox_ops_burst` tokens and gains
+`limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10 by default, and
+expires once it is full again. A call that finds it empty answers `ResourceExhausted` with reason
+`RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls
+spend nothing, nor does a call refused before the bucket, such as an invalid request, an unknown
+handle or a placement that is not ready. When Valkey cannot answer, the call goes through and the
+router logs a warning.
 
 ## Deployment
 
