@@ -2,6 +2,7 @@ package placement
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -89,6 +90,26 @@ func TestCandidatesEqualCostKeepListOrder(t *testing.T) {
 	}
 	if !slices.Equal(names(got), []string{"b", "a", "c", "dear"}) {
 		t.Fatalf("order = %v", names(got))
+	}
+}
+
+func TestCandidatesEqualCostKeepListOrderPastTwelve(t *testing.T) {
+	// Go sorts 12 or fewer elements by insertion, which is stable whatever sort is asked for
+	var ps []provider.Provider
+	groups := map[int64][]string{}
+	for i := range 24 {
+		name := fmt.Sprintf("p%02d", 23-i)
+		cost := int64(1000 * (1 + i%3))
+		ps = append(ps, newLocal(t, name, cost, time.Second))
+		groups[cost] = append(groups[cost], name)
+	}
+	got, err := engine(fakeHealth{}, ps...).Candidates(Inputs{Package: pkg(10, 1000000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Concat(groups[1000], groups[2000], groups[3000])
+	if !slices.Equal(names(got), want) {
+		t.Fatalf("order = %v, want each cost in list order %v", names(got), want)
 	}
 }
 
