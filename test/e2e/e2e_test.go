@@ -145,6 +145,15 @@ func TestE2EHappyPath(t *testing.T) {
 			stdout, stderr, code)
 	}
 
+	// A flood past the job's output budget reaches bugnet-dev cut, with a note of the skip
+	flood := `head -c 20000000 /dev/zero | tr '\0' a; echo; echo end`
+	stdout, stderr, code = s.dev(t, s.a.url, "exec", "--handle", h, "--", "sh", "-c", flood)
+	if code != 0 || !strings.HasSuffix(stdout, "a\nend\n") || len(stdout) >= 20000005 ||
+		!strings.Contains(stderr, "output skipped") {
+		t.Errorf("bugnet-dev exec of a flood printed %d bytes and %q and exited %d, want "+
+			"fewer than all 20000005 ending in end, a skip note and 0", len(stdout), stderr, code)
+	}
+
 	token := strings.TrimSpace(s.devOK(t, s.a.url, "token", "--kind", "extend",
 		"--package", morePkg, "--handle", h))
 	ctx, cancel := context.WithTimeout(t.Context(), callTimeout)

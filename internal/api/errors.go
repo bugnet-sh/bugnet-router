@@ -41,6 +41,7 @@ var codes = []struct {
 	{jobs.ErrNotReady, connect.CodeFailedPrecondition},
 	{errNotReady, connect.CodeFailedPrecondition},
 	{placement.ErrNoCandidate, connect.CodeResourceExhausted},
+	{jobs.ErrTooManyJobs, connect.CodeResourceExhausted},
 	{store.ErrNotFound, connect.CodeNotFound},
 	{jobs.ErrNotFound, connect.CodeNotFound},
 	{jobs.ErrShuttingDown, connect.CodeUnavailable},

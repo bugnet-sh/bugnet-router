@@ -145,6 +145,8 @@ type options struct {
 	readyDelay  time.Duration
 	holdReady   <-chan struct{}
 	maxLifetime time.Duration
+	maxRunning  int   // jobs a placement may run at once, the jobs default when zero
+	jobBudget   int64 // what one job's output may cost its stream, the jobs default when zero
 }
 
 type env struct {
@@ -218,7 +220,7 @@ func newEnv(t *testing.T, opts options) *env {
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
 		Store: st, Bus: streams.NewBus(vk, prefix), Registry: reg, ReplicaID: "api-test",
-		Log: discard,
+		Log: discard, MaxRunning: opts.maxRunning, JobBudget: opts.jobBudget,
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -858,6 +860,7 @@ func TestEstimate(t *testing.T) {
 type watched struct {
 	stdout, stderr []byte
 	exit           *routerv1.JobExit
+	skips          []*routerv1.JobSkip
 	cursors        []string
 }
 
@@ -902,6 +905,15 @@ func (e *env) watchJob(t *testing.T, req *routerv1.WatchJobRequest) (watched, er
 			default:
 				t.Fatalf("output on stream %v", o.GetStream())
 			}
+		case m.GetSkip() != nil:
+			sk := m.GetSkip()
+			out, errOut := routerv1.OutputStream_OUTPUT_STREAM_STDOUT,
+				routerv1.OutputStream_OUTPUT_STREAM_STDERR
+			if sk.GetStdoutOffset() < offsets[out] || sk.GetStderrOffset() < offsets[errOut] {
+				t.Fatalf("skip %v goes back from %v", sk, offsets)
+			}
+			offsets[out], offsets[errOut] = sk.GetStdoutOffset(), sk.GetStderrOffset()
+			w.skips = append(w.skips, sk)
 		case m.GetExit() != nil:
 			w.exit = m.GetExit()
 		}
@@ -983,6 +995,29 @@ func TestWatchJobStreamsAllOutput(t *testing.T) {
 	}
 }
 
+func TestFloodingJobReportsWhatItSkipped(t *testing.T) {
+	e := newEnv(t, options{jobBudget: 128 << 10})
+	h, _ := e.readyPlacement(t)
+	req := sh(h, `head -c 2000000 /dev/zero | tr '\0' a; echo; echo end`)
+	req.Until = &routerv1.Until{Exit: true}
+	res := e.exec(t, req)
+	if res.GetState() != routerv1.JobState_JOB_STATE_EXITED || !res.GetTruncated() ||
+		!strings.HasSuffix(string(res.GetStdoutTail()), "a\nend\n") {
+		t.Fatalf("exec of a flood gave state %v truncated %v", res.GetState(), res.GetTruncated())
+	}
+	w, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: res.GetJobId()})
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if len(w.skips) == 0 || w.exit == nil || w.exit.GetStdoutBytes() != 2000005 ||
+		!strings.HasSuffix(string(w.stdout), "a\nend\n") {
+		t.Fatalf("watch of a flood gave %d skips and exit %v", len(w.skips), w.exit)
+	}
+	if len(w.stdout) >= 2000005 {
+		t.Fatalf("watch of a flood sent all %d bytes, want it to skip most", len(w.stdout))
+	}
+}
+
 func TestWatchJobMapsFrames(t *testing.T) {
 	e := newEnv(t, options{})
 	h, p := e.readyPlacement(t)
@@ -1005,7 +1040,8 @@ func TestWatchJobMapsFrames(t *testing.T) {
 		{Kind: frame.KindHeartbeat, Out: 1},
 		{Kind: frame.KindError, Reason: frame.ReasonJobExists},
 		{Kind: frame.KindStderr, Data: []byte("bc")},
-		{Kind: frame.KindExit, Code: 2, Out: 1, Err: 2},
+		{Kind: frame.KindSkip, Out: 9, Err: 2},
+		{Kind: frame.KindExit, Code: 2, Out: 9, Err: 2},
 	} {
 		entry, err := lease.Append(ctx, f)
 		if err != nil {
@@ -1033,6 +1069,10 @@ func TestWatchJobMapsFrames(t *testing.T) {
 				x.GetStdoutBytes(), x.GetStderrBytes()))
 		case m.GetHeartbeat():
 			got = append(got, m.GetCursor()+" heartbeat")
+		case m.GetSkip() != nil:
+			sk := m.GetSkip()
+			got = append(got, fmt.Sprintf("%s skip %d %d", m.GetCursor(), sk.GetStdoutOffset(),
+				sk.GetStderrOffset()))
 		default:
 			t.Fatalf("message without a frame %v", m)
 		}
@@ -1044,7 +1084,8 @@ func TestWatchJobMapsFrames(t *testing.T) {
 		ids[0] + " OUTPUT_STREAM_STDOUT 0 a",
 		ids[1] + " heartbeat",
 		ids[3] + " OUTPUT_STREAM_STDERR 0 bc",
-		ids[4] + " exit 2 1 2",
+		ids[4] + " skip 9 2",
+		ids[5] + " exit 2 9 2",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("watch sent %q, want %q", got, want)
@@ -1380,6 +1421,15 @@ func TestErrorCodes(t *testing.T) {
 		if string(w.stdout) != "up\n" || w.exit != nil {
 			t.Fatalf("watch of a lost job gave %q and exit %v", w.stdout, w.exit)
 		}
+	})
+	t.Run("too many running jobs is resource exhausted", func(t *testing.T) {
+		busy := newEnv(t, options{maxRunning: 1})
+		bh, _ := busy.readyPlacement(t)
+		req := sh(bh, "echo up; sleep 30")
+		req.Until = &routerv1.Until{OutputPattern: "up"}
+		busy.exec(t, req)
+		_, err := busy.client.Exec(ctx, connect.NewRequest(sh(bh, "true")))
+		wantCode(t, err, connect.CodeResourceExhausted)
 	})
 	t.Run("shutting down is unavailable", func(t *testing.T) {
 		down := newEnv(t, options{})

@@ -295,12 +295,16 @@ func TestCreateJobConflict(t *testing.T) {
 	if err != nil || len(running) != 1 {
 		t.Fatalf("running=%v err=%v", running, err)
 	}
-	if err := s.FinishJob(ctx, "j1", store.JobExited, 3, 10, 20); err != nil {
+	exited := store.JobOutcome{
+		State: store.JobExited, Code: 3, StdoutBytes: 10, StderrBytes: 20, Truncated: true,
+	}
+	if err := s.FinishJob(ctx, "j1", exited); err != nil {
 		t.Fatal(err)
 	}
 	done, err := s.JobByID(ctx, "j1")
 	if err != nil || done.State != store.JobExited || done.ExitCode == nil || *done.ExitCode != 3 ||
-		done.StdoutBytes != 10 || done.StderrBytes != 20 || done.FinishedAt == nil {
+		done.StdoutBytes != 10 || done.StderrBytes != 20 || done.FinishedAt == nil ||
+		!done.OutputTruncated {
 		t.Fatalf("job=%+v err=%v", done, err)
 	}
 	if _, err := s.JobByID(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
@@ -318,16 +322,66 @@ func TestFinishLostJobHasNoExitCode(t *testing.T) {
 	if _, _, err := s.CreateJob(ctx, store.NewJob{ID: "j1", PlacementID: p.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishJob(ctx, "j1", store.JobLost, 0, 7, 0); err != nil {
+	lost := store.JobOutcome{State: store.JobLost, StdoutBytes: 7}
+	if err := s.FinishJob(ctx, "j1", lost); err != nil {
 		t.Fatal(err)
 	}
 	j, err := s.JobByID(ctx, "j1")
-	if err != nil || j.State != store.JobLost || j.ExitCode != nil || j.StdoutBytes != 7 {
+	if err != nil || j.State != store.JobLost || j.ExitCode != nil || j.StdoutBytes != 7 ||
+		j.OutputTruncated {
 		t.Fatalf("job=%+v err=%v", j, err)
 	}
-	err = s.FinishJob(ctx, "j1", store.JobExited, 0, 7, 0)
+	err = s.FinishJob(ctx, "j1", store.JobOutcome{State: store.JobExited, StdoutBytes: 7})
 	if !errors.Is(err, store.ErrStateConflict) {
 		t.Fatalf("finish of a lost job: %v, want ErrStateConflict", err)
+	}
+}
+
+func TestCreateJobKeepsToTheRunningLimit(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, other := newPlacement(t, s, "o"), newPlacement(t, s, "other")
+	const limit = 3
+	var wg sync.WaitGroup
+	var created, refused atomic.Int64
+	for i := range 12 {
+		wg.Go(func() {
+			j := store.NewJob{ID: fmt.Sprintf("j%d", i), PlacementID: p.ID, Limit: limit}
+			_, ok, err := s.CreateJob(ctx, j)
+			switch {
+			case errors.Is(err, store.ErrJobLimit):
+				refused.Add(1)
+			case err != nil:
+				t.Error(err)
+			case ok:
+				created.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if created.Load() != limit || refused.Load() != 12-limit {
+		t.Fatalf("created %d and refused %d of 12 jobs, want %d created", created.Load(),
+			refused.Load(), limit)
+	}
+	running, err := s.RunningJobs(ctx)
+	if err != nil || len(running) != limit {
+		t.Fatalf("running jobs %+v, %v, want %d", running, err, limit)
+	}
+	first := running[0].ID
+	again, ok, err := s.CreateJob(ctx, store.NewJob{ID: first, PlacementID: p.ID, Limit: limit})
+	if err != nil || ok || again.ID != first {
+		t.Fatalf("a repeated id at the limit gave %+v created %v, %v", again, ok, err)
+	}
+	_, ok, err = s.CreateJob(ctx, store.NewJob{ID: "o1", PlacementID: other.ID, Limit: limit})
+	if err != nil || !ok {
+		t.Fatalf("a job of another placement gave created %v, %v", ok, err)
+	}
+	if err := s.FinishJob(ctx, first, store.JobOutcome{State: store.JobExited}); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err = s.CreateJob(ctx, store.NewJob{ID: "late", PlacementID: p.ID, Limit: limit})
+	if err != nil || !ok {
+		t.Fatalf("a job after one finished gave created %v, %v", ok, err)
 	}
 }
 

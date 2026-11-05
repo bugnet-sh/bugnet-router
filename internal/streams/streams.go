@@ -3,14 +3,17 @@
 //
 // Keys, all under the prefix, are job:<id>:s (the stream, one JSON frame per entry in field f),
 // job:<id>:owner (<replica>:<epoch>, expiring with the lease), job:<id>:epoch (a counter that
-// gives every new owner a fresh value), job:<id>:cancel (set when a cancel was asked for) and
-// jobs:leases (a sorted set of job ids scored by lease expiry in Unix ms). Every write that
-// needs the lease runs as a Lua script that first checks the owner value, so an owner whose
-// lease expired can never append after a peer took over.
+// gives every new owner a fresh value), job:<id>:cancel (set when a cancel was asked for),
+// placement:<id>:out (what the placement's job streams cost so far) and jobs:leases (a sorted set
+// of job ids scored by lease expiry in Unix ms). Every write that needs the lease runs as a Lua
+// script that first checks the owner value, so an owner whose lease expired can never append
+// after a peer took over. An append refuses output and heartbeats once the placement's streams
+// would cost more than its budget, and trims a stream past a length the budgets keep it far below.
 package streams
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,14 +31,26 @@ const (
 	epochTTL  = 24 * time.Hour
 	readCount = 256
 	scanPage  = 256
+	// entryCost is what one entry costs Valkey beside its data, keys and stream bookkeeping
+	entryCost = 96
 )
+
+// maxEntries trims a stream as a backstop, the output budgets keep every stream far shorter
+var maxEntries int64 = 200_000
 
 var (
 	// ErrLeaseLost means another owner holds the job's lease or it expired
 	ErrLeaseLost = errors.New("streams: lease lost")
 	// ErrBadCursor means a cursor is not a stream entry ID
 	ErrBadCursor = errors.New("streams: malformed cursor")
+	// ErrOverBudget means the frame would take the placement's streams past their budget
+	ErrOverBudget = errors.New("streams: the placement's output budget is spent")
 )
+
+// Cost estimates the Valkey memory a frame's entry takes, its data stored as base64
+func Cost(f frame.Frame) int64 {
+	return int64(base64.StdEncoding.EncodedLen(len(f.Data))) + entryCost
+}
 
 var cursorPattern = regexp.MustCompile(`^[0-9]+(-[0-9]+)?$`)
 
@@ -102,10 +117,19 @@ return 1
 
 var appendScript = valkey.NewLuaScript(`
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return false end
-local id = redis.call('XADD', KEYS[2], '*', 'f', ARGV[2])
+local cost, budget = tonumber(ARGV[4]), tonumber(ARGV[5])
+if budget > 0 and ARGV[6] == '1' and
+	tonumber(redis.call('GET', KEYS[4]) or '0') + cost > budget then
+	return 'over'
+end
+local id = redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[7], '*', 'f', ARGV[2])
+if budget > 0 then redis.call('INCRBY', KEYS[4], cost) end
 if ARGV[3] ~= '0' then
 	redis.call('PEXPIREAT', KEYS[2], ARGV[3])
 	redis.call('PEXPIREAT', KEYS[3], ARGV[3])
+	if budget > 0 and redis.call('PEXPIRETIME', KEYS[4]) < tonumber(ARGV[3]) then
+		redis.call('PEXPIREAT', KEYS[4], ARGV[3])
+	end
 end
 return id
 `)
@@ -117,6 +141,9 @@ type Lease struct {
 	owner string
 	// StreamExpiry is when Append makes the stream and epoch expire, never when zero
 	StreamExpiry time.Time
+	// Placement names the job's placement, whose streams share PlacementBudget unless it is zero
+	Placement       string
+	PlacementBudget int64
 }
 
 // AcquireLease claims the job for replica unless someone holds it, reporting false when held
@@ -185,7 +212,7 @@ func (l Lease) giveUp(ctx context.Context, what, expiry string) error {
 	return l.run(ctx, what, releaseScript, keys, []string{l.owner, l.job, expiry})
 }
 
-// Append adds f to the job's stream and returns its entry ID, or ErrLeaseLost from a stale owner
+// Append adds f and returns its entry ID, ErrLeaseLost from a stale owner or ErrOverBudget
 func (l Lease) Append(ctx context.Context, f frame.Frame) (string, error) {
 	raw, err := json.Marshal(f)
 	if err != nil {
@@ -196,13 +223,28 @@ func (l Lease) Append(ctx context.Context, f frame.Frame) (string, error) {
 		expiry = unixMs(l.StreamExpiry)
 	}
 	b := l.bus
-	keys := []string{b.key(l.job, "owner"), b.key(l.job, "s"), b.key(l.job, "epoch")}
-	id, err := appendScript.Exec(ctx, b.c, keys, []string{l.owner, string(raw), expiry}).ToString()
-	if valkey.IsValkeyNil(err) {
-		return "", ErrLeaseLost
+	budgetKey, budget := b.key(l.job, "s"), int64(0)
+	if l.Placement != "" && l.PlacementBudget > 0 {
+		budgetKey, budget = b.prefix+"placement:"+l.Placement+":out", l.PlacementBudget
 	}
-	if err != nil {
+	// Skip and final frames are always kept, since readers learn from them what output is missing
+	refusable := "0"
+	if f.Kind == frame.KindStdout || f.Kind == frame.KindStderr || f.Kind == frame.KindHeartbeat {
+		refusable = "1"
+	}
+	keys := []string{b.key(l.job, "owner"), b.key(l.job, "s"), b.key(l.job, "epoch"), budgetKey}
+	args := []string{
+		l.owner, string(raw), expiry, strconv.FormatInt(Cost(f), 10),
+		strconv.FormatInt(budget, 10), refusable, strconv.FormatInt(maxEntries, 10),
+	}
+	id, err := appendScript.Exec(ctx, b.c, keys, args).ToString()
+	switch {
+	case valkey.IsValkeyNil(err):
+		return "", ErrLeaseLost
+	case err != nil:
 		return "", fmt.Errorf("append to job %s: %w", l.job, err)
+	case id == "over":
+		return "", ErrOverBudget
 	}
 	return id, nil
 }
@@ -277,33 +319,44 @@ func (b *Bus) Last(ctx context.Context, jobID string) (Entry, bool, error) {
 	return entries[0], true, nil
 }
 
-// LastOffsets returns the furthest output offsets anywhere in the stream and whether it has ended
-func (b *Bus) LastOffsets(ctx context.Context, jobID string) (int64, int64, bool, error) {
-	var out, errOff int64
-	done := false
+// Offsets is what LastOffsets found in a job's stream
+type Offsets struct {
+	Out, Err int64 // the furthest output offsets anywhere in the stream
+	Done     bool  // the newest entry ends the stream
+	Stored   int64 // what the output entries cost by Cost
+	Skipped  bool  // a skip frame says the stream left output out
+}
+
+// LastOffsets reads the furthest output offsets anywhere in the stream and what its output costs
+func (b *Bus) LastOffsets(ctx context.Context, jobID string) (Offsets, error) {
+	var o Offsets
 	end := "+"
 	// The whole stream is read, so a stale entry near its end can never rewind a resume
 	for first := true; ; first = false {
 		page, err := b.revRange(ctx, jobID, end, scanPage)
 		if err != nil {
-			return 0, 0, false, err
+			return Offsets{}, err
 		}
 		for i, e := range page {
 			f := e.Frame
 			if first && i == 0 {
-				done = Terminal(f)
+				o.Done = Terminal(f)
 			}
 			switch f.Kind {
 			case frame.KindStdout:
-				out = max(out, f.Offset+int64(len(f.Data)))
+				o.Out = max(o.Out, f.Offset+int64(len(f.Data)))
+				o.Stored += Cost(f)
 			case frame.KindStderr:
-				errOff = max(errOff, f.Offset+int64(len(f.Data)))
+				o.Err = max(o.Err, f.Offset+int64(len(f.Data)))
+				o.Stored += Cost(f)
+			case frame.KindSkip:
+				o.Out, o.Err, o.Skipped = max(o.Out, f.Out), max(o.Err, f.Err), true
 			case frame.KindHeartbeat, frame.KindExit:
-				out, errOff = max(out, f.Out), max(errOff, f.Err)
+				o.Out, o.Err = max(o.Out, f.Out), max(o.Err, f.Err)
 			}
 		}
 		if len(page) < scanPage {
-			return out, errOff, done, nil
+			return o, nil
 		}
 		end = "(" + page[len(page)-1].ID
 	}

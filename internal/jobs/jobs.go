@@ -8,9 +8,14 @@
 // owner stops, crashes or loses its lease, the scanner of some replica takes the job over and
 // attaches from the offsets the stream already holds. The exit frame, or an error frame for a
 // job that cannot be reached, ends the stream, and its owner records the outcome in the store.
+// Output is bounded per job and per placement. Past either budget the owner follows the job by
+// its newest 64 KiB, stores that tail every 10 s while an allowance lasts and once more at the
+// end, and marks the output it left out with skip frames, the whole output staying in the
+// sandbox's job files.
 package jobs
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -53,6 +58,18 @@ const (
 	holderPoll    = 50 * time.Millisecond
 	callTimeout   = 10 * time.Second
 	retryAfter    = 5 * time.Second
+	// floodTail is the newest output of each stream a flooding job is followed by
+	floodTail = 64 << 10
+)
+
+// floodEvery paces the snapshots that store a flooding job's newest output
+var floodEvery = 10 * time.Second
+
+// Defaults of the output budgets and the running job limit
+const (
+	DefaultJobBudget       = 8 << 20
+	DefaultPlacementBudget = 32 << 20
+	DefaultMaxRunning      = 16
 )
 
 // idleAfter gives up a runner stream that sent nothing, not even a heartbeat, for three beats
@@ -68,6 +85,8 @@ var (
 	ErrNotFound = errors.New("jobs: job not found")
 	// ErrShuttingDown means this replica stopped taking jobs, so the caller should try a peer
 	ErrShuttingDown = errors.New("jobs: service is shutting down")
+	// ErrTooManyJobs means the placement already runs as many jobs as it may
+	ErrTooManyJobs = errors.New("jobs: the placement runs as many jobs as it may")
 )
 
 var errNoProvider = errors.New("jobs: provider is not configured")
@@ -79,6 +98,12 @@ type Deps struct {
 	Registry  *provider.Registry
 	ReplicaID string       // the replica part of every lease this service takes
 	Log       *slog.Logger // slog.Default when nil
+	// JobBudget is what one job's output may cost its stream, DefaultJobBudget when zero
+	JobBudget int64
+	// PlacementBudget is what a placement's job streams may cost together, a default when zero
+	PlacementBudget int64
+	// MaxRunning bounds the jobs one placement runs at once, DefaultMaxRunning when zero
+	MaxRunning int
 }
 
 // Service runs jobs and serves their streams
@@ -97,6 +122,9 @@ func New(deps Deps) *Service {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
 	}
+	deps.JobBudget = cmp.Or(deps.JobBudget, DefaultJobBudget)
+	deps.PlacementBudget = cmp.Or(deps.PlacementBudget, DefaultPlacementBudget)
+	deps.MaxRunning = cmp.Or(deps.MaxRunning, DefaultMaxRunning)
 	ctx, stop := context.WithCancel(context.Background())
 	return &Service{d: deps, ctx: ctx, stop: stop, owners: map[string]*owner{}}
 }
@@ -109,7 +137,7 @@ type ExecResult struct {
 	StdoutTail []byte // last 8 KiB
 	StderrTail []byte // last 8 KiB
 	Cursor     string
-	Truncated  bool
+	Truncated  bool // the tails or the job's stream leave output out
 }
 
 var idEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -185,7 +213,10 @@ func (s *Service) Exec(
 	if s.closing() {
 		return ExecResult{}, ErrShuttingDown
 	}
-	nj := store.NewJob{ID: newJobID(p.ID, idemKey), PlacementID: p.ID, IdempotencyKey: idemKey}
+	nj := store.NewJob{
+		ID: newJobID(p.ID, idemKey), PlacementID: p.ID, IdempotencyKey: idemKey,
+		Limit: s.d.MaxRunning,
+	}
 	c := &command{argv: argv, cwd: cwd, env: env}
 	if err := s.begin(ctx, p, prov, nj, c, deadline); err != nil {
 		return ExecResult{}, err
@@ -232,6 +263,10 @@ func (s *Service) start(
 		return ErrShuttingDown
 	}
 	job, _, err := s.d.Store.CreateJob(ctx, nj)
+	if errors.Is(err, store.ErrJobLimit) {
+		s.giveBack(lease, true)
+		return fmt.Errorf("%w: %w", ErrTooManyJobs, err)
+	}
 	if err != nil {
 		s.giveBack(lease, true)
 		return err
@@ -245,11 +280,22 @@ func (s *Service) start(
 }
 
 type tails struct {
-	data [2][]byte
-	size [2]int64
+	data    [2][]byte
+	size    [2]int64
+	skipped bool
 }
 
 func (t *tails) add(f frame.Frame) {
+	if f.Kind == frame.KindSkip {
+		t.skipped = true
+		// Bytes were left out, so a tail starts over after them rather than join across the gap
+		for i, at := range [2]int64{f.Out, f.Err} {
+			if at > t.size[i] {
+				t.data[i], t.size[i] = nil, at
+			}
+		}
+		return
+	}
 	i, ok := streamOf(f.Kind)
 	if !ok {
 		return
@@ -285,13 +331,14 @@ func (s *Service) collect(
 		StdoutTail: slices.Clone(t.data[0]),
 		StderrTail: slices.Clone(t.data[1]),
 		Cursor:     r.cursor,
-		Truncated:  t.size[0] > tailSize || t.size[1] > tailSize,
+		Truncated:  t.skipped || t.size[0] > tailSize || t.size[1] > tailSize,
 	}
 	switch {
 	case end.final != nil:
 		res.State, res.ExitCode = outcome(*end.final)
 	case end.job != nil:
 		res.State, res.ExitCode = end.job.State, end.job.ExitCode
+		res.Truncated = res.Truncated || end.job.OutputTruncated
 	}
 	return res, nil
 }
@@ -422,6 +469,10 @@ func (r *reader) nextBlock(deadline time.Time) (time.Duration, bool) {
 
 // fresh drops output this reader already delivered and trims a frame that overlaps it
 func (r *reader) fresh(f frame.Frame) (frame.Frame, bool) {
+	if f.Kind == frame.KindSkip {
+		r.next = [2]int64{max(r.next[0], f.Out), max(r.next[1], f.Err)}
+		return f, true
+	}
 	i, ok := streamOf(f.Kind)
 	if !ok {
 		return f, true
@@ -625,8 +676,16 @@ type owner struct {
 	cmd    *command          // nil when the job only needs attaching
 	ctx    context.Context
 	cancel context.CancelFunc
-	// offsets are the next stdout and stderr bytes the stream lacks, kept by the run goroutine
-	offsets     [2]int64
+	// The fields up to mu are kept by the run goroutine
+	offsets     [2]int64  // the next stdout and stderr bytes the follower sends
+	stream      [2]int64  // the offsets the stream's output and skip frames reach
+	stored      int64     // what the stream's output entries cost
+	flood       bool      // output passed a budget, so the job is followed by its tail
+	noTail      bool      // the sandbox's bugnet-run has no attach --tail
+	spent       bool      // the placement's budget refused a snapshot
+	skipped     bool      // the stream left output out
+	held        [2][]byte // the newest output between stream and offsets while flooding
+	snapped     time.Time // when held output was last stored or passed over
 	mu          sync.Mutex
 	deadline    *time.Time
 	renewPaused atomic.Bool // set by tests to let the lease expire while the loop streams
@@ -757,6 +816,7 @@ func (o *owner) leaseNow() streams.Lease {
 	o.mu.Lock()
 	l.StreamExpiry = expiry(o.deadline)
 	o.mu.Unlock()
+	l.Placement, l.PlacementBudget = o.place.ID.String(), o.s.d.PlacementBudget
 	return l
 }
 
@@ -769,24 +829,27 @@ const (
 	pumpGap                          // the runner stream skipped output before delivering a frame
 	pumpFinished                     // the job ended and is recorded
 	pumpStopped                      // the lease is gone, the service stopped or Valkey failed
+	pumpFlood                        // the output passed a budget, so the job is followed anew
 )
 
 // follow streams the job's frames into its stream and reports whether the job finished
 func (o *owner) follow() bool {
-	out, errOff, done, err := o.s.d.Bus.LastOffsets(o.ctx, o.job())
+	st, err := o.s.d.Bus.LastOffsets(o.ctx, o.job())
 	if err != nil {
 		o.warn("read job stream offsets", err)
 		return false
 	}
-	o.offsets = [2]int64{out, errOff}
-	if done {
+	o.offsets = [2]int64{st.Out, st.Err}
+	o.stream, o.stored, o.skipped = o.offsets, st.Stored, st.Skipped
+	o.flood, o.snapped = st.Stored >= o.s.d.JobBudget, time.Now()
+	if st.Done {
 		return o.finishFromStream()
 	}
 	if o.prov == nil {
 		return o.end(frame.Frame{Kind: frame.KindError, Reason: frame.ReasonJobLost}) ==
 			pumpFinished
 	}
-	start := o.cmd != nil && out == 0 && errOff == 0
+	start := o.cmd != nil && st.Out == 0 && st.Err == 0
 	failures := 0
 	for {
 		argv := o.attachArgv()
@@ -798,7 +861,7 @@ func (o *owner) follow() bool {
 			return true
 		case pumpStopped:
 			return false
-		case pumpExists:
+		case pumpExists, pumpFlood:
 			start = false
 			continue
 		case pumpProgressed:
@@ -833,10 +896,14 @@ func (o *owner) startArgv() []string {
 }
 
 func (o *owner) attachArgv() []string {
-	return []string{
+	argv := []string{
 		runnerPath, "attach", "--job", o.job(),
 		"--out", strconv.FormatInt(o.offsets[0], 10), "--err", strconv.FormatInt(o.offsets[1], 10),
 	}
+	if o.flood && !o.noTail {
+		argv = append(argv, "--tail", strconv.Itoa(floodTail))
+	}
+	return argv
 }
 
 // pump runs one bugnet-run follower and appends its frames until it ends
@@ -871,6 +938,18 @@ func (o *owner) pump(argv []string) pumpResult {
 			continue
 		case f.Kind == frame.KindError && f.Reason == frame.ReasonJobExists:
 			return pumpExists
+		case f.Kind == frame.KindError && f.Reason == frame.ReasonBadArgs && o.flood && !o.noTail:
+			// A bugnet-run without attach --tail is followed whole and its tail cut here
+			o.noTail = true
+			return pumpFlood
+		case o.flood:
+			if r, ended := o.floodFrame(f); ended {
+				return r
+			}
+			result = pumpProgressed
+			continue
+		case f.Kind == frame.KindSkip:
+			continue
 		case o.skips(f):
 			// A lossy transport dropped output, so the next follower resumes from the stream's end
 			if result == pumpProgressed {
@@ -884,11 +963,152 @@ func (o *owner) pump(argv []string) pumpResult {
 		if !fresh {
 			continue
 		}
-		if !o.append(f) {
-			return pumpStopped
+		if r, kept := o.keep(f); !kept {
+			return r
 		}
 		result = pumpProgressed
 	}
+}
+
+// keep appends a frame of a job within its budget, reporting the pump's result when it cannot
+func (o *owner) keep(f frame.Frame) (pumpResult, bool) {
+	_, output := streamOf(f.Kind)
+	err := streams.ErrOverBudget
+	if !output || o.stored+streams.Cost(f) <= o.s.d.JobBudget {
+		err = o.append(f)
+	}
+	switch {
+	case errors.Is(err, streams.ErrOverBudget) && output:
+		o.startFlood(f)
+		return pumpFlood, false
+	case errors.Is(err, streams.ErrOverBudget):
+		// A heartbeat past the placement's budget is left out, as nothing depends on it
+	case err != nil:
+		return pumpStopped, false
+	case output:
+		o.stored += streams.Cost(f)
+	}
+	return 0, true
+}
+
+/* Floods */
+
+// startFlood keeps f out of the stream and follows the job by its tail from now on
+func (o *owner) startFlood(f frame.Frame) {
+	o.s.d.Log.Info("job output passed its budget, following its tail", "job", o.job(),
+		"stored", o.stored)
+	o.flood, o.stream, o.snapped = true, o.offsets, time.Now()
+	o.hold(f)
+}
+
+// floodFrame takes one frame of a flooding job, reporting the pump's result once it must end
+func (o *owner) floodFrame(f frame.Frame) (pumpResult, bool) {
+	if streams.Terminal(f) {
+		if f.Kind == frame.KindExit {
+			o.skipTo(f.Out, f.Err)
+		}
+		return o.end(f), true
+	}
+	// The held tail is stored before f, since a skip in f would drop it
+	if time.Since(o.snapped) >= floodEvery && !o.snapshot(false) {
+		return pumpStopped, true
+	}
+	switch f.Kind {
+	case frame.KindSkip:
+		o.skipTo(f.Out, f.Err)
+	case frame.KindHeartbeat:
+		o.skipTo(f.Out, f.Err)
+		if !o.beat() {
+			return pumpStopped, true
+		}
+	case frame.KindStdout, frame.KindStderr:
+		i, _ := streamOf(f.Kind)
+		// A gap is no loss here, since the tail is all that is kept of a flood
+		if f.Offset > o.offsets[i] {
+			o.held[i], o.offsets[i] = nil, f.Offset
+		}
+		if f, fresh := o.unseen(f); fresh {
+			o.hold(f)
+		}
+	}
+	return 0, false
+}
+
+// beat appends a heartbeat naming only offsets the stream covers, which a takeover resumes from
+func (o *owner) beat() bool {
+	err := o.append(frame.Frame{Kind: frame.KindHeartbeat, Out: o.stream[0], Err: o.stream[1]})
+	return err == nil || errors.Is(err, streams.ErrOverBudget)
+}
+
+// hold keeps the newest floodTail bytes of an output frame the stream does not have
+func (o *owner) hold(f frame.Frame) {
+	i, ok := streamOf(f.Kind)
+	if !ok {
+		return
+	}
+	o.held[i] = keepLast(o.held[i], f.Data, floodTail)
+	o.offsets[i] = f.Offset + int64(len(f.Data))
+}
+
+// skipTo moves the outputs to offsets the follower reports, dropping held bytes before a jump
+func (o *owner) skipTo(out, errOff int64) {
+	for i, at := range [2]int64{out, errOff} {
+		if at > o.offsets[i] {
+			o.held[i], o.offsets[i] = nil, at
+		}
+	}
+}
+
+// snapshot stores the held tails behind a skip frame, reporting false once the stream fails
+func (o *owner) snapshot(final bool) bool {
+	if !final && len(o.held[0])+len(o.held[1]) == 0 {
+		// With no new output held the next frame that brings some is stored instead
+		return true
+	}
+	o.snapped = time.Now()
+	// Before the end, only an allowance of a quarter past the job's budget goes to snapshots
+	allowed := final || (!o.spent && o.stored < o.s.d.JobBudget+o.s.d.JobBudget/4)
+	if o.offsets == o.stream || !allowed {
+		return true
+	}
+	from := [2]int64{
+		o.offsets[0] - int64(len(o.held[0])), o.offsets[1] - int64(len(o.held[1])),
+	}
+	if !o.skipStream(from) {
+		return false
+	}
+	for i, kind := range []frame.Kind{frame.KindStdout, frame.KindStderr} {
+		if len(o.held[i]) == 0 {
+			continue
+		}
+		f := frame.Frame{Kind: kind, Offset: from[i], Data: o.held[i]}
+		err := o.append(f)
+		if errors.Is(err, streams.ErrOverBudget) {
+			// The placement's budget is spent, so the stream only says what it left out
+			o.spent = true
+			break
+		}
+		if err != nil {
+			return false
+		}
+		o.stored += streams.Cost(f)
+		o.stream[i] = o.offsets[i]
+	}
+	o.held = [2][]byte{}
+	return o.skipStream(o.offsets)
+}
+
+// skipStream appends a skip frame moving the stream's offsets to to, when they lie behind it
+func (o *owner) skipStream(to [2]int64) bool {
+	if to[0] <= o.stream[0] && to[1] <= o.stream[1] {
+		return true
+	}
+	to = [2]int64{max(to[0], o.stream[0]), max(to[1], o.stream[1])}
+	if o.append(frame.Frame{Kind: frame.KindSkip, Out: to[0], Err: to[1]}) != nil {
+		return false
+	}
+	o.stream, o.skipped = to, true
+	return true
 }
 
 // skips reports whether f lies past output the stream lacks
@@ -924,21 +1144,26 @@ func (o *owner) unseen(f frame.Frame) (frame.Frame, bool) {
 	return f, true
 }
 
-func (o *owner) append(f frame.Frame) bool {
+// append adds f to the stream, ErrOverBudget refusing output or a heartbeat past the budget
+func (o *owner) append(f frame.Frame) error {
 	if _, err := o.leaseNow().Append(o.ctx, f); err != nil {
-		if !errors.Is(err, streams.ErrLeaseLost) {
+		if !errors.Is(err, streams.ErrLeaseLost) && !errors.Is(err, streams.ErrOverBudget) {
 			o.warn("append job frame", err)
 		}
-		return false
+		return err
 	}
-	if i, ok := streamOf(f.Kind); ok {
+	if i, ok := streamOf(f.Kind); ok && !o.flood {
 		o.offsets[i] = f.Offset + int64(len(f.Data))
+		o.stream[i] = o.offsets[i]
 	}
-	return true
+	return nil
 }
 
-// end appends the job's final frame and records its outcome
+// end stores what a flood still holds, then appends the job's final frame and records its outcome
 func (o *owner) end(f frame.Frame) pumpResult {
+	if o.flood && !o.snapshot(true) {
+		return pumpStopped
+	}
 	if f.Kind == frame.KindExit {
 		cancelled, err := o.s.d.Bus.CancelRequested(o.ctx, o.job())
 		if err != nil {
@@ -949,7 +1174,7 @@ func (o *owner) end(f frame.Frame) pumpResult {
 			f.Reason = reasonCancelled
 		}
 	}
-	if !o.append(f) || !o.record(f) {
+	if o.append(f) != nil || !o.record(f) {
 		return pumpStopped
 	}
 	return pumpFinished
@@ -976,7 +1201,10 @@ func (o *owner) record(f frame.Frame) bool {
 	}
 	ctx, cancel := detached(o.ctx)
 	defer cancel()
-	err := o.s.d.Store.FinishJob(ctx, o.job(), state, deref(code), out, errBytes)
+	err := o.s.d.Store.FinishJob(ctx, o.job(), store.JobOutcome{
+		State: state, Code: deref(code), StdoutBytes: out, StderrBytes: errBytes,
+		Truncated: o.skipped,
+	})
 	if err != nil && !errors.Is(err, store.ErrStateConflict) {
 		o.s.d.Log.Warn("record job outcome", "job", o.job(), "err", err)
 		return false

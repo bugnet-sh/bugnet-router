@@ -405,6 +405,10 @@ func (s *Server) WatchJob(
 			}}
 		case frame.KindHeartbeat:
 			resp.Frame = &routerv1.WatchJobResponse_Heartbeat{Heartbeat: true}
+		case frame.KindSkip:
+			resp.Frame = &routerv1.WatchJobResponse_Skip{Skip: &routerv1.JobSkip{
+				StdoutOffset: uint64(f.Out), StderrOffset: uint64(f.Err),
+			}}
 		case frame.KindError:
 			if streams.Terminal(f) {
 				ce := connect.NewError(connect.CodeAborted,

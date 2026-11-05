@@ -152,6 +152,17 @@ Only `router-worker` reads these.
 
 Money is integer micro-USD and times are UTC.
 
+## Job output
+
+Every frame `bugnet-run` emits goes into the job's Valkey stream until the job's output has cost
+8 MiB of stream memory, or the placement's jobs 32 MiB together. Past that the router follows the
+job with `bugnet-run attach --tail`, stores its newest 64 KiB per output every 10 s until another
+quarter of the job's budget is spent, and once more when the job ends. A `skip` frame names the
+offsets the stored output goes on from. `WatchJob` sends it as `skip`, `Exec` sets `truncated`
+and the job row records `output_truncated`. The whole output stays in the sandbox in
+`/tmp/bugnet/jobs/<job>/out` and `err`, which `ReadFile` reads. A placement runs at most 16 jobs
+at once, and `Exec` answers `ResourceExhausted` past that.
+
 ## Events
 
 `router-worker` posts each outbox event to `BUGNET_EVENTS_URL` as JSON `{id, type, created_at,

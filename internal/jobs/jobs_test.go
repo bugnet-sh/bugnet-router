@@ -157,10 +157,18 @@ func (e *env) service(t *testing.T, replica string) *jobs.Service {
 
 func (e *env) serviceWith(t *testing.T, replica string, reg *provider.Registry) *jobs.Service {
 	t.Helper()
-	s := jobs.New(jobs.Deps{
-		Store: e.store, Bus: e.bus, Registry: reg, ReplicaID: replica,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	return e.serviceDeps(t, jobs.Deps{Registry: reg, ReplicaID: replica})
+}
+
+// serviceDeps builds a service over d, filling in the env's store, bus and registry
+func (e *env) serviceDeps(t *testing.T, d jobs.Deps) *jobs.Service {
+	t.Helper()
+	d.Store, d.Bus = e.store, e.bus
+	if d.Registry == nil {
+		d.Registry = e.reg
+	}
+	d.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := jobs.New(d)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -1390,5 +1398,401 @@ func TestExecWhenTheLeaseHolderRecordsNoJob(t *testing.T) {
 	}
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("exec after the holder gave up took %v", took)
+	}
+}
+
+/* Output budgets */
+
+// argvLog notes the runner subcommands a provider is asked to run, and can refuse attach --tail
+type argvLog struct {
+	*local.Provider
+	oldRunner bool // answers attach --tail as a bugnet-run without the flag would
+	mu        sync.Mutex
+	argvs     [][]string
+}
+
+func (a *argvLog) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	a.mu.Lock()
+	a.argvs = append(a.argvs, slices.Clone(spec.Argv))
+	a.mu.Unlock()
+	if i := slices.Index(spec.Argv, "--tail"); a.oldRunner && i >= 0 {
+		spec.Argv = slices.Clone(spec.Argv)
+		spec.Argv[i] = "--no-such-flag"
+	}
+	return a.Provider.Exec(ctx, ref, spec)
+}
+
+func (a *argvLog) tails() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, argv := range a.argvs {
+		if slices.Contains(argv, "--tail") {
+			n++
+		}
+	}
+	return n
+}
+
+// covered checks that a stream's output and skips cover every offset it names, returning cost
+func covered(t *testing.T, entries []streams.Entry) (int64, int) {
+	t.Helper()
+	var cost int64
+	skips := 0
+	next := [2]int64{}
+	for _, e := range entries {
+		f := e.Frame
+		switch f.Kind {
+		case frame.KindSkip:
+			skips++
+			if f.Out < next[0] || f.Err < next[1] {
+				t.Fatalf("skip frame %+v goes back from %v", f, next)
+			}
+			next = [2]int64{f.Out, f.Err}
+		case frame.KindStdout, frame.KindStderr:
+			i := 0
+			if f.Kind == frame.KindStderr {
+				i = 1
+			}
+			if f.Offset != next[i] {
+				t.Fatalf("%s frame at %d, want %d after the output and skips before it", f.Kind,
+					f.Offset, next[i])
+			}
+			next[i] = f.Offset + int64(len(f.Data))
+			cost += streams.Cost(f)
+		case frame.KindHeartbeat, frame.KindExit:
+			if f.Out != next[0] || f.Err != next[1] {
+				t.Fatalf("%s frame names %d/%d, want the %v the stream covers", f.Kind, f.Out,
+					f.Err, next)
+			}
+		}
+	}
+	return cost, skips
+}
+
+// tailCost is what one stored snapshot of a flooding job's newest output may cost
+var tailCost = 2 * streams.Cost(frame.Frame{Data: make([]byte, 64<<10)})
+
+// floodScript prints start, then bursts of a and b on stdout and stderr, then end on stdout
+func floodScript(bursts, outBurst, errBurst int) ([]string, int64, int64) {
+	errPart := ""
+	if errBurst > 0 {
+		errPart = fmt.Sprintf(`head -c %d /dev/zero | tr '\0' b >&2; `, errBurst)
+	}
+	script := fmt.Sprintf(`echo start; i=0; while [ $i -lt %d ]; do `+
+		`head -c %d /dev/zero | tr '\0' a; %ssleep 0.1; i=$((i+1)); done; echo; echo end`,
+		bursts, outBurst, errPart)
+	return []string{"sh", "-c", script}, int64(6 + bursts*outBurst + 5), int64(bursts * errBurst)
+}
+
+var started = jobs.Until{Pattern: regexp.MustCompile("start")}
+
+// storedDuring reports whether a stream holds output between its first and last skip frames
+func storedDuring(entries []streams.Entry) bool {
+	skipped, between := false, false
+	for _, e := range entries {
+		switch e.Frame.Kind {
+		case frame.KindSkip:
+			if skipped && between {
+				return true
+			}
+			skipped = true
+		case frame.KindStdout, frame.KindStderr:
+			between = skipped
+		}
+	}
+	return false
+}
+
+// memory samples the Valkey memory of a job's stream until the returned stop is called
+func (e *env) memory(t *testing.T, id string) func() int64 {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	var peak atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		key := e.prefix + "job:" + id + ":s"
+		for ctx.Err() == nil {
+			cmd := e.vk.B().MemoryUsage().Key(key).Samples(0).Build()
+			if n, err := e.vk.Do(ctx, cmd).AsInt64(); err == nil && n > peak.Load() {
+				peak.Store(n)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	return func() int64 {
+		cancel()
+		<-done
+		return peak.Load()
+	}
+}
+
+// checkFloodEnd checks the job row and the sandbox file of a flood that wrote out and errBytes
+func (e *env) checkFloodEnd(t *testing.T, id string, out, errBytes int64) {
+	t.Helper()
+	job := waitFinished(t, e.store, id)
+	if job.State != store.JobExited || job.StdoutBytes != out || job.StderrBytes != errBytes ||
+		!job.OutputTruncated {
+		t.Fatalf("flooding job row %+v, want exited with %d/%d bytes and truncated", job, out,
+			errBytes)
+	}
+	end, eof, err := e.prov.ReadFile(t.Context(), *e.place.ProviderRef,
+		"/tmp/bugnet/jobs/"+id+"/out", out-4, 64)
+	if err != nil || string(end) != "end\n" || !eof {
+		t.Fatalf("the sandbox's output file ends with %q eof %v, %v, want all of it", end, eof,
+			err)
+	}
+}
+
+func TestFloodingJobKeepsToItsBudget(t *testing.T) {
+	var runs *argvLog
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		runs = &argvLog{Provider: p}
+		return runs
+	})
+	const budget = 256 << 10
+	s := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", JobBudget: budget})
+	script := "head -c 4000000 /dev/zero | tr '\\0' a; echo; echo done"
+	res := e.exec(t, s, []string{"sh", "-c", script}, "", 30*time.Second, jobs.Until{})
+	if res.State != store.JobExited || !strings.HasSuffix(string(res.StdoutTail), "a\ndone\n") ||
+		!res.Truncated {
+		t.Fatalf("flooding job gave state %s tail %q truncated %v", res.State,
+			res.StdoutTail[max(len(res.StdoutTail)-20, 0):], res.Truncated)
+	}
+	all := e.streamed(t, res.JobID)
+	cost, skips := covered(t, all)
+	if most := int64(budget+budget/4) + 2*tailCost; cost > most || skips == 0 {
+		t.Fatalf("flooding job's stream costs %d with %d skips, want at most %d after a skip",
+			cost, skips, most)
+	}
+	last := all[len(all)-1].Frame
+	if last.Kind != frame.KindExit || last.Out != 4000006 {
+		t.Fatalf("last entry %+v, want the exit counting every byte", last)
+	}
+	if runs.tails() == 0 {
+		t.Fatal("the owner never followed the flooding job by its tail")
+	}
+	job := waitFinished(t, e.store, res.JobID)
+	if job.StdoutBytes != 4000006 || !job.OutputTruncated {
+		t.Fatalf("job recorded %d stdout bytes truncated %v, want all 4000006 and truncated",
+			job.StdoutBytes, job.OutputTruncated)
+	}
+	var sawSkip bool
+	for _, en := range watch(t, s, res.JobID, "", jobs.Until{}) {
+		sawSkip = sawSkip || en.Frame.Kind == frame.KindSkip
+	}
+	if !sawSkip {
+		t.Fatal("a reader of the flooding job saw no skip frame")
+	}
+}
+
+func TestFloodingJobOnAnOldRunnerKeepsToItsBudget(t *testing.T) {
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		return &argvLog{Provider: p, oldRunner: true}
+	})
+	const budget = 128 << 10
+	s := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", JobBudget: budget})
+	script := "head -c 2000000 /dev/zero | tr '\\0' b; echo; echo done"
+	res := e.exec(t, s, []string{"sh", "-c", script}, "", 30*time.Second, jobs.Until{})
+	if res.State != store.JobExited || !strings.HasSuffix(string(res.StdoutTail), "done\n") ||
+		!res.Truncated {
+		t.Fatalf("flooding job on an old runner gave state %s truncated %v", res.State,
+			res.Truncated)
+	}
+	cost, skips := covered(t, e.streamed(t, res.JobID))
+	if most := int64(budget+budget/4) + 2*tailCost; cost > most || skips == 0 {
+		t.Fatalf("stream costs %d with %d skips, want at most %d after a skip", cost, skips, most)
+	}
+}
+
+func TestFloodKeepsValkeyBoundedAndReadersEnd(t *testing.T) {
+	jobs.SetFloodEvery(t, 200*time.Millisecond)
+	e := newEnv(t)
+	const budget = 512 << 10
+	s := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", JobBudget: budget})
+	argv, out, errBytes := floodScript(30, 2_000_000, 20_000)
+	id := jobs.JobIDFor(e.place.ID, "flood")
+	peak := e.memory(t, id)
+	if res := e.exec(t, s, argv, "flood", 10*time.Second, started); res.State != store.JobRunning {
+		t.Fatalf("flooding job is %s before its output, want running", res.State)
+	}
+	// A reader follows the flood from its start while it runs and must end at its exit
+	live := watch(t, s, id, "", jobs.Until{})
+	most := peak()
+
+	last := live[len(live)-1].Frame
+	if last.Kind != frame.KindExit || last.Out != out || last.Err != errBytes {
+		t.Fatalf("the live reader ended with %+v, want the exit at %d/%d", last, out, errBytes)
+	}
+	covered(t, live)
+	if !storedDuring(live) {
+		t.Fatal("the live reader saw no output between skips, want the tail stored mid-flood")
+	}
+	cost, _ := covered(t, e.streamed(t, id))
+	bound := int64(budget+budget/4) + 2*tailCost
+	if cost > bound {
+		t.Fatalf("the flood's stream costs %d, want at most %d", cost, bound)
+	}
+	// Valkey keeps base64 in JSON in listpacks, so its memory may pass the estimate somewhat
+	if most == 0 || most > bound+bound/2 {
+		t.Fatalf("the flood's stream took up to %d bytes of Valkey memory, want at most %d",
+			most, bound+bound/2)
+	}
+	counter := e.vk.B().Get().Key(e.prefix + "placement:" + e.place.ID.String() + ":out").Build()
+	if spent, err := e.vk.Do(t.Context(), counter).AsInt64(); err != nil || spent > 2*bound {
+		t.Fatalf("the placement's budget counter holds %d, %v, want at most %d", spent, err,
+			2*bound)
+	}
+	e.checkFloodEnd(t, id, out, errBytes)
+
+	res := e.exec(t, s, argv, "flood", time.Second, jobs.Until{})
+	if res.State != store.JobExited || !res.Truncated ||
+		!strings.HasSuffix(string(res.StdoutTail), "a\nend\n") ||
+		!strings.HasSuffix(string(res.StderrTail), "bbb") {
+		t.Fatalf("exec of the finished flood gave state %s truncated %v", res.State,
+			res.Truncated)
+	}
+}
+
+func TestFloodTakeoverKeepsToItsBudget(t *testing.T) {
+	jobs.SetFloodEvery(t, 200*time.Millisecond)
+	e := newEnv(t)
+	const budget = 256 << 10
+	first := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", JobBudget: budget})
+	second := e.serviceDeps(t, jobs.Deps{ReplicaID: "r2", JobBudget: budget})
+	argv, out, errBytes := floodScript(80, 500_000, 1000)
+	res := e.exec(t, first, argv, "", 10*time.Second, started)
+	for start := time.Now(); ; time.Sleep(20 * time.Millisecond) {
+		if st, err := e.bus.LastOffsets(t.Context(), res.JobID); err != nil || st.Skipped {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the first owner never stored a skip frame")
+		}
+	}
+	if !jobs.StopRenewing(first, res.JobID) {
+		t.Fatal("the first replica does not own the flooding job")
+	}
+	scan(t, second)
+	var tookOver atomic.Bool
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		for ; ctx.Err() == nil; time.Sleep(20 * time.Millisecond) {
+			if jobs.Owns(second, res.JobID) {
+				tookOver.Store(true)
+			}
+		}
+	}()
+	all := watch(t, second, res.JobID, "", jobs.Until{})
+	if !tookOver.Load() {
+		t.Fatal("the second replica never owned the flooding job")
+	}
+	// A stale owner storing nothing in a flood notices its lost lease at its next append
+	for start := time.Now(); jobs.Owns(first, res.JobID); time.Sleep(20 * time.Millisecond) {
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("the first replica kept owning the job after it ended")
+		}
+	}
+	last := all[len(all)-1].Frame
+	if last.Kind != frame.KindExit || last.Out != out || last.Err != errBytes {
+		t.Fatalf("the reader ended with %+v, want the exit at %d/%d", last, out, errBytes)
+	}
+	// Each owner may store one snapshot past the allowance before the final one
+	cost, _ := covered(t, e.streamed(t, res.JobID))
+	if bound := int64(budget+budget/4) + 3*tailCost; cost > bound {
+		t.Fatalf("the stream across the takeover costs %d, want at most %d", cost, bound)
+	}
+	e.checkFloodEnd(t, res.JobID, out, errBytes)
+}
+
+func TestAdoptedFloodKeepsToItsBudget(t *testing.T) {
+	e := newEnv(t)
+	const budget = 256 << 10
+	first := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", JobBudget: budget})
+	argv, out, errBytes := floodScript(40, 1_000_000, 0)
+	res := e.exec(t, first, argv, "", 10*time.Second, started)
+	time.Sleep(500 * time.Millisecond)
+
+	// Valkey losing every key leaves only the running row, and the owner key goes first
+	ctx := t.Context()
+	keys := []string{"job:" + res.JobID + ":owner", "job:" + res.JobID + ":s",
+		"job:" + res.JobID + ":epoch", "placement:" + e.place.ID.String() + ":out"}
+	for _, key := range keys {
+		if err := e.vk.Do(ctx, e.vk.B().Del().Key(e.prefix+key).Build()).Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	zrem := e.vk.B().Zrem().Key(e.prefix + "jobs:leases").Member(res.JobID).Build()
+	if err := e.vk.Do(ctx, zrem).Error(); err != nil {
+		t.Fatal(err)
+	}
+	for start := time.Now(); jobs.Owns(first, res.JobID); time.Sleep(20 * time.Millisecond) {
+		if time.Since(start) > 5*time.Second {
+			t.Fatal("the first replica kept owning a job whose lease vanished")
+		}
+	}
+
+	second := e.serviceDeps(t, jobs.Deps{ReplicaID: "r2", JobBudget: budget})
+	scan(t, second)
+	all := watch(t, second, res.JobID, "", jobs.Until{})
+	last := all[len(all)-1].Frame
+	if last.Kind != frame.KindExit || last.Out != out || last.Err != errBytes {
+		t.Fatalf("the reader ended with %+v, want the exit at %d/%d", last, out, errBytes)
+	}
+	// The adopting owner starts from the file's start, so the stream again stops at the budget
+	cost, skips := covered(t, e.streamed(t, res.JobID))
+	if bound := int64(budget+budget/4) + 2*tailCost; cost > bound || skips == 0 {
+		t.Fatalf("the adopted stream costs %d with %d skips, want at most %d after a skip", cost,
+			skips, bound)
+	}
+	e.checkFloodEnd(t, res.JobID, out, errBytes)
+}
+
+func TestPlacementBudgetBoundsAllItsJobs(t *testing.T) {
+	e := newEnv(t)
+	const budget = 200 << 10
+	s := e.serviceDeps(t, jobs.Deps{
+		ReplicaID: "r1", JobBudget: 1 << 30, PlacementBudget: budget,
+	})
+	var total int64
+	for i := range 3 {
+		script := fmt.Sprintf("head -c 150000 /dev/zero | tr '\\0' c; echo; echo done %d", i)
+		res := e.exec(t, s, []string{"sh", "-c", script}, "", 30*time.Second, jobs.Until{})
+		if res.State != store.JobExited {
+			t.Fatalf("job %d is %s, want exited", i, res.State)
+		}
+		cost, _ := covered(t, e.streamed(t, res.JobID))
+		total += cost
+		job := waitFinished(t, e.store, res.JobID)
+		if i == 2 && (!res.Truncated || !job.OutputTruncated || job.StdoutBytes != 150008) {
+			t.Fatalf("a job past the placement's budget gave truncated %v and row %+v",
+				res.Truncated, job)
+		}
+	}
+	if total > budget {
+		t.Fatalf("three jobs stored output costing %d, over the placement's %d", total, budget)
+	}
+}
+
+func TestExecRefusesPastTheRunningJobLimit(t *testing.T) {
+	e := newEnv(t)
+	s := e.serviceDeps(t, jobs.Deps{ReplicaID: "r1", MaxRunning: 2})
+	up := jobs.Until{Pattern: regexp.MustCompile("up")}
+	for i := range 2 {
+		e.exec(t, s, []string{"sh", "-c", "echo up; sleep 30"}, "key-"+strconv.Itoa(i),
+			5*time.Second, up)
+	}
+	_, err := s.Exec(t.Context(), e.place, []string{"true"}, "", nil, "key-more", time.Second,
+		jobs.Until{})
+	if !errors.Is(err, jobs.ErrTooManyJobs) {
+		t.Fatalf("a third running job gave %v, want ErrTooManyJobs", err)
+	}
+	if res := e.exec(t, s, []string{"sh", "-c", "echo up; sleep 30"}, "key-0", time.Second,
+		up); res.State != store.JobRunning {
+		t.Fatalf("a repeated key of a running job gave %s, want it attached", res.State)
 	}
 }

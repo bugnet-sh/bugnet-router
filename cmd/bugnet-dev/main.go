@@ -546,6 +546,13 @@ func (c *cli) follow(
 			if _, err := w.Write(f.Output.GetData()); err != nil {
 				return err
 			}
+		case *routerv1.WatchJobResponse_Skip:
+			_, err := fmt.Fprintf(c.stderr, "bugnet-dev: output skipped to stdout byte %d and "+
+				"stderr byte %d, the whole output is in /tmp/bugnet/jobs/%s/out and err\n",
+				f.Skip.GetStdoutOffset(), f.Skip.GetStderrOffset(), job)
+			if err != nil {
+				return err
+			}
 		case *routerv1.WatchJobResponse_Exit:
 			return exitCode(f.Exit.GetExitCode())
 		}

@@ -19,8 +19,10 @@ type Job struct {
 	ExitCode       *int
 	StdoutBytes    int64
 	StderrBytes    int64
-	CreatedAt      time.Time
-	FinishedAt     *time.Time
+	// OutputTruncated says the job's stream left output out, which its sandbox files still hold
+	OutputTruncated bool
+	CreatedAt       time.Time
+	FinishedAt      *time.Time
 }
 
 // NewJob describes a job to create in the running state
@@ -28,15 +30,19 @@ type NewJob struct {
 	ID             string
 	PlacementID    uuid.UUID
 	IdempotencyKey string
+	Limit          int // refuses a new job while the placement runs this many, none when zero
 }
 
+// ErrJobLimit means the placement already runs as many jobs as the new job's Limit allows
+var ErrJobLimit = errors.New("store: the placement runs as many jobs as it may")
+
 const jobColumns = `id, placement_id, coalesce(idempotency_key, ''), state, exit_code,
-	stdout_bytes, stderr_bytes, created_at, finished_at`
+	stdout_bytes, stderr_bytes, output_truncated, created_at, finished_at`
 
 func scanJob(row pgx.Row) (Job, error) {
 	var j Job
 	err := row.Scan(&j.ID, &j.PlacementID, &j.IdempotencyKey, &j.State, &j.ExitCode,
-		&j.StdoutBytes, &j.StderrBytes, &j.CreatedAt, &j.FinishedAt)
+		&j.StdoutBytes, &j.StderrBytes, &j.OutputTruncated, &j.CreatedAt, &j.FinishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, ErrNotFound
 	}
@@ -50,6 +56,9 @@ func scanJob(row pgx.Row) (Job, error) {
 
 // CreateJob inserts j, or returns the existing job with created false when the ID is taken
 func (s *Store) CreateJob(ctx context.Context, j NewJob) (Job, bool, error) {
+	if j.Limit > 0 {
+		return s.createLimited(ctx, j)
+	}
 	tag, err := s.q.Exec(ctx, `
 		insert into jobs (id, placement_id, idempotency_key, state) values ($1, $2, $3, $4)
 		on conflict (id) do nothing`,
@@ -64,6 +73,39 @@ func (s *Store) CreateJob(ctx context.Context, j NewJob) (Job, bool, error) {
 	return job, tag.RowsAffected() == 1, nil
 }
 
+// createLimited counts and inserts under a lock per placement, so no two creates pass one limit
+func (s *Store) createLimited(ctx context.Context, j NewJob) (Job, bool, error) {
+	var job Job
+	created := false
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := s.Tx(tx)
+		_, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+			j.PlacementID)
+		if err != nil {
+			return fmt.Errorf("lock placement jobs: %w", err)
+		}
+		if job, err = ts.JobByID(ctx, j.ID); !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		var running int
+		err = tx.QueryRow(ctx, `select count(*) from jobs where placement_id = $1 and state = $2`,
+			j.PlacementID, JobRunning).Scan(&running)
+		if err != nil {
+			return fmt.Errorf("count running jobs: %w", err)
+		}
+		if running >= j.Limit {
+			return fmt.Errorf("%w: %d of %d running", ErrJobLimit, running, j.Limit)
+		}
+		j.Limit = 0
+		job, created, err = ts.CreateJob(ctx, j)
+		return err
+	})
+	if err != nil {
+		return Job{}, false, err
+	}
+	return job, created, nil
+}
+
 // JobByID returns the job or ErrNotFound
 func (s *Store) JobByID(ctx context.Context, id string) (Job, error) {
 	j, err := scanJob(s.q.QueryRow(ctx, `select `+jobColumns+` from jobs where id = $1`, id))
@@ -73,14 +115,21 @@ func (s *Store) JobByID(ctx context.Context, id string) (Job, error) {
 	return j, err
 }
 
-// FinishJob records the outcome of a running job, a lost job keeping no exit code
-func (s *Store) FinishJob(
-	ctx context.Context, id, state string, code int, outBytes, errBytes int64,
-) error {
+// JobOutcome is how a job ended, a lost job keeping no exit code
+type JobOutcome struct {
+	State                    string
+	Code                     int
+	StdoutBytes, StderrBytes int64
+	Truncated                bool // the job's stream left output out
+}
+
+// FinishJob records the outcome of a running job
+func (s *Store) FinishJob(ctx context.Context, id string, o JobOutcome) error {
 	tag, err := s.q.Exec(ctx, `
 		update jobs set state = $2, exit_code = case when $2 = $7 then null else $3::int end,
-			stdout_bytes = $4, stderr_bytes = $5, finished_at = now()
-		where id = $1 and state = $6`, id, state, code, outBytes, errBytes, JobRunning, JobLost)
+			stdout_bytes = $4, stderr_bytes = $5, output_truncated = $8, finished_at = now()
+		where id = $1 and state = $6`,
+		id, o.State, o.Code, o.StdoutBytes, o.StderrBytes, JobRunning, JobLost, o.Truncated)
 	if err != nil {
 		return fmt.Errorf("finish job: %w", err)
 	}

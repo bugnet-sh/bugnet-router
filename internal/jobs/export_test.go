@@ -29,3 +29,10 @@ func SetIdleAfter(t interface{ Cleanup(func()) }, d time.Duration) {
 	idleAfter = d
 	t.Cleanup(func() { idleAfter = old })
 }
+
+// SetFloodEvery shortens how often a flooding job's tail is stored until the test ends
+func SetFloodEvery(t interface{ Cleanup(func()) }, d time.Duration) {
+	old := floodEvery
+	floodEvery = d
+	t.Cleanup(func() { floodEvery = old })
+}

@@ -242,10 +242,10 @@ func TestLastOffsets(t *testing.T) {
 	ctx := t.Context()
 	check := func(step string, wantOut, wantErr int64, wantDone bool) {
 		t.Helper()
-		o, e, done, err := b.LastOffsets(ctx, "j1")
-		if err != nil || o != wantOut || e != wantErr || done != wantDone {
+		st, err := b.LastOffsets(ctx, "j1")
+		if err != nil || st.Out != wantOut || st.Err != wantErr || st.Done != wantDone {
 			t.Fatalf("%s: offsets %d/%d done %v (%v), want %d/%d done %v",
-				step, o, e, done, err, wantOut, wantErr, wantDone)
+				step, st.Out, st.Err, st.Done, err, wantOut, wantErr, wantDone)
 		}
 	}
 	check("empty stream", 0, 0, false)
@@ -287,10 +287,10 @@ func TestLastOffsetsNeverRewindToStaleEntries(t *testing.T) {
 	l := acquire(t, b, "j1", "r1")
 	check := func(step string, wantOut, wantErr int64, wantDone bool) {
 		t.Helper()
-		o, e, done, err := b.LastOffsets(ctx, "j1")
-		if err != nil || o != wantOut || e != wantErr || done != wantDone {
+		st, err := b.LastOffsets(ctx, "j1")
+		if err != nil || st.Out != wantOut || st.Err != wantErr || st.Done != wantDone {
 			t.Fatalf("%s: offsets %d/%d done %v (%v), want %d/%d done %v",
-				step, o, e, done, err, wantOut, wantErr, wantDone)
+				step, st.Out, st.Err, st.Done, err, wantOut, wantErr, wantDone)
 		}
 	}
 	stale := []frame.Frame{
@@ -333,9 +333,9 @@ func TestLastOffsetsTerminalError(t *testing.T) {
 	if _, err := l.Append(ctx, lost); err != nil {
 		t.Fatal(err)
 	}
-	o, e, done, err := b.LastOffsets(ctx, "j1")
-	if err != nil || o != 3 || e != 0 || !done {
-		t.Fatalf("offsets %d/%d done %v (%v), want 3/0 done", o, e, done, err)
+	st, err := b.LastOffsets(ctx, "j1")
+	if err != nil || st.Out != 3 || st.Err != 0 || !st.Done {
+		t.Fatalf("offsets %+v (%v), want 3/0 done", st, err)
 	}
 	if streams.Terminal(frame.Frame{Kind: frame.KindError, Reason: frame.ReasonJobExists}) {
 		t.Fatal("job_exists is not the end of a stream")
@@ -418,5 +418,98 @@ func TestPostponedLeaseWaitsForItsTime(t *testing.T) {
 	next := acquire(t, b, "j1", "r2")
 	if next.Owner() == l.Owner() {
 		t.Fatalf("the next owner reuses %s", l.Owner())
+	}
+}
+
+func TestLastOffsetsCountSkipsAndStoredOutput(t *testing.T) {
+	b, _, _ := newBus(t)
+	ctx := t.Context()
+	l := acquire(t, b, "j1", "r1")
+	fs := []frame.Frame{
+		out(0, "hello"), {Kind: frame.KindSkip, Out: 900, Err: 40}, out(900, "tail"),
+		{Kind: frame.KindHeartbeat, Out: 904, Err: 40},
+	}
+	for _, f := range fs {
+		if _, err := l.Append(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := b.LastOffsets(ctx, "j1")
+	want := streams.Cost(fs[0]) + streams.Cost(fs[2])
+	if err != nil || st.Out != 904 || st.Err != 40 || st.Done || st.Stored != want ||
+		!st.Skipped {
+		t.Fatalf("state %+v (%v), want 904/40 skipped with %d stored", st, err, want)
+	}
+	whole := acquire(t, b, "j2", "r1")
+	if _, err := whole.Append(ctx, out(0, "all")); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := b.LastOffsets(ctx, "j2"); err != nil || st.Skipped || st.Out != 3 {
+		t.Fatalf("state of a whole stream %+v (%v), want 3 bytes and no skip", st, err)
+	}
+}
+
+func TestAppendKeepsToThePlacementBudget(t *testing.T) {
+	b, vk, prefix := newBus(t)
+	ctx := t.Context()
+	first, second := acquire(t, b, "j1", "r1"), acquire(t, b, "j2", "r1")
+	for _, l := range []*streams.Lease{&first, &second} {
+		l.Placement = "p1"
+		l.PlacementBudget = 2 * streams.Cost(out(0, "x"))
+		l.StreamExpiry = time.Now().Add(time.Hour)
+	}
+	if _, err := first.Append(ctx, out(0, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Append(ctx, out(0, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Append(ctx, out(1, "y")); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("output past the placement's budget gave %v, want ErrOverBudget", err)
+	}
+	beat := frame.Frame{Kind: frame.KindHeartbeat, Out: 1}
+	if _, err := second.Append(ctx, beat); !errors.Is(err, streams.ErrOverBudget) {
+		t.Fatalf("a heartbeat past the budget gave %v, want ErrOverBudget", err)
+	}
+	skip := frame.Frame{Kind: frame.KindSkip, Out: 2}
+	if _, err := first.Append(ctx, skip); err != nil {
+		t.Fatalf("a skip past the budget gave %v, want it kept", err)
+	}
+	exit := frame.Frame{Kind: frame.KindExit, Out: 2}
+	if _, err := first.Append(ctx, exit); err != nil {
+		t.Fatalf("an exit past the budget gave %v, want it kept", err)
+	}
+	if n, err := vk.Do(ctx, vk.B().Xlen().Key(prefix+"job:j1:s").Build()).AsInt64(); err != nil ||
+		n != 3 {
+		t.Fatalf("stream holds %d entries, %v, want the output, the skip and the exit", n, err)
+	}
+	if n, err := vk.Do(ctx, vk.B().Xlen().Key(prefix+"job:j2:s").Build()).AsInt64(); err != nil ||
+		n != 1 {
+		t.Fatalf("second stream holds %d entries, %v, want only its output", n, err)
+	}
+	spent, err := vk.Do(ctx, vk.B().Get().Key(prefix+"placement:p1:out").Build()).AsInt64()
+	want := 2*streams.Cost(out(0, "x")) + streams.Cost(skip) + streams.Cost(exit)
+	if err != nil || spent != want {
+		t.Fatalf("budget counter holds %d, %v, want %d for the four kept entries", spent, err, want)
+	}
+	ttl, err := vk.Do(ctx, vk.B().Pttl().Key(prefix+"placement:p1:out").Build()).AsInt64()
+	if err != nil || ttl < (59*time.Minute).Milliseconds() {
+		t.Fatalf("budget counter expires in %dms, %v, want about an hour", ttl, err)
+	}
+}
+
+func TestAppendTrimsAStreamPastItsLength(t *testing.T) {
+	streams.SetMaxEntries(t, 10)
+	b, vk, prefix := newBus(t)
+	ctx := t.Context()
+	l := acquire(t, b, "j1", "r1")
+	for i := range 1000 {
+		if _, err := l.Append(ctx, out(int64(i), "x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := vk.Do(ctx, vk.B().Xlen().Key(prefix+"job:j1:s").Build()).AsInt64()
+	if err != nil || n >= 1000 {
+		t.Fatalf("stream holds %d entries, %v, want it trimmed", n, err)
 	}
 }
