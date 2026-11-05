@@ -139,7 +139,7 @@ func TestE2EHappyPath(t *testing.T) {
 		}
 	}
 
-	stdout, stderr, code := s.dev(t, s.a.url, "exec", "--handle", h, "--",
+	stdout, stderr, code := s.dev(t, s.a, "exec", "--handle", h, "--",
 		"sh", "-c", "echo out; echo err >&2; exit 3")
 	if stdout != "out\n" || stderr != "err\n" || code != 3 {
 		t.Errorf("bugnet-dev exec printed %q and %q and exited %d, want out, err and 3",
@@ -148,14 +148,14 @@ func TestE2EHappyPath(t *testing.T) {
 
 	// A flood past the job's output budget reaches bugnet-dev cut, with a note of the skip
 	flood := `head -c 20000000 /dev/zero | tr '\0' a; echo; echo end`
-	stdout, stderr, code = s.dev(t, s.a.url, "exec", "--handle", h, "--", "sh", "-c", flood)
+	stdout, stderr, code = s.dev(t, s.a, "exec", "--handle", h, "--", "sh", "-c", flood)
 	if code != 0 || !strings.HasSuffix(stdout, "a\nend\n") || len(stdout) >= 20000005 ||
 		!strings.Contains(stderr, "output skipped") {
 		t.Errorf("bugnet-dev exec of a flood printed %d bytes and %q and exited %d, want "+
 			"fewer than all 20000005 ending in end, a skip note and 0", len(stdout), stderr, code)
 	}
 
-	token := strings.TrimSpace(s.devOK(t, s.a.url, "token", "--kind", "extend",
+	token := strings.TrimSpace(s.devOK(t, s.a, "token", "--kind", "extend",
 		"--package", morePkg, "--handle", h))
 	ctx, cancel := context.WithTimeout(t.Context(), callTimeout)
 	defer cancel()
@@ -193,7 +193,7 @@ func TestE2EHappyPath(t *testing.T) {
 func TestE2EDeadlineExpiry(t *testing.T) {
 	t.Parallel()
 	s := startStack(t)
-	created := parseKV(s.devOK(t, s.b.url, "create", "--package", shortPkg))
+	created := parseKV(s.devOK(t, s.b, "create", "--package", shortPkg))
 	h, id := created["handle"], created["placement_id"]
 	if created["state"] != "ready" || h == "" {
 		t.Fatalf("bugnet-dev create printed %v, want a ready placement and its handle", created)
@@ -218,7 +218,7 @@ func TestE2EDeadlineExpiry(t *testing.T) {
 	if n := sandboxes(t, s.root); n != 0 {
 		t.Errorf("%d sandboxes left after the deadline, want 0", n)
 	}
-	if got := parseKV(s.devOK(t, s.a.url, "get", "--handle", h)); got["state"] != "terminated" {
+	if got := parseKV(s.devOK(t, s.a, "get", "--handle", h)); got["state"] != "terminated" {
 		t.Errorf("bugnet-dev get printed %v after the deadline, want terminated", got)
 	}
 }
@@ -301,11 +301,11 @@ func TestE2EOwnerCrashNoGap(t *testing.T) {
 		t.Errorf("combined output is not 1 to 300 once each:\n%s", out.String())
 	}
 
-	replay, _, code := s.dev(t, s.b.url, "watch", "--handle", h, "--job", job)
+	replay, _, code := s.dev(t, s.b, "watch", "--handle", h, "--job", job)
 	if replay != want.String() || code != 0 {
 		t.Errorf("bugnet-dev watch exited %d after printing:\n%s", code, replay)
 	}
-	stopped := parseKV(s.devOK(t, s.b.url, "stop", "--handle", h))
+	stopped := parseKV(s.devOK(t, s.b, "stop", "--handle", h))
 	if stopped["state"] != "terminated" {
 		t.Errorf("bugnet-dev stop printed %v, want terminated", stopped)
 	}
@@ -776,17 +776,15 @@ func modTimes(
 	return out
 }
 
-// dev runs bugnet-dev against the API at url and returns its stdout, stderr and exit code
-func (s *stack) dev(t *testing.T, url string, args ...string) (string, string, int) {
+// dev runs bugnet-dev with the settings of replica p and returns its stdout, stderr and exit code
+func (s *stack) dev(t *testing.T, p *proc, args ...string) (string, string, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), callTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin.dev, args...)
+	cmd := exec.CommandContext(ctx, bin.dev, append([]string{"--config", p.config}, args...)...)
 	cmd.Env = append(hostEnv(),
-		"BUGNET_API_URL="+url,
 		"BUGNET_INTERNAL_TOKEN="+s.keys["BUGNET_INTERNAL_TOKEN"],
 		"BUGNET_ORDER_PRIVATE_KEY="+s.keys["BUGNET_ORDER_PRIVATE_KEY"],
-		"BUGNET_PACKAGES_FILE="+s.packages,
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -799,9 +797,9 @@ func (s *stack) dev(t *testing.T, url string, args ...string) (string, string, i
 }
 
 // devOK is dev for a command that must succeed, returning its stdout
-func (s *stack) devOK(t *testing.T, url string, args ...string) string {
+func (s *stack) devOK(t *testing.T, p *proc, args ...string) string {
 	t.Helper()
-	stdout, stderr, code := s.dev(t, url, args...)
+	stdout, stderr, code := s.dev(t, p, args...)
 	if code != 0 {
 		t.Fatalf("bugnet-dev %s exited %d:\n%s", args[0], code, stderr)
 	}

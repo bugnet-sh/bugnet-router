@@ -1,9 +1,10 @@
 // Command bugnet-dev drives a Sandbox Router from the terminal during development.
 //
-// keys and token work offline. Every other command calls the API at BUGNET_API_URL over
-// unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and extend sign their own
-// order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from BUGNET_PACKAGES_FILE. exec and
-// watch write a job's output to stdout and stderr as it arrives and exit with the job's code.
+// keys, pubkey and token work offline. Every other command calls the API at api.listen_addr of
+// the settings file over unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and
+// extend sign their own order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the
+// settings file's packages_file. Only commands that need a setting read the file. exec and watch
+// write a job's output to stdout and stderr as it arrives and exit with the job's code.
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,13 +32,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
 )
 
-const usage = `usage: bugnet-dev <command> [flags]
+const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
 
   keys                                   print fresh secrets as KEY=value lines
+  pubkey [--priv K]                      print the order token public key of a private key
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
         [--priv K]                       print a signed order token
   create --package P [--order O] [--token T]
@@ -49,15 +53,20 @@ const usage = `usage: bugnet-dev <command> [flags]
                                          run a command and stream its output
   watch --handle H --job J [--cursor C]  stream a job's output after a cursor
 
+Settings
+  --config FILE             router settings file, default config/dev.toml, read only by commands
+                            that call the API or price a token without --amount
+  api.listen_addr           the API is at http://ADDR, with 127.0.0.1 for an empty or
+                            unspecified host
+  packages_file             catalog that prices a token when --amount is not given
+
 Environment
-  BUGNET_API_URL            router API, default http://127.0.0.1:8080
   BUGNET_INTERNAL_TOKEN     bearer token for the API
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
-  BUGNET_PACKAGES_FILE      catalog that prices a token when --amount is not given
 `
 
 const (
-	defaultAPIURL = "http://127.0.0.1:8080"
+	defaultConfig = "config/dev.toml"
 	defaultTTL    = 10 * time.Minute
 	pollWaitMs    = 25000
 	// execWaitMs keeps Exec short so the output streams through WatchJob as it arrives
@@ -80,10 +89,12 @@ func main() {
 }
 
 type cli struct {
-	ctx    context.Context
-	stdout io.Writer
-	stderr io.Writer
-	getenv func(string) string
+	ctx        context.Context
+	stdout     io.Writer
+	stderr     io.Writer
+	getenv     func(string) string
+	configPath string
+	settings   *config.Config // read on first use
 }
 
 // run executes one command and returns the process exit code, 2 for bad usage
@@ -92,14 +103,25 @@ func run(
 ) int {
 	c := &cli{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
 	commands := map[string]func([]string) error{
-		"keys": c.keys, "token": c.token, "create": c.create, "get": c.get,
+		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
 		"extend": c.extend, "stop": c.stop, "exec": c.exec, "watch": c.watch,
 	}
+	global := newFlags("bugnet-dev")
+	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
+	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = io.WriteString(stdout, usage)
+			return 0
+		}
+		_, _ = fmt.Fprintf(stderr, "bugnet-dev: %v\n\n%s", err, usage)
+		return 2
+	}
+	args = global.Args()
 	switch {
 	case len(args) == 0:
 		_, _ = io.WriteString(stderr, usage)
 		return 2
-	case args[0] == "-h" || args[0] == "--help" || args[0] == "help":
+	case args[0] == "help":
 		_, _ = io.WriteString(stdout, usage)
 		return 0
 	}
@@ -177,15 +199,16 @@ func (e envFlag) Set(kv string) error {
 
 /* Keys and tokens */
 
+// keys prints only secrets, the order token public key comes from pubkey
 func (c *cli) keys(args []string) error {
 	if err := parse(newFlags("keys"), args, false); err != nil {
 		return err
 	}
-	orderPub, orderPriv, err := ed25519.GenerateKey(rand.Reader)
+	_, orderPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
-	eventPub, eventPriv, err := ed25519.GenerateKey(rand.Reader)
+	_, eventPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
@@ -198,12 +221,26 @@ func (c *cli) keys(args []string) error {
 	b64 := base64.StdEncoding.EncodeToString
 	return c.print([][2]string{
 		{"BUGNET_INTERNAL_TOKEN", hex.EncodeToString(token)},
-		{"BUGNET_ORDER_TOKEN_PUBLIC_KEY", b64(orderPub)},
 		{"BUGNET_ORDER_PRIVATE_KEY", b64(orderPriv.Seed())},
 		{"BUGNET_HANDLE_KEY", b64(handleKey)},
 		{"BUGNET_EVENT_SIGNING_KEY", b64(eventPriv.Seed())},
-		{"BUGNET_EVENT_PUBLIC_KEY", b64(eventPub)},
 	})
+}
+
+// pubkey prints the key order_token_public_key needs for the order private key
+func (c *cli) pubkey(args []string) error {
+	fs := newFlags("pubkey")
+	priv := fs.String("priv", "", "base64 Ed25519 private key")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	key, err := c.privateKey(*priv)
+	if err != nil {
+		return err
+	}
+	pub := key.Public().(ed25519.PublicKey)
+	_, err = fmt.Fprintln(c.stdout, base64.StdEncoding.EncodeToString(pub))
+	return err
 }
 
 // order is what an order token claims before it is signed
@@ -285,10 +322,14 @@ func (c *cli) sign(o order) (string, error) {
 }
 
 func (c *cli) price(pkg string) (int64, error) {
-	path := c.getenv("BUGNET_PACKAGES_FILE")
+	cfg, err := c.config()
+	if err != nil {
+		return 0, err
+	}
+	path := cfg.PackagesFile
 	if path == "" {
-		return 0, fmt.Errorf("%w: --amount is required when BUGNET_PACKAGES_FILE is not set",
-			errUsage)
+		return 0, fmt.Errorf("%w: --amount is required when %s sets no packages_file",
+			errUsage, c.configPath)
 	}
 	cat, err := catalog.Load(path)
 	if err != nil {
@@ -577,6 +618,32 @@ func resumable(err error, h, job, cursor string) error {
 	return fmt.Errorf("%w\nresume with: %s", err, resume)
 }
 
+/* Settings */
+
+// config reads the settings file once, for the commands that need a setting
+func (c *cli) config() (config.Config, error) {
+	if c.settings == nil {
+		cfg, err := config.LoadFile(c.configPath)
+		if err != nil {
+			return config.Config{}, err
+		}
+		c.settings = &cfg
+	}
+	return *c.settings, nil
+}
+
+// apiURL is where a router-api listening on addr answers, on loopback for an unspecified host
+func apiURL(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("api.listen_addr %q is not host:port: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port), nil
+}
+
 /* API */
 
 // bearer sends every request with the internal token
@@ -596,9 +663,13 @@ func (c *cli) client() (routerv1connect.SandboxRouterServiceClient, error) {
 	if token == "" {
 		return nil, errors.New("BUGNET_INTERNAL_TOKEN is not set")
 	}
-	url := c.getenv("BUGNET_API_URL")
-	if url == "" {
-		url = defaultAPIURL
+	cfg, err := c.config()
+	if err != nil {
+		return nil, err
+	}
+	url, err := apiURL(cfg.ListenAddr)
+	if err != nil {
+		return nil, err
 	}
 	var protocols http.Protocols
 	protocols.SetUnencryptedHTTP2(true)
