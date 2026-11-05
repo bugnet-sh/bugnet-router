@@ -96,8 +96,8 @@ func sizesFor(bySize map[string]string) ([]size, error) {
 	for name, typ := range bySize {
 		i := slices.IndexFunc(machineTypes, func(t machineType) bool { return t.name == typ })
 		if name == "" || i < 0 {
-			return nil, fmt.Errorf("boat: size %q needs one of small, default, large or xlarge, "+
-				"not %q", name, typ)
+			return nil, fmt.Errorf(
+				"boat: size %q needs one of small, default, large or xlarge", name)
 		}
 		out = append(out, size{name: name, typ: machineTypes[i]})
 	}

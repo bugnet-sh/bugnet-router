@@ -131,8 +131,7 @@ func sizesFor(bySize map[string]string) ([]size, error) {
 	for name, id := range bySize {
 		t, ok := lookupType(id)
 		if name == "" || !ok {
-			return nil, fmt.Errorf("koyeb: size %q needs one of the known instance types, not %q",
-				name, id)
+			return nil, fmt.Errorf("koyeb: size %q needs one of the known instance types", name)
 		}
 		out = append(out, size{name: name, typ: t})
 	}

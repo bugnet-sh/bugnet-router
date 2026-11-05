@@ -1314,6 +1314,12 @@ func TestKoyebOptions(t *testing.T) {
 			t.Errorf("New with %s succeeded", name)
 		}
 	}
+	const pasted = "e2b_pasted_value"
+	_, err := New(Options{APIToken: "t", InstanceTypeBySize: map[string]string{"cpu": pasted}})
+	if err == nil || !strings.Contains(err.Error(), `"cpu"`) ||
+		strings.Contains(err.Error(), pasted) {
+		t.Errorf("an unknown type gave %v, want an error naming the size and not the type", err)
+	}
 	p, err := New(Options{APIToken: "t", Region: "par"})
 	if err != nil || p.region != "par" {
 		t.Fatalf("region option gave %+v, %v", p, err)

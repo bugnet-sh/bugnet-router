@@ -1248,6 +1248,12 @@ func TestBoatOptions(t *testing.T) {
 			t.Errorf("%s: New accepted %+v", name, opts)
 		}
 	}
+	const pasted = "e2b_pasted_value"
+	_, err := New(Options{APIKey: fakeKey, TypeBySize: map[string]string{"cpu2": pasted}})
+	if err == nil || !strings.Contains(err.Error(), `"cpu2"`) ||
+		strings.Contains(err.Error(), pasted) {
+		t.Errorf("an unknown type gave %v, want an error naming the size and not the type", err)
+	}
 }
 
 /* Helpers */
