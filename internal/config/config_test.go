@@ -667,6 +667,16 @@ func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
 		{"table set twice", "[api]\nlisten_addr = \":9\"\n[api]", "line 5: api is set twice"},
 		{"key set twice", "[limits]\nmax_running_jobs = 2\nmax_running_jobs = 3",
 			"line 5: limits.max_running_jobs is set twice"},
+		{"dotted table given a header", "api.listen_addr = \":9\"\n[api]",
+			"line 4: api is set twice"},
+		{"table given dotted keys", "[koyeb.instance_types]\ncpu = \"large\"\n[koyeb]\n" +
+			"instance_types.gpu = \"small\"", "line 6: koyeb.instance_types is set twice"},
+		{"value given dotted keys", "[api]\nlisten_addr = \":9\"\nlisten_addr.port = 9",
+			"line 5: api.listen_addr is set twice"},
+		{"array given tables", "[e2b]\ntemplates = [{ size = \"a\" }]\n[[e2b.templates]]",
+			"line 5: e2b.templates is set twice"},
+		{"table given array tables", "[e2b.templates]\n[[e2b.templates]]",
+			"line 3: e2b.templates must be an array of tables"},
 		{"syntax error", "margin_floor = 0.5 0.6", "line 3: margin_floor is not valid TOML"},
 		{"syntax error in a table", "[limits]\nmax_running_jobs = 2 3",
 			"line 4: limits.max_running_jobs is not valid TOML"},
@@ -691,6 +701,8 @@ func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
 		"[e2b]\ntemplates = [{ size = \"a\", vcpu = 1 }, { size = \"b\", vcpu = 2 }]",
 		"[[e2b.templates]]\nsize = \"a\"\n[[e2b.templates]]\nsize = \"b\"",
 		"api.listen_addr = \":9\"\nworker.listen_addr = \":10\"",
+		"[boat]\ntypes.cpu = \"small\"\ntypes.gpu = \"large\"",
+		"[[e2b.templates]]\nsize = \"a\"\n[e2b]\ndomain = \"x\"",
 		"[limits]\n[api]\n[limits.x]",
 	} {
 		_, err := LoadFile(writeFile(t, ok))

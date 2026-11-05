@@ -18,13 +18,15 @@ import (
 
 // setting is one key or table header the document writes
 type setting struct {
-	path   []string
-	id     string // the quoted path with each array element's index, the same for a key set twice
-	line   int
-	column int
-	header bool          // a [table] or [[array]] header
-	array  bool          // an [[array]] header
-	value  unstable.Kind // the kind of a key's value
+	path    []string
+	id      string   // the quoted path with each array element's index, alike for a repeated key
+	parents []string // ids of the tables a dotted key defines on its way
+	base    string   // the id of an [[array]] header without its element's index
+	line    int
+	column  int
+	header  bool          // a [table] or [[array]] header
+	array   bool          // an [[array]] header
+	value   unstable.Kind // the kind of a key's value
 }
 
 type outliner struct {
@@ -72,29 +74,38 @@ func (o *outliner) key(it unstable.Iterator) (parts []string, line, column int) 
 func (o *outliner) header(e *unstable.Node) setting {
 	path, line, column := o.key(e.Key())
 	array := e.Kind == unstable.ArrayTable
-	id := ""
+	id, base := "", ""
 	for i, part := range path {
 		id += "." + strconv.Quote(part)
 		if array && i == len(path)-1 {
 			o.arrays[id]++
+			base = id
 		}
 		// A key below an array of tables belongs to its latest element
 		if n, ok := o.arrays[id]; ok {
 			id += "#" + strconv.Itoa(n)
 		}
 	}
-	return setting{path: path, id: id, line: line, column: column, header: true, array: array}
+	return setting{
+		path: path, id: id, base: base, line: line, column: column, header: true, array: array,
+	}
 }
 
 func (o *outliner) keyValue(kv *unstable.Node, table []string, scope string) {
 	parts, line, column := o.key(kv.Key())
 	id := scope
-	for _, part := range parts {
+	var parents []string
+	for i, part := range parts {
 		id += "." + strconv.Quote(part)
+		if i < len(parts)-1 {
+			parents = append(parents, id)
+		}
 	}
 	path := slices.Concat(table, parts)
 	v := kv.Value()
-	o.out = append(o.out, setting{path: path, id: id, line: line, column: column, value: v.Kind})
+	o.out = append(o.out, setting{
+		path: path, id: id, parents: parents, line: line, column: column, value: v.Kind,
+	})
 	o.inner(v, path, id)
 }
 
@@ -149,7 +160,7 @@ var sizeName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 func check(doc []setting) error {
 	var problems []string
 	var unknown [][]string
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, s := range doc {
 		// Keys below an unknown key are not reported again
 		if slices.ContainsFunc(unknown, func(u []string) bool {
@@ -158,10 +169,9 @@ func check(doc []setting) error {
 			continue
 		}
 		problem, isUnknown := fit(s)
-		if seen[s.id] {
-			problem = strings.Join(s.path, ".") + " is set twice"
+		if again := repeated(seen, s); again != nil {
+			problem = strings.Join(again, ".") + " is set twice"
 		}
-		seen[s.id] = true
 		if isUnknown {
 			unknown = append(unknown, s.path)
 		}
@@ -171,6 +181,43 @@ func check(doc []setting) error {
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, ", "))
+	}
+	return nil
+}
+
+// What a document defined at an id, the kinds a second definition may not meet
+const (
+	definedValue = iota + 1
+	definedTable
+	definedDotted // a table a dotted key defines, which other dotted keys may add to
+	definedArray
+)
+
+// repeated finds the path a setting defines a second time, and records what it defines
+func repeated(seen map[string]int, s setting) []string {
+	switch {
+	case s.array:
+		if kind, ok := seen[s.base]; ok && kind != definedArray {
+			return s.path
+		}
+		seen[s.base], seen[s.id] = definedArray, definedTable
+	case s.header:
+		if _, ok := seen[s.id]; ok {
+			return s.path
+		}
+		seen[s.id] = definedTable
+	default:
+		first := len(s.path) - len(s.parents)
+		for i, id := range s.parents {
+			if kind, ok := seen[id]; ok && kind != definedDotted {
+				return s.path[:first+i]
+			}
+			seen[id] = definedDotted
+		}
+		if _, ok := seen[s.id]; ok {
+			return s.path
+		}
+		seen[s.id] = definedValue
 	}
 	return nil
 }
