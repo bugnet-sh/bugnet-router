@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # Runs migrate, then one router-api and one router-worker on the local provider until Ctrl-C.
 #
-# Settings come from the env file given as the first argument, .env by default. Secrets come
-# from .env.keys, which this script writes with bugnet-dev keys when it is missing. Binaries are
-# built into bin/ and every process logs to bin/logs/. Ctrl-C sends SIGTERM to both processes
-# and waits for them to drain.
-# shellcheck disable=SC1090,SC1091,SC2329
+# Settings come from the TOML file given as the first argument, config/dev.toml by default, with
+# a path relative to the repository root. Secrets come from .env and from .env.keys, which this
+# script writes with bugnet-dev keys when it is missing. Both processes read bin/dev.toml, the
+# settings with order_token_public_key in front. Binaries are built into bin/ and every process
+# logs to bin/logs/. Ctrl-C sends SIGTERM to both processes and waits for them to drain.
+# shellcheck disable=SC1091,SC2329
 set -euo pipefail
 # Job control puts each process in its own group, so Ctrl-C reaches only this script
 set -m
 
 cd "$(dirname "$0")/.."
-env_file=${1:-.env}
-if [ ! -f "$env_file" ]; then
-	echo "dev-up: $env_file is missing, copy .env.example to .env first" >&2
+config=${1:-config/dev.toml}
+if [ ! -f "$config" ]; then
+	echo "dev-up: settings file $config is missing" >&2
 	exit 1
 fi
-case $env_file in
-*/*) ;;
-*) env_file=./$env_file ;;
-esac
+if [ ! -f .env ]; then
+	echo "dev-up: .env is missing, copy .env.example to .env first" >&2
+	exit 1
+fi
 
 mkdir -p bin/logs
 echo "dev-up: building into bin/"
@@ -31,13 +32,16 @@ if [ ! -f .env.keys ]; then
 	echo "dev-up: wrote fresh secrets to .env.keys"
 fi
 set -a
-. "$env_file"
+. ./.env
 . ./.env.keys
 set +a
-export BUGNET_PROVIDERS=${BUGNET_PROVIDERS:-local}
-export BUGNET_ENABLE_LOCAL_PROVIDER=${BUGNET_ENABLE_LOCAL_PROVIDER:-1}
-export BUGNET_LOCAL_RUNNER=${BUGNET_LOCAL_RUNNER:-$PWD/bin/bugnet-run}
-export BUGNET_LOCAL_ROOT=${BUGNET_LOCAL_ROOT:-$PWD/bin/local}
+
+pubkey=$(bin/bugnet-dev pubkey)
+# TOML top-level keys must come before every table, so the key goes first
+{
+	printf 'order_token_public_key = "%s"\n\n' "$pubkey"
+	cat "$config"
+} >bin/dev.toml
 
 if ! bin/router-api migrate >>bin/logs/migrate.log 2>&1; then
 	echo "dev-up: migrate failed, see bin/logs/migrate.log" >&2
@@ -59,12 +63,11 @@ trap stop EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-bin/router-api >>bin/logs/router-api.log 2>&1 &
+bin/router-api -config bin/dev.toml >>bin/logs/router-api.log 2>&1 &
 api_pid=$!
-bin/router-worker >>bin/logs/router-worker.log 2>&1 &
+bin/router-worker -config bin/dev.toml >>bin/logs/router-worker.log 2>&1 &
 worker_pid=$!
-echo "dev-up: router-api on ${BUGNET_LISTEN_ADDR:-:8080}," \
-	"router-worker on ${BUGNET_WORKER_LISTEN_ADDR:-:8081}, logs in bin/logs, Ctrl-C stops"
+echo "dev-up: router-api and router-worker run with bin/dev.toml, logs in bin/logs, Ctrl-C stops"
 
 while kill -0 "$api_pid" 2>/dev/null && kill -0 "$worker_pid" 2>/dev/null; do
 	# A background sleep keeps wait interruptible, so Ctrl-C stops at once
