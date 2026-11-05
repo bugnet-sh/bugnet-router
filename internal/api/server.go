@@ -48,6 +48,8 @@ const (
 	defaultFileMode = 0o644
 	maxRequestBytes = 4 << 20
 	readyTimeout    = 2 * time.Second
+	// opsTimeout is how long an operation waits on its limit before going through unchecked
+	opsTimeout = 500 * time.Millisecond
 )
 
 // Deps are the services and settings a Server works with
@@ -358,8 +360,12 @@ func (s *Server) sandbox(
 
 // spend takes one of the placement's operation tokens, refusing the operation when none is left
 func (s *Server) spend(ctx context.Context, p store.Placement) error {
-	ok, wait, err := s.ops.Take(ctx, p.ID)
+	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
+	defer cancel()
+	ok, wait, err := s.ops.Take(tctx, p.ID)
 	switch {
+	case err != nil && ctx.Err() != nil:
+		return ctx.Err()
 	case err != nil:
 		// The limit protects the router, so an operation never fails for want of reading it
 		s.d.Log.Warn("api: sandbox operation limit unread, letting the operation through",

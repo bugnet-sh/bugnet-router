@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -159,6 +161,7 @@ type options struct {
 	opsPerSecond int
 	opsBurst     int
 	log          *slog.Logger // the API server's log, discarded when nil
+	apiValkey    string       // what the API server's Valkey client dials, valkeyAddr() when empty
 }
 
 type env struct {
@@ -242,7 +245,7 @@ func newEnv(t *testing.T, opts options) *env {
 	})
 	apiName := "bugnet-api-test-" + rand.Text()
 	apiVK, err := valkey.NewClient(valkey.ClientOption{
-		InitAddress: []string{valkeyAddr()}, ClientName: apiName,
+		InitAddress: []string{cmp.Or(opts.apiValkey, valkeyAddr())}, ClientName: apiName,
 	})
 	if err != nil {
 		t.Fatalf("connect to valkey: %v", err)
@@ -1704,6 +1707,90 @@ func TestSandboxOperationsGoThroughWhenTheLimitCannotBeRead(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "level=WARN msg=\"api: sandbox operation limit unread") {
 		t.Fatalf("no warning that the limit was not read in the log:\n%s", logs.String())
+	}
+}
+
+func TestSandboxOperationsGoThroughWhenValkeyHangs(t *testing.T) {
+	var logs syncBuffer
+	addr, replies := valve(t)
+	e := newEnv(t, options{
+		opsPerSecond: 1, opsBurst: 1, apiValkey: addr,
+		log: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	h, _ := e.readyPlacement(t)
+	list := func(ctx context.Context) error {
+		_, err := e.client.ListFiles(ctx, connect.NewRequest(
+			&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
+		return err
+	}
+	replies.Lock()
+	t.Cleanup(replies.Unlock)
+
+	short, cancelShort := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancelShort()
+	wantCode(t, list(short), connect.CodeDeadlineExceeded)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	for i := range 2 {
+		start := time.Now()
+		if err := list(ctx); err != nil {
+			t.Fatalf("operation %d with Valkey not answering: %v", i+1, err)
+		}
+		t.Logf("operation %d took %v", i+1, time.Since(start))
+	}
+	// The caller that gave up first is not Valkey's fault, so only the two others warn
+	if n := strings.Count(logs.String(), "msg=\"api: sandbox operation limit unread"); n != 2 {
+		t.Fatalf("%d warnings that the limit was not read, want 2:\n%s", n, logs.String())
+	}
+}
+
+// valve forwards connections to Valkey, holding its replies back while the lock is held
+func valve(t *testing.T) (string, *sync.RWMutex) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lis.Close() })
+	shut := new(sync.RWMutex)
+	go func() {
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			go forward(c, shut)
+		}
+	}()
+	return lis.Addr().String(), shut
+}
+
+// forward copies c to Valkey and Valkey's replies back while shut is not locked
+func forward(c net.Conn, shut *sync.RWMutex) {
+	defer func() { _ = c.Close() }()
+	up, err := net.Dial("tcp", valkeyAddr())
+	if err != nil {
+		return
+	}
+	defer func() { _ = up.Close() }()
+	go func() {
+		_, _ = io.Copy(up, c)
+		_ = up.Close()
+	}()
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := up.Read(buf)
+		if n > 0 {
+			shut.RLock()
+			_, werr := c.Write(buf[:n])
+			shut.RUnlock()
+			if werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
