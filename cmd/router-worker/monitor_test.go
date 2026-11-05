@@ -94,7 +94,7 @@ func seedPlacement(t *testing.T, pool *pgxpool.Pool, state string, deadline time
 	}
 }
 
-// seedStopped inserts a placement terminating since since, or since before the column when zero
+// seedStopped inserts a stopped placement terminating from since, or from before the column if zero
 func seedStopped(t *testing.T, pool *pgxpool.Pool, since, deadline time.Time) {
 	t.Helper()
 	id := uuid.New()
