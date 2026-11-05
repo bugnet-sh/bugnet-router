@@ -179,13 +179,15 @@ no settings file.
 ## Settings
 
 `router-api -config FILE` and `router-worker -config FILE` read every other setting from a TOML
-file. [`config/example.toml`](config/example.toml) lists each key at its default with what it
-means, and [`config/dev.toml`](config/dev.toml) is the file `dev-up.sh` runs with. The file is
-decoded strictly, so an unknown or misspelt key is an error naming the key and its line.
-Relative paths resolve against the working directory the binary starts in. Serving needs
-`order_token_public_key` and `packages_file`. Each provider's settings live in its own table,
-`[boxd]`, `[e2b]`, `[koyeb]` and `[boat]`, and the local provider starts only with
-`local.enabled = true`.
+file. [`config/example.toml`](config/example.toml) lists each key with what it means, each at
+its default except the two `[[e2b.templates]]` tables, since E2B has no templates by default.
+[`config/dev.toml`](config/dev.toml) is the file `dev-up.sh` runs with. The file is decoded
+strictly, so an unknown or misspelt key, or one in the wrong case, is an error naming the key and
+its line, and the keys of `koyeb.instance_types` and `boat.types` must be size names of
+lowercase letters, digits and hyphens. Relative paths resolve against the working directory the
+binary starts in. Serving needs `order_token_public_key` and `packages_file`. Each provider's
+settings live in its own table, `[boxd]`, `[e2b]`, `[koyeb]` and `[boat]`, and the local
+provider starts only with `local.enabled = true`.
 
 Each router that shares a provider account needs its own `deployment_id`. Every sandbox carries
 its router's deployment, and a router's sweep destroys the sandboxes of its deployment that its
