@@ -433,9 +433,10 @@ func TestCheckExtend(t *testing.T) {
 			t.Errorf("%s: exited %d, want 2", name, code)
 		}
 	}
-	if help, _, code := runCLI(t, env(nil), "help"); code != 0 ||
-		!strings.Contains(help, "\n  check-extend --handle H --package P ") {
-		t.Errorf("help exited %d with %q, want check-extend listed", code, help)
+	line := "\n  check-extend --handle H --package P    print a placement and an extension's " +
+		"deadline and price\n"
+	if help, _, code := runCLI(t, env(nil), "help"); code != 0 || !strings.Contains(help, line) {
+		t.Errorf("help exited %d with %q, want the line %q", code, help, line)
 	}
 }
 

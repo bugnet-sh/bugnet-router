@@ -49,7 +49,7 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   get --handle H                         print a placement
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
-  check-extend --handle H --package P    print a placement and the deadline an extension would give
+  check-extend --handle H --package P    print a placement and an extension's deadline and price
   extensions --handle H                  list the packages that can extend a placement
   stop --handle H                        stop a placement
   exec --handle H [--cwd D] [--env K=V]... -- ARGV
