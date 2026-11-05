@@ -1606,7 +1606,14 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 	ctx := t.Context()
 	busy, busyMsg := e.readyPlacement(t)
 	calm, calmMsg := e.readyPlacement(t)
+	ended, _ := e.readyPlacement(t)
+	e.stop(t, ended)
 	ops := e.sandboxOps(t)
+	for _, name := range []string{"Exec", "ReadFile", "WriteFile", "ListFiles"} {
+		for range burst + 1 {
+			wantCode(t, ops[name](ended), connect.CodeFailedPrecondition)
+		}
+	}
 	watchErr := func(h string) error {
 		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
 		return err
@@ -1665,7 +1672,7 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 	}
 	slices.Sort(want)
 	if keys := e.opsKeys(t); !slices.Equal(keys, want) {
-		t.Fatalf("operation buckets %v, want only the two placements' %v", keys, want)
+		t.Fatalf("operation buckets %v, want only the two ready placements' %v", keys, want)
 	}
 
 	_, err = e.client.ExtendPlacement(ctx, connect.NewRequest(&routerv1.ExtendPlacementRequest{
