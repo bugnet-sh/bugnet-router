@@ -251,7 +251,7 @@ func TestBoxdCreatePinsDefaultProxy(t *testing.T) {
 	f, p := newTestProvider(t)
 	ref := mustCreate(t, p, "key-1")
 	mustCreate(t, p, "key-1")
-	pin := setProxyPort{vm: ref.ID, name: "default", port: "29417"}
+	pin := setProxyPort{vm: ref.ID, name: "", port: "29417"}
 	eq(t, f.proxyPins(), []setProxyPort{pin, pin})
 	vm, _ := f.vm(ref.ID)
 	eq(t, vm.proxyPort, "29417")
@@ -261,7 +261,7 @@ func TestBoxdCreatePinsAfterALostReply(t *testing.T) {
 	f, p := newTestProvider(t)
 	f.inject("CreateVm", fault{err: status.Error(codes.Unavailable, "reply lost"), after: true})
 	ref := mustCreate(t, p, "key-lost-pin")
-	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "29417"}})
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "", port: "29417"}})
 }
 
 func TestBoxdCreatePinsTheConfiguredGatePort(t *testing.T) {
@@ -272,7 +272,7 @@ func TestBoxdCreatePinsTheConfiguredGatePort(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	ref := mustCreate(t, p, "key-port")
-	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "30001"}})
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "", port: "30001"}})
 }
 
 func TestBoxdRefusesAGatePortOutOfRange(t *testing.T) {
@@ -416,7 +416,7 @@ func TestBoxdCreateClosesAMachineWhoseCallerLeftDuringCreateVm(t *testing.T) {
 	}
 	eq(t, ctx.Err() != nil, true)
 	eq(t, f.callCount("DestroyVm"), 0)
-	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "default", port: "29417"}})
+	eq(t, f.proxyPins(), []setProxyPort{{vm: ref.ID, name: "", port: "29417"}})
 	vm, err := f.vm(ref.ID)
 	if err != nil {
 		t.Fatal(err)

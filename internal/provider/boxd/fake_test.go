@@ -453,7 +453,7 @@ func (f *fakeBoxd) SetProxyPort(
 	if err != nil {
 		return nil, err
 	}
-	if req.GetName() != "default" {
+	if req.GetName() != "" {
 		return nil, status.Errorf(codes.NotFound, "proxy %q not found", req.GetName())
 	}
 	if n, err := strconv.Atoi(req.GetPort()); req.GetPort() != "auto" &&

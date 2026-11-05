@@ -44,12 +44,13 @@ import (
 )
 
 const (
-	providerName     = "boxd"
-	defaultRegion    = "fra"
-	homeHost         = "boxd.sh"
-	apiPort          = "9443"
-	keyLabel         = "bugnet/key"
-	defaultProxy     = "default"
+	providerName  = "boxd"
+	defaultRegion = "fra"
+	homeHost      = "boxd.sh"
+	apiPort       = "9443"
+	keyLabel      = "bugnet/key"
+	// boxd names a machine's default proxy with the empty string, "default" is not found
+	defaultProxy     = ""
 	hibernateOffMeta = "hibernate_off"
 	namePrefix       = "bn-"
 	nameHashChars    = 20
