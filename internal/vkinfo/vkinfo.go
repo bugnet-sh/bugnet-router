@@ -16,6 +16,9 @@ import (
 // NoEviction is the only maxmemory-policy the router runs with, it may lose no stream or lease
 const NoEviction = "noeviction"
 
+// ErrIncomplete means INFO memory answered without a field the router reads
+var ErrIncomplete = errors.New("valkey info memory is incomplete")
+
 const checkTimeout = 2 * time.Second
 
 // Memory is Valkey's memory in use and its maxmemory in bytes, 0 when unset, and its policy
@@ -49,7 +52,7 @@ func Parse(info string) (Memory, error) {
 	policy := fields["maxmemory_policy"]
 	var policyErr error
 	if policy == "" {
-		policyErr = errors.New("valkey info memory: no maxmemory_policy")
+		policyErr = fmt.Errorf("%w: no maxmemory_policy", ErrIncomplete)
 	}
 	return Memory{Used: used, Max: limit, Policy: policy}, errors.Join(usedErr, limitErr, policyErr)
 }
@@ -57,11 +60,11 @@ func Parse(info string) (Memory, error) {
 func number(fields map[string]string, key string) (int64, error) {
 	v, ok := fields[key]
 	if !ok {
-		return 0, fmt.Errorf("valkey info memory: no %s", key)
+		return 0, fmt.Errorf("%w: no %s", ErrIncomplete, key)
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("valkey info memory: %s is not an integer", key)
+		return 0, fmt.Errorf("%w: %s is not an integer", ErrIncomplete, key)
 	}
 	return n, nil
 }

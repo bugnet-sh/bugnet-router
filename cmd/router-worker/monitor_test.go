@@ -46,10 +46,10 @@ func TestMonitorOKOnACleanDatabase(t *testing.T) {
 	st := store.New(migrated(t))
 	vk, _ := testenv.Valkey(t)
 	unreadable := func(context.Context, valkey.Client) (vkinfo.Memory, error) {
-		return vkinfo.Memory{}, errors.New("valkey info memory: no maxmemory_policy")
+		return vkinfo.Parse("used_memory:10\r\nmaxmemory:0\r\n")
 	}
 	for name, read := range map[string]vkinfo.Reader{
-		"under the alert": healthy, "local valkey": vkinfo.Read, "info unreadable": unreadable,
+		"under the alert": healthy, "local valkey": vkinfo.Read, "info without a field": unreadable,
 	} {
 		if code, body := probe(st, vk, read); code != http.StatusOK || body != "ok\n" {
 			t.Errorf("monitor with %s answered %d %q, want 200 ok", name, code, body)
@@ -74,7 +74,8 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 	}()
 	select {
 	case got := <-answered:
-		if want := "503 1 placements are over 3 minutes past their deadline\n"; got != want {
+		want := "503 1 placement is over 3 minutes past its deadline\nvalkey memory is unknown\n"
+		if got != want {
 			t.Fatalf("monitor with a hung valkey answered %q, want %q", got, want)
 		}
 	case <-time.After(3 * time.Second):
@@ -140,7 +141,7 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 		{name: "one overdue placement", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				seedPlacement(t, pool, store.PlacementTerminating, now.Add(-10*time.Minute))
-			}, want: "1 placements are over 3 minutes past their deadline\n"},
+			}, want: "1 placement is over 3 minutes past its deadline\n"},
 		{name: "stuck outbox events", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
@@ -151,7 +152,11 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 		{name: "one stuck outbox event", postgres: true, vk: vk, read: healthy,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
-			}, want: "1 outbox events are stuck\n"},
+			}, want: "1 outbox event is stuck\n"},
+		{name: "valkey memory unknown", postgres: true, vk: vk,
+			read: func(context.Context, valkey.Client) (vkinfo.Memory, error) {
+				return vkinfo.Memory{}, errors.New("valkey info memory: i/o timeout")
+			}, want: "valkey memory is unknown\n"},
 		{name: "valkey memory", postgres: true, vk: vk,
 			read: fixed(vkinfo.Memory{Used: 80, Max: 100, Policy: "noeviction"}),
 			want: "valkey memory is at 80% of maxmemory\n"},

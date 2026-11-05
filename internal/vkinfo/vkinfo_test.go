@@ -49,8 +49,9 @@ func TestParseNamesAMissingFieldAndKeepsTheRest(t *testing.T) {
 		"maxmemory_policy": {Used: 2317312, Max: 4294967296},
 	} {
 		m, err := vkinfo.Parse(without(field))
-		if err == nil || !strings.Contains(err.Error(), field) || m != want {
-			t.Errorf("Parse without %s = %+v, %v, want %+v and an error naming it",
+		if !errors.Is(err, vkinfo.ErrIncomplete) || !strings.Contains(err.Error(), field) ||
+			m != want {
+			t.Errorf("Parse without %s = %+v, %v, want %+v and an incomplete error naming it",
 				field, m, err, want)
 		}
 	}
@@ -60,7 +61,8 @@ func TestParseRefusesANonNumber(t *testing.T) {
 	text := strings.Replace(sample, "maxmemory:4294967296", "maxmemory:lots", 1)
 	m, err := vkinfo.Parse(text)
 	want := vkinfo.Memory{Used: 2317312, Policy: "noeviction"}
-	if err == nil || !strings.Contains(err.Error(), "maxmemory") || m != want {
+	if !errors.Is(err, vkinfo.ErrIncomplete) || !strings.Contains(err.Error(), "maxmemory") ||
+		m != want {
 		t.Fatalf("Parse with a non-number maxmemory = %+v, %v, want %+v and an error naming it",
 			m, err, want)
 	}

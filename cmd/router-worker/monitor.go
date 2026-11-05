@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,9 +27,9 @@ const (
 
 // health is what one /monitor request found, memory holding only what INFO gave
 type health struct {
-	postgresDown, valkeyDown bool
-	overdue, stuck           int
-	memory                   vkinfo.Memory
+	postgresDown, valkeyDown, memoryUnknown bool
+	overdue, stuck                          int
+	memory                                  vkinfo.Memory
 }
 
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
@@ -42,7 +43,9 @@ func monitor(
 		// Both run at once so a hung Postgres cannot spend Valkey's share of the timeout
 		var wg sync.WaitGroup
 		wg.Go(func() { h.overdue, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
-		wg.Go(func() { h.memory, h.valkeyDown = checkValkey(ctx, log, vk, read) })
+		wg.Go(func() {
+			h.memory, h.valkeyDown, h.memoryUnknown = checkValkey(ctx, log, vk, read)
+		})
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -68,19 +71,20 @@ func checkPostgres(ctx context.Context, log *slog.Logger, st *store.Store) (int,
 	return overdue, stuck, false
 }
 
-// checkValkey pings Valkey and then reads its memory, a field INFO lacks staying zero
+// checkValkey pings Valkey and reads its memory, unknown when INFO fails rather than lacks a field
 func checkValkey(
 	ctx context.Context, log *slog.Logger, vk valkey.Client, read vkinfo.Reader,
-) (vkinfo.Memory, bool) {
+) (m vkinfo.Memory, down, unknown bool) {
 	if err := vk.Do(ctx, vk.B().Ping().Build()).Error(); err != nil {
 		log.Warn("monitor cannot reach valkey", "err", err)
-		return vkinfo.Memory{}, true
+		return vkinfo.Memory{}, true, false
 	}
 	m, err := read(ctx, vk)
 	if err != nil {
 		log.Warn("monitor cannot read valkey memory in full", "err", err)
 	}
-	return m, false
+	// A managed Valkey may hide a field for good, which must not keep /monitor failing
+	return m, false, err != nil && !errors.Is(err, vkinfo.ErrIncomplete)
 }
 
 func (h health) problems() []string {
@@ -91,12 +95,21 @@ func (h health) problems() []string {
 	if h.valkeyDown {
 		out = append(out, "valkey is unreachable")
 	}
-	if h.overdue > 0 {
+	switch minutes := int(overdueAfter / time.Minute); {
+	case h.overdue == 1:
+		out = append(out, fmt.Sprintf("1 placement is over %d minutes past its deadline", minutes))
+	case h.overdue > 1:
 		out = append(out, fmt.Sprintf("%d placements are over %d minutes past their deadline",
-			h.overdue, int(overdueAfter/time.Minute)))
+			h.overdue, minutes))
 	}
-	if h.stuck > 0 {
+	switch {
+	case h.stuck == 1:
+		out = append(out, "1 outbox event is stuck")
+	case h.stuck > 1:
 		out = append(out, fmt.Sprintf("%d outbox events are stuck", h.stuck))
+	}
+	if h.memoryUnknown {
+		out = append(out, "valkey memory is unknown")
 	}
 	if m := h.memory; m.Max > 0 && m.Used*100 >= memoryAlertPercent*m.Max {
 		percent := m.Used * 100 / m.Max
