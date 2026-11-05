@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -341,6 +342,60 @@ func TestBoxdCreateSshFailureDestroysMachine(t *testing.T) {
 	_, err := create2x8(t, p, "key-ssh-fail")
 	e, ok := provider.AsError(err)
 	eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+	eq(t, f.count(), 0)
+}
+
+func TestBoxdCreateWarnsWhenItsCleanupDestroyFails(t *testing.T) {
+	cases := []struct {
+		name, method string
+		setup        func(f *fakeBoxd)
+	}{
+		{name: "pin", method: "SetProxyPort", setup: func(*fakeBoxd) {}},
+		{
+			name: "ssh", method: "SetSsh",
+			setup: func(f *fakeBoxd) { f.refuseNetworkConfig = true },
+		},
+		{
+			name: "timer", method: "SetDeleteAfter",
+			setup: func(f *fakeBoxd) { f.omitMachine = true },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, p := newTestProvider(t)
+			var logs bytes.Buffer
+			p.log = slog.New(slog.NewTextHandler(&logs, nil))
+			c.setup(f)
+			f.inject(c.method, fault{err: status.Error(codes.Internal, "step refused")})
+			f.inject("DestroyVm", fault{err: status.Error(codes.Unavailable, "destroy refused")})
+			_, err := create2x8(t, p, "key-stuck")
+			e, ok := provider.AsError(err)
+			eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+			msg := err.Error()
+			eq(t, strings.Contains(msg, "step refused") && !strings.Contains(msg, "destroy"), true)
+			eq(t, f.callCount("DestroyVm"), 1)
+			vm, err := f.vm(machineName("key-stuck"))
+			if err != nil {
+				t.Fatalf("the machine whose destroy failed is gone: %v", err)
+			}
+			got := logs.String()
+			if !strings.Contains(got, "level=WARN") || !strings.Contains(got, vm.id) ||
+				!strings.Contains(got, "destroy refused") {
+				t.Fatalf("log %q, want a warning naming machine %s and the refusal", got, vm.id)
+			}
+		})
+	}
+}
+
+func TestBoxdCreateDestroysOnItsOwnDeadlineOnceTheBudgetIsSpent(t *testing.T) {
+	f, p := newTestProvider(t)
+	p.afterCreate = 300 * time.Millisecond
+	f.inject("SetProxyPort", fault{stall: true})
+	_, err := create2x8(t, p, "key-spent")
+	e, ok := provider.AsError(err)
+	eq(t, ok && e.Code == provider.CodeInternal && e.CanFailOver, true)
+	eq(t, errors.Is(err, context.DeadlineExceeded), true)
+	eq(t, f.callCount("DestroyVm"), 1)
 	eq(t, f.count(), 0)
 }
 

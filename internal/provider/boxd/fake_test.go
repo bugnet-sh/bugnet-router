@@ -35,6 +35,7 @@ const (
 	fakeReadChunkBytes = 64 << 10
 	fakeListBatch      = 2
 	fakeKillGrace      = 100 * time.Millisecond
+	fakeStallLimit     = 5 * time.Second
 )
 
 var (
@@ -47,6 +48,8 @@ type fault struct {
 	err   error
 	after bool
 	times int
+	// stall holds the call until its deadline, or fakeStallLimit without one, and then fails it
+	stall bool
 }
 
 type fakeVM struct {
@@ -200,6 +203,14 @@ func (f *fakeBoxd) unaryGate(
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
 	ft := f.take(info.FullMethod)
+	if ft != nil && ft.stall {
+		select {
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		case <-time.After(fakeStallLimit):
+			return nil, status.Error(codes.DeadlineExceeded, "fake boxd stalled past its limit")
+		}
+	}
 	if ft != nil && !ft.after {
 		return nil, ft.err
 	}
