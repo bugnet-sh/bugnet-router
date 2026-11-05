@@ -106,6 +106,7 @@ Drive the router from another terminal in the repository root:
 set -a; . ./.env.keys; set +a
 bin/bugnet-dev create --package dev-small-10m
 bin/bugnet-dev exec --handle sbx_... -- sh -c 'echo hello; sleep 1; echo done'
+bin/bugnet-dev extensions --handle sbx_...
 bin/bugnet-dev check-extend --handle sbx_... --package dev-small-10m-more
 bin/bugnet-dev extend --handle sbx_... --package dev-small-10m-more
 bin/bugnet-dev stop --handle sbx_...
@@ -117,10 +118,12 @@ for the API address and the catalog, and needs only `BUGNET_INTERNAL_TOKEN` and
 `BUGNET_ORDER_PRIVATE_KEY`, priced from the catalog, and waits until the sandbox is ready.
 `exec` streams the output and exits with the command's exit code. If the stream breaks, it
 prints the `bugnet-dev watch` command that resumes from the last cursor, with the same
-`--config` when one was given. `check-extend` prints the placement and, as `deadline_after`, the
-deadline `extend` would give it, with no order and no change. `bugnet-dev token` prints a token
-for other clients, `bugnet-dev pubkey` the public key that verifies its tokens, and `bugnet-dev`
-with no arguments lists every command.
+`--config` when one was given. `extensions` prints a line for each package that can extend the
+placement, with its minutes, its price and whether `extend` would take it now or the reason it
+would not. `check-extend` prints the placement, then as `deadline_after` and `price_micros` the
+deadline `extend` would give it and the package's price, with no order and no change.
+`bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
+verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
 A recorded session against `dev-up.sh` on the local provider (2026-11-05):
 
@@ -219,8 +222,13 @@ extension that would outlast the provider's maximum lifetime with `FailedPrecond
 answers `NOT_READY`, and only a handle it never issued answers `NotFound`. `CheckExtendPlacement`
 takes a handle and a package ID and answers as `ExtendPlacement` would for a fresh order of that
 package now, with the same `NotFound`, `InvalidArgument` or `FailedPrecondition`, or else the
-placement as it is and the deadline it would have, changing nothing. The gateway asks it before it
-takes payment.
+placement as it is, the deadline it would have and the package with its price, changing nothing.
+The gateway asks it before it takes payment. `ListExtensions` takes a handle and lists the
+placement's own package and every package whose `extension_of` names it, by minutes, then price,
+then ID, each with its price and `available` where `CheckExtendPlacement` would accept it, else
+`unavailable_reason` `not_ready` or `exceeds_lifetime`, the `ErrorInfo` reasons in lowercase. A
+placement that is not ready lists every package as `not_ready`, a handle the router never issued
+answers `NotFound`, and the listing changes nothing.
 
 `PermissionDenied`, `InvalidArgument`, `NotFound` and `FailedPrecondition` from `ExtendPlacement`
 mean that call recorded nothing. Any other error, or a reply that never arrives, may follow a
