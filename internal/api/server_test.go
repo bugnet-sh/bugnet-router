@@ -1704,7 +1704,19 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 			t.Fatalf("%s within the burst: %v", name, err)
 		}
 	}
+	// A loaded machine may refill a token between calls, so each refusal starts on an empty bucket
+	drain := func() {
+		t.Helper()
+		for range burst + 1 {
+			if err := ops["ListFiles"](busy); err != nil {
+				wantCode(t, err, connect.CodeResourceExhausted)
+				return
+			}
+		}
+		t.Fatal("the bucket never ran dry")
+	}
 	for name, op := range ops {
+		drain()
 		err := op(busy)
 		wantCode(t, err, connect.CodeResourceExhausted)
 		wantInfo(t, err, "RATE_LIMITED")
@@ -1717,8 +1729,10 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		}
 	}
 	jobs := e.jobCount(t, busyMsg.GetPlacementId())
+	drain()
 	_, err := e.client.Exec(ctx, connect.NewRequest(sh(busy, `touch "$HOME/refused"`)))
 	wantCode(t, err, connect.CodeResourceExhausted)
+	drain()
 	_, err = e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
 		Handle: busy, Path: "/root/ops.txt", Data: []byte("refused"),
 	}))

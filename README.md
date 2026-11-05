@@ -281,9 +281,9 @@ Valkey unreachable, placements ready or terminating over 3 minutes past their de
 still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
 outbox events, Valkey memory at 80% of `maxmemory` or more, and a `maxmemory-policy` other than
 `noeviction`. A failed connection means the worker is down. When `INFO memory` fails or times out
-while Valkey answers, `/monitor` reports `valkey memory is unknown`, and keeps doing so while an ACL
-or `rename-command` refuses `INFO`, which also leaves the start-up policy check blind, so leave
-`INFO` allowed. When it answers without a field, as a managed Valkey may, `/monitor` checks the
+while Valkey answers, `/monitor` reports `valkey memory is unknown`. When an ACL or
+`rename-command` refuses `INFO`, it reports `valkey refuses INFO, so its memory and policy go
+unchecked`, since that also leaves the start-up policy check blind, so leave `INFO` allowed. When it answers without a field, as a managed Valkey may, `/monitor` checks the
 fields it got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only
 that Postgres and Valkey answer.
 

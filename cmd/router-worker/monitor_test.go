@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -183,6 +184,11 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				outboxEvent(t, pool, store.MaxOutboxAttempts, false)
 			}, want: "1 outbox event is stuck\n"},
+		{name: "valkey refuses info", postgres: true, vk: vk,
+			read: func(ctx context.Context, c valkey.Client) (vkinfo.Memory, error) {
+				_, err := c.Do(ctx, c.B().Arbitrary("BUGNET_NO_SUCH_COMMAND").Build()).ToString()
+				return vkinfo.Memory{}, fmt.Errorf("valkey info memory: %w", err)
+			}, want: "valkey refuses INFO, so its memory and policy go unchecked\n"},
 		{name: "valkey memory unknown", postgres: true, vk: vk,
 			read: func(context.Context, valkey.Client) (vkinfo.Memory, error) {
 				return vkinfo.Memory{}, errors.New("valkey info memory: i/o timeout")

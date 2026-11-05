@@ -27,9 +27,9 @@ const (
 
 // health is what one /monitor request found, memory holding only what INFO gave
 type health struct {
-	postgresDown, valkeyDown, memoryUnknown bool
-	overdue, ending, stuck                  int
-	memory                                  vkinfo.Memory
+	postgresDown           bool
+	overdue, ending, stuck int
+	valkey                 valkeyHealth
 }
 
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
@@ -43,9 +43,7 @@ func monitor(
 		// Both run at once so a hung Postgres cannot spend Valkey's share of the timeout
 		var wg sync.WaitGroup
 		wg.Go(func() { h.overdue, h.ending, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
-		wg.Go(func() {
-			h.memory, h.valkeyDown, h.memoryUnknown = checkValkey(ctx, log, vk, read)
-		})
+		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, read) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -76,20 +74,32 @@ func checkPostgres(
 	return overdue, ending, stuck, false
 }
 
-// checkValkey pings Valkey and reads its memory, unknown when INFO fails rather than lacks a field
+// valkeyHealth is what /monitor learned from Valkey
+type valkeyHealth struct {
+	memory                  vkinfo.Memory
+	down, unknown, refusing bool
+}
+
+// checkValkey pings Valkey and reads its memory, a refused INFO told apart from one that failed
 func checkValkey(
 	ctx context.Context, log *slog.Logger, vk valkey.Client, read vkinfo.Reader,
-) (m vkinfo.Memory, down, unknown bool) {
+) valkeyHealth {
 	if err := vk.Do(ctx, vk.B().Ping().Build()).Error(); err != nil {
 		log.Warn("monitor cannot reach valkey", "err", err)
-		return vkinfo.Memory{}, true, false
+		return valkeyHealth{down: true}
 	}
 	m, err := read(ctx, vk)
 	if err != nil {
 		log.Warn("monitor cannot read valkey memory in full", "err", err)
 	}
-	// A managed Valkey may hide a field for good, which must not keep /monitor failing
-	return m, false, err != nil && !errors.Is(err, vkinfo.ErrIncomplete)
+	var reply *valkey.ValkeyError
+	refused := errors.As(err, &reply) && !reply.IsNil()
+	return valkeyHealth{
+		memory: m,
+		// A managed Valkey may hide a field for good, which must not keep /monitor failing
+		unknown:  err != nil && !refused && !errors.Is(err, vkinfo.ErrIncomplete),
+		refusing: refused,
+	}
 }
 
 func (h health) problems() []string {
@@ -97,7 +107,7 @@ func (h health) problems() []string {
 	if h.postgresDown {
 		out = append(out, "postgres is unreachable")
 	}
-	if h.valkeyDown {
+	if h.valkey.down {
 		out = append(out, "valkey is unreachable")
 	}
 	minutes := int(overdueAfter / time.Minute)
@@ -122,14 +132,17 @@ func (h health) problems() []string {
 	case h.stuck > 1:
 		out = append(out, fmt.Sprintf("%d outbox events are stuck", h.stuck))
 	}
-	if h.memoryUnknown {
+	switch {
+	case h.valkey.refusing:
+		out = append(out, "valkey refuses INFO, so its memory and policy go unchecked")
+	case h.valkey.unknown:
 		out = append(out, "valkey memory is unknown")
 	}
-	if m := h.memory; m.Max > 0 && m.Used*100 >= memoryAlertPercent*m.Max {
+	if m := h.valkey.memory; m.Max > 0 && m.Used*100 >= memoryAlertPercent*m.Max {
 		percent := m.Used * 100 / m.Max
 		out = append(out, fmt.Sprintf("valkey memory is at %d%% of maxmemory", percent))
 	}
-	if p := h.memory.Policy; p != "" && p != vkinfo.NoEviction {
+	if p := h.valkey.memory.Policy; p != "" && p != vkinfo.NoEviction {
 		out = append(out, fmt.Sprintf(
 			"valkey maxmemory-policy is %s, the router needs noeviction", p))
 	}
