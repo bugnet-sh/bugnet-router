@@ -112,6 +112,8 @@ type fakeE2B struct {
 	script   []*processpb.ProcessEvent
 	cleanup  []string
 	running  atomic.Int64
+	// listLimited makes envd refuse every listing as rate limited
+	listLimited atomic.Bool
 }
 
 func newFake(t *testing.T) *fakeE2B {
@@ -716,9 +718,13 @@ type fakeFilesystem struct {
 	f *fakeE2B
 }
 
-func (fakeFilesystem) ListDir(
+func (h fakeFilesystem) ListDir(
 	_ context.Context, req *connect.Request[filesystempb.ListDirRequest],
 ) (*connect.Response[filesystempb.ListDirResponse], error) {
+	if h.f.listLimited.Load() {
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			errors.New("too many requests"))
+	}
 	if basicUser(req.Header()) != "root" {
 		return nil, connect.NewError(connect.CodePermissionDenied,
 			errors.New("fake envd lists only as root"))

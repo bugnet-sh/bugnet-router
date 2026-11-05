@@ -1071,7 +1071,21 @@ func TestE2BBoundsEnvdMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if entries, err := listAll(t.Context(), p, ref, dir, 1); err == nil {
-		t.Fatalf("a listing over the message cap gave %d entries, want an error", len(entries))
+	entries, err := listAll(t.Context(), p, ref, dir, 1)
+	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeInvalid || e.CanFailOver ||
+		!strings.Contains(err.Error(), "listing is too large") {
+		t.Fatalf("a listing over the message cap gave %d entries and %v, want invalid as too "+
+			"large", len(entries), err)
+	}
+}
+
+func TestE2BListFilesRateLimited(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := f.add(nil)
+	f.listLimited.Store(true)
+	_, err := listAll(t.Context(), p, ref, t.TempDir(), 1)
+	if !isCode(err, provider.CodeRateLimited) {
+		t.Fatalf("envd refusing a listing as resource exhausted gave %v, want rate_limited", err)
 	}
 }

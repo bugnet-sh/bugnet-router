@@ -1029,6 +1029,11 @@ func (p *Provider) ListFiles(
 	req.Header().Set("Authorization", rootAuth)
 	client := filesystemconnect.NewFilesystemClient(p.envd, p.envdBase(ref), p.codec...)
 	resp, err := client.ListDir(ctx, req)
+	if connect.CodeOf(err) == connect.CodeResourceExhausted && !connect.IsWireError(err) {
+		// The reply passed the envd message cap, which no retry of the same listing changes
+		return invalid(fmt.Errorf("e2b listing is too large for one envd message, list less "+
+			"deeply or a smaller directory: %w", err))
+	}
 	if err != nil {
 		return envdError(err)
 	}
