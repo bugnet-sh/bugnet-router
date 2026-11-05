@@ -256,7 +256,8 @@ expires once it is full again. A call that finds it empty answers `ResourceExhau
 spend nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec`
 or file call on a placement that is not ready. A request only the provider refuses has spent its
 token. When Valkey cannot answer within 500 ms, the call goes through and the router logs a
-warning.
+warning. `StopPlacement` spends nothing, and stops that race on one placement in one process wait
+for the destroy already in flight instead of calling the provider again.
 
 ## Deployment
 
