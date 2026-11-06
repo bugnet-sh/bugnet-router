@@ -216,19 +216,30 @@ func (c *cli) keys(args []string) error {
 	if err != nil {
 		return err
 	}
-	token, handleKey := make([]byte, secretBytes), make([]byte, secretBytes)
-	for _, b := range [][]byte{token, handleKey} {
-		if _, err := rand.Read(b); err != nil {
-			return err
-		}
-	}
 	b64 := base64.StdEncoding.EncodeToString
-	return c.print([][2]string{
-		{"BUGNET_INTERNAL_TOKEN", hex.EncodeToString(token)},
+	lines := [][2]string{
+		{"BUGNET_INTERNAL_TOKEN", hex.EncodeToString(rand32())},
 		{"BUGNET_ORDER_PRIVATE_KEY", b64(orderPriv.Seed())},
-		{"BUGNET_HANDLE_KEY", b64(handleKey)},
+		{"BUGNET_HANDLE_KEY", b64(rand32())},
 		{"BUGNET_EVENT_SIGNING_KEY", b64(eventPriv.Seed())},
-	})
+	}
+	for _, name := range []string{
+		"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
+		"BUGNET_EGRESS_FETCH_TOKEN",
+	} {
+		lines = append(lines, [2]string{name, hex.EncodeToString(rand32())})
+	}
+	// The edge compares this part of the hooks path, so it is base64url without padding
+	lines = append(lines,
+		[2]string{"BUGNET_HOOK_PATH_SECRET", base64.RawURLEncoding.EncodeToString(rand32())})
+	return c.print(lines)
+}
+
+// rand32 returns secretBytes random bytes, and crypto/rand never fails to give them
+func rand32() []byte {
+	b := make([]byte, secretBytes)
+	_, _ = rand.Read(b)
+	return b
 }
 
 // pubkey prints the key order_token_public_key needs for the order private key

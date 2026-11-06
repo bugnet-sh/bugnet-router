@@ -82,10 +82,16 @@ func TestKeysMakeAValidConfig(t *testing.T) {
 	}
 	want := []string{
 		"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_PRIVATE_KEY", "BUGNET_HANDLE_KEY",
-		"BUGNET_EVENT_SIGNING_KEY",
+		"BUGNET_EVENT_SIGNING_KEY", "BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN",
+		"BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN", "BUGNET_EGRESS_FETCH_TOKEN",
+		"BUGNET_HOOK_PATH_SECRET",
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("keys printed %v, want only the secrets %v", names, want)
+	}
+	path, err := base64.RawURLEncoding.DecodeString(vars["BUGNET_HOOK_PATH_SECRET"])
+	if err != nil || len(path) != 32 {
+		t.Fatalf("hook path secret is not base64url of 32 bytes: %v", err)
 	}
 	pub, stderr, code := runCLI(t, env(vars), "pubkey")
 	if code != 0 {
@@ -104,6 +110,13 @@ packages_file = "packages.json"
 	}
 	if cfg.EventSigningKey == nil {
 		t.Fatal("no event signing key")
+	}
+	tokens := []string{cfg.InternalToken, cfg.EdgeToken, cfg.SecretsToken, cfg.SSHToken,
+		cfg.EgressToken, cfg.EgressFetchToken}
+	for i, tok := range tokens {
+		if len(tok) < 32 || slices.Contains(tokens[:i], tok) {
+			t.Fatalf("caller token %d is short or repeated", i)
+		}
 	}
 	token, _, code := runCLI(t, env(nil), "token", "--priv", vars["BUGNET_ORDER_PRIVATE_KEY"],
 		"--package", "small-10m", "--amount", "1")

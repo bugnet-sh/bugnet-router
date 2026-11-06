@@ -198,10 +198,12 @@ does not know.
 | `BUGNET_ORDER_PRIVATE_KEY` | `bugnet-dev` only, base64 Ed25519 seed it signs order tokens with |
 | `BUGNET_EDGE_TOKEN`, `BUGNET_SECRETS_TOKEN`, `BUGNET_SSH_TOKEN`, `BUGNET_EGRESS_TOKEN` | `router-api` and `router-worker`, one bearer token per edge process, each empty or 32 characters or more |
 | `BUGNET_EGRESS_FETCH_TOKEN` | `router-api` and `router-worker`, the `bnf_` token the router's private fetch opens egress tunnels with, empty or 32 characters or more |
+| `BUGNET_HOOK_PATH_SECRET` | The edge only, base64url of 32 bytes in the provider webhook path |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
 of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
-its own service.
+its own service. `bugnet-dev keys` prints fresh values for all of them. A `.env.keys` written
+before these tokens existed lacks them, so delete it to get the full set.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.
