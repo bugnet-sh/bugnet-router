@@ -3,11 +3,7 @@ package e2b
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"io"
-	mrand "math/rand/v2"
 	"os"
 	"strings"
 	"testing"
@@ -114,11 +110,7 @@ func TestLiveE2BFileStreams(t *testing.T) {
 	ref := liveSandbox(t, p)
 	dir := "/root/bugnet-streams"
 	t.Run("Contract", func(t *testing.T) { contract.Streams(t, p, ref, dir) })
-	for _, size := range []int64{0, 1, 1<<20 + 1, 5<<20 + 1, 101 << 20} {
-		t.Run(fmt.Sprintf("RoundTrip%dBytes", size), func(t *testing.T) {
-			liveRoundTrip(t, p, ref, fmt.Sprintf("%s/round-%d.bin", dir, size), size)
-		})
-	}
+	livetest.RoundTrips(t, p, ref, dir)
 	t.Run("DevUrandom", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
 		defer cancel()
@@ -135,62 +127,4 @@ func TestLiveE2BFileStreams(t *testing.T) {
 			t.Error("OpenReader opened /dev/urandom")
 		}
 	})
-}
-
-// liveRoundTrip streams size random bytes up and back and compares SHA-256 at every step
-func liveRoundTrip(t *testing.T, p *Provider, ref provider.Ref, name string, size int64) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
-	defer cancel()
-	var seed [32]byte
-	_, _ = rand.Read(seed[:])
-	src := mrand.NewChaCha8(seed)
-
-	begin := time.Now()
-	w, err := p.OpenWriter(ctx, ref, name, provider.WriteSpec{Size: size, Mode: 0o644})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sent := sha256.New()
-	buf := make([]byte, 256<<10)
-	for left := size; left > 0; {
-		chunk := buf[:min(int64(len(buf)), left)]
-		_, _ = src.Read(chunk)
-		sent.Write(chunk)
-		if _, err := w.Write(chunk); err != nil {
-			_ = w.Abort()
-			t.Fatalf("write with %d of %d bytes left: %v", left, size, err)
-		}
-		left -= int64(len(chunk))
-	}
-	sum := sent.Sum(nil)
-	entry, err := w.Commit(ctx, sum)
-	if err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-	up := time.Since(begin)
-	if entry.Size != size || !entry.Regular {
-		t.Errorf("Commit described %+v, want a regular file of %d bytes", entry, size)
-	}
-
-	out, code, err := runExec(ctx, p, ref, provider.ExecSpec{Argv: []string{"sha256sum", name}})
-	if err != nil || code != 0 {
-		t.Fatalf("sha256sum gave exit %d, %v", code, err)
-	}
-	disk, _, _ := strings.Cut(string(out), " ")
-	eq(t, disk, hex.EncodeToString(sum))
-
-	begin = time.Now()
-	r, err := p.OpenReader(ctx, ref, name, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := sha256.New()
-	n, err := io.Copy(got, r)
-	_ = r.Close()
-	if err != nil || n != size {
-		t.Fatalf("read back %d of %d bytes, %v", n, size, err)
-	}
-	eq(t, hex.EncodeToString(got.Sum(nil)), hex.EncodeToString(sum))
-	t.Logf("%d bytes up in %v and down in %v", size, up.Round(time.Millisecond),
-		time.Since(begin).Round(time.Millisecond))
 }

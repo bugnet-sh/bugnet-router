@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -193,4 +195,150 @@ func liveGet(ctx context.Context, client *http.Client, url string) (int, string,
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	return resp.StatusCode, string(body), err
+}
+
+// liveHome is the exec user's home on boxd
+const liveHome = "/home/boxd"
+
+func TestLiveBoxdFileRows(t *testing.T) {
+	p := liveProvider(t)
+	ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+	ref := liveMachine(ctx, t, p)
+	cancel()
+	dir := liveHome + "/bugnet-streams"
+	t.Run("Contract", func(t *testing.T) { contract.Streams(t, p, ref, dir) })
+	livetest.RoundTrips(t, p, ref, dir)
+	t.Run("DevUrandom", func(t *testing.T) { livetest.NotRegular(t, p, ref, "/dev/urandom") })
+	t.Run("FilesystemTypes", func(t *testing.T) { livetest.FilesystemTypes(t, p, ref, liveHome) })
+	t.Run("BOXD5", func(t *testing.T) {
+		t.Run("CancelledUploadKeepsTheOldFile", func(t *testing.T) {
+			liveCancelledUpload(t, p, ref, dir+"/cancelled")
+		})
+		t.Run("AcceptsMiBChunks", func(t *testing.T) {
+			liveOneWrite(t, p, ref, dir+"/chunks", 4<<20)
+		})
+		t.Run("RenameReplacesAHardLinkedTarget", func(t *testing.T) {
+			liveReplace(t, p, ref, dir, "linked", "printf old > linked && ln -f linked other")
+			ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+			defer cancel()
+			if got := livetest.Run(ctx, t, p, ref, "cat", dir+"/other"); got != "old" {
+				t.Errorf("the other hard link holds %q, want the old bytes it kept", got)
+			}
+		})
+		t.Run("RenameReplacesARootOwnedTarget", func(t *testing.T) {
+			liveReplace(t, p, ref, dir, "rooted", "sudo -n sh -c "+
+				"'printf old > rooted && chown root:root rooted && chmod 0644 rooted'")
+			ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+			defer cancel()
+			owner := livetest.Run(ctx, t, p, ref, "stat", "-c", "%U", dir+"/rooted")
+			t.Logf("after the rename the file belongs to %s", strings.TrimSpace(owner))
+		})
+	})
+}
+
+// liveCancelledUpload ends a writer's context halfway and checks the old file and no temp stay
+func liveCancelledUpload(t *testing.T, p *Provider, ref provider.Ref, name string) {
+	ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+	defer cancel()
+	old := make([]byte, 1<<20)
+	_, _ = rand.Read(old)
+	w, err := p.OpenWriter(ctx, ref, name, provider.WriteSpec{Size: int64(len(old)), Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Commit(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := livetest.SHA256(ctx, t, p, ref, name)
+
+	wctx, stop := context.WithCancel(ctx)
+	w, err = p.OpenWriter(wctx, ref, name, provider.WriteSpec{Size: 2 << 20, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(make([]byte, 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if _, err := w.Commit(ctx, nil); err == nil {
+		t.Fatal("a writer whose context ended committed")
+	}
+	if after := livetest.SHA256(ctx, t, p, ref, name); after != before {
+		t.Errorf("the target changed from %s to %s after a cancelled upload", before, after)
+	}
+	liveNoTemp(ctx, t, p, ref, path.Dir(name))
+}
+
+// liveNoTemp waits a while for every temp file in dir to go and fails if one stays
+func liveNoTemp(ctx context.Context, t *testing.T, p *Provider, ref provider.Ref, dir string) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		listing := provider.NewListing(1000)
+		if err := p.ListFiles(ctx, ref, dir, 1, listing); err != nil {
+			t.Fatal(err)
+		}
+		var temps []string
+		for _, e := range listing.Entries {
+			if base := path.Base(e.Path); strings.Contains(base, ".bugnet-") &&
+				strings.HasSuffix(base, ".part") {
+				temps = append(temps, base)
+			}
+		}
+		if len(temps) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("temp files left in %s: %v", dir, temps)
+		}
+	}
+}
+
+// liveOneWrite sends size bytes in one Write, which the adapter splits into 1 MiB chunks
+func liveOneWrite(t *testing.T, p *Provider, ref provider.Ref, name string, size int) {
+	ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+	defer cancel()
+	data := make([]byte, size)
+	_, _ = rand.Read(data)
+	w, err := p.OpenWriter(ctx, ref, name, provider.WriteSpec{Size: int64(size), Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatalf("a write boxd took in 1 MiB chunks failed: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	if _, err := w.Commit(ctx, sum[:]); err != nil {
+		t.Fatal(err)
+	}
+	if got := livetest.SHA256(ctx, t, p, ref, name); got != hex.EncodeToString(sum[:]) {
+		t.Errorf("sha256sum gave %s, want %x", got, sum)
+	}
+}
+
+// liveReplace makes the target with setup, then streams new bytes over it through FsRename
+func liveReplace(t *testing.T, p *Provider, ref provider.Ref, dir, base, setup string) {
+	ctx, cancel := context.WithTimeout(t.Context(), liveTimeout)
+	defer cancel()
+	livetest.Run(ctx, t, p, ref, "mkdir", "-p", dir)
+	livetest.Run(ctx, t, p, ref, "sh", "-c", "cd "+dir+" && "+setup)
+	name := dir + "/" + base
+	w, err := p.OpenWriter(ctx, ref, name, provider.WriteSpec{Size: 3, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if got := livetest.Run(ctx, t, p, ref, "cat", name); got != "old" {
+		t.Errorf("before Commit %s holds %q, want the old bytes", name, got)
+	}
+	if _, err := w.Commit(ctx, nil); err != nil {
+		t.Fatalf("Commit over %s: %v", name, err)
+	}
+	if got := livetest.Run(ctx, t, p, ref, "cat", name); got != "new" {
+		t.Errorf("after Commit %s holds %q, want the new bytes", name, got)
+	}
 }

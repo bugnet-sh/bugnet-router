@@ -88,10 +88,23 @@ scripts/live-test.sh boxd koyeb boat
 
 The script fails with the variable's name when a key is empty, and otherwise runs
 `go test -run Live` for each provider named, with every other setting from `config/dev.toml`
-(E2B uses its `[[e2b.templates]]`). The tests create real sandboxes and remove them again, which
-costs a little on the provider's account. The boxd run also starts `python3 -m http.server 8000`
-in a machine and checks that its public default proxy does not serve it. The E2B run streams
-files of 0 B to 101 MiB up and back and compares their SHA-256 with `sha256sum` in the sandbox.
+(E2B uses its `[[e2b.templates]]`, Koyeb its `transfers.koyeb_part`). Each provider gets 20
+minutes unless a first argument such as `--timeout 90m` says otherwise. The tests create real
+sandboxes and remove them again, which costs a little on the provider's account. The boxd run
+also starts `python3 -m http.server 8000` in a machine and checks that its public default proxy
+does not serve it.
+
+Every provider's run streams files of 0 B to 101 MiB up and back, compares their SHA-256 with
+`sha256sum` in the sandbox, checks a device or FIFO never reads as a regular file and logs the
+filesystem of `/tmp` and the home directory. Three runs add their provider's file rows:
+
+| Test | Rows |
+|---|---|
+| `TestLiveBoxdFileRows` | A cancelled upload keeps the old file, 1 MiB chunks, `FsRename` over a hard-linked and a root-owned target |
+| `TestLiveKoyebFileRows` | The `/files` and `/files/uploads` routes, a 1 GiB download through Koyeb's cuts, two 8 MiB parts sent at 0.3 MB/s |
+| `TestLiveBoatFileRows` | `Range` on signed download URLs, download and upload URLs used past their `expiresAt` |
+
+The Koyeb run reads 1 GiB, so give it `--timeout 90m` on a slow uplink.
 
 ## Running locally
 
@@ -585,9 +598,26 @@ no provider. `Estimate` marks every package, and `PricePackage` the one it price
 Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
 running the router on `local`.
 
-The `local` and E2B adapters stream whole files in and out of sandboxes, for transfers. A write
-fills a hidden file `.<name>.bugnet-<8 hex>.part` beside the target and replaces the target only
-once every byte arrived. An abort, or the end of the writer's context, removes that file. A read
-stops at the size the file had when it opened and fails if the file ends sooner. E2B streams use
-an HTTP/1.1 client of their own that asks for `identity` encoding, so lengths stay exact, and
-envd's `507` reads as a full disk. `contract.Streams` checks every adapter the same way.
+Every adapter streams whole files in and out of sandboxes, for transfers, through
+`StatFile`, `OpenReader` and `OpenWriter` on `provider.Provider`. A read stops at the size the
+file had when it opened and fails if the file ends sooner. No write makes new bytes visible:
+the target changes only on `Commit`, after exactly the declared size, and an abort or the end of
+the writer's context leaves it as it was. `StatFile` never follows a final symlink, and only a
+regular file reads as `Regular`. `contract.Streams` checks every adapter the same way. A full
+disk reads as `no_space` everywhere.
+
+| Adapter | Reads | Writes |
+|---|---|---|
+| `local` | `O_NOFOLLOW` open, checked against the `Lstat` | `.<name>.bugnet-<8 hex>.part` beside the target, renamed on `Commit` |
+| E2B | One ranged `GET /files` | `POST /files` to the temp file, then `chmod` and `Move` |
+| boxd | `FsRead` with the length, its byte count checked | `FsWrite` in 1 MiB chunks to the temp file, then `FsRename` |
+| Koyeb | Ranged `GET /files`, reissued with `If-Range` when cut, 3 empty tries in a row fail | Parts of `transfers.koyeb_part` in memory, one `PUT /files` or an upload session completed on `Commit` |
+| Boat | A ranged `GET` of a signed URL, bytes skipped on a 200 | A `PUT` of the temp file to a signed URL, then `permissions` and `move` |
+
+Transfer clients ask for `identity` encoding over HTTP/1.1, so lengths stay exact. boxd streams
+use a second gRPC connection, so a long stream never shares TCP with `Exec`. Each Koyeb part is
+sent again up to 3 times, and all part buffers of one process stay under
+`transfers.koyeb_buffer_total`, a writer waiting for room. Koyeb's `GET /files/stat` follows a
+final symlink, so `StatFile` reads the directory's listing instead. Boat's file API reaches only
+`/home/user` and `/tmp`, so any other path is refused before a call, and its file info has no
+type, so `StatFile` asks the shell whether a path is a regular file.

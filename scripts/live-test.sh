@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runs the live tests of each provider named, boxd, e2b, koyeb or boat, against the real service.
+# A first argument --timeout DURATION replaces go test's 20 minute limit for each provider.
 #
 # Keys come from .env and every other setting from config/dev.toml. The tests create real
 # sandboxes and remove them again, which costs a little on the provider's account.
@@ -7,8 +8,18 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+timeout=20m
+if [ "${1:-}" = "--timeout" ]; then
+	if [ -z "${2:-}" ]; then
+		echo "live-test: --timeout needs a duration such as 90m" >&2
+		exit 2
+	fi
+	timeout=$2
+	shift 2
+fi
 if [ $# -eq 0 ]; then
-	echo "usage: scripts/live-test.sh PROVIDER..., each one of boxd, e2b, koyeb or boat" >&2
+	echo "usage: scripts/live-test.sh [--timeout DURATION] PROVIDER..., each one of boxd," \
+		"e2b, koyeb or boat" >&2
 	exit 2
 fi
 keys=()
@@ -40,5 +51,5 @@ for key in "${keys[@]}"; do
 done
 
 for provider in "$@"; do
-	go test -count=1 -v -timeout 20m -run Live "./internal/provider/$provider/"
+	go test -count=1 -v -timeout "$timeout" -run Live "./internal/provider/$provider/"
 done
