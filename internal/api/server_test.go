@@ -41,6 +41,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -235,10 +236,12 @@ func newEnv(t *testing.T, opts options) *env {
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	st := store.New(pool)
+	_, keys := testenv.DataPlaneKeys(t)
 	sg := saga.New(saga.Deps{
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
+		Events: edgeevents.New(vk, prefix, discard), Keys: keys,
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{

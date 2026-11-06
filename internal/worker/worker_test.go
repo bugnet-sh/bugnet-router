@@ -29,6 +29,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -241,6 +242,8 @@ func newEnv(t *testing.T, o options) *env {
 		ReplicaID:    "worker-test",
 		DeploymentID: o.deployment,
 		Log:          slog.New(slog.NewTextHandler(out, nil)),
+		Events:       edgeevents.New(vk, prefix, slog.New(slog.NewTextHandler(out, nil))),
+		Keys:         keys,
 	}
 	if o.sagaClock != nil {
 		sd.Now = o.sagaClock.Now

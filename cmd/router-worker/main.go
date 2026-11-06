@@ -26,6 +26,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/placement"
 	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/saga"
@@ -152,6 +153,9 @@ func serve(
 		ReplicaID:    cfg.ReplicaID,
 		DeploymentID: cfg.DeploymentID,
 		Log:          log,
+		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
+		Budget:       cfg.EdgeBudget,
+		Keys:         cfg.DataPlaneKeys,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers,

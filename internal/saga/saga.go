@@ -11,7 +11,10 @@
 // one is destroyed. FailStuck fails a placement whose placing saga went away in the same way.
 // Every sandbox is labelled with its placement and the saga's deployment. Every state change
 // commits together with its outbox event and, for a deadline, its River job, and is then
-// published on Valkey for live readers.
+// published on Valkey for live readers. A placement records the data-plane root it was created
+// under, gets its edge and egress budgets in the transaction that makes it ready, and grows them
+// in each extension's. The edges hear of a placement leaving ready through PlacementEnded, and
+// of an extension through DeadlineMoved once both spent guards are cleared.
 package saga
 
 import (
@@ -32,11 +35,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/riverqueue/river"
 	"github.com/valkey-io/valkey-go"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/oynozan/bugnet-router/internal/budget"
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -125,6 +134,12 @@ type Deps struct {
 	Runners           map[string][]byte // architecture to its bugnet-run build
 	Now               func() time.Time  // time.Now when nil
 	Log               *slog.Logger      // slog.Default when nil
+	// Events carries the edge events, none are sent when nil
+	Events *edgeevents.Bus
+	// Budget sizes each placement's edge and egress budgets
+	Budget config.EdgeBudget
+	// Keys are the data-plane roots, a new placement records the newest one's id
+	Keys dpkeys.Keys
 }
 
 // Saga runs placements from order to teardown
@@ -132,7 +147,11 @@ type Saga struct {
 	d        Deps
 	wg       sync.WaitGroup
 	destroys singleflight.Group // keyed by placement, so racing terminations share one destroy
+	meter    *budget.Meter
+	keyID    string // the newest data-plane root's id, empty without keys
 }
+
+var errNoKeys = errors.New("saga: no data-plane keys to create a placement under")
 
 // New builds a saga over deps
 func New(deps Deps) *Saga {
@@ -148,7 +167,11 @@ func New(deps Deps) *Saga {
 	if deps.DeploymentID == "" {
 		deps.DeploymentID = defaultDeployment
 	}
-	return &Saga{d: deps}
+	s := &Saga{d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget)}
+	if roots := deps.Keys.Roots(); len(roots) > 0 {
+		s.keyID = roots[0].ID
+	}
+	return s
 }
 
 // Wait blocks until every placing goroutine has finished
@@ -170,8 +193,13 @@ func (s *Saga) Create(
 	if err != nil {
 		return store.Placement{}, "", err
 	}
+	if s.keyID == "" {
+		return store.Placement{}, "", errNoKeys
+	}
 	h, sha := handle.Derive(s.d.HandleKey, c.OrderID)
-	np := store.NewPlacement{HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID}
+	np := store.NewPlacement{
+		HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
+	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
 	case errors.Is(err, placement.ErrNoCandidate):
@@ -480,6 +508,9 @@ func (s *Saga) commitReady(
 		if err != nil {
 			return err
 		}
+		if _, _, err := s.addBudgets(tctx, ts, p.ID, pkg); err != nil {
+			return err
+		}
 		ready := rec
 		ready.State = attemptReady
 		if err := ts.RecordAttempt(tctx, ready); err != nil {
@@ -680,10 +711,17 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	// The lifetime is set inside the transaction so a refusal also takes back the extension
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		p, applied, err = s.d.Store.Tx(tx).ExtendDeadline(ctx, c.OrderID, id, by)
+		ts := s.d.Store.Tx(tx)
+		p, applied, err = ts.ExtendDeadline(ctx, c.OrderID, id, by)
 		if err != nil || !applied {
 			return err
 		}
+		edge, egress, err := s.addBudgets(ctx, ts, id, pkg)
+		if err != nil {
+			return err
+		}
+		p.EdgeBudgetBytes += edge
+		p.EgressBudgetBytes += egress
 		// A concurrent extension may have moved the deadline since the check above
 		if err := withinLifetime(prov, p, *p.Deadline); err != nil {
 			return err
@@ -714,7 +752,51 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		return s.replayExtend(ctx, p), nil
 	}
 	s.publish(ctx, ev)
+	s.deadlineMoved(ctx, p)
 	return p, nil
+}
+
+// addBudgets grows the placement's budgets by what pkg brings, inside the caller's transaction,
+// and returns the edge and egress bytes it added
+func (s *Saga) addBudgets(
+	ctx context.Context, ts *store.Store, id uuid.UUID, pkg catalog.Package,
+) (int64, int64, error) {
+	edge := budget.BytesFor(pkg, s.d.Budget, budget.Edge)
+	egress := budget.BytesFor(pkg, s.d.Budget, budget.Egress)
+	return edge, egress, ts.AddPlacementBudgets(ctx, id, edge, egress)
+}
+
+// deadlineMoved clears both spent guards, then tells the edges the new deadline and bytes left
+func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
+	defer cancel()
+	if err := s.meter.ClearSpent(ctx, p.ID); err != nil {
+		// The bytes left never read the guards, so only a second BudgetSpent is lost
+		s.d.Log.Warn("clear spent guards after an extension", "placement", p.ID, "err", err)
+	}
+	if s.d.Events == nil || p.Deadline == nil {
+		return
+	}
+	limit := budget.Limit{Placement: p.ID, Deadline: *p.Deadline}
+	edge, egress := limit, limit
+	edge.Budget, egress.Budget = p.EdgeBudgetBytes, p.EgressBudgetBytes
+	edgeLeft, err := s.meter.Remaining(ctx, budget.Edge, edge)
+	var egressLeft uint64
+	if err == nil {
+		egressLeft, err = s.meter.Remaining(ctx, budget.Egress, egress)
+	}
+	if err != nil {
+		// The edges ask CheckEdgeLeases before cutting at the old deadline, which repairs this
+		s.d.Log.Warn("read bytes left after an extension, no DeadlineMoved sent",
+			"placement", p.ID, "err", err)
+		return
+	}
+	s.d.Events.Publish(ctx, &routerv1.EdgeEvent{Event: &routerv1.EdgeEvent_DeadlineMoved{
+		DeadlineMoved: &routerv1.DeadlineMoved{
+			PlacementId: p.ID.String(), Deadline: timestamppb.New(*p.Deadline),
+			EdgeBytesRemaining: edgeLeft, EgressBytesRemaining: egressLeft,
+		},
+	}})
 }
 
 // CheckExtend answers as Extend would for a fresh order of the package now, changing nothing
@@ -854,7 +936,7 @@ func (s *Saga) Stop(ctx context.Context, h string) (store.Placement, error) {
 	if err != nil {
 		return store.Placement{}, err
 	}
-	return s.terminate(ctx, p, func(ctx context.Context) (bool, error) {
+	return s.terminate(ctx, p, ReasonStop, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementTerminating(ctx, p.ID, ReasonStop, s.now())
 	})
 }
@@ -865,15 +947,35 @@ func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, due time.Ti
 	if err != nil {
 		return err
 	}
-	_, err = s.terminate(ctx, p, func(ctx context.Context) (bool, error) {
+	_, err = s.terminate(ctx, p, ReasonDeadline, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementDue(ctx, p.ID, ReasonDeadline, due, s.now())
 	})
 	return err
 }
 
-// terminate destroys the sandbox, then marks the placement terminated and frees its slot once
+// endReasons maps a termination reason to the EndReason the edges get
+var endReasons = map[string]routerv1.EndReason{
+	ReasonStop:     routerv1.EndReason_END_REASON_STOPPED,
+	ReasonDeadline: routerv1.EndReason_END_REASON_EXPIRED,
+}
+
+// placementEnded tells the edges to close all of the placement's traffic
+func (s *Saga) placementEnded(ctx context.Context, id uuid.UUID, reason string) {
+	if s.d.Events == nil {
+		return
+	}
+	s.d.Events.Publish(ctx, &routerv1.EdgeEvent{Event: &routerv1.EdgeEvent_PlacementEnded{
+		PlacementEnded: &routerv1.PlacementEnded{
+			PlacementId: id.String(), Reason: endReasons[reason],
+		},
+	}})
+}
+
+// terminate marks the placement for reason, destroys the sandbox, then marks it terminated and
+// frees its slot once
 func (s *Saga) terminate(
-	ctx context.Context, p store.Placement, mark func(context.Context) (bool, error),
+	ctx context.Context, p store.Placement, reason string,
+	mark func(context.Context) (bool, error),
 ) (store.Placement, error) {
 	switch p.State {
 	case store.PlacementTerminated:
@@ -888,7 +990,10 @@ func (s *Saga) terminate(
 	if err != nil {
 		return store.Placement{}, err
 	}
-	if !moved {
+	if moved {
+		// The edges cut the placement's traffic now, not once the destroy is done
+		s.placementEnded(ctx, p.ID, reason)
+	} else {
 		if p, err = s.d.Store.PlacementByID(ctx, p.ID); err != nil {
 			return store.Placement{}, err
 		}

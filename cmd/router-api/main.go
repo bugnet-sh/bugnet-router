@@ -29,6 +29,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -151,6 +152,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		DeploymentID: cfg.DeploymentID,
 		Runners:      runners,
 		Log:          log,
+		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
+		Budget:       cfg.EdgeBudget,
+		Keys:         cfg.DataPlaneKeys,
 	})
 	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
 	var scanner sync.WaitGroup

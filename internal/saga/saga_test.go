@@ -30,6 +30,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -366,6 +367,7 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 	_, keys := testenv.DataPlaneKeys(t)
 	st := store.New(pool, store.WithRefSealer(keys),
 		store.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
 	deps := saga.Deps{
 		Store:       st,
 		Engine:      placement.New(reg, tracker),
@@ -379,7 +381,10 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 		MarginFloor: 0.5,
 		Tracker:     tracker,
 		ReplicaID:   "replica-test",
-		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:         discard,
+		Events:      edgeevents.New(vk, prefix, discard),
+		Budget:      budgetDefaults,
+		Keys:        keys,
 	}
 	if adjust != nil {
 		adjust(&deps)
