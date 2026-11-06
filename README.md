@@ -16,8 +16,8 @@ A `Placement`'s `ended_at` is when it became terminated or failed, and never mov
 is unset before. A placement that fails at once, with no provider for its order, ends at its
 `created_at`.
 
-A terminating or terminated placement's `termination_reason` is `stop` or `deadline`. It is empty
-in every other state. A failed placement says why in `failure_reason` alone.
+A terminating or terminated placement's `termination_reason` is a stable code such as `stop` or
+`deadline`. It is empty in every other state. A failed placement says why in `failure_reason` alone.
 
 ## Layout
 
@@ -407,4 +407,5 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   from each process's own count while Valkey does not answer.
 
 No provider offers SSH, previews or secrets yet. An order that requires any of them finds no
-provider, and `Estimate` and `PricePackage` mark every package `feature_unavailable` for it.
+provider. `Estimate` marks every package, and `PricePackage` the one it prices,
+`feature_unavailable` for it.
