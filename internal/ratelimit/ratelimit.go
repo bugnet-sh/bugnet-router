@@ -3,6 +3,10 @@
 // Take spends from a placement's operation bucket, ops:<placement>. TakeKey, TakeAll and Peek
 // work on any bucket a caller names, whose refill may be a fraction of a token a second, so
 // limits such as 10 an hour need no other form.
+//
+// One script serves every form. A bucket holds micro-tokens timed by the Valkey server's clock in
+// microseconds, so a rate of tokens a second is also micro-tokens a microsecond. Peek writes
+// nothing.
 package ratelimit
 
 import (
@@ -29,9 +33,7 @@ const (
 	modePeek = "peek"
 )
 
-// takeScript checks every bucket in KEYS and takes one token from each only when all have one.
-// A bucket holds micro-tokens timed in the server's microseconds, its rate in ARGV as tokens a
-// second, which is also micro-tokens a microsecond. Peek mode writes nothing.
+// takeScript takes one token from every bucket in KEYS when each has one, and none otherwise
 var takeScript = valkey.NewLuaScript(`
 local mode = ARGV[1]
 local now = redis.call('TIME')
