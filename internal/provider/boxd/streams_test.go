@@ -163,6 +163,32 @@ func TestBoxdNoSpace(t *testing.T) {
 	}
 }
 
+func TestBoxdFilePermissionIsNotAuth(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory of mode 0 anyway")
+	}
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	_, err := p.StatFile(t.Context(), ref, filepath.Join(locked, "f"))
+	eq(t, isCode(err, provider.CodeInvalid), true)
+	_, _, err = p.ReadFile(t.Context(), ref, filepath.Join(locked, "f"), 0, 1)
+	eq(t, isCode(err, provider.CodeInvalid), true)
+	_, err = listAll(t.Context(), p, ref, locked, 1)
+	eq(t, isCode(err, provider.CodeInvalid), true)
+}
+
 func TestBoxdReaderChecksTheByteCount(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)

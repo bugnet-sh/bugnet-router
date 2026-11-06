@@ -29,8 +29,16 @@ func fsError(ctx context.Context, err error, trailer metadata.MD) error {
 	if _, ok := provider.AsError(err); ok {
 		return err
 	}
-	if reasons := trailer.Get(reasonTrailer); len(reasons) > 0 && reasons[0] == "no_space" {
+	var reason string
+	if reasons := trailer.Get(reasonTrailer); len(reasons) > 0 {
+		reason = reasons[0]
+	}
+	switch reason {
+	case "no_space":
 		return &provider.Error{Code: provider.CodeNoSpace, Err: withCtx(ctx, err)}
+	case "permission_denied", "read_only":
+		// The exec user may not touch the path, which says nothing about the API key
+		return &provider.Error{Code: provider.CodeInvalid, Err: withCtx(ctx, err)}
 	}
 	return classify(ctx, err)
 }

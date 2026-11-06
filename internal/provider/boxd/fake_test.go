@@ -670,6 +670,8 @@ func fsErr(set func(metadata.MD), err error) error {
 		code, reason = codes.FailedPrecondition, "not_a_directory"
 	case errors.Is(err, syscall.ENOSPC):
 		code, reason = codes.ResourceExhausted, "no_space"
+	case errors.Is(err, fs.ErrPermission):
+		code, reason = codes.PermissionDenied, "permission_denied"
 	}
 	return fsFail(set, code, reason, err.Error())
 }

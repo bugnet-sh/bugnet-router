@@ -724,7 +724,7 @@ func (p *Provider) ReadFile(
 			break
 		}
 		if err != nil {
-			return nil, false, classify(ctx, err)
+			return nil, false, fsError(ctx, err, stream.Trailer())
 		}
 		if e := c.GetEntry(); e != nil {
 			size = int64(e.GetSize())
@@ -809,7 +809,7 @@ func (p *Provider) list(
 			break
 		}
 		if err != nil {
-			return classify(ctx, err)
+			return fsError(ctx, err, stream.Trailer())
 		}
 		for _, e := range c.GetEntries() {
 			entry := fileEntry(dir, e)
