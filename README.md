@@ -15,6 +15,9 @@ secrets and `FetchSource` RPCs answer `Unimplemented` until the router builds th
 A `Placement`'s `ended_at` is when it became terminated, and never moves after that. It is unset
 before, and on a failed placement, since the router records no time for a failure.
 
+A terminating or terminated placement's `termination_reason` is `stop` or `deadline`. It is empty
+in every other state. A failed placement says why in `failure_reason` alone.
+
 ## Layout
 
 | Path | What it holds |

@@ -169,6 +169,7 @@ type options struct {
 
 type env struct {
 	api       *api.Server
+	saga      *saga.Saga
 	client    routerv1connect.SandboxRouterServiceClient
 	url       string
 	dbURL     string
@@ -269,9 +270,9 @@ func newEnv(t *testing.T, opts options) *env {
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk, tracker: tracker,
-		apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root, priv: priv,
-		handleKey: handleKey,
+		api: srv, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
+		tracker: tracker, apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root,
+		priv: priv, handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv, internalToken)
