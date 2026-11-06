@@ -297,6 +297,8 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"koyeb part above the total", "[transfers]\nkoyeb_part = \"8MiB\"\n" +
 			"koyeb_buffer_total = \"4MiB\"",
 			"transfers.koyeb_part must not exceed transfers.koyeb_buffer_total"},
+		{"koyeb part above a request", "[transfers]\nkoyeb_part = \"101MiB\"\n" +
+			"koyeb_buffer_total = \"1GiB\"", "transfers.koyeb_part must not exceed 100MiB"},
 		{"host key without a key", "[ssh]\nhost_keys = [\"ssh-ed25519\"]",
 			"ssh.host_keys entry 1 must be a public key line"},
 		{"host key not base64", "[ssh]\nhost_keys = [\"ssh-ed25519 !!!\"]",

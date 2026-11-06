@@ -20,6 +20,9 @@ import (
 // maxDataplaneWorkers is the most workers River lets one queue run
 const maxDataplaneWorkers = 10_000
 
+// maxKoyebPart is the most one request carries through Koyeb's front
+const maxKoyebPart = 100 << 20
+
 // dataPlane checks the data-plane tables of f and sets them on c
 func (f file) dataPlane(c *Config) error {
 	d := defaults()
@@ -126,6 +129,10 @@ func (f file) dataPlane(c *Config) error {
 	}
 	if c.Transfers.KoyebPart > c.Transfers.KoyebBufferTotal {
 		return errors.New("transfers.koyeb_part must not exceed transfers.koyeb_buffer_total")
+	}
+	if c.Transfers.KoyebPart > maxKoyebPart {
+		return errors.New("transfers.koyeb_part must not exceed 100MiB, the most one Koyeb " +
+			"request carries")
 	}
 	if c.SSH.SSHDPort == c.SSH.SSHDFallbackPort {
 		return errors.New("ssh.sshd_port and ssh.sshd_fallback_port must differ")

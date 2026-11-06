@@ -10,7 +10,9 @@
 // processes, so SetLifetime changes nothing and refuses any lifetime past the 23 hours 50
 // minutes the adapter sells, which keeps every deadline inside the backstop. The control plane
 // is called through a small client that reads only the fields it needs. The executor is reached
-// over HTTP/1.1 only, the protocol that can wake a sleeping service.
+// over HTTP/1.1 only, the protocol that can wake a sleeping service. File streams buffer each
+// upload part in memory, so a part Koyeb's front cuts is sent again, and reissue a download
+// that ends early from where it stopped.
 package koyeb
 
 import (
@@ -31,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 )
@@ -151,6 +155,10 @@ type Options struct {
 	InstanceTypeBySize map[string]string
 	BaseURL            string
 	Log                *slog.Logger // slog.Default when nil
+	// PartBytes is the size of each buffered upload part, 8 MiB when 0
+	PartBytes int64
+	// BufferTotal bounds every part buffer of the process together, 256 MiB when 0
+	BufferTotal int64
 }
 
 // Provider places sandboxes on Koyeb, keeping only the labels it already read per service
@@ -162,8 +170,14 @@ type Provider struct {
 	sizes        []size
 	pollInterval time.Duration
 	exitDir      string
-	mu           sync.Mutex
-	known        map[string]knownService // by service id, labels never change after create
+	// streams carries file streams, which never ask for compression
+	streams   *http.Client
+	partBytes int64
+	buffers   *semaphore.Weighted
+	// reissueWait spaces out reads that follow one that moved no bytes
+	reissueWait time.Duration
+	mu          sync.Mutex
+	known       map[string]knownService // by service id, labels never change after create
 }
 
 // knownService is what ListOwned read from one deployment of a service
@@ -181,6 +195,18 @@ func New(opts Options) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	part := cmp.Or(opts.PartBytes, defaultPartBytes)
+	total := cmp.Or(opts.BufferTotal, defaultBufferTotal)
+	switch {
+	case part < 0 || total < 0:
+		return nil, errors.New("koyeb: part and buffer sizes must not be negative")
+	case part > maxPartBytes:
+		return nil, fmt.Errorf("koyeb: a part of %d bytes is over Koyeb's %d per request", part,
+			int64(maxPartBytes))
+	case part > total:
+		return nil, fmt.Errorf("koyeb: a part of %d bytes does not fit a buffer total of %d",
+			part, total)
+	}
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
@@ -197,6 +223,10 @@ func New(opts Options) (*Provider, error) {
 		sizes:        sizes,
 		pollInterval: defaultPoll,
 		exitDir:      defaultExitDir,
+		streams:      newStreamClient(),
+		partBytes:    part,
+		buffers:      semaphore.NewWeighted(total),
+		reissueWait:  defaultReissueWait,
 		known:        map[string]knownService{},
 	}, nil
 }

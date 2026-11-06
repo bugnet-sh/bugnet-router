@@ -160,6 +160,11 @@ func executorError(resp *http.Response) error {
 		Err: fmt.Errorf("koyeb executor answered %d: %s", resp.StatusCode, msg),
 	}
 	switch resp.StatusCode {
+	case http.StatusInternalServerError:
+		// The executor answers a full disk as a plain 500 holding the OS error's text
+		if strings.Contains(msg, "no space left on device") {
+			e.Code, e.CanFailOver = provider.CodeNoSpace, false
+		}
 	case http.StatusBadRequest, http.StatusForbidden, http.StatusConflict:
 		// 403 is a file the executor's user may not touch, a wrong secret is 401
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
@@ -690,8 +695,12 @@ func fileEntry(dir, rel, typ string, size int64, mode, mtime string) provider.Fi
 		m |= fs.ModeDir
 	case "symlink":
 		m |= fs.ModeSymlink
+	case "other":
+		m |= fs.ModeIrregular
 	}
-	entry := provider.FileEntry{Path: path.Join(dir, rel), Size: size, IsDir: m.IsDir(), Mode: m}
+	entry := provider.FileEntry{
+		Path: path.Join(dir, rel), Size: size, IsDir: m.IsDir(), Mode: m, Regular: typ == "file",
+	}
 	if t, err := time.Parse(time.RFC3339Nano, mtime); err == nil {
 		entry.Modified = t.UTC()
 	}

@@ -63,7 +63,7 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			}
 			ps = append(ps, p)
 		case "koyeb":
-			p, err := buildKoyeb(cfg.Koyeb, cfg.ProviderKeys["koyeb"])
+			p, err := buildKoyeb(cfg, cfg.ProviderKeys["koyeb"])
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -147,17 +147,23 @@ func buildE2B(cfg config.E2B, key string) (*e2b.Provider, error) {
 }
 
 // buildKoyeb builds Koyeb from its settings, every fra instance type is a size unless named
-func buildKoyeb(cfg config.Koyeb, token string) (*koyeb.Provider, error) {
+func buildKoyeb(cfg config.Config, token string) (*koyeb.Provider, error) {
 	if token == "" {
 		return nil, errors.New("koyeb needs KOYEB_API_TOKEN")
 	}
-	p, err := koyeb.New(koyeb.Options{
-		APIToken: token, Region: cfg.Region, InstanceTypeBySize: cfg.InstanceTypes,
-	})
+	p, err := koyeb.New(koyebOptions(cfg, token))
 	if err != nil {
 		return nil, fmt.Errorf("koyeb.instance_types: %w", err)
 	}
 	return p, nil
+}
+
+// koyebOptions maps the settings Koyeb reads, its upload parts among them, to its options
+func koyebOptions(cfg config.Config, token string) koyeb.Options {
+	return koyeb.Options{
+		APIToken: token, Region: cfg.Koyeb.Region, InstanceTypeBySize: cfg.Koyeb.InstanceTypes,
+		PartBytes: cfg.Transfers.KoyebPart, BufferTotal: cfg.Transfers.KoyebBufferTotal,
+	}
 }
 
 // buildBoat builds Boat from its settings, every machine type is a size unless some are named

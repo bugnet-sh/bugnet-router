@@ -106,6 +106,25 @@ func (p *fakeProc) since(i int) ([]logEntry, bool, <-chan struct{}) {
 	return slices.Clone(p.entries[i:]), p.done, p.changed
 }
 
+// fileFault answers matching executor file calls with status and body, or cuts a download short
+type fileFault struct {
+	status int
+	body   string
+	// cut ends a download's body after so many bytes, its status and length already sent
+	cut   int64
+	times int
+}
+
+// fakeUpload is one upload session, its bytes in a temp file beside the target like Koyeb's
+type fakeUpload struct {
+	path, temp string
+	size       int64
+	mode       fs.FileMode
+	modeSet    bool
+	sha        string
+	ranges     [][2]int64
+}
+
 type startCall struct {
 	header http.Header
 	cmd    string
@@ -160,6 +179,10 @@ type fakeKoyeb struct {
 	slowDeployment string
 	script         *string
 	cleanup        []string
+	fileFaults     map[string][]*fileFault
+	downloads      []http.Header
+	sessions       map[string]*fakeUpload
+	nextUpload     int
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -168,6 +191,7 @@ func newFake(t *testing.T) *fakeKoyeb {
 		t: t, apps: map[string]*fakeApp{}, services: map[string]*fakeService{},
 		deployments: map[string]*fakeDeployment{}, procs: map[string]*fakeProc{},
 		faults: map[string]*fault{}, calls: map[string]int{}, stamps: map[string][]time.Time{},
+		fileFaults: map[string][]*fileFault{}, sessions: map[string]*fakeUpload{},
 	}
 	api := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -240,6 +264,7 @@ func (f *fakeKoyeb) provider(t *testing.T, token string) *Provider {
 
 func (f *fakeKoyeb) trust(p *Provider) {
 	p.exec.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: f.pool}
+	p.streams.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: f.pool}
 }
 
 func (f *fakeKoyeb) inject(pattern string, ft fault) {
@@ -811,6 +836,28 @@ func (f *fakeKoyeb) edge(w http.ResponseWriter, r *http.Request) {
 		f.upload(w, r)
 	case "GET /files/list":
 		f.list(w, r)
+	case "GET /files/stat":
+		f.stat(w, r)
+	case "POST /make_dir":
+		f.makeDir(w, r)
+	case "POST /files/uploads":
+		f.openUpload(w, r)
+	default:
+		f.session(w, r, route)
+	}
+}
+
+// session serves the routes of one upload session under /files/uploads/{id}
+func (f *fakeKoyeb) session(w http.ResponseWriter, r *http.Request, route string) {
+	rest, ok := strings.CutPrefix(route, "/files/uploads/")
+	id, complete := strings.CutSuffix(rest, "/complete")
+	switch {
+	case ok && complete && r.Method == http.MethodPost:
+		f.completeUpload(w, id)
+	case ok && !strings.Contains(rest, "/") && r.Method == http.MethodPut:
+		f.uploadPart(w, r, id)
+	case ok && !strings.Contains(rest, "/") && r.Method == http.MethodDelete:
+		f.dropUpload(w, id)
 	default:
 		f.t.Errorf("adapter called the executor route %s %s", r.Method, route)
 		http.Error(w, "not in the fake", http.StatusNotFound)
@@ -1016,7 +1063,74 @@ func writeFileError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
+// failFiles queues a fault for route's next times calls, every later call when times is 0
+func (f *fakeKoyeb) failFiles(route string, ft fileFault) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fileFaults[route] = append(f.fileFaults[route], &ft)
+}
+
+// fileFault takes the first queued fault for route, if there is one
+func (f *fakeKoyeb) fileFault(route string) *fileFault {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	queue := f.fileFaults[route]
+	if len(queue) == 0 {
+		return nil
+	}
+	ft := queue[0]
+	if ft.times > 0 {
+		if ft.times--; ft.times == 0 {
+			f.fileFaults[route] = queue[1:]
+		}
+	}
+	copied := *ft
+	return &copied
+}
+
+// failed writes a fault's answer and reports whether there was one to write
+func failed(w http.ResponseWriter, ft *fileFault) bool {
+	if ft == nil || ft.status == 0 {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(ft.status)
+	_, _ = io.WriteString(w, ft.body)
+	return true
+}
+
+// cutWriter aborts the response once its body passed left bytes, as a cut connection would
+type cutWriter struct {
+	http.ResponseWriter
+	left int64
+}
+
+func (c *cutWriter) Write(b []byte) (int, error) {
+	if int64(len(b)) > c.left {
+		n, _ := c.ResponseWriter.Write(b[:c.left])
+		_ = http.NewResponseController(c.ResponseWriter).Flush()
+		c.left -= int64(n)
+		panic(http.ErrAbortHandler)
+	}
+	c.left -= int64(len(b))
+	return c.ResponseWriter.Write(b)
+}
+
+// downloadHeaders lists the request headers of every download, oldest first
+func (f *fakeKoyeb) downloadHeaders() []http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.downloads)
+}
+
 func (f *fakeKoyeb) download(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.downloads = append(f.downloads, r.Header.Clone())
+	f.mu.Unlock()
+	ft := f.fileFault("GET /files")
+	if failed(w, ft) {
+		return
+	}
 	name := r.URL.Query().Get("path")
 	info, err := os.Stat(name)
 	if err != nil {
@@ -1039,6 +1153,10 @@ func (f *fakeKoyeb) download(w http.ResponseWriter, r *http.Request) {
 	if info.Size() == 0 {
 		return
 	}
+	w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
+	if ft != nil && ft.cut >= 0 && ft.status == 0 {
+		w = &cutWriter{ResponseWriter: w, left: ft.cut}
+	}
 	http.ServeContent(w, r, "", info.ModTime(), file)
 }
 
@@ -1058,6 +1176,9 @@ func (f *fakeKoyeb) upload(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.uploads = append(f.uploads, r.Clone(r.Context()))
 	f.mu.Unlock()
+	if failed(w, f.fileFault("PUT /files")) {
+		return
+	}
 	sum := sha256.Sum256(data)
 	if want := r.Header.Get("X-Content-SHA256"); want != "" && want != hex.EncodeToString(sum[:]) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha256 mismatch"})
@@ -1128,12 +1249,8 @@ func (f *fakeKoyeb) list(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return enc.Encode(map[string]any{"path": rel, "size": 0, "error": err.Error()})
 		}
-		typ := "file"
-		if info.IsDir() {
-			typ = "dir"
-		}
 		_ = enc.Encode(map[string]any{
-			"path": rel, "type": typ, "size": info.Size(),
+			"path": rel, "type": fakeType(info.Mode()), "size": info.Size(),
 			"mode":  fmt.Sprintf("%04o", info.Mode().Perm()),
 			"mtime": info.ModTime().UTC().Format(time.RFC3339Nano),
 		})
@@ -1142,6 +1259,242 @@ func (f *fakeKoyeb) list(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+}
+
+// fakeType names a mode the way the executor's entries do
+func fakeType(mode fs.FileMode) string {
+	switch {
+	case mode.IsRegular():
+		return "file"
+	case mode.IsDir():
+		return "dir"
+	case mode&fs.ModeSymlink != 0:
+		return "symlink"
+	}
+	return "other"
+}
+
+// stat follows a final symlink like the executor's GET /files/stat
+func (f *fakeKoyeb) stat(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("path")
+	info, err := os.Stat(name)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"type": fakeType(info.Mode()), "size": info.Size(),
+		"mode":  fmt.Sprintf("%04o", info.Mode().Perm()),
+		"mtime": info.ModTime().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// makeDir answers like the executor's legacy route, 200 with success false on a failure
+func (f *fakeKoyeb) makeDir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	f.track(req.Path)
+	if err := os.MkdirAll(req.Path, 0o755); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+const fakeMaxPart = 100 << 20
+
+func (f *fakeKoyeb) openUpload(w http.ResponseWriter, r *http.Request) {
+	if failed(w, f.fileFault("POST /files/uploads")) {
+		return
+	}
+	var req struct {
+		Path   string  `json:"path"`
+		Size   *int64  `json:"size"`
+		Mode   *string `json:"mode"`
+		SHA256 string  `json:"sha256"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" ||
+		req.Size == nil || *req.Size < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path and size required"})
+		return
+	}
+	u := &fakeUpload{path: filepath.Clean(req.Path), size: *req.Size, sha: req.SHA256}
+	if req.Mode != nil {
+		mode, err := strconv.ParseUint(*req.Mode, 8, 32)
+		if err != nil || mode > 0o777 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "mode must be octal permission bits, e.g. 0644",
+			})
+			return
+		}
+		u.mode, u.modeSet = fs.FileMode(mode), true
+	}
+	f.mu.Lock()
+	f.nextUpload++
+	n := f.nextUpload
+	f.mu.Unlock()
+	id := fmt.Sprintf("up-%04d", n)
+	u.temp = filepath.Join(filepath.Dir(u.path),
+		"."+filepath.Base(u.path)+".koyeb-tmp-"+strconv.Itoa(n))
+	file, err := os.OpenFile(u.temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		err = errors.Join(file.Truncate(u.size), file.Close())
+	}
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	f.mu.Lock()
+	f.sessions[id] = u
+	f.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"upload_id": id, "max_part_size": fakeMaxPart})
+}
+
+func (f *fakeKoyeb) uploadSession(id string) *fakeUpload {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessions[id]
+}
+
+func (f *fakeKoyeb) uploadPart(w http.ResponseWriter, r *http.Request, id string) {
+	u := f.uploadSession(id)
+	if u == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown upload session"})
+		return
+	}
+	offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	if err != nil || offset < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "offset must be a non-negative integer",
+		})
+		return
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return
+	}
+	if failed(w, f.fileFault("PUT /files/uploads/{id}")) {
+		return
+	}
+	switch sum := sha256.Sum256(data); {
+	case len(data) > fakeMaxPart:
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+			"error": "part is larger than max_part_size",
+		})
+		return
+	case offset+int64(len(data)) > u.size:
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "part writes past the end of the upload",
+		})
+		return
+	case r.Header.Get("X-Content-SHA256") != "" &&
+		r.Header.Get("X-Content-SHA256") != hex.EncodeToString(sum[:]):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha256 mismatch"})
+		return
+	}
+	file, err := os.OpenFile(u.temp, os.O_WRONLY, 0)
+	if err == nil {
+		_, err = file.WriteAt(data, offset)
+		err = errors.Join(err, file.Close())
+	}
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	if len(data) > 0 {
+		f.mu.Lock()
+		u.ranges = append(u.ranges, [2]int64{offset, offset + int64(len(data))})
+		f.mu.Unlock()
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// covered reports whether ranges cover [0, size) without a gap
+func covered(ranges [][2]int64, size int64) bool {
+	sorted := slices.Clone(ranges)
+	slices.SortFunc(sorted, func(a, b [2]int64) int { return cmp.Compare(a[0], b[0]) })
+	end := int64(0)
+	for _, r := range sorted {
+		if r[0] > end {
+			return false
+		}
+		end = max(end, r[1])
+	}
+	return end >= size
+}
+
+func (f *fakeKoyeb) completeUpload(w http.ResponseWriter, id string) {
+	u := f.uploadSession(id)
+	if u == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown upload session"})
+		return
+	}
+	f.mu.Lock()
+	whole := covered(u.ranges, u.size)
+	if whole {
+		delete(f.sessions, id)
+	}
+	f.mu.Unlock()
+	if !whole {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "ranges of the upload are still missing",
+		})
+		return
+	}
+	data, err := os.ReadFile(u.temp)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	sum := sha256.Sum256(data)
+	if u.sha != "" && u.sha != hex.EncodeToString(sum[:]) {
+		_ = os.Remove(u.temp)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sha256 mismatch"})
+		return
+	}
+	mode := fs.FileMode(0o644)
+	if info, err := os.Stat(u.path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if u.modeSet {
+		mode = u.mode
+	}
+	f.track(u.path)
+	if err := errors.Join(os.Chmod(u.temp, mode), os.Rename(u.temp, u.path)); err != nil {
+		_ = os.Remove(u.temp)
+		writeFileError(w, err)
+		return
+	}
+	reply := map[string]any{"size": u.size}
+	if u.sha != "" {
+		reply["sha256"] = u.sha
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeKoyeb) dropUpload(w http.ResponseWriter, id string) {
+	f.mu.Lock()
+	u := f.sessions[id]
+	delete(f.sessions, id)
+	f.mu.Unlock()
+	if u == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown upload session"})
+		return
+	}
+	_ = os.Remove(u.temp)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// openSessions counts the upload sessions neither completed nor deleted
+func (f *fakeKoyeb) openSessions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sessions)
 }
 
 // track remembers the topmost path a write is about to create so cleanup removes it
