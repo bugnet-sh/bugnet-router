@@ -37,6 +37,19 @@ type Placement struct {
 	// TerminationReason is why the placement moved to terminating, empty before it did
 	TerminationReason string
 	TerminatingAt     *time.Time
+	// KeyID names the data-plane root of the placement's gate key and placeholders
+	KeyID string
+	// SSHAlias is the placement's SSH alias, empty until it has one
+	SSHAlias    string
+	SourceLabel string
+	// EdgeBudgetBytes is the edge bytes the placement may use both ways, 0 before it is set
+	EdgeBudgetBytes   int64
+	EgressBudgetBytes int64
+	// EgressCAVersion is the Bugnet CA version installed in the sandbox, 0 for none
+	EgressCAVersion int
+	// SecretsVersion moves on every change to the placement's secrets
+	SecretsVersion int64
+	GateReadyAt    *time.Time
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -62,7 +75,9 @@ type Attempt struct {
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
 	provider_ref, coalesce(size_name, ''), deadline, created_at, ready_at, terminated_at,
 	coalesce(failure_reason, ''), refundable, coalesce(saga_owner, ''), saga_heartbeat,
-	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at`
+	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at,
+	coalesce(key_id, ''), coalesce(ssh_alias, ''), coalesce(source_label, ''), edge_budget_bytes,
+	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at`
 
 func scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -70,7 +85,9 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 	err := row.Scan(&p.ID, &p.HandleSHA256, &p.OrderID, &p.PackageID, &p.State, &p.Provider,
 		&ref, &p.SizeName, &p.Deadline, &p.CreatedAt, &p.ReadyAt, &p.TerminatedAt,
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
-		&p.TerminationReason, &p.TerminatingAt)
+		&p.TerminationReason, &p.TerminatingAt, &p.KeyID, &p.SSHAlias, &p.SourceLabel,
+		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
+		&p.GateReadyAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -89,6 +106,7 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 	p.TerminatedAt = utcPtr(p.TerminatedAt)
 	p.SagaHeartbeat = utcPtr(p.SagaHeartbeat)
 	p.TerminatingAt = utcPtr(p.TerminatingAt)
+	p.GateReadyAt = utcPtr(p.GateReadyAt)
 	return p, nil
 }
 

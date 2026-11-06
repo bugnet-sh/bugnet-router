@@ -2,9 +2,11 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1349,4 +1351,133 @@ func TestMigrateKeepsHeldCapacity(t *testing.T) {
 			t.Errorf("placement %d holds capacity on %q, want %q", i+1, got, w)
 		}
 	}
+}
+
+// dataPlaneTables are the tables migration 00006 creates
+var dataPlaneTables = []string{
+	"previews", "ssh_keys", "ssh_hosts", "ssh_gateway_keys", "secret_links", "secrets",
+}
+
+// dataPlaneColumns are the placements columns migration 00006 adds
+var dataPlaneColumns = []string{
+	"key_id", "ssh_alias", "source_label", "edge_budget_bytes", "egress_budget_bytes",
+	"egress_token_sha256", "egress_ca_version", "secrets_version", "gate_ready_at",
+}
+
+// schemaCounts counts the data-plane tables and placements columns the database has
+func schemaCounts(t *testing.T, db *sql.DB) (tables, columns int) {
+	t.Helper()
+	ctx := context.Background()
+	err := db.QueryRowContext(ctx, `
+		select count(*) from information_schema.tables
+		where table_schema = current_schema() and table_name = any($1)`,
+		dataPlaneTables).Scan(&tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.QueryRowContext(ctx, `
+		select count(*) from information_schema.columns
+		where table_schema = current_schema() and table_name = 'placements'
+			and column_name = any($1)`, dataPlaneColumns).Scan(&columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tables, columns
+}
+
+func TestMigration00006UpDownUp(t *testing.T) {
+	url := testenv.DatabaseURL(t)
+	ctx := context.Background()
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	gp, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, cols := len(dataPlaneTables), len(dataPlaneColumns)
+	if _, err := gp.UpTo(ctx, 5); err != nil {
+		t.Fatalf("up to 5: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+		insert into placements (id, handle_sha256, order_id, package_id, state)
+		values ('00000000-0000-0000-0000-000000000001', 'h1', 'o1', 'p', 'ready')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, step := range []struct {
+		name           string
+		run            func() error
+		tables, column int
+	}{
+		{"up", func() error { _, err := gp.UpTo(ctx, 6); return err }, all, cols},
+		{"down", func() error { _, err := gp.DownTo(ctx, 5); return err }, 0, 0},
+		{"up again", func() error { _, err := gp.UpTo(ctx, 6); return err }, all, cols},
+	} {
+		if err := step.run(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		tables, columns := schemaCounts(t, db)
+		if tables != step.tables || columns != step.column {
+			t.Fatalf("step %d %s: %d tables and %d columns, want %d and %d", i+1, step.name,
+				tables, columns, step.tables, step.column)
+		}
+	}
+	var edge, secrets int64
+	var keyID *string
+	err = db.QueryRowContext(ctx, `
+		select edge_budget_bytes, secrets_version, key_id from placements`).
+		Scan(&edge, &secrets, &keyID)
+	if err != nil || edge != 0 || secrets != 0 || keyID != nil {
+		t.Fatalf("an older placement reads %d, %d, %v, %v, want zeros and no key id",
+			edge, secrets, keyID, err)
+	}
+	_, err = db.ExecContext(ctx, `
+		insert into previews (id, placement_id, port)
+		values ('abcdefghijklmnop', '00000000-0000-0000-0000-000000000001', 0)`)
+	if err == nil {
+		t.Fatal("a preview of port 0 was stored")
+	}
+}
+
+func TestPlacementReadsDataPlaneColumns(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o-dp")
+	eq := func(got, want any, name string) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+	eq(p.KeyID, "", "new key id")
+	eq(p.SSHAlias, "", "new ssh alias")
+	eq(p.EdgeBudgetBytes, int64(0), "new edge budget")
+	eq(p.EgressCAVersion, 0, "new egress CA version")
+	eq(p.GateReadyAt, (*time.Time)(nil), "new gate ready at")
+
+	gate := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	_, err := pool.Exec(ctx, `
+		update placements set key_id = 'k2', ssh_alias = 'bn-k3fz2q7max', source_label = 'gh',
+			edge_budget_bytes = 2147483648, egress_budget_bytes = 1073741824,
+			egress_ca_version = 3, secrets_version = 7, gate_ready_at = $2
+		where id = $1`, p.ID, gate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(got.KeyID, "k2", "key id")
+	eq(got.SSHAlias, "bn-k3fz2q7max", "ssh alias")
+	eq(got.SourceLabel, "gh", "source label")
+	eq(got.EdgeBudgetBytes, int64(2<<30), "edge budget")
+	eq(got.EgressBudgetBytes, int64(1<<30), "egress budget")
+	eq(got.EgressCAVersion, 3, "egress CA version")
+	eq(got.SecretsVersion, int64(7), "secrets version")
+	eq(got.GateReadyAt, &gate, "gate ready at")
 }
