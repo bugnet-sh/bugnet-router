@@ -7,11 +7,14 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
@@ -167,6 +170,53 @@ func TestE2BReaderFromAnOffset(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestE2BWriteBlocksUnderBackPressure(t *testing.T) {
+	f := newFake(t)
+	release := make(chan struct{})
+	envd := f.envd.Config.Handler
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/files" {
+			<-release
+		}
+		envd.ServeHTTP(w, r)
+	}))
+	t.Cleanup(stub.Close)
+	open := sync.OnceFunc(func() { close(release) })
+	// runs before stub.Close, so a failing run never leaves a handler waiting
+	t.Cleanup(open)
+	p, err := New(Options{
+		APIKey: fakeKey, Templates: fakeTemplates, BaseURL: f.rest.URL, EnvdURL: stub.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := f.add(nil)
+	name := filepath.Join(t.TempDir(), "big")
+	const size = 64 << 20
+	w, err := p.OpenWriter(t.Context(), ref, name, provider.WriteSpec{Size: size, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := w.Write(make([]byte, size))
+		wrote <- err
+	}()
+	select {
+	case err := <-wrote:
+		t.Fatalf("a 64 MiB Write returned %v while envd read nothing, want it to block", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	open()
+	if err := <-wrote; err != nil {
+		t.Fatalf("Write once envd read gave %v", err)
+	}
+	entry, err := w.Commit(t.Context(), nil)
+	if err != nil || entry.Size != size || !entry.Regular {
+		t.Fatalf("Commit gave %+v, %v, want a regular file of 64 MiB", entry, err)
 	}
 }
 
