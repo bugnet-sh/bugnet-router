@@ -29,7 +29,7 @@ const (
 	idleTimeout         = 90 * time.Second
 )
 
-var _ provider.FileStreamer = (*Provider)(nil)
+var _ provider.Provider = (*Provider)(nil)
 
 var (
 	errAborted     = errors.New("e2b upload aborted")

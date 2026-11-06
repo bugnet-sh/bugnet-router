@@ -113,6 +113,12 @@ type Provider interface {
 	ListFiles(ctx context.Context, ref Ref, path string, depth int, into *Listing) error
 	// ListOwned finds the sandboxes carrying every given label
 	ListOwned(ctx context.Context, labels map[string]string) ([]Summary, error)
+	// StatFile describes one path without following a final symlink
+	StatFile(ctx context.Context, ref Ref, path string) (FileEntry, error)
+	// OpenReader streams a regular file from offset to the size it had when opened
+	OpenReader(ctx context.Context, ref Ref, path string, offset int64) (FileReader, error)
+	// OpenWriter streams spec.Size bytes into path, creating parents, replacing it only on Commit
+	OpenWriter(ctx context.Context, ref Ref, path string, spec WriteSpec) (FileWriter, error)
 }
 
 // FileReader streams a regular file from an offset to the size it had when opened
@@ -137,16 +143,6 @@ type FileWriter interface {
 	Commit(ctx context.Context, sum []byte) (FileEntry, error)
 	// Abort drops what was written and leaves the path as it was, a no-op after Commit
 	Abort() error
-}
-
-// FileStreamer is a provider that streams whole files in and out of its sandboxes
-type FileStreamer interface {
-	// StatFile describes one path without following a final symlink
-	StatFile(ctx context.Context, ref Ref, path string) (FileEntry, error)
-	// OpenReader streams a regular file from offset to the size it had when opened
-	OpenReader(ctx context.Context, ref Ref, path string, offset int64) (FileReader, error)
-	// OpenWriter streams spec.Size bytes into path, creating parents, replacing it only on Commit
-	OpenWriter(ctx context.Context, ref Ref, path string, spec WriteSpec) (FileWriter, error)
 }
 
 // StartCoster is a provider that charges a fee per sandbox start beside its hourly price

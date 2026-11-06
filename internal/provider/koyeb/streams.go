@@ -35,7 +35,7 @@ const (
 	streamHeaderTimeout = 2 * time.Minute
 )
 
-var _ provider.FileStreamer = (*Provider)(nil)
+var _ provider.Provider = (*Provider)(nil)
 
 // newStreamClient talks HTTP/1.1 only and never asks for compression, so lengths stay exact
 func newStreamClient() *http.Client {

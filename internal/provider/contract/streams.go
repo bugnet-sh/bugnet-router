@@ -25,12 +25,8 @@ const (
 )
 
 // Streams checks the file stream contract inside dir, which the sandbox's exec user can fill
-func Streams(t *testing.T, p provider.FileStreamer, ref provider.Ref, dir string) {
-	full, ok := p.(provider.Provider)
-	if !ok {
-		t.Fatalf("%T lacks Exec and ListFiles, which the stream checks use", p)
-	}
-	s := streams{p: p, full: full, ref: ref, dir: dir}
+func Streams(t *testing.T, p provider.Provider, ref provider.Ref, dir string) {
+	s := streams{p: p, ref: ref, dir: dir}
 	for _, c := range []struct {
 		name string
 		run  func(t *testing.T)
@@ -50,10 +46,9 @@ func Streams(t *testing.T, p provider.FileStreamer, ref provider.Ref, dir string
 }
 
 type streams struct {
-	p    provider.FileStreamer
-	full provider.Provider
-	ref  provider.Ref
-	dir  string
+	p   provider.Provider
+	ref provider.Ref
+	dir string
 }
 
 func (s streams) readStopsAtSize(t *testing.T) {
@@ -303,7 +298,7 @@ func (s streams) stat(t *testing.T, name string) provider.FileEntry {
 func (s streams) shell(t *testing.T, script string) {
 	t.Helper()
 	spec := provider.ExecSpec{Argv: []string{"sh", "-c", script}, Cwd: s.dir}
-	out, code, err := run(withTimeout(t, opTimeout), s.full, s.ref, spec)
+	out, code, err := run(withTimeout(t, opTimeout), s.p, s.ref, spec)
 	if err != nil || code != 0 {
 		t.Fatalf("sh -c %q gave exit %d, %v, output %q", script, code, err, out)
 	}
@@ -313,7 +308,7 @@ func (s streams) shell(t *testing.T, script string) {
 func (s streams) temps(t *testing.T) []string {
 	t.Helper()
 	listing := provider.NewListing(1000)
-	if err := s.full.ListFiles(withTimeout(t, opTimeout), s.ref, s.dir, 1, listing); err != nil {
+	if err := s.p.ListFiles(withTimeout(t, opTimeout), s.ref, s.dir, 1, listing); err != nil {
 		t.Fatalf("ListFiles of %s: %v", s.dir, err)
 	}
 	var names []string

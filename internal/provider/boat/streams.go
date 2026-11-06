@@ -34,7 +34,7 @@ const (
 	maxKindBytes = 64
 )
 
-var _ provider.FileStreamer = (*Provider)(nil)
+var _ provider.Provider = (*Provider)(nil)
 
 var (
 	errAborted     = errors.New("boat upload aborted")

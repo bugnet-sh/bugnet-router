@@ -19,7 +19,7 @@ import (
 // reasonTrailer is where boxd names the exact reason a file call failed
 const reasonTrailer = "x-boxd-error-reason"
 
-var _ provider.FileStreamer = (*Provider)(nil)
+var _ provider.Provider = (*Provider)(nil)
 
 // fsError classifies a file call's failure, boxd's reason trailer before its gRPC code
 func fsError(ctx context.Context, err error, trailer metadata.MD) error {

@@ -16,7 +16,7 @@ import (
 // tempTries bounds the names tried for one temporary file, as os.CreateTemp does
 const tempTries = 100
 
-var _ provider.FileStreamer = (*Provider)(nil)
+var _ provider.Provider = (*Provider)(nil)
 
 // beforeOpen runs between a reader's Lstat and its open, so a test can swap the file there
 var beforeOpen func(host string)
