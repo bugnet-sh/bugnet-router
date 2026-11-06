@@ -1,53 +1,13 @@
 package vkclient
 
 import (
-	"io"
-	"net"
-	"os"
-	"path/filepath"
-	"sync/atomic"
 	"testing"
 
 	"github.com/oynozan/bugnet-router/internal/testenv"
 )
 
-// relay accepts on a Unix socket and copies each connection to the test Valkey over TCP
-func relay(t *testing.T) (path string, accepted *atomic.Int32) {
-	t.Helper()
-	// A short directory keeps the socket path under the 104 bytes macOS allows
-	dir, err := os.MkdirTemp("", "vk")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	path = filepath.Join(dir, "valkey.sock")
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	accepted = &atomic.Int32{}
-	go func() {
-		for {
-			in, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			accepted.Add(1)
-			out, err := net.Dial("tcp", testenv.ValkeyAddr())
-			if err != nil {
-				_ = in.Close()
-				continue
-			}
-			go func() { _, _ = io.Copy(out, in); _ = out.Close() }()
-			go func() { _, _ = io.Copy(in, out); _ = in.Close() }()
-		}
-	}()
-	return path, accepted
-}
-
 func TestValkeyUnixAddress(t *testing.T) {
-	path, accepted := relay(t)
+	path, accepted := testenv.ValkeySocket(t)
 	opt, err := Options("unix://" + path)
 	if err != nil {
 		t.Fatal(err)
