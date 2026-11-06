@@ -1373,8 +1373,8 @@ func TestExecWhenTheLeaseHolderRecordsNoJob(t *testing.T) {
 
 	start := time.Now()
 	_, err = s.Exec(ctx, e.place, argv, "", nil, "orphan", 500*time.Millisecond, jobs.Until{})
-	if !errors.Is(err, jobs.ErrNotFound) {
-		t.Fatalf("exec behind a holder that records nothing: %v, want ErrNotFound", err)
+	if !errors.Is(err, jobs.ErrNotRecorded) || errors.Is(err, jobs.ErrNotFound) {
+		t.Fatalf("exec behind a holder that records nothing: %v, want ErrNotRecorded", err)
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("exec behind a holder that records nothing returned after %v", took)

@@ -73,6 +73,7 @@ var codes = []struct {
 	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},
 	{store.ErrNotFound, connect.CodeNotFound, ""},
 	{jobs.ErrShuttingDown, connect.CodeUnavailable, ""},
+	{jobs.ErrNotRecorded, connect.CodeUnavailable, ""},
 	{errShuttingDown, connect.CodeUnavailable, ""},
 	{context.Canceled, connect.CodeCanceled, ""},
 	{context.DeadlineExceeded, connect.CodeDeadlineExceeded, ""},
@@ -144,10 +145,15 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		if !errors.Is(err, c.err) {
 			continue
 		}
-		if c.reason != "" {
-			return withInfo(connect.NewError(c.code, err), c.reason)
+		msg := err
+		if c.code == connect.CodeCanceled || c.code == connect.CodeDeadlineExceeded {
+			// What wraps a context error can name a job, so the answer quotes it alone
+			msg = c.err
 		}
-		return connect.NewError(c.code, err)
+		if c.reason != "" {
+			return withInfo(connect.NewError(c.code, msg), c.reason)
+		}
+		return connect.NewError(c.code, msg)
 	}
 	if e, ok := provider.AsError(err); ok {
 		// The provider's text may name the provider or its sandbox, which the gateway never sees

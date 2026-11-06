@@ -310,7 +310,13 @@ holds a handle or a job ID.
 | `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
 | `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty |
 
-A provider failure carries the provider's code in lowercase instead, such as `rate_limited`.
+A provider failure carries the provider's code in lowercase instead, such as `rate_limited`. A
+call that its caller cancels or lets run out of time answers `Canceled` or `DeadlineExceeded`,
+with only the context error as its message.
+
+An `Exec` whose `idempotency_key` another call holds waits for that call to record the job. When
+it records none within the wait, `Exec` answers `Unavailable` with no reason, and a retry with the
+same key runs the command once.
 
 ## Deployment
 

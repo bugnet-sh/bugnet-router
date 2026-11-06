@@ -89,6 +89,8 @@ var (
 	ErrShuttingDown = errors.New("jobs: service is shutting down")
 	// ErrTooManyJobs means the placement already runs as many jobs as it may
 	ErrTooManyJobs = errors.New("jobs: the placement runs as many jobs as it may")
+	// ErrNotRecorded means the call holding the idempotency key recorded no job, so retry it
+	ErrNotRecorded = errors.New("jobs: the call holding this idempotency key recorded no job")
 )
 
 var errNoProvider = errors.New("jobs: provider is not configured")
@@ -257,7 +259,7 @@ func (s *Service) begin(
 		}
 		left := time.Until(deadline)
 		if left <= 0 {
-			return fmt.Errorf("%w: never recorded", ErrNotFound)
+			return ErrNotRecorded
 		}
 		select {
 		case <-ctx.Done():
