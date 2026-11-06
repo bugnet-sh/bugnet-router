@@ -114,6 +114,7 @@ type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
 	maxLifetime time.Duration   // replaces the local provider's cap, when set
+	secrets     bool            // reports the secrets capability, when set
 }
 
 func (f faulty) Capabilities() provider.Capabilities {
@@ -121,6 +122,7 @@ func (f faulty) Capabilities() provider.Capabilities {
 	if f.maxLifetime > 0 {
 		c.MaxLifetime = f.maxLifetime
 	}
+	c.Secrets = c.Secrets || f.secrets
 	return c
 }
 
@@ -156,6 +158,7 @@ type options struct {
 	readyDelay  time.Duration
 	holdReady   <-chan struct{}
 	maxLifetime time.Duration
+	secrets     bool  // the provider reports the secrets capability
 	maxRunning  int   // jobs a placement may run at once, the jobs default when zero
 	jobBudget   int64 // what one job's output may cost its stream, the jobs default when zero
 	// opsPerSecond and opsBurst are each placement's operation limit, the defaults when zero
@@ -223,6 +226,7 @@ func newEnv(t *testing.T, opts options) *env {
 	t.Cleanup(func() { destroyAll(t, prov) })
 	reg := provider.NewRegistry([]provider.Provider{faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
+		secrets: opts.secrets,
 	}})
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
@@ -405,8 +409,15 @@ func (e *env) createWith(
 	t *testing.T, tok string,
 ) (*connect.Response[routerv1.CreatePlacementResponse], error) {
 	t.Helper()
+	return e.createFor(t, tok, nil)
+}
+
+func (e *env) createFor(
+	t *testing.T, tok string, r *routerv1.Requirements,
+) (*connect.Response[routerv1.CreatePlacementResponse], error) {
+	t.Helper()
 	return e.client.CreatePlacement(t.Context(), connect.NewRequest(
-		&routerv1.CreatePlacementRequest{OrderToken: tok}))
+		&routerv1.CreatePlacementRequest{OrderToken: tok, Requirements: r}))
 }
 
 func (e *env) create(t *testing.T) (string, *routerv1.Placement) {

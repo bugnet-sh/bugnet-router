@@ -352,7 +352,21 @@ func adapters(t *testing.T) []provider.Provider {
 	return []provider.Provider{newLocal(t, "local", 0, time.Second), bx, eb, ky, bt}
 }
 
-func TestCandidatesForSSHOrPreviewFindNone(t *testing.T) {
+func TestCandidatesForSecretsTakeOnlyAProviderReportingThem(t *testing.T) {
+	secrets := capsProvider{
+		Provider: newLocal(t, "secrets", 1000, time.Second),
+		caps:     provider.Capabilities{Secrets: true, MaxLifetime: time.Hour},
+	}
+	plain := newLocal(t, "plain", 1000, time.Second)
+	got, err := engine(fakeHealth{}, plain, secrets).Candidates(Inputs{
+		Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
+	})
+	if err != nil || !slices.Equal(names(got), []string{"secrets"}) {
+		t.Fatalf("got %v, %v", names(got), err)
+	}
+}
+
+func TestCandidatesForSSHPreviewOrSecretsFindNone(t *testing.T) {
 	e := engine(fakeHealth{}, adapters(t)...)
 	in := func(r Requirements) Inputs {
 		return Inputs{Package: pkg(10, 10_000_000), Requirements: r}
@@ -363,7 +377,7 @@ func TestCandidatesForSSHOrPreviewFindNone(t *testing.T) {
 	got, err := e.Candidates(plain)
 	eq(t, err, nil)
 	eq(t, len(got), 4)
-	for _, r := range []Requirements{{SSH: true}, {Preview: true}} {
+	for _, r := range []Requirements{{SSH: true}, {Preview: true}, {Secrets: true}} {
 		_, err = e.Candidates(in(r))
 		eq(t, errors.Is(err, ErrNoCapableProvider), true)
 		eq(t, errors.Is(err, ErrNoCandidate), true)
@@ -374,6 +388,10 @@ func TestNoCapableProviderLooksOnlyAtCapabilities(t *testing.T) {
 	ssh := capsProvider{
 		Provider: newLocal(t, "ssh", 1000, time.Second),
 		caps:     provider.Capabilities{SSH: true, MaxLifetime: time.Hour},
+	}
+	secrets := capsProvider{
+		Provider: newLocal(t, "secrets", 1000, time.Second),
+		caps:     provider.Capabilities{Secrets: true, MaxLifetime: time.Hour},
 	}
 	plain := newLocal(t, "plain", 1000, time.Second)
 	gpuPkg := pkg(10, 100000)
@@ -405,6 +423,13 @@ func TestNoCapableProviderLooksOnlyAtCapabilities(t *testing.T) {
 		{"no preview", engine(fakeHealth{}, plain, ssh), Inputs{
 			Package: pkg(10, 100000), Requirements: Requirements{Preview: true},
 		}, false},
+		{"no secrets", engine(fakeHealth{}, plain, ssh), Inputs{
+			Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
+		}, false},
+		{"secrets unhealthy", engine(fakeHealth{down: map[string]bool{"secrets": true}},
+			plain, secrets), Inputs{
+			Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
+		}, true},
 		{"no gpu for a gpu package", engine(fakeHealth{}, plain, ssh),
 			Inputs{Package: gpuPkg}, false},
 		{"no gpu asked for", engine(fakeHealth{}, plain, ssh),

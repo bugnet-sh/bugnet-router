@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/placement"
 )
 
@@ -70,7 +71,9 @@ func reasons(t *testing.T, opts []*routerv1.PackageOption) map[string]string {
 // sameAsEstimate checks that Estimate lists starts packages and PricePackage answers each the same
 func (e *env) sameAsEstimate(t *testing.T, starts int) {
 	t.Helper()
-	for _, r := range []*routerv1.Requirements{nil, {Ssh: true}, {Preview: true}, {Gpu: true}} {
+	for _, r := range []*routerv1.Requirements{
+		nil, {Ssh: true}, {Preview: true}, {Gpu: true}, {Secrets: true},
+	} {
 		opts := e.estimate(t, r)
 		eq(t, len(opts), starts)
 		for _, want := range opts {
@@ -124,8 +127,8 @@ func TestPricePackageKeepsTheMarginFloor(t *testing.T) {
 
 func TestUnavailableReasonCodes(t *testing.T) {
 	e := newEnv(t, options{})
-	// The local provider offers no SSH, previews or GPU
-	for _, r := range []*routerv1.Requirements{{Ssh: true}, {Preview: true}} {
+	// The local provider offers no SSH, previews, secrets or GPU
+	for _, r := range []*routerv1.Requirements{{Ssh: true}, {Preview: true}, {Secrets: true}} {
 		eq(t, reasons(t, e.estimate(t, r)), map[string]string{
 			smallPkg: "feature_unavailable", longPkg: "feature_unavailable",
 			gpuPkg: "feature_unavailable",
@@ -145,6 +148,39 @@ func TestUnavailableReasonCodes(t *testing.T) {
 	eq(t, e.price(t, smallPkg, nil).GetUnavailableReason(), "no_candidate")
 	ssh := &routerv1.Requirements{Ssh: true}
 	eq(t, e.price(t, smallPkg, ssh).GetUnavailableReason(), "feature_unavailable")
+}
+
+func TestSecretsNeedAProviderReportingThem(t *testing.T) {
+	need := &routerv1.Requirements{Secrets: true}
+	none := newEnv(t, options{})
+	eq(t, reasons(t, none.estimate(t, need)), map[string]string{
+		smallPkg: "feature_unavailable", longPkg: "feature_unavailable",
+		gpuPkg: "feature_unavailable",
+	})
+	for _, id := range []string{smallPkg, longPkg, gpuPkg} {
+		eq(t, none.price(t, id, need).GetUnavailableReason(), "feature_unavailable")
+	}
+
+	offered := newEnv(t, options{secrets: true})
+	eq(t, reasons(t, offered.estimate(t, need)), map[string]string{
+		smallPkg: "", longPkg: "", gpuPkg: "feature_unavailable",
+	})
+	eq(t, offered.price(t, smallPkg, need).GetAvailable(), true)
+	eq(t, offered.price(t, longPkg, need).GetAvailable(), true)
+	offered.sameAsEstimate(t, 3)
+}
+
+func TestCreatePlacementNeedingAMissingFeatureFindsNoCandidate(t *testing.T) {
+	e := newEnv(t, options{})
+	for _, r := range []*routerv1.Requirements{{Ssh: true}, {Secrets: true}} {
+		order, tok := e.startOrder(t, smallPkg, smallPrice)
+		_, err := e.createFor(t, tok, r)
+		mustCode(t, err, connect.CodeResourceExhausted, "")
+		h, _ := handle.Derive(e.handleKey, order)
+		p := e.get(t, h, 0, 0)
+		eq(t, p.GetState(), routerv1.PlacementState_PLACEMENT_STATE_FAILED)
+		eq(t, p.GetFailureReason(), "no_candidate")
+	}
 }
 
 func TestEngineErrorIsInternalAndLogged(t *testing.T) {

@@ -665,7 +665,9 @@ func (s *Server) ListFiles(
 /* Messages */
 
 func requirements(r *routerv1.Requirements) placement.Requirements {
-	return placement.Requirements{SSH: r.GetSsh(), Preview: r.GetPreview(), GPU: r.GetGpu()}
+	return placement.Requirements{
+		SSH: r.GetSsh(), Preview: r.GetPreview(), GPU: r.GetGpu(), Secrets: r.GetSecrets(),
+	}
 }
 
 // packageOption describes a package and whether it is available, reason saying why when not

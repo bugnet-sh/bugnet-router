@@ -28,6 +28,8 @@ type Capabilities struct {
 	Arch string
 	// OneSandboxPerKey means a create repeated under one idempotency key never makes a second
 	OneSandboxPerKey bool
+	// Secrets means the provider's secret egress path is proven live, so an order may add secrets
+	Secrets bool
 }
 
 // RunnerArch names the bugnet-run build the provider's sandboxes run

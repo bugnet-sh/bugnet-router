@@ -236,7 +236,7 @@ text.
 | Code | When |
 | --- | --- |
 | `no_candidate` | A configured provider has the capabilities needed, but none can take it now |
-| `feature_unavailable` | No configured provider has the SSH, preview or GPU capability needed |
+| `feature_unavailable` | No configured provider offers the SSH, previews, secrets or GPU needed |
 | `internal` | Any other error, logged at error level with the detail |
 
 A capable provider can still refuse a package for its health, its sizes, the margin or its
@@ -405,5 +405,5 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
 
-No provider offers SSH or previews yet. An order that requires either finds no provider, and
-`Estimate` marks every package `feature_unavailable` for it.
+No provider offers SSH, previews or secrets yet. An order that requires any of them finds no
+provider, and `Estimate` and `PricePackage` mark every package `feature_unavailable` for it.

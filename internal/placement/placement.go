@@ -33,7 +33,7 @@ type Candidate struct {
 }
 
 // Requirements are the capabilities a placement needs beyond the package's resources
-type Requirements struct{ SSH, Preview, GPU bool }
+type Requirements struct{ SSH, Preview, GPU, Secrets bool }
 
 // Inputs describe one placement request
 type Inputs struct {
@@ -122,7 +122,8 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 
 // capable reports whether caps covers every capability req asks for
 func capable(caps provider.Capabilities, req Requirements) bool {
-	return (!req.SSH || caps.SSH) && (!req.Preview || caps.Preview) && (!req.GPU || caps.GPU)
+	return (!req.SSH || caps.SSH) && (!req.Preview || caps.Preview) && (!req.GPU || caps.GPU) &&
+		(!req.Secrets || caps.Secrets)
 }
 
 // noCandidate is ErrNoCapableProvider when req asks for a capability no provider has at all
