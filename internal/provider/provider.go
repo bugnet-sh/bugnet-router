@@ -123,7 +123,7 @@ type StartCoster interface {
 
 // GateRoute is how the edges reach the bugnet-run gate in one sandbox, never shown to users
 type GateRoute struct {
-	BaseURL         string            // the gate's https origin, its port only when not 443
+	BaseURL         string            // the gate's origin, its port only when not the default
 	Header          map[string]string // provider credential headers
 	Cookies         map[string]string // provider credential cookies
 	BlockedPrefixes []string          // paths the edges never forward
