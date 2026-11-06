@@ -85,6 +85,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	d.DataplaneWorkers = cmp.Or(d.DataplaneWorkers, dataplaneWorkers)
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -130,6 +131,9 @@ func queues(d Deps) map[string]river.QueueConfig {
 		jobargs.QueueDataplane: {MaxWorkers: cmp.Or(d.DataplaneWorkers, dataplaneWorkers)},
 	}
 }
+
+// DataplaneWorkers is how many workers River runs on the dataplane queue
+func (w *Worker) DataplaneWorkers() int { return w.d.DataplaneWorkers }
 
 // River returns the client to start and stop
 func (w *Worker) River() *river.Client[pgx.Tx] { return w.river }

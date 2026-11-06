@@ -169,7 +169,7 @@ func serve(
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()
 	log.Info("working", "addr", ln.Addr().String(), "replica", cfg.ReplicaID,
-		"providers", cfg.Providers)
+		"providers", cfg.Providers, "dataplane_workers", w.DataplaneWorkers())
 
 	var serveErr error
 	select {
