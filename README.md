@@ -213,8 +213,10 @@ transfer and link tokens, put grants, pairing codes and placeholders, so the rou
 of them. A root id is 1 to 32 lowercase letters, digits or hyphens, and `bugnet-dev keys` prints
 one root named `k1`. Each placement records the id of the root its gate key and placeholders come
 from. To rotate, put a new root first in the list. New placements use it, and preview tokens, put
-grants and SSH grant ids made under any listed root still verify. Remove an old root only once
-every placement that recorded it has ended.
+grants and SSH grant ids made under any listed root still verify. Restart `router-api` and
+`router-worker` together with the same list, since a process without the new root cannot open or
+check what the other made under it. Remove an old root only once every placement that recorded it
+has ended.
 
 The store seals the provider credentials in `provider_ref` (E2B's `envd_token` and
 `traffic_token`, Koyeb's `secret`, Boat's `_token`) with AES-256-GCM under a key derived from the
