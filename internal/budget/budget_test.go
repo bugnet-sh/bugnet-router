@@ -110,8 +110,9 @@ func TestReportAddsAndAnswersWhatIsLeft(t *testing.T) {
 	got, err := m.Remaining(t.Context(), budget.Edge, l)
 	eq(t, err == nil && got == 6<<20, true)
 	untilExpiry := time.Until(l.Deadline.Add(time.Hour))
+	// Valkey keeps whole milliseconds, so the expiry may round up past untilExpiry
 	if ttl := m.pttl("edge:used:" + p.String()); ttl < untilExpiry-5*time.Second ||
-		ttl > untilExpiry {
+		ttl > untilExpiry+time.Second {
 		t.Fatalf("edge:used expires in %v, want about %v", ttl, untilExpiry)
 	}
 }
@@ -178,7 +179,8 @@ func TestReportAnswersZeroOnceSpentAndSpendsOnce(t *testing.T) {
 	a, spent = m.report(budget.Edge, budget.BySSH, l, 1)
 	eq(t, a[p].Remaining, uint64(0))
 	eq(t, len(spent), 0)
-	if ttl := m.pttl("edge:spent:" + p.String()); ttl < 69*time.Minute || ttl > 70*time.Minute {
+	ttl := m.pttl("edge:spent:" + p.String())
+	if ttl < 69*time.Minute || ttl > 70*time.Minute+time.Second {
 		t.Fatalf("edge:spent expires in %v, want the deadline plus 1h", ttl)
 	}
 }
