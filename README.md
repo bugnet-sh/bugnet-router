@@ -39,6 +39,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
+| `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
 | `test/e2e` | End-to-end tests over the built binaries |
 | `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with |
 | `scripts` | `dev-up.sh` for a local stack and `live-test.sh` for the live provider tests |
@@ -99,7 +100,8 @@ scripts/dev-up.sh
 `.env` holds only secrets, the database URL and the provider keys. Every other setting comes
 from `config/dev.toml`, or from the file given as `dev-up.sh`'s argument. `dev-up.sh` builds the
 binaries into `bin/`, writes fresh router secrets to `.env.keys` with
-`bin/bugnet-dev keys > .env.keys` when that file is missing, writes `bin/dev.toml` as the
+`bin/bugnet-dev keys > .env.keys` when that file is missing, adds any secret `bugnet-dev keys`
+prints that an older `.env.keys` lacks, keeping its other values, writes `bin/dev.toml` as the
 settings file with `order_token_public_key` from `bin/bugnet-dev pubkey` in front, in place of
 any top-level `order_token_public_key` the file has, migrates the database and starts one
 `router-api` and one `router-worker` with `-config bin/dev.toml` on the local provider. Logs go
@@ -193,6 +195,7 @@ does not know.
 | `BUGNET_DATABASE_URL` | `router-api`, `router-worker`, `router-api migrate` and `router-worker outbox-redrive`, may hold a password |
 | `BUGNET_INTERNAL_TOKEN` | `router-api`, `router-worker` and `bugnet-dev`, the API's bearer token, 32 characters or more |
 | `BUGNET_HANDLE_KEY` | `router-api` and `router-worker`, base64 of 32 bytes or more that derives handles |
+| `BUGNET_DATA_PLANE_KEYS` | `router-api` and `router-worker`, required, root keys as `<id>:<base64 of 32 bytes>` entries separated by commas, newest first |
 | `BUGNET_EVENT_SIGNING_KEY` | `router-worker`, which requires it, and `router-api` when set, base64 Ed25519 seed that signs events |
 | `BOXD_API_KEY`, `E2B_API_KEY`, `KOYEB_API_TOKEN`, `BOAT_API_KEY` | the binaries for each provider in `providers`, and the live tests |
 | `BUGNET_ORDER_PRIVATE_KEY` | `bugnet-dev` only, base64 Ed25519 seed it signs order tokens with |
@@ -202,8 +205,16 @@ does not know.
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
 of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
-its own service. `bugnet-dev keys` prints fresh values for all of them. A `.env.keys` written
-before these tokens existed lacks them, so delete it to get the full set.
+its own service. `bugnet-dev keys` prints fresh values for all of them, and `dev-up.sh` adds the
+ones an older `.env.keys` lacks.
+
+`BUGNET_DATA_PLANE_KEYS` derives the data plane's preview tokens, gate keys, SSH grant ids,
+transfer and link tokens, put grants, pairing codes and placeholders, so the router stores none
+of them. A root id is 1 to 32 lowercase letters, digits or hyphens, and `bugnet-dev keys` prints
+one root named `k1`. Each placement records the id of the root its gate key and placeholders come
+from. To rotate, put a new root first in the list. New placements use it, and preview tokens, put
+grants and SSH grant ids made under any listed root still verify. Remove an old root only once
+every placement that recorded it has ended.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.

@@ -23,15 +23,21 @@ const secretToken = "0123456789abcdef0123456789abcdef"
 
 var handleKeyB64 = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 
+// dataPlaneKeys lists two roots, newest first, as BUGNET_DATA_PLANE_KEYS takes them
+var dataPlaneKeys = "k2:" +
+	base64.StdEncoding.EncodeToString([]byte("fedcba9876543210fedcba9876543210")) +
+	",k1:" + handleKeyB64
+
 // secrets are the environment of a valid Load, with a password in the database URL
 var secrets = map[string]string{
-	"BUGNET_DATABASE_URL":   "postgres://user:dbpass@localhost/x",
-	"BUGNET_INTERNAL_TOKEN": secretToken,
-	"BUGNET_HANDLE_KEY":     handleKeyB64,
-	"BOXD_API_KEY":          "bk-secret",
-	"E2B_API_KEY":           "ek-secret",
-	"KOYEB_API_TOKEN":       "kt-secret",
-	"BOAT_API_KEY":          "ok-secret",
+	"BUGNET_DATABASE_URL":    "postgres://user:dbpass@localhost/x",
+	"BUGNET_INTERNAL_TOKEN":  secretToken,
+	"BUGNET_HANDLE_KEY":      handleKeyB64,
+	"BUGNET_DATA_PLANE_KEYS": dataPlaneKeys,
+	"BOXD_API_KEY":           "bk-secret",
+	"E2B_API_KEY":            "ek-secret",
+	"KOYEB_API_TOKEN":        "kt-secret",
+	"BOAT_API_KEY":           "ok-secret",
 }
 
 func pubB64(t *testing.T) string {
@@ -433,6 +439,37 @@ func TestLoadSecrets(t *testing.T) {
 	}
 }
 
+func TestDataPlaneKeysRequired(t *testing.T) {
+	path := writeFile(t, serving(t))
+	c, err := Load(path, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.DataPlaneKeys.Current().ID, "k2")
+	eq(t, len(c.DataPlaneKeys.Roots()), 2)
+	eq(t, c.DataPlaneKeys.Roots()[1].Key, []byte("0123456789abcdef0123456789abcdef"))
+
+	short := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
+	for name, over := range map[string]map[string]string{
+		"missing":        {"BUGNET_DATA_PLANE_KEYS": "-"},
+		"empty":          {"BUGNET_DATA_PLANE_KEYS": ""},
+		"no id":          {"BUGNET_DATA_PLANE_KEYS": handleKeyB64},
+		"short key":      {"BUGNET_DATA_PLANE_KEYS": "k1:" + short},
+		"repeated id":    {"BUGNET_DATA_PLANE_KEYS": "k1:" + handleKeyB64 + ",k1:" + handleKeyB64},
+		"trailing comma": {"BUGNET_DATA_PLANE_KEYS": dataPlaneKeys + ","},
+	} {
+		_, err := Load(path, env(over))
+		if err == nil || !strings.Contains(err.Error(), "BUGNET_DATA_PLANE_KEYS") {
+			t.Errorf("%s: %v, want an error naming BUGNET_DATA_PLANE_KEYS", name, err)
+			continue
+		}
+		noSecrets(t, name, err, over)
+		if strings.Contains(err.Error(), short) {
+			t.Errorf("%s: error echoes the key: %v", name, err)
+		}
+	}
+}
+
 // noSecrets fails the test when err carries the value of a secret
 func noSecrets(t *testing.T, name string, err error, over map[string]string) {
 	t.Helper()
@@ -567,6 +604,8 @@ func TestLoadFileRefusesSecrets(t *testing.T) {
 			"c2VlZA=="},
 		{`order_private_key = "cHJpdg=="`, "order_private_key", "BUGNET_ORDER_PRIVATE_KEY",
 			"cHJpdg=="},
+		{`data_plane_keys = "k1:` + handleKeyB64 + `"`, "data_plane_keys",
+			"BUGNET_DATA_PLANE_KEYS", handleKeyB64},
 		{"[limits]\nE2B_API_KEY = \"ek-secret\"", "limits.E2B_API_KEY", "E2B_API_KEY",
 			"ek-secret"},
 		{"[boat.types]\nBOAT_API_KEY=boat_unquoted", "boat.types.BOAT_API_KEY", "BOAT_API_KEY",

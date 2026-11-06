@@ -34,6 +34,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
 )
@@ -222,6 +223,7 @@ func (c *cli) keys(args []string) error {
 		{"BUGNET_ORDER_PRIVATE_KEY", b64(orderPriv.Seed())},
 		{"BUGNET_HANDLE_KEY", b64(rand32())},
 		{"BUGNET_EVENT_SIGNING_KEY", b64(eventPriv.Seed())},
+		{"BUGNET_DATA_PLANE_KEYS", dpkeys.NewEnv()},
 	}
 	for _, name := range []string{
 		"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",

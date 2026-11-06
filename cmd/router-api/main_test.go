@@ -25,7 +25,7 @@ import (
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // serveOnly are the secrets serving requires and migrating does not
-var serveOnly = []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY"}
+var serveOnly = []string{"BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY", "BUGNET_DATA_PLANE_KEYS"}
 
 // settingsFile writes a settings file router-api can serve with
 func settingsFile(t *testing.T) string {

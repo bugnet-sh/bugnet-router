@@ -82,9 +82,9 @@ func TestKeysMakeAValidConfig(t *testing.T) {
 	}
 	want := []string{
 		"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_PRIVATE_KEY", "BUGNET_HANDLE_KEY",
-		"BUGNET_EVENT_SIGNING_KEY", "BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN",
-		"BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN", "BUGNET_EGRESS_FETCH_TOKEN",
-		"BUGNET_HOOK_PATH_SECRET",
+		"BUGNET_EVENT_SIGNING_KEY", "BUGNET_DATA_PLANE_KEYS", "BUGNET_EDGE_TOKEN",
+		"BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
+		"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_HOOK_PATH_SECRET",
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("keys printed %v, want only the secrets %v", names, want)
@@ -110,6 +110,9 @@ packages_file = "packages.json"
 	}
 	if cfg.EventSigningKey == nil {
 		t.Fatal("no event signing key")
+	}
+	if roots := cfg.DataPlaneKeys.Roots(); len(roots) != 1 || roots[0].ID != "k1" {
+		t.Fatalf("data-plane keys hold %d roots, want only k1", len(roots))
 	}
 	tokens := []string{cfg.InternalToken, cfg.EdgeToken, cfg.SecretsToken, cfg.SSHToken,
 		cfg.EgressToken, cfg.EgressFetchToken}

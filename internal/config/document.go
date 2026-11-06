@@ -455,7 +455,7 @@ func valueKind(t reflect.Type) string {
 var secretNames = slices.Concat([]string{
 	databaseURLEnv, "BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY", "BUGNET_EVENT_SIGNING_KEY",
 	"BUGNET_ORDER_PRIVATE_KEY", "BOXD_API_KEY", "E2B_API_KEY", "KOYEB_API_TOKEN", "BOAT_API_KEY",
-	"BUGNET_HOOK_PATH_SECRET", "E2B_WEBHOOK_SECRET",
+	"BUGNET_HOOK_PATH_SECRET", "E2B_WEBHOOK_SECRET", dataPlaneKeysEnv,
 }, callerTokens)
 
 // describe names the line and key go-toml puts a decode error at, quoting no go-toml text or value

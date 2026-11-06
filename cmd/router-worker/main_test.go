@@ -82,11 +82,13 @@ runner = %q
 	if err := os.WriteFile(path, []byte(settings), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	dataPlaneKeys, _ := testenv.DataPlaneKeys(t)
 	for k, v := range map[string]string{
 		"BUGNET_DATABASE_URL":      databaseURL,
 		"BUGNET_INTERNAL_TOKEN":    strings.Repeat("t", 32),
 		"BUGNET_HANDLE_KEY":        b64(t, 32),
 		"BUGNET_EVENT_SIGNING_KEY": b64(t, ed25519.SeedSize),
+		"BUGNET_DATA_PLANE_KEYS":   dataPlaneKeys,
 	} {
 		t.Setenv(k, v)
 	}

@@ -3,7 +3,8 @@
 #
 # Settings come from the TOML file given as the first argument, config/dev.toml by default, with
 # a path relative to the repository root. Secrets come from .env and from .env.keys, which this
-# script writes with bugnet-dev keys when it is missing. Both processes read bin/dev.toml, the
+# script writes with bugnet-dev keys when it is missing, and to which it adds any secret
+# bugnet-dev keys prints that it lacks, keeping the rest. Both processes read bin/dev.toml, the
 # settings with the generated order_token_public_key in front, and with any top-level
 # order_token_public_key line of the settings file dropped, so a copy of config/example.toml
 # works too. Binaries are built into bin/ and every process logs to bin/logs/. Ctrl-C sends
@@ -32,6 +33,17 @@ go build -o bin/ github.com/oynozan/bugnet-run/cmd/bugnet-run \
 if [ ! -f .env.keys ]; then
 	bin/bugnet-dev keys >.env.keys
 	echo "dev-up: wrote fresh secrets to .env.keys"
+else
+	# An older .env.keys gains the secrets it lacks and keeps every value it holds
+	missing=$(bin/bugnet-dev keys | while IFS= read -r line; do
+		grep -q "^${line%%=*}=" .env.keys || printf '%s\n' "$line"
+	done)
+	if [ -n "$missing" ]; then
+		[ -z "$(tail -c 1 .env.keys)" ] || echo >>.env.keys
+		printf '%s\n' "$missing" >>.env.keys
+		names=$(printf '%s\n' "$missing" | cut -d= -f1 | paste -sd ' ' -)
+		echo "dev-up: added $names to .env.keys"
+	fi
 fi
 set -a
 . ./.env

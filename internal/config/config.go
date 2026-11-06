@@ -28,6 +28,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/oynozan/bugnet-router/internal/bytesize"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 )
 
 // Config holds every router setting
@@ -92,6 +93,8 @@ type Config struct {
 	EgressToken string
 	// EgressFetchToken is the bnf_ token the router's private fetch opens egress tunnels with
 	EgressFetchToken string
+	// DataPlaneKeys are the roots every derived data-plane value and sealed provider ref uses
+	DataPlaneKeys dpkeys.Keys
 }
 
 // Boxd holds the boxd adapter's settings
@@ -654,6 +657,7 @@ func providerList(given *[]string, c Config) ([]string, error) {
 const (
 	minHandleKeyBytes = 32
 	databaseURLEnv    = "BUGNET_DATABASE_URL"
+	dataPlaneKeysEnv  = "BUGNET_DATA_PLANE_KEYS"
 )
 
 var providerKeyVars = []struct{ name, env string }{
@@ -686,7 +690,9 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 		v, _ := getenv(name)
 		return v
 	}
-	for _, name := range []string{databaseURLEnv, "BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY"} {
+	for _, name := range []string{
+		databaseURLEnv, "BUGNET_INTERNAL_TOKEN", "BUGNET_HANDLE_KEY", dataPlaneKeysEnv,
+	} {
 		if get(name) == "" {
 			return fmt.Errorf("%s is required", name)
 		}
@@ -702,6 +708,9 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 			minHandleKeyBytes)
 	}
 	c.HandleKey = hk
+	if c.DataPlaneKeys, err = dpkeys.Parse(get(dataPlaneKeysEnv)); err != nil {
+		return fmt.Errorf("%s %w", dataPlaneKeysEnv, err)
+	}
 	if err := c.readCallerTokens(get); err != nil {
 		return err
 	}

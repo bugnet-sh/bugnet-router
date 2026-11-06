@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
+
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 )
 
 const (
@@ -110,6 +112,17 @@ func Postgres(t *testing.T) *pgxpool.Pool {
 	// Registered after the drop cleanup so it runs first and no connection blocks the drop
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// DataPlaneKeys returns a fresh BUGNET_DATA_PLANE_KEYS value, as bugnet-dev keys prints it, parsed
+func DataPlaneKeys(t *testing.T) (string, dpkeys.Keys) {
+	t.Helper()
+	env := dpkeys.NewEnv()
+	keys, err := dpkeys.Parse(env)
+	if err != nil {
+		t.Fatalf("parse data-plane keys: %v", err)
+	}
+	return env, keys
 }
 
 // ValkeyAddr returns the address of the Valkey tests use

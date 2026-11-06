@@ -82,3 +82,15 @@ func TestValkeyPrefixCleanup(t *testing.T) {
 		t.Fatalf("keys left after cleanup: %v", keys)
 	}
 }
+
+func TestDataPlaneKeysAreFreshAndParse(t *testing.T) {
+	envA, keysA := testenv.DataPlaneKeys(t)
+	envB, _ := testenv.DataPlaneKeys(t)
+	if envA == envB {
+		t.Fatal("two calls gave the same root")
+	}
+	if keysA.Current().ID != "k1" || len(keysA.Roots()) != 1 {
+		t.Fatalf("keys hold %d roots, current %q, want only k1", len(keysA.Roots()),
+			keysA.Current().ID)
+	}
+}

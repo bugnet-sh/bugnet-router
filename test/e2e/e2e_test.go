@@ -72,7 +72,7 @@ const (
 // keyNames are the secrets bugnet-dev keys must print
 var keyNames = []string{
 	"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_PRIVATE_KEY", "BUGNET_HANDLE_KEY",
-	"BUGNET_EVENT_SIGNING_KEY",
+	"BUGNET_EVENT_SIGNING_KEY", "BUGNET_DATA_PLANE_KEYS",
 }
 
 var bin struct{ runner, api, worker, dev string }
@@ -436,6 +436,7 @@ func startStackWith(t *testing.T, o stackOptions) *stack {
 		"BUGNET_INTERNAL_TOKEN="+s.keys["BUGNET_INTERNAL_TOKEN"],
 		"BUGNET_HANDLE_KEY="+s.keys["BUGNET_HANDLE_KEY"],
 		"BUGNET_EVENT_SIGNING_KEY="+s.keys["BUGNET_EVENT_SIGNING_KEY"],
+		"BUGNET_DATA_PLANE_KEYS="+s.keys["BUGNET_DATA_PLANE_KEYS"],
 	)
 
 	migrate := exec.Command(bin.api, "migrate")
