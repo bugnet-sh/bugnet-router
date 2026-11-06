@@ -161,6 +161,8 @@ type options struct {
 	log         io.Writer
 	providers   []provider.Provider
 	deployment  string
+	// dataplaneWorkers sets Deps.DataplaneWorkers, the default when zero
+	dataplaneWorkers int
 }
 
 type env struct {
@@ -240,7 +242,9 @@ func newEnv(t *testing.T, o options) *env {
 	if o.sagaClock != nil {
 		sd.Now = o.sagaClock.Now
 	}
-	wd := worker.Deps{EventsURL: o.eventsURL, SigningKey: o.eventKey}
+	wd := worker.Deps{
+		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
+	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
 	}
@@ -1420,5 +1424,39 @@ func TestDataplaneQueueHasEightWorkers(t *testing.T) {
 	}
 	if jobargs.QueueDataplane != "dataplane" {
 		t.Fatalf("queue %q, want dataplane", jobargs.QueueDataplane)
+	}
+}
+
+func TestDataplaneQueueRunsJobsOnTheWorkersAskedFor(t *testing.T) {
+	prov := &flaky{Provider: newLocal(t, "local"), listHangs: true}
+	e := newEnv(t, options{providers: []provider.Provider{prov}, dataplaneWorkers: 2})
+	e.start(t)
+	ctx := t.Context()
+	dataplane := &river.InsertOpts{Queue: jobargs.QueueDataplane}
+	res, err := e.river.Insert(ctx, jobargs.Outbox{}, dataplane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.finished(t, "outbox", res.Job.ID)
+
+	// Each sweep hangs on its listing, so only as many run as the queue has workers
+	for range 3 {
+		if _, err := e.river.Insert(ctx, jobargs.Sweep{}, dataplane); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running := func() int {
+		l, err := e.river.JobList(ctx, river.NewJobListParams().Kinds("sweep").
+			Queues(jobargs.QueueDataplane).States(rivertype.JobStateRunning))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(l.Jobs)
+	}
+	eventually(t, "two running sweeps", func() bool { return running() >= 2 })
+	// River polls each queue every second, so a third worker would have taken a job by now
+	time.Sleep(1500 * time.Millisecond)
+	if n := running(); n != 2 {
+		t.Fatalf("%d sweeps running on the dataplane queue, want its 2 workers' worth", n)
 	}
 }
