@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
@@ -90,6 +91,12 @@ type fakeBoxd struct {
 	refuseNetworkConfig bool
 	// onCreated runs inside CreateVm once the machine exists, before the reply
 	onCreated func()
+	// noSpace refuses every FsWrite with boxd's no_space reason
+	noSpace atomic.Bool
+	// badBytesRead counts one byte too many on FsRead's eof chunk
+	badBytesRead atomic.Bool
+	// shortRead ends FsRead halfway with an honest eof chunk, as a file cut while it is read
+	shortRead atomic.Bool
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
@@ -104,6 +111,11 @@ type fakeBoxd struct {
 	creates      []*boxdpb.CreateVmRequest
 	commands     []string
 	writeChunks  []int
+	writePaths   []string
+	writeHeads   []*boxdpb.FsWriteChunk
+	renameCalls  [][2]string
+	lengths      []uint64
+	peers        map[string][]string
 	cleanupPaths []string
 	running      atomic.Int64
 }
@@ -112,6 +124,7 @@ func newFake(t *testing.T) *fakeBoxd {
 	t.Helper()
 	f := &fakeBoxd{
 		t: t, vms: map[string]*fakeVM{}, faults: map[string]*fault{}, calls: map[string]int{},
+		peers: map[string][]string{},
 	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -153,10 +166,13 @@ func (f *fakeBoxd) inject(method string, ft fault) {
 	f.faults[method] = &ft
 }
 
-func (f *fakeBoxd) take(fullMethod string) *fault {
+func (f *fakeBoxd) take(ctx context.Context, fullMethod string) *fault {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	name := path.Base(fullMethod)
+	if pr, ok := peer.FromContext(ctx); ok {
+		f.peers[name] = append(f.peers[name], pr.Addr.String())
+	}
 	f.calls[name]++
 	f.order = append(f.order, name)
 	ft := f.faults[name]
@@ -170,6 +186,13 @@ func (f *fakeBoxd) take(fullMethod string) *fault {
 		}
 	}
 	return ft
+}
+
+// peersOf lists the client address of every call of method, one per call
+func (f *fakeBoxd) peersOf(method string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.peers[method])
 }
 
 func (f *fakeBoxd) callCount(method string) int {
@@ -204,7 +227,7 @@ func (f *fakeBoxd) unaryGate(
 	if !authorized(ctx) {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	ft := f.take(info.FullMethod)
+	ft := f.take(ctx, info.FullMethod)
 	if ft != nil && ft.stall {
 		select {
 		case <-ctx.Done():
@@ -229,7 +252,7 @@ func (f *fakeBoxd) streamGate(
 	if !authorized(ss.Context()) {
 		return status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if ft := f.take(info.FullMethod); ft != nil {
+	if ft := f.take(ss.Context(), info.FullMethod); ft != nil {
 		return ft.err
 	}
 	return handler(srv, ss)
@@ -633,33 +656,82 @@ func (f *fakeBoxd) lastCommand() string {
 
 /* Files */
 
-func fsErr(err error) error {
+// fsErr answers a file call's failure with its gRPC code and boxd's reason trailer through set
+func fsErr(set func(metadata.MD), err error) error {
+	code, reason := codes.Internal, "io_error"
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return status.Error(codes.NotFound, err.Error())
+		code, reason = codes.NotFound, "not_found"
+	case errors.Is(err, fs.ErrExist):
+		code, reason = codes.AlreadyExists, "file_exists"
 	case errors.Is(err, syscall.EISDIR):
-		return status.Error(codes.FailedPrecondition, "is_a_directory: "+err.Error())
+		code, reason = codes.FailedPrecondition, "is_a_directory"
 	case errors.Is(err, syscall.ENOTDIR):
-		return status.Error(codes.FailedPrecondition, "not_a_directory: "+err.Error())
+		code, reason = codes.FailedPrecondition, "not_a_directory"
+	case errors.Is(err, syscall.ENOSPC):
+		code, reason = codes.ResourceExhausted, "no_space"
 	}
-	return status.Error(codes.Internal, err.Error())
+	return fsFail(set, code, reason, err.Error())
+}
+
+func fsFail(set func(metadata.MD), code codes.Code, reason, msg string) error {
+	set(metadata.Pairs(reasonTrailer, reason))
+	return status.Error(code, msg)
+}
+
+// unaryTrailer sets a trailer on a unary call
+func unaryTrailer(ctx context.Context) func(metadata.MD) {
+	return func(md metadata.MD) { _ = grpc.SetTrailer(ctx, md) }
+}
+
+func entryType(mode fs.FileMode) boxdpb.FsEntryType {
+	switch {
+	case mode.IsDir():
+		return boxdpb.FsEntryType_FS_ENTRY_TYPE_DIRECTORY
+	case mode&fs.ModeSymlink != 0:
+		return boxdpb.FsEntryType_FS_ENTRY_TYPE_SYMLINK
+	case !mode.IsRegular():
+		return boxdpb.FsEntryType_FS_ENTRY_TYPE_OTHER
+	}
+	return boxdpb.FsEntryType_FS_ENTRY_TYPE_FILE
 }
 
 func entryOf(name string, info fs.FileInfo) *boxdpb.FsEntry {
-	t := boxdpb.FsEntryType_FS_ENTRY_TYPE_FILE
-	switch {
-	case info.IsDir():
-		t = boxdpb.FsEntryType_FS_ENTRY_TYPE_DIRECTORY
-	case info.Mode()&fs.ModeSymlink != 0:
-		t = boxdpb.FsEntryType_FS_ENTRY_TYPE_SYMLINK
-	case !info.Mode().IsRegular():
-		t = boxdpb.FsEntryType_FS_ENTRY_TYPE_OTHER
-	}
+	t := entryType(info.Mode())
 	return &boxdpb.FsEntry{
 		Name: []byte(info.Name()), Path: []byte(name), Type: t, TargetType: t,
 		Size: uint64(info.Size()), Mode: uint32(info.Mode().Perm()),
 		MtimeNs: info.ModTime().UnixNano(),
 	}
+}
+
+// lstatEntry describes name itself like boxd, a symlink typed as one with its target's size
+func lstatEntry(name string) (*boxdpb.FsEntry, error) {
+	info, err := os.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	e := entryOf(name, info)
+	if info.Mode()&fs.ModeSymlink != 0 {
+		e.TargetType = boxdpb.FsEntryType_FS_ENTRY_TYPE_UNSPECIFIED
+		if target, err := os.Stat(name); err == nil {
+			e.TargetType, e.Size = entryType(target.Mode()), uint64(target.Size())
+		}
+	}
+	return e, nil
+}
+
+func (f *fakeBoxd) FsStat(
+	ctx context.Context, req *boxdpb.FsStatRequest,
+) (*boxdpb.FsStatResponse, error) {
+	if _, err := f.vm(req.GetVmId()); err != nil {
+		return nil, err
+	}
+	e, err := lstatEntry(string(req.GetPath()))
+	if err != nil {
+		return nil, fsErr(unaryTrailer(ctx), err)
+	}
+	return &boxdpb.FsStatResponse{Entry: e}, nil
 }
 
 func (f *fakeBoxd) FsRead(
@@ -669,24 +741,34 @@ func (f *fakeBoxd) FsRead(
 		return err
 	}
 	name := string(req.GetPath())
+	f.mu.Lock()
+	f.lengths = append(f.lengths, req.GetLength())
+	f.mu.Unlock()
+	entry, err := lstatEntry(name)
+	if err != nil {
+		return fsErr(stream.SetTrailer, err)
+	}
+	if entry.GetTargetType() != boxdpb.FsEntryType_FS_ENTRY_TYPE_FILE {
+		return fsFail(stream.SetTrailer, codes.FailedPrecondition, "not_a_regular_file", name)
+	}
 	file, err := os.Open(name)
 	if err != nil {
-		return fsErr(err)
+		return fsErr(stream.SetTrailer, err)
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		return fsErr(err)
-	}
-	if info.IsDir() {
-		return status.Error(codes.FailedPrecondition, "is_a_directory: "+name)
+		return fsErr(stream.SetTrailer, err)
 	}
 	left := info.Size() - int64(req.GetOffset())
 	if req.Length != nil && !f.ignoreLength {
 		left = min(left, int64(req.GetLength()))
 	}
+	if f.shortRead.Load() {
+		left /= 2
+	}
 	r := io.NewSectionReader(file, int64(req.GetOffset()), max(left, 0))
-	first := &boxdpb.FsReadChunk{Entry: entryOf(name, info)}
+	first := &boxdpb.FsReadChunk{Entry: entry}
 	var sent uint64
 	buf := make([]byte, fakeReadChunkBytes)
 	for {
@@ -705,14 +787,24 @@ func (f *fakeBoxd) FsRead(
 			break
 		}
 		if err != nil {
-			return fsErr(err)
+			return fsErr(stream.SetTrailer, err)
 		}
 	}
 	last := &boxdpb.FsReadChunk{Eof: true, BytesRead: sent}
+	if f.badBytesRead.Load() {
+		last.BytesRead++
+	}
 	if first != nil {
 		last.Entry = first.Entry
 	}
 	return stream.Send(last)
+}
+
+// readLengths lists the length every FsRead asked for, oldest first
+func (f *fakeBoxd) readLengths() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.lengths)
 }
 
 // track remembers the topmost path a write is about to create so cleanup removes it
@@ -731,6 +823,7 @@ func (f *fakeBoxd) track(name string) {
 	}
 }
 
+// FsWrite writes each chunk into the path at once and keeps a cut write, the worst boxd could do
 func (f *fakeBoxd) FsWrite(
 	stream grpc.ClientStreamingServer[boxdpb.FsWriteChunk, boxdpb.FsWriteResponse],
 ) error {
@@ -742,24 +835,16 @@ func (f *fakeBoxd) FsWrite(
 		return err
 	}
 	name := string(first.GetPath())
-	data := first.GetData()
-	chunks := []int{len(first.GetData())}
-	for {
-		c, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		chunks = append(chunks, len(c.GetData()))
-		data = append(data, c.GetData()...)
-	}
 	f.mu.Lock()
-	f.writeChunks = chunks
+	f.writePaths = append(f.writePaths, name)
+	f.writeHeads = append(f.writeHeads, &boxdpb.FsWriteChunk{
+		VmId: first.GetVmId(), Path: first.GetPath(), Mode: first.Mode,
+		ExpectedSize: first.ExpectedSize,
+	})
 	f.mu.Unlock()
-	if first.ExpectedSize != nil && first.GetExpectedSize() != uint64(len(data)) {
-		return status.Error(codes.FailedPrecondition, "size_mismatch")
+	if f.noSpace.Load() {
+		return fsFail(stream.SetTrailer, codes.ResourceExhausted, "no_space",
+			"write: no space left on device")
 	}
 	mode := fs.FileMode(0o644)
 	if first.Mode != nil {
@@ -767,21 +852,108 @@ func (f *fakeBoxd) FsWrite(
 	}
 	f.track(name)
 	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
-		return fsErr(err)
+		return fsErr(stream.SetTrailer, err)
 	}
-	if err := os.WriteFile(name, data, mode); err != nil {
-		return fsErr(err)
-	}
-	if err := os.Chmod(name, mode); err != nil {
-		return fsErr(err)
-	}
-	info, err := os.Stat(name)
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
-		return fsErr(err)
+		return fsErr(stream.SetTrailer, err)
+	}
+	defer func() { _ = file.Close() }()
+	chunks := []int{len(first.GetData())}
+	written, err := file.Write(first.GetData())
+	for err == nil {
+		var c *boxdpb.FsWriteChunk
+		if c, err = stream.Recv(); err != nil {
+			break
+		}
+		chunks = append(chunks, len(c.GetData()))
+		var n int
+		n, err = file.Write(c.GetData())
+		written += n
+	}
+	f.mu.Lock()
+	f.writeChunks = chunks
+	f.mu.Unlock()
+	if !errors.Is(err, io.EOF) {
+		return err
+	}
+	if first.ExpectedSize != nil && first.GetExpectedSize() != uint64(written) {
+		return fsFail(stream.SetTrailer, codes.FailedPrecondition, "size_mismatch",
+			"size_mismatch")
+	}
+	if err := file.Chmod(mode); err != nil {
+		return fsErr(stream.SetTrailer, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return fsErr(stream.SetTrailer, err)
 	}
 	return stream.SendAndClose(&boxdpb.FsWriteResponse{
-		BytesWritten: uint64(len(data)), Entry: entryOf(name, info),
+		BytesWritten: uint64(written), Entry: entryOf(name, info),
 	})
+}
+
+func (f *fakeBoxd) FsRename(
+	ctx context.Context, req *boxdpb.FsRenameRequest,
+) (*boxdpb.FsRenameResponse, error) {
+	if _, err := f.vm(req.GetVmId()); err != nil {
+		return nil, err
+	}
+	from, to := string(req.GetOldPath()), string(req.GetNewPath())
+	f.mu.Lock()
+	f.renameCalls = append(f.renameCalls, [2]string{from, to})
+	f.mu.Unlock()
+	if _, err := os.Lstat(to); err == nil && req.GetNoReplace() {
+		return nil, fsErr(unaryTrailer(ctx), fs.ErrExist)
+	}
+	if err := os.Rename(from, to); err != nil {
+		return nil, fsErr(unaryTrailer(ctx), err)
+	}
+	return &boxdpb.FsRenameResponse{}, nil
+}
+
+func (f *fakeBoxd) FsRemove(
+	ctx context.Context, req *boxdpb.FsRemoveRequest,
+) (*boxdpb.FsRemoveResponse, error) {
+	if _, err := f.vm(req.GetVmId()); err != nil {
+		return nil, err
+	}
+	name := string(req.GetPath())
+	remove := os.Remove
+	if req.GetRecursive() {
+		remove = os.RemoveAll
+	}
+	if _, err := os.Lstat(name); err != nil {
+		return nil, fsErr(unaryTrailer(ctx), err)
+	}
+	if err := remove(name); err != nil {
+		return nil, fsErr(unaryTrailer(ctx), err)
+	}
+	return &boxdpb.FsRemoveResponse{}, nil
+}
+
+// fsWritePaths lists the path of every FsWrite, oldest first
+func (f *fakeBoxd) fsWritePaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.writePaths)
+}
+
+// lastWriteHead is the first chunk of the last FsWrite without its data
+func (f *fakeBoxd) lastWriteHead() *boxdpb.FsWriteChunk {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.writeHeads) == 0 {
+		return nil
+	}
+	return f.writeHeads[len(f.writeHeads)-1]
+}
+
+// renames lists every FsRename as its old and new path, oldest first
+func (f *fakeBoxd) renames() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.renameCalls)
 }
 
 func (f *fakeBoxd) FsList(
@@ -793,7 +965,7 @@ func (f *fakeBoxd) FsList(
 	dir := string(req.GetPath())
 	des, err := os.ReadDir(dir)
 	if err != nil {
-		return fsErr(err)
+		return fsErr(stream.SetTrailer, err)
 	}
 	var batch []*boxdpb.FsEntry
 	for _, de := range des {

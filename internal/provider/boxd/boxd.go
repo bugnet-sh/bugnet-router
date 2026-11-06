@@ -8,7 +8,9 @@
 // adapter refuses router keys with dots of their own. Exec takes one shell command string, which
 // package shell builds from argv with single-quote escaping, and closing either side of its
 // stream kills the command. Before Create returns a machine, its default proxy is pinned to the
-// gate port and boxd's own SSH is off, so no app inside it is public by accident.
+// gate port and boxd's own SSH is off, so no app inside it is public by accident. File streams
+// run on a second connection, write only to a hidden temp file beside the target and rename it
+// over the target on Commit, since FsWrite overwrites some targets in place.
 package boxd
 
 import (
@@ -101,10 +103,12 @@ type Options struct {
 	GatePort int
 }
 
-// Provider places sandboxes on boxd over one long-lived gRPC connection
+// Provider places sandboxes on boxd over one gRPC connection and streams files over a second
 type Provider struct {
 	conn         *grpc.ClientConn
 	api          boxdpb.BoxdApiClient
+	streamConn   *grpc.ClientConn
+	streams      boxdpb.BoxdApiClient
 	log          *slog.Logger
 	pollInterval time.Duration
 	afterCreate  time.Duration
@@ -123,12 +127,19 @@ func New(opts Options) (*Provider, error) {
 	if opts.Insecure {
 		creds = insecure.NewCredentials()
 	}
-	conn, err := grpc.NewClient(endpoint(opts),
+	dial := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithPerRPCCredentials(bearer{key: opts.APIKey, secure: !opts.Insecure}),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxRecvMsgBytes)),
-	)
+	}
+	conn, err := grpc.NewClient(endpoint(opts), dial...)
 	if err != nil {
+		return nil, fmt.Errorf("boxd: %w", err)
+	}
+	// A second connection keeps a long file stream off the TCP connection Exec uses
+	streamConn, err := grpc.NewClient(endpoint(opts), dial...)
+	if err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("boxd: %w", err)
 	}
 	log := opts.Log
@@ -136,7 +147,8 @@ func New(opts Options) (*Provider, error) {
 		log = slog.Default()
 	}
 	return &Provider{
-		conn: conn, api: boxdpb.NewBoxdApiClient(conn), log: log, pollInterval: defaultPoll,
+		conn: conn, api: boxdpb.NewBoxdApiClient(conn), streamConn: streamConn,
+		streams: boxdpb.NewBoxdApiClient(streamConn), log: log, pollInterval: defaultPoll,
 		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
 	}, nil
 }
@@ -164,8 +176,8 @@ func (b bearer) GetRequestMetadata(context.Context, ...string) (map[string]strin
 
 func (b bearer) RequireTransportSecurity() bool { return b.secure }
 
-// Close releases the connection
-func (p *Provider) Close() error { return p.conn.Close() }
+// Close releases both connections
+func (p *Provider) Close() error { return errors.Join(p.conn.Close(), p.streamConn.Close()) }
 
 // Name returns "boxd"
 func (p *Provider) Name() string { return providerName }
@@ -754,7 +766,7 @@ func (p *Provider) WriteFile(
 	}
 	resp, err := stream.CloseAndRecv()
 	if err != nil {
-		return classify(ctx, err)
+		return fsError(ctx, err, stream.Trailer())
 	}
 	if resp.GetBytesWritten() != uint64(len(data)) {
 		return &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
@@ -842,6 +854,7 @@ func fileEntry(dir string, e *boxdpb.FsEntry) provider.FileEntry {
 		IsDir:    mode.IsDir(),
 		Mode:     mode,
 		Modified: time.Unix(0, e.GetMtimeNs()).UTC(),
+		Regular:  e.GetType() == boxdpb.FsEntryType_FS_ENTRY_TYPE_FILE,
 	}
 }
 
