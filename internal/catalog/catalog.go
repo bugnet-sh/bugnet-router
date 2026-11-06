@@ -5,13 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 
 	"github.com/oynozan/bugnet-router/internal/bytesize"
+	"github.com/oynozan/bugnet-router/internal/hostname"
 	"github.com/oynozan/bugnet-router/internal/provider"
 )
 
@@ -227,10 +226,6 @@ func (fe *fileEdge) read(id string) (Edge, error) {
 	return e, nil
 }
 
-// hostName is a lowercase DNS name of letters, digits and inner hyphens, with no final dot
-var hostName = regexp.MustCompile(
-	`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
-
 // read checks the hosts of a restricted package, exact lowercase names only
 func (fe *fileEgress) read(id string) ([]string, error) {
 	if fe == nil {
@@ -240,7 +235,7 @@ func (fe *fileEgress) read(id string) ([]string, error) {
 		return nil, fmt.Errorf("catalog: package %q egress.allow must name a host", id)
 	}
 	for i, h := range fe.Allow {
-		if _, err := netip.ParseAddr(h); err == nil || len(h) > 253 || !hostName.MatchString(h) {
+		if !hostname.Valid(h) {
 			return nil, fmt.Errorf("catalog: package %q egress.allow entry %d must be a "+
 				"lowercase host name with no wildcard or final dot", id, i+1)
 		}

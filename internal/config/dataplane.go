@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oynozan/bugnet-router/internal/hostname"
 )
 
 // maxDataplaneWorkers is the most workers River lets one queue run
@@ -214,10 +216,6 @@ func featureList(key string, names []string) ([]string, error) {
 	return slices.Clone(names), nil
 }
 
-// hostLabels is a lowercase DNS name of letters, digits and inner hyphens, with no final dot
-var hostLabels = regexp.MustCompile(
-	`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
-
 // checkNames accepts an empty name, or a lowercase host name that is not an IP address
 func checkNames(n Names) error {
 	for _, h := range []struct{ key, name string }{
@@ -228,8 +226,7 @@ func checkNames(n Names) error {
 		if h.name == "" {
 			continue
 		}
-		if _, err := netip.ParseAddr(h.name); err == nil || len(h.name) > 253 ||
-			!hostLabels.MatchString(h.name) {
+		if !hostname.Valid(h.name) {
 			return fmt.Errorf("%s must be a lowercase host name such as host.example.com, "+
 				"with no scheme, port or final dot", h.key)
 		}
