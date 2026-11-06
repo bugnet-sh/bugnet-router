@@ -37,6 +37,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters and the registry |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
+| `internal/hostname` | The one exact host name rule that `[names]` and a package's `egress.allow` share |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
@@ -296,6 +297,10 @@ and `egress_requests_in_flight`, each optional, sizes as strings. A field left o
 router's setting. `egress.allow` lists exact lowercase host names, at least one. An extension must
 carry the same `egress.allow` as the package it extends, since a sandbox keeps the egress rules
 it was created with.
+
+A host name here and in `[names]` is never an IP address, and never ends in a label that is all
+digits or `0x` and hex digits, such as `127.1` or `a.0x1f`. `inet_aton`, curl and browsers read
+those short forms as IPv4 addresses.
 
 Money is integer micro-USD and times are UTC.
 
