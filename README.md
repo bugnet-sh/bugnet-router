@@ -28,6 +28,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Per-placement operation limit in Valkey |
+| `internal/vkclient` | Valkey connections at `host:port` or a `unix://` socket path |
 | `internal/vkinfo` | Valkey's memory and `maxmemory-policy` from `INFO memory` |
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |

@@ -25,7 +25,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
@@ -37,6 +36,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/streams"
+	"github.com/oynozan/bugnet-router/internal/vkclient"
 	"github.com/oynozan/bugnet-router/internal/vkinfo"
 )
 
@@ -100,7 +100,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return fmt.Errorf("open postgres pool: %w", err)
 	}
 	defer pool.Close()
-	vk, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{cfg.ValkeyAddr}})
+	vk, err := vkclient.New(cfg.ValkeyAddr)
 	if err != nil {
 		return fmt.Errorf("connect to valkey: %w", err)
 	}

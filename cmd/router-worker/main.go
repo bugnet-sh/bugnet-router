@@ -30,6 +30,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/providers"
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/oynozan/bugnet-router/internal/vkclient"
 	"github.com/oynozan/bugnet-router/internal/vkinfo"
 	"github.com/oynozan/bugnet-router/internal/worker"
 )
@@ -113,7 +114,7 @@ func serve(
 		return fmt.Errorf("open postgres pool: %w", err)
 	}
 	defer pool.Close()
-	vk, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{cfg.ValkeyAddr}})
+	vk, err := vkclient.New(cfg.ValkeyAddr)
 	if err != nil {
 		return fmt.Errorf("connect to valkey: %w", err)
 	}
