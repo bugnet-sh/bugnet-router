@@ -7,7 +7,9 @@
 // lifetime cap. Calls to envd go through E2B's sandbox proxy, routed by headers, and run as root.
 // Commands go over envd's Connect Process service, file contents over its /files endpoint and
 // listings over its Filesystem service. An upload cannot carry a mode, so WriteFile runs chmod
-// when the mode is not the one envd gives new files.
+// when the mode is not the one envd gives new files. File streams use their own HTTP/1.1 client
+// that never asks for compression. A streamed upload fills a hidden temporary file beside the
+// target, since envd truncates in place, and Commit chmods it and moves it over the target.
 package e2b
 
 import (
@@ -41,7 +43,6 @@ import (
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/e2b/api"
 	filesystempb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem/filesystemconnect"
 	processpb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process"
 	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process/processconnect"
 )
@@ -149,6 +150,7 @@ type Provider struct {
 	api          *api.Client
 	rest         *http.Client
 	envd         *http.Client
+	streams      *http.Client
 	restURL      string
 	envdURL      string
 	domain       string
@@ -177,6 +179,7 @@ func New(opts Options) (*Provider, error) {
 			Transport:     proxyTransport{base: http.DefaultTransport},
 			CheckRedirect: provider.NoRedirect,
 		},
+		streams:      newStreamClient(),
 		restURL:      cmp.Or(opts.BaseURL, "https://api."+domain),
 		envdURL:      opts.EnvdURL,
 		domain:       domain,
@@ -698,8 +701,10 @@ func filesError(resp *http.Response) error {
 		Err: fmt.Errorf("e2b envd answered %d: %s", resp.StatusCode, msg),
 	}
 	switch resp.StatusCode {
-	case http.StatusBadRequest, http.StatusNotAcceptable, http.StatusInsufficientStorage:
+	case http.StatusBadRequest, http.StatusNotAcceptable:
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
+	case http.StatusInsufficientStorage:
+		e.Code, e.CanFailOver = provider.CodeNoSpace, false
 	case http.StatusUnauthorized, http.StatusForbidden:
 		e.Code = provider.CodeAuth
 	case http.StatusNotFound:
@@ -990,10 +995,8 @@ func (p *Provider) ListFiles(
 		return invalid(fmt.Errorf("depth %d is below 1", depth))
 	}
 	req := connect.NewRequest(&filesystempb.ListDirRequest{Path: name, Depth: uint32(depth)})
-	envdHeaders(req.Header(), ref)
-	req.Header().Set("Authorization", rootAuth)
-	client := filesystemconnect.NewFilesystemClient(p.envd, p.envdBase(ref), p.codec...)
-	resp, err := client.ListDir(ctx, req)
+	asRoot(req.Header(), ref)
+	resp, err := p.filesystem(ref).ListDir(ctx, req)
 	if connect.CodeOf(err) == connect.CodeResourceExhausted && !connect.IsWireError(err) {
 		// The reply passed the envd message cap, which no retry of the same listing changes
 		return invalid(fmt.Errorf("e2b listing is too large for one envd message, list less "+
@@ -1023,6 +1026,8 @@ func fileEntry(dir string, e *filesystempb.EntryInfo) provider.FileEntry {
 		Size:  e.GetSize(),
 		IsDir: mode.IsDir(),
 		Mode:  mode,
+		// envd types a symlink by its target, so only an unflagged file entry is regular
+		Regular: e.GetType() == filesystempb.FileType_FILE_TYPE_FILE && !e.GetIsSymlink(),
 	}
 	if e.GetModifiedTime() != nil {
 		entry.Modified = e.GetModifiedTime().AsTime().UTC()

@@ -85,6 +85,12 @@ type idemEntry struct {
 	request, reply []byte
 }
 
+// filesCall is one request to envd's /files endpoint as the fake saw it
+type filesCall struct {
+	method, path, encoding string
+	protoMajor             int
+}
+
 // fakeE2B serves E2B's REST API and proxied envd from memory and the host, for trusted tests
 type fakeE2B struct {
 	t    *testing.T
@@ -96,6 +102,12 @@ type fakeE2B struct {
 	// noContentRange drops Content-Range from partial answers like a proxy that strips it
 	noContentRange bool
 	pageSize       int
+	// noSpace answers every upload with envd's 507 once its body arrived
+	noSpace atomic.Bool
+	// shortBody declares a whole file on download and sends half of it
+	shortBody atomic.Bool
+	// gzipBody labels downloads gzip encoded like a proxy that ignores Accept-Encoding
+	gzipBody atomic.Bool
 
 	mu       sync.Mutex
 	boxes    map[string]*fakeSandbox
@@ -108,6 +120,8 @@ type fakeE2B struct {
 	starts   []startCall
 	uploads  []url.Values
 	ranges   []string
+	files    []filesCall
+	moves    [][2]string
 	scripted bool
 	script   []*processpb.ProcessEvent
 	cleanup  []string
@@ -773,6 +787,97 @@ func (h fakeFilesystem) ListDir(
 	return connect.NewResponse(resp), nil
 }
 
+func (h fakeFilesystem) Stat(
+	_ context.Context, req *connect.Request[filesystempb.StatRequest],
+) (*connect.Response[filesystempb.StatResponse], error) {
+	if basicUser(req.Header()) != "root" {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			errors.New("fake envd stats only as root"))
+	}
+	entry, err := fakeEntry(req.Msg.GetPath())
+	if err != nil {
+		return nil, fakeFsError(err)
+	}
+	return connect.NewResponse(&filesystempb.StatResponse{Entry: entry}), nil
+}
+
+// Move renames like envd, making the destination's parents first
+func (h fakeFilesystem) Move(
+	_ context.Context, req *connect.Request[filesystempb.MoveRequest],
+) (*connect.Response[filesystempb.MoveResponse], error) {
+	if basicUser(req.Header()) != "root" {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			errors.New("fake envd moves only as root"))
+	}
+	from, to := req.Msg.GetSource(), req.Msg.GetDestination()
+	h.f.mu.Lock()
+	h.f.moves = append(h.f.moves, [2]string{from, to})
+	h.f.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return nil, fakeFsError(err)
+	}
+	if err := os.Rename(from, to); err != nil {
+		return nil, fakeFsError(err)
+	}
+	entry, err := fakeEntry(to)
+	if err != nil {
+		return nil, fakeFsError(err)
+	}
+	return connect.NewResponse(&filesystempb.MoveResponse{Entry: entry}), nil
+}
+
+// Remove deletes like envd, with os.RemoveAll, so a missing path is no error
+func (h fakeFilesystem) Remove(
+	_ context.Context, req *connect.Request[filesystempb.RemoveRequest],
+) (*connect.Response[filesystempb.RemoveResponse], error) {
+	if basicUser(req.Header()) != "root" {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			errors.New("fake envd removes only as root"))
+	}
+	if err := os.RemoveAll(req.Msg.GetPath()); err != nil {
+		return nil, fakeFsError(err)
+	}
+	return connect.NewResponse(&filesystempb.RemoveResponse{}), nil
+}
+
+// fakeEntry describes name like envd, a symlink flagged and typed by its target
+func fakeEntry(name string) (*filesystempb.EntryInfo, error) {
+	info, err := os.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	e := &filesystempb.EntryInfo{
+		Name: info.Name(), Path: name, Size: info.Size(), Mode: uint32(info.Mode().Perm()),
+		Permissions: info.Mode().String(), ModifiedTime: timestamppb.New(info.ModTime()),
+	}
+	kind := info.Mode()
+	if kind&fs.ModeSymlink != 0 {
+		e.IsSymlink = true
+		if target, err := os.Readlink(name); err == nil {
+			e.SymlinkTarget = &target
+		}
+		if followed, err := os.Stat(name); err == nil {
+			kind = followed.Mode()
+		}
+	}
+	switch {
+	case kind.IsRegular():
+		e.Type = filesystempb.FileType_FILE_TYPE_FILE
+	case kind.IsDir():
+		e.Type = filesystempb.FileType_FILE_TYPE_DIRECTORY
+	case kind&fs.ModeSymlink != 0:
+		e.Type = filesystempb.FileType_FILE_TYPE_SYMLINK
+	}
+	return e, nil
+}
+
+func fakeFsError(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return connect.NewError(connect.CodeNotFound, err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
+}
+
 func fakeFilesError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
@@ -784,8 +889,31 @@ func fakeFilesError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]any{"code": status, "message": err.Error()})
 }
 
+// seeFiles records a request to /files
+func (f *fakeE2B) seeFiles(r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files = append(f.files, filesCall{
+		method: r.Method, path: r.URL.Query().Get("path"),
+		encoding: r.Header.Get("Accept-Encoding"), protoMajor: r.ProtoMajor,
+	})
+}
+
+func (f *fakeE2B) filesSeen() []filesCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.files)
+}
+
+func (f *fakeE2B) movesSeen() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.moves)
+}
+
 func (f *fakeE2B) download(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	f.seeFiles(r)
 	f.mu.Lock()
 	f.ranges = append(f.ranges, r.Header.Get("Range"))
 	f.mu.Unlock()
@@ -818,6 +946,15 @@ func (f *fakeE2B) download(w http.ResponseWriter, r *http.Request) {
 	if f.noRange {
 		r.Header.Del("Range")
 	}
+	if f.gzipBody.Load() {
+		w.Header().Set("Content-Encoding", "gzip")
+	}
+	if f.shortBody.Load() {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.CopyN(w, file, info.Size()/2)
+		return
+	}
 	if f.noContentRange {
 		w = dropContentRange{w}
 	}
@@ -834,9 +971,10 @@ func (d dropContentRange) WriteHeader(status int) {
 	d.ResponseWriter.WriteHeader(status)
 }
 
-// upload writes like envd, files it creates get mode 0644 and files it replaces keep theirs
+// upload writes like envd, truncating in place, new files get 0644 and replaced ones keep theirs
 func (f *fakeE2B) upload(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	f.seeFiles(r)
 	f.mu.Lock()
 	f.uploads = append(f.uploads, q)
 	f.mu.Unlock()
@@ -851,17 +989,28 @@ func (f *fakeE2B) upload(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		return
-	}
 	f.track(name)
 	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		fakeFilesError(w, err)
 		return
 	}
-	if err := os.WriteFile(name, data, 0o644); err != nil {
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		fakeFilesError(w, err)
+		return
+	}
+	_, err = io.Copy(file, r.Body)
+	cerr := file.Close()
+	switch {
+	case err != nil:
+		return
+	case f.noSpace.Load():
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{
+			"code": 507, "message": "not enough disk space available",
+		})
+		return
+	case cerr != nil:
+		fakeFilesError(w, cerr)
 		return
 	}
 	writeJSON(w, http.StatusOK, []map[string]string{
