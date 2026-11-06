@@ -795,3 +795,81 @@ func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
 	c := newLocal(t, local.Options{}).Capabilities()
 	eq(t, c.SSH || c.Preview, false)
 }
+
+func TestLocalStreamsContract(t *testing.T) {
+	p := newLocal(t, local.Options{})
+	contract.Streams(t, p, createReady(t, p, nil), "/root/t")
+}
+
+func TestLocalStreamsStayInTheSandbox(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	ctx := t.Context()
+	for _, bad := range []string{"/../escape", "../../escape"} {
+		_, err := p.StatFile(ctx, ref, bad)
+		requireCode(t, "StatFile "+bad, err, provider.CodeInvalid)
+		_, err = p.OpenReader(ctx, ref, bad, 0)
+		requireCode(t, "OpenReader "+bad, err, provider.CodeInvalid)
+		_, err = p.OpenWriter(ctx, ref, bad, provider.WriteSpec{Size: 1, Mode: 0o644})
+		requireCode(t, "OpenWriter "+bad, err, provider.CodeInvalid)
+	}
+	_, err := p.OpenWriter(ctx, ref, "/", provider.WriteSpec{Mode: 0o644})
+	requireCode(t, "OpenWriter of the sandbox root", err, provider.CodeInvalid)
+	_, err = p.OpenWriter(ctx, ref, "/root/f", provider.WriteSpec{Size: -1, Mode: 0o644})
+	requireCode(t, "OpenWriter of a negative size", err, provider.CodeInvalid)
+
+	w, err := p.OpenWriter(ctx, ref, "notes.txt", provider.WriteSpec{Size: 2, Mode: 0o600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := w.Commit(ctx, nil)
+	eq(t, err, nil)
+	eq(t, entry.Path, "/root/notes.txt")
+	host := filepath.Join(root, ref.ID, "fs", "root", "notes.txt")
+	info, err := os.Stat(host)
+	if err != nil || info.Mode().Perm() != 0o600 || info.Size() != 2 {
+		t.Fatalf("committed host file %v, %v, want 2 bytes with mode 0600", info, err)
+	}
+}
+
+func TestLocalReaderFailsWhenTheFileShrinks(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	if err := p.WriteFile(t.Context(), ref, "/root/f", []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := p.OpenReader(t.Context(), ref, "/root/f", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	host := filepath.Join(root, ref.ID, "fs", "root", "f")
+	if err := os.Truncate(host, 4); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if string(got) != "0123" || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("a file cut to 4 bytes read %q, %v, want 0123 and an unexpected EOF", got, err)
+	}
+}
+
+func TestLocalReaderRefusesAFifo(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	host := filepath.Join(root, ref.ID, "fs", "tmp", "fifo")
+	if err := syscall.Mkfifo(host, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := p.StatFile(t.Context(), ref, "/tmp/fifo")
+	if err != nil || entry.Regular || entry.Mode&os.ModeNamedPipe == 0 {
+		t.Fatalf("StatFile of a FIFO gave %+v, %v", entry, err)
+	}
+	_, err = p.OpenReader(t.Context(), ref, "/tmp/fifo", 0)
+	requireCode(t, "OpenReader of a FIFO", err, provider.CodeInvalid)
+}

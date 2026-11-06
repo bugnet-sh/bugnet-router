@@ -607,13 +607,7 @@ func (p *Provider) ListFiles(
 		if err != nil {
 			return err
 		}
-		if !into.Add(provider.FileEntry{
-			Path:     s.sandboxPath(host),
-			Size:     info.Size(),
-			IsDir:    d.IsDir(),
-			Mode:     info.Mode(),
-			Modified: info.ModTime().UTC(),
-		}) {
+		if !into.Add(s.entry(host, info)) {
 			return filepath.SkipAll
 		}
 		rel, _ := filepath.Rel(root, host)
@@ -851,10 +845,13 @@ func internalErr(err error) error {
 	return &provider.Error{Code: provider.CodeInternal, Err: err}
 }
 
-// fileErr turns a missing file into not_found and any other failure into internal
+// fileErr turns a missing file into not_found, a full disk into no_space and the rest internal
 func fileErr(err error) error {
-	if errors.Is(err, fs.ErrNotExist) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return &provider.Error{Code: provider.CodeNotFound, Err: err}
+	case errors.Is(err, syscall.ENOSPC):
+		return &provider.Error{Code: provider.CodeNoSpace, Err: err}
 	}
 	return internalErr(err)
 }
