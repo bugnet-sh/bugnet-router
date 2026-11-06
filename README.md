@@ -27,7 +27,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
-| `internal/ratelimit` | Per-placement operation limit in Valkey |
+| `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
 | `internal/vkclient` | Valkey connections at `host:port` or a `unix://` socket path |
 | `internal/vkinfo` | Valkey's memory and `maxmemory-policy` from `INFO memory` |
 | `internal/saga` | Start, extend and stop of placements |
