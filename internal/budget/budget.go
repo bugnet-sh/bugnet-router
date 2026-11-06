@@ -4,8 +4,12 @@
 // egress:used:<placement> and answers what is left of each placement's budget, and for the edge
 // kind the pace each way. The first report that reaches a budget wins a SET NX on the
 // placement's spent key, so exactly one router replica writes BudgetSpent. An extension grows
-// the budget and clears the spent keys, so a later crossing writes it again. Every key expires
-// an hour after the placement's deadline.
+// the budget and clears the spent keys, so a later crossing writes it again.
+//
+// The pace halves while both carriers carried the placement's bytes in the last 10 s, which
+// edge:seen:<placement> records by Valkey's clock. Every key expires an hour after the
+// placement's deadline. MoveDeadline carries the used counters to a new deadline, and an expiry
+// only ever moves later, so a report still holding the old deadline cannot shorten it.
 package budget
 
 import (
@@ -67,13 +71,12 @@ const (
 	maxDelta = 1 << 40
 )
 
-// reportScript adds one placement's delta, claims its spent key the first time the sum reaches
-// the budget, and for the edge kind records when this carrier last carried bytes. Its answer is
-// the sum, whether this call claimed the spent key, and whether both carriers carried bytes in
-// the last 10 s, by Valkey's clock.
+// reportScript adds one placement's delta and answers its sum, its spent claim and both carriers
 var reportScript = valkey.NewLuaScript(`
 local used = redis.call('INCRBY', KEYS[1], ARGV[1])
-redis.call('PEXPIREAT', KEYS[1], ARGV[3])
+if redis.call('PEXPIRETIME', KEYS[1]) < tonumber(ARGV[3]) then
+	redis.call('PEXPIREAT', KEYS[1], ARGV[3])
+end
 local crossed = 0
 if used >= tonumber(ARGV[2]) and redis.call('SET', KEYS[2], '1', 'NX', 'PXAT', ARGV[3]) then
 	crossed = 1
@@ -93,6 +96,16 @@ if KEYS[3] then
 	end
 end
 return {used, crossed, both}
+`)
+
+// keepScript moves the expiry of each key in KEYS that exists to ARGV[1] unless it lies later
+var keepScript = valkey.NewLuaScript(`
+for _, key in ipairs(KEYS) do
+	if redis.call('PEXPIRETIME', key) < tonumber(ARGV[1]) then
+		redis.call('PEXPIREAT', key, ARGV[1])
+	end
+end
+return 0
 `)
 
 // Meter counts placements' bytes in Valkey under one key prefix
@@ -225,6 +238,16 @@ func (m *Meter) ClearSpent(ctx context.Context, placement uuid.UUID) error {
 	cmd := m.c.B().Del().Key(m.key(Edge, "spent", placement), m.key(Egress, "spent", placement))
 	if err := m.c.Do(ctx, cmd.Build()).Error(); err != nil {
 		return fmt.Errorf("budget: clear spent of %s: %w", placement, err)
+	}
+	return nil
+}
+
+// MoveDeadline keeps both of the placement's used counters until an hour after deadline
+func (m *Meter) MoveDeadline(ctx context.Context, placement uuid.UUID, deadline time.Time) error {
+	keys := []string{m.key(Edge, "used", placement), m.key(Egress, "used", placement)}
+	at := strconv.FormatInt(deadline.Add(keyLife).UnixMilli(), 10)
+	if err := keepScript.Exec(ctx, m.c, keys, []string{at}).Error(); err != nil {
+		return fmt.Errorf("budget: move the counters of %s: %w", placement, err)
 	}
 	return nil
 }

@@ -208,6 +208,54 @@ func TestExtensionClearsSpentAndCountsOnFromWhatWasUsed(t *testing.T) {
 	eq(t, spent, []uuid.UUID{p})
 }
 
+// expiresAt is the key's expiry in Unix milliseconds, -2 when the key is absent
+func (m meter) expiresAt(key string) int64 {
+	m.t.Helper()
+	at, err := m.vk.Do(m.t.Context(), m.vk.B().Pexpiretime().Key(m.prefix+key).Build()).AsInt64()
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return at
+}
+
+func TestMoveDeadlineKeepsBothCountersAnHourPastIt(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	m.report(budget.Edge, budget.ByEdge, l, 1<<20)
+	m.report(budget.Egress, budget.ByEdge, l, 1<<20)
+	later := l.Deadline.Add(30 * time.Minute)
+	if err := m.MoveDeadline(t.Context(), p, later); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"edge:used:", "egress:used:"} {
+		eq(t, m.expiresAt(key+p.String()), later.Add(time.Hour).UnixMilli())
+	}
+	if err := m.MoveDeadline(t.Context(), p, l.Deadline); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.expiresAt("egress:used:"+p.String()), later.Add(time.Hour).UnixMilli())
+
+	// A placement that reported nothing gets no counters
+	q := uuid.New()
+	if err := m.MoveDeadline(t.Context(), q, later); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.expiresAt("edge:used:"+q.String()), int64(-2))
+	eq(t, m.expiresAt("egress:used:"+q.String()), int64(-2))
+}
+
+func TestAReportNeverShortensTheExpiry(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	later := l
+	later.Deadline = l.Deadline.Add(30 * time.Minute)
+	m.report(budget.Edge, budget.ByEdge, later, 1<<20)
+	m.report(budget.Edge, budget.ByEdge, l, 1<<20)
+	eq(t, m.expiresAt("edge:used:"+p.String()), later.Deadline.Add(time.Hour).UnixMilli())
+}
+
 func TestEdgeAndEgressCountApart(t *testing.T) {
 	m := newMeter(t)
 	p := uuid.New()

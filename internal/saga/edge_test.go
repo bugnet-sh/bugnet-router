@@ -193,6 +193,33 @@ func TestExtendClearsSpentAndPublishesDeadlineMoved(t *testing.T) {
 	eq(t, err == nil && len(spent) == 1, true)
 }
 
+func TestExtendKeepsTheUsedCountersAnHourPastTheNewDeadline(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeReady(t, "order-1")
+	m := budget.New(e.vk, e.prefix, budgetDefaults)
+	limits := map[uuid.UUID]budget.Limit{
+		p.ID: {Placement: p.ID, Budget: 1 << 30, Deadline: *p.Deadline},
+	}
+	for _, kind := range []budget.Kind{budget.Edge, budget.Egress} {
+		_, _, err := m.Report(t.Context(), kind, budget.ByEdge,
+			[]budget.Usage{{Placement: p.ID, Out: 1 << 20}}, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An idle placement sends no report that could move them
+	for _, key := range []string{"edge:used:", "egress:used:"} {
+		at, err := e.vk.Do(t.Context(), e.vk.B().Pexpiretime().Key(e.prefix+key+p.ID.String()).
+			Build()).AsInt64()
+		eq(t, err, nil)
+		eq(t, at, got.Deadline.Add(time.Hour).UnixMilli())
+	}
+}
+
 func TestPlacementEndedGoesOutBeforeTheDestroy(t *testing.T) {
 	f := &failingDestroy{Provider: newLocal(t, local.Options{Name: "a"})}
 	e := newEnv(t, f)

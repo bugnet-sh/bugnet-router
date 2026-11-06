@@ -756,8 +756,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	return p, nil
 }
 
-// addBudgets grows the placement's budgets by what pkg brings, inside the caller's transaction,
-// and returns the edge and egress bytes it added
+// addBudgets adds pkg's edge and egress bytes to the placement's budgets in ts and returns them
 func (s *Saga) addBudgets(
 	ctx context.Context, ts *store.Store, id uuid.UUID, pkg catalog.Package,
 ) (int64, int64, error) {
@@ -766,7 +765,7 @@ func (s *Saga) addBudgets(
 	return edge, egress, ts.AddPlacementBudgets(ctx, id, edge, egress)
 }
 
-// deadlineMoved clears both spent guards, then tells the edges the new deadline and bytes left
+// deadlineMoved clears the spent guards and moves the counters' expiry, then tells the edges
 func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 	defer cancel()
@@ -774,7 +773,14 @@ func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 		// The bytes left never read the guards, so only a second BudgetSpent is lost
 		s.d.Log.Warn("clear spent guards after an extension", "placement", p.ID, "err", err)
 	}
-	if s.d.Events == nil || p.Deadline == nil {
+	if p.Deadline == nil {
+		return
+	}
+	if err := s.meter.MoveDeadline(ctx, p.ID, *p.Deadline); err != nil {
+		// The placement's next report with bytes moves them too
+		s.d.Log.Warn("keep the used counters after an extension", "placement", p.ID, "err", err)
+	}
+	if s.d.Events == nil {
 		return
 	}
 	limit := budget.Limit{Placement: p.ID, Deadline: *p.Deadline}
@@ -971,8 +977,7 @@ func (s *Saga) placementEnded(ctx context.Context, id uuid.UUID, reason string) 
 	}})
 }
 
-// terminate marks the placement for reason, destroys the sandbox, then marks it terminated and
-// frees its slot once
+// terminate marks the placement, destroys its sandbox, then ends it and frees its slot once
 func (s *Saga) terminate(
 	ctx context.Context, p store.Placement, reason string,
 	mark func(context.Context) (bool, error),

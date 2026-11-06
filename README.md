@@ -452,6 +452,8 @@ placement's bytes in the last 10 s, half while `bugnet-edge` and `bugnet-ssh` bo
 placement that is not ready, or an id that is unknown or malformed, gets no entry. The first report
 that reaches a budget writes `BudgetSpent`, once across every replica. An extension clears the
 spent marks, so a later crossing writes it again. Every key expires an hour after the deadline.
+An extension moves the used counters to an hour after the new deadline, even for a placement that
+reports nothing, and no report moves an expiry earlier.
 
 `CheckEdgeLeases` and `CheckEgressLeases` answer each named placement that is still ready with its
 deadline and bytes left, and the egress check its `secrets_version`. Ended placements are absent.
