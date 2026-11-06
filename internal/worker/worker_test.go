@@ -1407,3 +1407,18 @@ func TestOutboxAlertsOnceTheTenthFailureIsRecorded(t *testing.T) {
 		t.Fatalf("failing event alerted %d times, want once\n%s", n, logs.String())
 	}
 }
+
+func TestDataplaneQueueHasEightWorkers(t *testing.T) {
+	q := worker.Queues(worker.Deps{})
+	if q[jobargs.QueueDataplane].MaxWorkers != 8 || q[river.QueueDefault].MaxWorkers != 10 ||
+		len(q) != 2 {
+		t.Fatalf("queues %+v, want dataplane at 8 workers beside default at 10", q)
+	}
+	three := worker.Queues(worker.Deps{DataplaneWorkers: 3})
+	if three[jobargs.QueueDataplane].MaxWorkers != 3 {
+		t.Fatalf("queues %+v, want dataplane at the 3 workers asked for", three)
+	}
+	if jobargs.QueueDataplane != "dataplane" {
+		t.Fatalf("queue %q, want dataplane", jobargs.QueueDataplane)
+	}
+}

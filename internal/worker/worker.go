@@ -10,10 +10,11 @@
 // outbox job runs every second and posts each due event, signed, to the configured events URL,
 // retrying a failed one with backoff until it is delivered. A periodic job a crashed worker left
 // running is rescued after a few minutes, so it holds back the next run of its kind only that
-// long.
+// long. Data-plane jobs run on the dataplane queue with workers of their own.
 package worker
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"errors"
 	"log/slog"
@@ -48,11 +49,16 @@ const (
 	outboxRunTime = 30 * time.Second
 )
 
+// dataplaneWorkers is the dataplane queue's workers when Deps leaves them unset
+const dataplaneWorkers = 8
+
 // Deps are the worker's own settings next to the saga it builds
 type Deps struct {
 	EventsURL  string             // events stay pending when empty
 	SigningKey ed25519.PrivateKey // signs every delivered event
 	Now        func() time.Time   // time.Now when nil
+	// DataplaneWorkers works the dataplane queue, 8 when zero
+	DataplaneWorkers int
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -101,9 +107,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			river.QueueDefault: {MaxWorkers: maxWorkers},
-		},
+		Queues:               queues(d),
 		Workers:              workers,
 		PeriodicJobs:         periodicJobs(),
 		JobTimeout:           jobTimeout,
@@ -117,6 +121,14 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	w.river = rc
 	w.saga = saga.New(sd)
 	return w, nil
+}
+
+// queues gives data-plane jobs their own queue, so slow Execs never delay deadlines or the outbox
+func queues(d Deps) map[string]river.QueueConfig {
+	return map[string]river.QueueConfig{
+		river.QueueDefault:     {MaxWorkers: maxWorkers},
+		jobargs.QueueDataplane: {MaxWorkers: cmp.Or(d.DataplaneWorkers, dataplaneWorkers)},
+	}
 }
 
 // River returns the client to start and stop

@@ -255,6 +255,9 @@ each once. `secrets.providers` never takes `local`, whose sandboxes share the ho
 `secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
 32-byte X25519 public key.
 
+`worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
+data-plane jobs away from deadlines, the sweep and the outbox.
+
 A package in the catalog may carry its own edge budget and a restricted egress list:
 
 ```json

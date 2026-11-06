@@ -147,7 +147,10 @@ func serve(
 		ReplicaID:    cfg.ReplicaID,
 		DeploymentID: cfg.DeploymentID,
 		Log:          log,
-	}, worker.Deps{EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey})
+	}, worker.Deps{
+		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
+		DataplaneWorkers: cfg.DataplaneWorkers,
+	})
 	if err != nil {
 		return err
 	}

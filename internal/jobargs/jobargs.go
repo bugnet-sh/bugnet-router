@@ -3,6 +3,9 @@ package jobargs
 
 import "github.com/google/uuid"
 
+// QueueDataplane is the River queue of every data-plane job, apart from the default queue
+const QueueDataplane = "dataplane"
+
 // Deadline asks the worker to end a placement once its paid deadline has passed
 type Deadline struct {
 	PlacementID uuid.UUID `json:"placement_id"`
