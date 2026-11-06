@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -223,6 +224,26 @@ func TestUsageReportsAnswerBytesLeftAndPace(t *testing.T) {
 	eq(t, len(e.edgeEvents(t)), 0)
 }
 
+const fastPkg = "fast-10m"
+
+// fastCatalog adds a start package with its own edge pace of 10 MiB a second
+var fastCatalog = strings.TrimSuffix(catalogJSON, "\n]}") + `,
+	{"id": "fast-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 50000, "edge": {"bytes_per_second": "10MiB"}}
+]}`
+
+func TestAPackagesOwnPaceReachesTheReports(t *testing.T) {
+	e := newEnv(t, options{catalog: fastCatalog})
+	resp, err := e.createWith(t, e.startToken(t, fastPkg, smallPrice))
+	if err != nil {
+		t.Fatalf("create placement: %v", err)
+	}
+	id := e.waitReady(t, resp.Msg.GetHandle()).GetPlacementId()
+	eq(t, e.reportEdge(t, usage(id, 1<<20, 0)).GetBytesPerSecond()[id], uint64(10<<20))
+	eq(t, e.reportSSH(t, usage(id, 0, 1<<20)).GetBytesPerSecond()[id], uint64(5<<20))
+	eq(t, e.reportEdge(t, usage(id, 0, 0)).GetBytesPerSecond()[id], uint64(5<<20))
+}
+
 func TestReportAnswersZeroOnceSpentAndNothingOnceEnded(t *testing.T) {
 	e := newEnv(t, options{})
 	h, p := e.readyPlacement(t)
@@ -333,6 +354,10 @@ func TestCheckEgressLeasesOmitsEnded(t *testing.T) {
 	h, gone := e.readyPlacement(t)
 	e.stop(t, h)
 	e.reportEgress(t, usage(live.GetPlacementId(), 1<<20, 0))
+	if _, err := e.pool.Exec(t.Context(), `update placements set secrets_version = 3
+		where id = $1`, live.GetPlacementId()); err != nil {
+		t.Fatal(err)
+	}
 	resp, err := e.egress(t).CheckEgressLeases(t.Context(), connect.NewRequest(
 		&routerv1.CheckEgressLeasesRequest{
 			PlacementIds: []string{live.GetPlacementId(), gone.GetPlacementId()},
@@ -345,7 +370,7 @@ func TestCheckEgressLeasesOmitsEnded(t *testing.T) {
 	l := leases[live.GetPlacementId()]
 	eq(t, l.GetDeadline().AsTime().Equal(live.GetDeadline().AsTime()), true)
 	eq(t, l.GetBytesRemaining(), uint64(1<<30-1<<20))
-	eq(t, l.GetSecretsVersion(), uint64(0))
+	eq(t, l.GetSecretsVersion(), uint64(3))
 }
 
 /* Events */

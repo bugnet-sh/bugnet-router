@@ -165,7 +165,8 @@ type options struct {
 	opsBurst     int
 	log          *slog.Logger // the API server's log, discarded when nil
 	apiValkey    string       // what the API server's Valkey client dials, valkeyAddr() when empty
-	apiCatalog   string       // the API server's catalog JSON, the saga's catalogJSON when empty
+	catalog      string       // the saga's and API server's catalog JSON, catalogJSON when empty
+	apiCatalog   string       // the API server's catalog JSON, the saga's when empty
 	apiEngine    api.Engine   // the API server's engine, the saga's engine when nil
 }
 
@@ -215,7 +216,7 @@ func newEnv(t *testing.T, opts options) *env {
 	if _, err := rand.Read(handleKey); err != nil {
 		t.Fatal(err)
 	}
-	cat := loadCatalog(t, catalogJSON)
+	cat := loadCatalog(t, cmp.Or(opts.catalog, catalogJSON))
 
 	root := t.TempDir()
 	prov := local.New(local.Options{
