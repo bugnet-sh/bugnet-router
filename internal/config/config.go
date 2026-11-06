@@ -17,15 +17,17 @@ import (
 	"io"
 	"maps"
 	"math"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/oynozan/bugnet-router/internal/bytesize"
 )
 
 // Config holds every router setting
@@ -68,12 +70,36 @@ type Config struct {
 	E2B             E2B
 	Koyeb           Koyeb
 	Boat            Boat
+	// DataplaneWorkers is how many River workers run the dataplane queue
+	DataplaneWorkers int
+	// LocalSSHDPath is the host's sshd, which the local provider's ssh-up never installs
+	LocalSSHDPath string
+	Names         Names
+	EdgeBudget    EdgeBudget
+	Previews      Previews
+	Transfers     Transfers
+	SSH           SSH
+	Secrets       Secrets
+	Fetch         Fetch
+	Hooks         Hooks
+	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
+	EdgeToken string
+	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
+	SecretsToken string
+	// SSHToken admits bugnet-ssh to SshGatewayService, no caller when empty
+	SSHToken string
+	// EgressToken admits bugnet-egress to EgressService, no caller when empty
+	EgressToken string
+	// EgressFetchToken is the bnf_ token the router's private fetch opens egress tunnels with
+	EgressFetchToken string
 }
 
 // Boxd holds the boxd adapter's settings
 type Boxd struct {
 	Region   string `toml:"region"`
 	Endpoint string `toml:"endpoint"` // overrides the region's endpoint when set
+	// GateRoute is subdomain for a bn proxy to the gate, or default for the pinned default proxy
+	GateRoute string `toml:"gate_route"`
 }
 
 // E2B holds the E2B adapter's settings
@@ -103,6 +129,126 @@ type Koyeb struct {
 type Boat struct {
 	// Types maps each size sold to its machine type, every type when empty
 	Types map[string]string `toml:"types"`
+	// SSHPath is gate for SSH through the bugnet-run gate, or native for Boat's own sshd
+	SSHPath string `toml:"ssh_path"`
+}
+
+// Names holds the public names the edges serve, each empty until a deployment sets it
+type Names struct {
+	PreviewDomain string `toml:"preview_domain"` // previews are <id>.<preview_domain>
+	TransferHost  string `toml:"transfer_host"`
+	SecretsHost   string `toml:"secrets_host"`
+	SSHHost       string `toml:"ssh_host"`
+	SSHPort       int    `toml:"ssh_port"` // known_hosts names the port when it is not 22
+	EgressHost    string `toml:"egress_host"`
+}
+
+// EdgeBudget bounds one placement's previews, transfers and SSH together, and its egress apart
+type EdgeBudget struct {
+	// BytesPer10Minutes is the edge bytes both ways, scaled by the package's paid minutes
+	BytesPer10Minutes int64
+	// BytesPerSecond is the edge pace each way, shared by the edge and the SSH gateway
+	BytesPerSecond int64
+	// RequestsPerSecond is the preview request rate, with RequestsBurst as its burst
+	RequestsPerSecond int
+	RequestsBurst     int
+	// QueuedRequests is how many preview requests may be in flight, more wait up to 30 s
+	QueuedRequests int
+	// WebSockets is how many preview WebSockets may be open
+	WebSockets int
+	// EgressBytesPer10Minutes is the egress tunnel bytes both ways, scaled the same way
+	EgressBytesPer10Minutes int64
+	// EgressBytesPerSecond is the egress pace each way
+	EgressBytesPerSecond int64
+	// EgressRequestsInFlight is how many proxied requests may be in flight
+	EgressRequestsInFlight int
+}
+
+// Previews holds the preview settings
+type Previews struct {
+	// Providers lists the providers whose gate route passed the live test
+	Providers []string `toml:"providers"`
+	// GatePort is the port the bugnet-run gate listens on inside every sandbox
+	GatePort        int  `toml:"gate_port"`
+	MaxPerPlacement int  `toml:"max_per_placement"`
+	Interstitial    bool `toml:"interstitial"`
+}
+
+// Transfers holds the transfer settings
+type Transfers struct {
+	// URLTTL is the window in which a transfer must start
+	URLTTL time.Duration
+	// MaxBytes is the per-file cap, which a package's edge transfer_max_bytes replaces
+	MaxBytes              int64
+	MaxDuration           time.Duration
+	IdleTimeout           time.Duration
+	MaxActivePerPlacement int
+	MaxTokensPerPlacement int
+	// MaxClaims is how many times one URL may be claimed, with 2 x size + 64 MiB of bytes
+	MaxClaims int
+	// KoyebPart is the size of each buffered and retried Koyeb upload part
+	KoyebPart int64
+	// KoyebBufferTotal bounds every Koyeb part buffer of one router-api process together
+	KoyebBufferTotal int64
+}
+
+// SSH holds the SSH gateway settings
+type SSH struct {
+	// Providers lists the providers whose SSH live test passed
+	Providers []string
+	// HostKeys are the gateway's public host key lines, for known_hosts
+	HostKeys                   []string
+	SSHDPort                   int
+	SSHDFallbackPort           int
+	MaxConnectionsPerPlacement int
+	MaxKeysPerPlacement        int
+	ConnectionLease            time.Duration
+	// PrepareTimeout is how long OpenSshUpstream waits for sshd to be ready
+	PrepareTimeout time.Duration
+	// InstallTimeout bounds apt-get update and install in ssh-up
+	InstallTimeout time.Duration
+}
+
+// Secrets holds the secret and egress proxy settings
+type Secrets struct {
+	// Providers lists the providers whose secret live test passed
+	Providers []string
+	// EgressIPs are the proxy's addresses, pinned in every forwarder
+	EgressIPs []netip.Addr
+	// CACertFile is the Bugnet CA certificate in PEM, no CA yet when empty
+	CACertFile string
+	CAVersion  int
+	// BoxPublicKeys are the proxy's sealing keys, newest first
+	BoxPublicKeys []BoxKey
+	LinkTTL       time.Duration
+	// PutGrantTTL is how long a bnsp_ grant for the bridge stays valid
+	PutGrantTTL time.Duration
+	// CustomHosts false refuses and stops serving hosts outside the presets
+	CustomHosts     bool
+	MaxPerPlacement int
+	LinksPerHour    int
+	PutsPerHour     int
+	ApplyWait       time.Duration
+}
+
+// BoxKey is one X25519 public key of the egress proxy, by its id
+type BoxKey struct {
+	ID  string
+	Key []byte // 32 bytes
+}
+
+// Fetch holds the settings of the router's private repository fetch
+type Fetch struct {
+	// MaxBytes caps one private repository tarball, counted as egress
+	MaxBytes int64
+	// EgressAddr is the proxy's listener, dialled directly with a PROXY v2 header
+	EgressAddr string
+}
+
+// Hooks holds the provider webhook settings
+type Hooks struct {
+	// Providers lists the providers whose webhooks are verified
+	Providers []string `toml:"providers"`
 }
 
 /* Settings file */
@@ -126,6 +272,14 @@ type file struct {
 	E2B                 e2bFile    `toml:"e2b"`
 	Koyeb               Koyeb      `toml:"koyeb"`
 	Boat                Boat       `toml:"boat"`
+	Names               Names      `toml:"names"`
+	EdgeBudget          budgetFile `toml:"edge_budget"`
+	Previews            Previews   `toml:"previews"`
+	Transfers           xferFile   `toml:"transfers"`
+	SSH                 sshFile    `toml:"ssh"`
+	Secrets             secretFile `toml:"secrets"`
+	Fetch               fetchFile  `toml:"fetch"`
+	Hooks               Hooks      `toml:"hooks"`
 }
 
 type apiFile struct {
@@ -133,7 +287,8 @@ type apiFile struct {
 }
 
 type workerFile struct {
-	ListenAddr string `toml:"listen_addr"`
+	ListenAddr       string `toml:"listen_addr"`
+	DataplaneWorkers int64  `toml:"dataplane_workers"`
 }
 
 type valkeyFile struct {
@@ -160,6 +315,7 @@ type localFile struct {
 	Root         string `toml:"root"`
 	Runner       string `toml:"runner"`
 	HourlyMicros int64  `toml:"hourly_micros"`
+	SSHDPath     string `toml:"sshd_path"`
 }
 
 type e2bFile struct {
@@ -168,22 +324,109 @@ type e2bFile struct {
 	Templates   []E2BTemplate `toml:"templates"`
 }
 
+type budgetFile struct {
+	BytesPer10Minutes       string `toml:"bytes_per_10_minutes"`
+	BytesPerSecond          string `toml:"bytes_per_second"`
+	RequestsPerSecond       int64  `toml:"requests_per_second"`
+	RequestsBurst           int64  `toml:"requests_burst"`
+	QueuedRequests          int64  `toml:"queued_requests"`
+	WebSockets              int64  `toml:"websockets"`
+	EgressBytesPer10Minutes string `toml:"egress_bytes_per_10_minutes"`
+	EgressBytesPerSecond    string `toml:"egress_bytes_per_second"`
+	EgressRequestsInFlight  int64  `toml:"egress_requests_in_flight"`
+}
+
+type xferFile struct {
+	URLTTL                string `toml:"url_ttl"`
+	MaxBytes              string `toml:"max_bytes"`
+	MaxDuration           string `toml:"max_duration"`
+	IdleTimeout           string `toml:"idle_timeout"`
+	MaxActivePerPlacement int64  `toml:"max_active_per_placement"`
+	MaxTokensPerPlacement int64  `toml:"max_tokens_per_placement"`
+	MaxClaims             int64  `toml:"max_claims"`
+	KoyebPart             string `toml:"koyeb_part"`
+	KoyebBufferTotal      string `toml:"koyeb_buffer_total"`
+}
+
+type sshFile struct {
+	Providers                  []string `toml:"providers"`
+	HostKeys                   []string `toml:"host_keys"`
+	SSHDPort                   int64    `toml:"sshd_port"`
+	SSHDFallbackPort           int64    `toml:"sshd_fallback_port"`
+	MaxConnectionsPerPlacement int64    `toml:"max_connections_per_placement"`
+	MaxKeysPerPlacement        int64    `toml:"max_keys_per_placement"`
+	ConnectionLease            string   `toml:"connection_lease"`
+	PrepareTimeout             string   `toml:"prepare_timeout"`
+	InstallTimeout             string   `toml:"install_timeout"`
+}
+
+type secretFile struct {
+	Providers       []string     `toml:"providers"`
+	EgressIPs       []string     `toml:"egress_ips"`
+	CACertFile      string       `toml:"ca_cert_file"`
+	CAVersion       int64        `toml:"ca_version"`
+	BoxPublicKeys   []boxKeyFile `toml:"box_public_keys"`
+	LinkTTL         string       `toml:"link_ttl"`
+	PutGrantTTL     string       `toml:"put_grant_ttl"`
+	CustomHosts     bool         `toml:"custom_hosts"`
+	MaxPerPlacement int64        `toml:"max_per_placement"`
+	LinksPerHour    int64        `toml:"links_per_hour"`
+	PutsPerHour     int64        `toml:"puts_per_hour"`
+	ApplyWait       string       `toml:"apply_wait"`
+}
+
+type boxKeyFile struct {
+	ID  string `toml:"id"`
+	Key string `toml:"key"`
+}
+
+type fetchFile struct {
+	MaxBytes   string `toml:"max_bytes"`
+	EgressAddr string `toml:"egress_addr"`
+}
+
 // defaults are the settings of an empty file, an empty string in the file also means its default
 func defaults() file {
 	return file{
 		MarginFloor:  0.5,
 		DeploymentID: "main",
 		API:          apiFile{ListenAddr: ":8080"},
-		Worker:       workerFile{ListenAddr: ":8081"},
+		Worker:       workerFile{ListenAddr: ":8081", DataplaneWorkers: 8},
 		Valkey:       valkeyFile{Addr: "127.0.0.1:6379", Prefix: "bn:"},
 		Limits: limitsFile{
 			JobOutputBudget: "8MiB", PlacementOutputBudget: "32MiB",
 			PlacementTailReserve: "8MiB", MaxRunningJobs: 16,
 			SandboxOpsPerSecond: 10, SandboxOpsBurst: 20,
 		},
-		Local: localFile{Root: filepath.Join(os.TempDir(), "bugnet-local")},
-		Boxd:  Boxd{Region: "fra"},
+		Local: localFile{
+			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
+		},
+		Boxd:  Boxd{Region: "fra", GateRoute: "subdomain"},
 		Koyeb: Koyeb{Region: "fra"},
+		Boat:  Boat{SSHPath: "gate"},
+		Names: Names{SSHPort: 22},
+		EdgeBudget: budgetFile{
+			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
+			RequestsBurst: 200, QueuedRequests: 64, WebSockets: 32,
+			EgressBytesPer10Minutes: "2GiB", EgressBytesPerSecond: "2MiB",
+			EgressRequestsInFlight: 32,
+		},
+		Previews: Previews{GatePort: 29417, MaxPerPlacement: 8, Interstitial: true},
+		Transfers: xferFile{
+			URLTTL: "10m", MaxBytes: "1GiB", MaxDuration: "30m", IdleTimeout: "60s",
+			MaxActivePerPlacement: 2, MaxTokensPerPlacement: 16, MaxClaims: 5,
+			KoyebPart: "8MiB", KoyebBufferTotal: "256MiB",
+		},
+		SSH: sshFile{
+			SSHDPort: 22, SSHDFallbackPort: 2022, MaxConnectionsPerPlacement: 8,
+			MaxKeysPerPlacement: 4, ConnectionLease: "60s", PrepareTimeout: "40s",
+			InstallTimeout: "120s",
+		},
+		Secrets: secretFile{
+			CAVersion: 1, LinkTTL: "10m", PutGrantTTL: "10m", CustomHosts: true,
+			MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: "15s",
+		},
+		Fetch: fetchFile{MaxBytes: "2GiB", EgressAddr: "127.0.0.1:9443"},
 	}
 }
 
@@ -282,13 +525,18 @@ func (f file) config() (Config, error) {
 		LocalHourlyMicros: f.Local.HourlyMicros,
 		Boxd: Boxd{
 			Region: cmp.Or(f.Boxd.Region, d.Boxd.Region), Endpoint: f.Boxd.Endpoint,
+			GateRoute: cmp.Or(f.Boxd.GateRoute, d.Boxd.GateRoute),
 		},
 		E2B: E2B{Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates)},
 		Koyeb: Koyeb{
 			Region:        cmp.Or(f.Koyeb.Region, d.Koyeb.Region),
 			InstanceTypes: maps.Clone(f.Koyeb.InstanceTypes),
 		},
-		Boat: Boat{Types: maps.Clone(f.Boat.Types)},
+		Boat: Boat{
+			Types: maps.Clone(f.Boat.Types), SSHPath: cmp.Or(f.Boat.SSHPath, d.Boat.SSHPath),
+		},
+		LocalSSHDPath: cmp.Or(f.Local.SSHDPath, d.Local.SSHDPath),
+		Names:         f.Names,
 	}
 	if f.OrderTokenPublicKey != "" {
 		pub, err := decodeKey("order_token_public_key", f.OrderTokenPublicKey,
@@ -353,9 +601,12 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	c.Providers = providers
+	if err := f.dataPlane(&c); err != nil {
+		return Config{}, err
+	}
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
-		&c.LocalRunnerPath,
+		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile,
 	} {
 		if *p == "" {
 			continue
@@ -451,6 +702,9 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 			minHandleKeyBytes)
 	}
 	c.HandleKey = hk
+	if err := c.readCallerTokens(get); err != nil {
+		return err
+	}
 	if raw := get("BUGNET_EVENT_SIGNING_KEY"); raw != "" {
 		seed, err := decodeKey("BUGNET_EVENT_SIGNING_KEY", raw, ed25519.SeedSize)
 		if err != nil {
@@ -463,6 +717,35 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 		if v := get(pk.env); v != "" {
 			c.ProviderKeys[pk.name] = v
 		}
+	}
+	return nil
+}
+
+// callerTokens are the environment variables of the edge processes' bearer tokens, in order
+var callerTokens = []string{
+	"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
+	"BUGNET_EGRESS_FETCH_TOKEN",
+}
+
+// readCallerTokens reads each caller token, empty or 32 characters and unlike every other token
+func (c *Config) readCallerTokens(get func(string) string) error {
+	into := []*string{&c.EdgeToken, &c.SecretsToken, &c.SSHToken, &c.EgressToken,
+		&c.EgressFetchToken}
+	seen := map[string]string{c.InternalToken: "BUGNET_INTERNAL_TOKEN"}
+	for i, name := range callerTokens {
+		v := get(name)
+		if v == "" {
+			continue
+		}
+		if len(v) < 32 {
+			return fmt.Errorf("%s must be empty or at least 32 characters", name)
+		}
+		if other, ok := seen[v]; ok {
+			// A shared token would let one caller reach another caller's service
+			return fmt.Errorf("%s must differ from %s", name, other)
+		}
+		seen[v] = name
+		*into[i] = v
 	}
 	return nil
 }
@@ -482,30 +765,14 @@ func DatabaseURLFrom(getenv func(string) (string, bool)) (string, error) {
 
 /* Values */
 
-// byteUnits are the suffixes a byte size may end in
-var byteUnits = []struct {
-	suffix string
-	size   int64
-}{{"KiB", 1 << 10}, {"MiB", 1 << 20}}
-
-// maxByteSize caps byte settings at 1 TiB so derived allowances never overflow
-const maxByteSize = 1 << 40
-
-// byteSize reads a positive whole number of bytes, KiB or MiB, such as 65536, 64KiB or 8MiB
+// byteSize reads a byte size setting, naming key when it is not 1 byte to 1 TiB
 func byteSize(key, raw string) (int64, error) {
-	digits, unit := raw, int64(1)
-	for _, u := range byteUnits {
-		if d, ok := strings.CutSuffix(raw, u.suffix); ok {
-			digits, unit = d, u.size
-			break
-		}
-	}
-	n, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil || n < 1 || n > maxByteSize/unit {
+	n, ok := bytesize.Parse(raw)
+	if !ok {
 		return 0, fmt.Errorf(
-			"%s must be 1 byte to 1 TiB, a whole number optionally ending in KiB or MiB", key)
+			"%s must be 1 byte to 1 TiB, a whole number optionally ending in KiB, MiB or GiB", key)
 	}
-	return n * unit, nil
+	return n, nil
 }
 
 func decodeKey(name, raw string, size int) ([]byte, error) {

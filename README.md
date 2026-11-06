@@ -37,6 +37,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters and the registry |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
+| `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
 | `test/e2e` | End-to-end tests over the built binaries |
 | `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with |
@@ -195,6 +196,12 @@ does not know.
 | `BUGNET_EVENT_SIGNING_KEY` | `router-worker`, which requires it, and `router-api` when set, base64 Ed25519 seed that signs events |
 | `BOXD_API_KEY`, `E2B_API_KEY`, `KOYEB_API_TOKEN`, `BOAT_API_KEY` | the binaries for each provider in `providers`, and the live tests |
 | `BUGNET_ORDER_PRIVATE_KEY` | `bugnet-dev` only, base64 Ed25519 seed it signs order tokens with |
+| `BUGNET_EDGE_TOKEN`, `BUGNET_SECRETS_TOKEN`, `BUGNET_SSH_TOKEN`, `BUGNET_EGRESS_TOKEN` | `router-api` and `router-worker`, one bearer token per edge process, each empty or 32 characters or more |
+| `BUGNET_EGRESS_FETCH_TOKEN` | `router-api` and `router-worker`, the `bnf_` token the router's private fetch opens egress tunnels with, empty or 32 characters or more |
+
+An empty caller token admits no calls, so a router without edges serves only the gateway. No two
+of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
+its own service.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.
@@ -203,7 +210,8 @@ no settings file.
 
 `router-api -config FILE` and `router-worker -config FILE` read every other setting from a TOML
 file. [`config/example.toml`](config/example.toml) lists each key with what it means, each at
-its default except the two `[[e2b.templates]]` tables, since E2B has no templates by default.
+its default except `[names]` and the two `[[e2b.templates]]` tables, since there are no names and
+E2B has no templates by default.
 [`config/dev.toml`](config/dev.toml) is the file `dev-up.sh` runs with. The file is decoded
 strictly, so an unknown or misspelt key, or one in the wrong case, is an error naming the key and
 its line, and the keys of `koyeb.instance_types` and `boat.types` must be size names of
@@ -220,6 +228,32 @@ sandboxes. `config/dev.toml` uses `dev`, the default is `main`.
 `router-api` reads each `[runner]` build once at start and refuses to start when a configured
 provider needs one that is unset or unreadable. `make build` in `bugnet-run` writes
 `dist/bugnet-run-linux-amd64`.
+
+Byte sizes are a whole number of bytes, or one ending in `KiB`, `MiB` or `GiB`, from 1 byte to
+1 TiB. `valkey.addr` takes `host:port`, or `unix://` and an absolute socket path, as
+`unix:///run/valkey/valkey.sock` on the VPS.
+
+### Data plane
+
+These tables hold the data plane's settings, each at its default in `config/example.toml`. The
+features that read them land one by one, and until then the settings only load and check.
+
+| Table | What it holds |
+| --- | --- |
+| `[names]` | The public names the edges serve, empty by default. `example.toml` shows the production set and `dev.toml` the `.dev` live-test set, with SSH on port 2200 |
+| `[edge_budget]` | Bytes, pace, request rate and concurrency of one placement's previews, transfers and SSH together, and of its egress apart |
+| `[previews]` | `providers` whose gate route passed its live test, the in-sandbox gate port 29417, previews per placement and the interstitial |
+| `[transfers]` | The start window, per-file cap and duration, per-placement counts, claims per URL and Koyeb's part buffers |
+| `[ssh]` | `providers` whose SSH live test passed, the gateway's host keys, sshd ports and the per-placement limits and timeouts |
+| `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
+| `[fetch]` | The private repository fetch's byte cap and the egress proxy's listener |
+| `[hooks]` | `providers` whose webhooks are verified |
+
+`boxd.gate_route` (`subdomain` or `default`), `boat.ssh_path` (`gate` or `native`) and
+`local.sshd_path` choose each provider's route. Every provider list takes known provider names,
+each once. `secrets.providers` never takes `local`, whose sandboxes share the host.
+`secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
+32-byte X25519 public key.
 
 Money is integer micro-USD and times are UTC.
 

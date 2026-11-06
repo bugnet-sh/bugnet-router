@@ -19,6 +19,14 @@ prefix = "bn:dev:"
 [runner]
 linux_amd64 = "../bugnet-run/dist/bugnet-run-linux-amd64"   # make build in bugnet-run writes it
 
+[names]                       # the live-test set, which the VPS fronts beside production
+preview_domain = "preview.dev.bugnet.sh"
+transfer_host = "transfer.dev.bugnet.sh"
+secrets_host = "secrets.dev.bugnet.sh"
+ssh_host = "ssh.dev.bugnet.sh"
+ssh_port = 2200               # port 22 cannot be split by name, so dev SSH has its own
+egress_host = "egress.dev.bugnet.sh"
+
 [local]
 enabled = true                # runs commands on this machine, never give it untrusted code
 root = "bin/local"

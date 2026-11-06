@@ -123,8 +123,8 @@ func TestLoadFileDefaults(t *testing.T) {
 		t.Fatalf("sandbox operations %d a second and %d at once, want the limiter's defaults",
 			c.SandboxOpsPerSecond, c.SandboxOpsBurst)
 	}
-	if c.Boxd != (Boxd{Region: "fra"}) || c.Koyeb.Region != "fra" ||
-		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil {
+	if c.Boxd != (Boxd{Region: "fra", GateRoute: "subdomain"}) || c.Koyeb.Region != "fra" ||
+		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil || c.Boat.SSHPath != "gate" {
 		t.Fatalf("provider defaults: %+v, %+v, %+v", c.Boxd, c.Koyeb, c.Boat)
 	}
 	if c.E2B.Domain != "" || c.E2B.MaxLifetime != 0 || c.E2B.Templates != nil {
@@ -146,10 +146,37 @@ prefix = ""
 job_output_budget = ""
 [local]
 root = ""
+sshd_path = ""
 [boxd]
 region = ""
+gate_route = ""
 [koyeb]
 region = ""
+[boat]
+ssh_path = ""
+[edge_budget]
+bytes_per_10_minutes = ""
+bytes_per_second = ""
+egress_bytes_per_10_minutes = ""
+egress_bytes_per_second = ""
+[transfers]
+url_ttl = ""
+max_bytes = ""
+max_duration = ""
+idle_timeout = ""
+koyeb_part = ""
+koyeb_buffer_total = ""
+[ssh]
+connection_lease = ""
+prepare_timeout = ""
+install_timeout = ""
+[secrets]
+link_ttl = ""
+put_grant_ttl = ""
+apply_wait = ""
+[fetch]
+max_bytes = ""
+egress_addr = ""
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +292,7 @@ cpu8 = "large"
 		c.LocalHourlyMicros != 1500 {
 		t.Fatalf("local settings: %+v", c)
 	}
-	if c.Boxd != (Boxd{Region: "nyc", Endpoint: "boxd.example:9443"}) {
+	if c.Boxd != (Boxd{Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "subdomain"}) {
 		t.Fatalf("boxd settings: %+v", c.Boxd)
 	}
 	wantTemplates := []E2BTemplate{
@@ -963,6 +990,9 @@ func TestCommittedFilesLoad(t *testing.T) {
 	if len(dev.E2B.Templates) != 2 {
 		t.Errorf("config/dev.toml e2b templates %+v, want both deploy/e2b builds", dev.E2B)
 	}
+	if dev.Names.PreviewDomain != "preview.dev.bugnet.sh" || dev.Names.SSHPort != 2200 {
+		t.Errorf("config/dev.toml names %+v, want the live-test set", dev.Names)
+	}
 
 	content := committed(t, "example.toml")
 	if !strings.Contains(content, `order_token_public_key = ""`) {
@@ -981,7 +1011,8 @@ func TestCommittedFilesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	example.E2B.Templates = nil
+	// Names have no default, the example shows the production set
+	example.E2B.Templates, example.Names = nil, empty.Names
 	if len(example.Koyeb.InstanceTypes) == 0 && len(example.Boat.Types) == 0 {
 		example.Koyeb.InstanceTypes, example.Boat.Types = nil, nil
 	}
@@ -993,11 +1024,11 @@ func TestCommittedFilesLoad(t *testing.T) {
 func TestByteSizes(t *testing.T) {
 	sizes := map[string]int64{
 		"1": 1, "8388608": 8 << 20, "8KiB": 8 << 10, "8MiB": 8 << 20, "+2MiB": 2 << 20,
-		"1048576MiB": 1 << 40,
+		"1048576MiB": 1 << 40, "8GiB": 8 << 30, "1024GiB": 1 << 40,
 	}
 	for _, raw := range []string{
-		"", "KiB", "MiB", "0", "0MiB", "-1KiB", "8 KiB", "8kib", "8GiB", "8KB", "1e3", "0x10",
-		"1048577MiB", "1099511627777",
+		"", "KiB", "MiB", "GiB", "0", "0MiB", "0GiB", "-1KiB", "8 KiB", "8kib", "8gib", "8KB",
+		"8GB", "8TiB", "1e3", "0x10", "1048577MiB", "1025GiB", "1099511627777",
 	} {
 		sizes[raw] = 0
 	}

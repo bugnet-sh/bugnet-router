@@ -1,6 +1,7 @@
-# Every setting of router-api and router-worker, each at its default except e2b.templates, which
-# is empty by default. Secrets never go in a settings file, they come only from the environment.
-# Relative paths resolve against the working directory.
+# Every setting of router-api and router-worker, each at its default except [names] and
+# e2b.templates, which are empty by default. [names] shows the production names. Secrets never go
+# in a settings file, they come only from the environment. Relative paths resolve against the
+# working directory.
 
 order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, required to serve
 packages_file = ""            # package catalog JSON, required
@@ -15,9 +16,10 @@ listen_addr = ":8080"         # router-api serves the Connect API here
 
 [worker]
 listen_addr = ":8081"         # /healthz, /readyz and /monitor
+dataplane_workers = 8         # River workers on the dataplane queue
 
 [valkey]
-addr = "127.0.0.1:6379"       # Valkey address
+addr = "127.0.0.1:6379"       # host:port, or unix:///run/valkey/valkey.sock for a Unix socket
 prefix = "bn:"                # prefix of every Valkey key
 
 [runner]
@@ -25,22 +27,92 @@ linux_amd64 = ""              # bugnet-run build uploaded to boxd, E2B, Koyeb an
 linux_arm64 = ""              # bugnet-run build for providers with arm64 sandboxes, none yet
 
 [limits]
-job_output_budget = "8MiB"        # bytes, KiB or MiB, 1 byte to 1 TiB, a job's stream memory
+job_output_budget = "8MiB"        # bytes, KiB, MiB or GiB, 1 byte to 1 TiB, a job's stream memory
 placement_output_budget = "32MiB" # stream memory of all of a placement's jobs together
 placement_tail_reserve = "8MiB"   # further stream memory per placement for final tails
 max_running_jobs = 16             # positive integer
 sandbox_ops_per_second = 10       # positive integer, a sandbox's operations a second, sustained
 sandbox_ops_burst = 20            # positive integer, a sandbox's operations at once
 
+[names]                                # lowercase host names, empty until a deployment sets them
+preview_domain = "preview.bugnet.sh"   # previews are <id>.<preview_domain>
+transfer_host = "transfer.bugnet.sh"
+secrets_host = "secrets.bugnet.sh"
+ssh_host = "ssh.bugnet.sh"
+ssh_port = 22                          # known_hosts uses [host]:port when this is not 22
+egress_host = "egress.bugnet.sh"
+
+[edge_budget]
+bytes_per_10_minutes = "2GiB"          # previews, transfers and SSH, scaled by paid minutes
+bytes_per_second = "5MiB"              # each way, per placement, shared by the edge and SSH
+requests_per_second = 100              # preview requests, per placement, every provider
+requests_burst = 200
+queued_requests = 64                   # preview requests in flight, more wait up to 30 s
+websockets = 32
+egress_bytes_per_10_minutes = "2GiB"   # egress tunnels, scaled the same way
+egress_bytes_per_second = "2MiB"       # each way, per placement
+egress_requests_in_flight = 32         # per placement
+
+[previews]
+providers = []                         # providers whose gate route passed the live test
+gate_port = 29417                      # the bugnet-run gate inside every sandbox
+max_per_placement = 8
+interstitial = true
+
+[transfers]
+url_ttl = "10m"                        # the window in which a transfer must start
+max_bytes = "1GiB"                     # per file, a package's edge.transfer_max_bytes wins
+max_duration = "30m"
+idle_timeout = "60s"
+max_active_per_placement = 2
+max_tokens_per_placement = 16
+max_claims = 5                         # and 2 x size + 64 MiB of bytes per URL
+koyeb_part = "8MiB"                    # buffered and retried parts
+koyeb_buffer_total = "256MiB"          # all Koyeb part buffers of one router-api process
+
+[ssh]
+providers = []                         # providers whose SSH live test passed
+host_keys = []                         # the gateway's public host key lines, for known_hosts
+sshd_port = 22
+sshd_fallback_port = 2022
+max_connections_per_placement = 8
+max_keys_per_placement = 4
+connection_lease = "60s"
+prepare_timeout = "40s"                # OpenSshUpstream's wait, set from Koyeb's measured install
+install_timeout = "120s"               # apt-get update and install in ssh-up
+
+[secrets]
+providers = []                         # providers whose secret live test passed, never local
+egress_ips = []                        # the proxy's IPv4 and IPv6, pinned in every forwarder
+ca_cert_file = ""                      # the Bugnet CA certificate, PEM, no CA yet when empty
+ca_version = 1
+box_public_keys = []                   # [{ id = "k1", key = "<base64 X25519>" }], newest first
+link_ttl = "10m"
+put_grant_ttl = "10m"                  # bnsp_ grants for the bridge
+custom_hosts = true                    # false refuses and stops serving hosts outside presets
+max_per_placement = 20
+links_per_hour = 10
+puts_per_hour = 30
+apply_wait = "15s"
+
+[fetch]
+max_bytes = "2GiB"                     # private repository tarballs, counted as egress
+egress_addr = "127.0.0.1:9443"         # the proxy's listener, dialled directly with PROXY v2
+
+[hooks]
+providers = []                         # providers whose webhooks are verified
+
 [local]
 enabled = false               # must be true for the local provider, it runs commands on the host
 root = ""                     # $TMPDIR/bugnet-local when empty
 runner = ""                   # required when providers has "local"
 hourly_micros = 0             # >= 0
+sshd_path = "/usr/sbin/sshd"  # the host's sshd, which ssh-up never installs
 
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
+gate_route = "subdomain"      # a bn proxy to the gate, or "default" for the pinned default proxy
 
 [e2b]
 domain = ""                   # e2b.app when empty
@@ -66,5 +138,8 @@ disk_gib = 10
 region = "fra"                # region every Koyeb sandbox runs in
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
+
+[boat]
+ssh_path = "gate"             # or "native", only if the gate path fails on Boat
 
 [boat.types]                  # size = machine type, every type when empty
