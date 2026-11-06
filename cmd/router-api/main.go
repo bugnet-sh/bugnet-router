@@ -94,6 +94,11 @@ func migrateDatabase(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
+// openStore returns the store, sealing provider credentials under the data-plane keys
+func openStore(pool *pgxpool.Pool, cfg config.Config) *store.Store {
+	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys))
+}
+
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -127,7 +132,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return fmt.Errorf("river client: %w", err)
 	}
 
-	st := store.New(pool)
+	st := openStore(pool, cfg)
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	sg := saga.New(saga.Deps{

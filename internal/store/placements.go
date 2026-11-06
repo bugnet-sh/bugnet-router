@@ -79,7 +79,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	coalesce(key_id, ''), coalesce(ssh_alias, ''), coalesce(source_label, ''), edge_budget_bytes,
 	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at`
 
-func scanPlacement(row pgx.Row) (Placement, error) {
+func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var ref []byte
 	err := row.Scan(&p.ID, &p.HandleSHA256, &p.OrderID, &p.PackageID, &p.State, &p.Provider,
@@ -99,6 +99,9 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 		if err := json.Unmarshal(ref, p.ProviderRef); err != nil {
 			return Placement{}, fmt.Errorf("decode provider ref: %w", err)
 		}
+		if err := s.openRef(&p); err != nil {
+			return Placement{}, fmt.Errorf("provider ref of %s: %w", p.ID, err)
+		}
 	}
 	p.CreatedAt = utc(p.CreatedAt)
 	p.Deadline = utcPtr(p.Deadline)
@@ -112,7 +115,7 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 
 func (s *Store) placementWhere(ctx context.Context, where string, arg any) (Placement, error) {
 	q := `select ` + placementColumns + ` from placements where ` + where
-	p, err := scanPlacement(s.q.QueryRow(ctx, q, arg))
+	p, err := s.scanPlacement(s.q.QueryRow(ctx, q, arg))
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Placement{}, fmt.Errorf("select placement: %w", err)
 	}
@@ -308,6 +311,10 @@ func (s *Store) transition(ctx context.Context, id uuid.UUID, name, sql string, 
 func (s *Store) MarkPlacementReady(
 	ctx context.Context, id uuid.UUID, ref provider.Ref, size string, readyAt, deadline time.Time,
 ) error {
+	ref, err := s.sealRef(id, ref)
+	if err != nil {
+		return fmt.Errorf("mark ready %s: %w", id, err)
+	}
 	raw, err := json.Marshal(ref)
 	if err != nil {
 		return fmt.Errorf("encode provider ref: %w", err)

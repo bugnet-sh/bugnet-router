@@ -31,7 +31,7 @@ func newStore(t *testing.T) *store.Store {
 	return s
 }
 
-func newStoreWithPool(t *testing.T) (*store.Store, *pgxpool.Pool) {
+func newStoreWithPool(t *testing.T, opts ...store.Option) (*store.Store, *pgxpool.Pool) {
 	t.Helper()
 	url := testenv.DatabaseURL(t)
 	ctx := context.Background()
@@ -43,7 +43,7 @@ func newStoreWithPool(t *testing.T) (*store.Store, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return store.New(pool), pool
+	return store.New(pool, opts...), pool
 }
 
 func newPlacement(t *testing.T, s *store.Store, order string) store.Placement {

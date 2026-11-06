@@ -216,6 +216,13 @@ from. To rotate, put a new root first in the list. New placements use it, and pr
 grants and SSH grant ids made under any listed root still verify. Remove an old root only once
 every placement that recorded it has ended.
 
+The store seals the provider credentials in `provider_ref` (E2B's `envd_token` and
+`traffic_token`, Koyeb's `secret`, Boat's `_token`) with AES-256-GCM under a key derived from the
+newest root, as `v1.<root id>.<base64url>`, so a copy of the database without these keys reveals
+none of them. Every other field, `id` included, stays plaintext. A field written before sealing
+reads as plaintext. A sealed field no listed root opens makes reading a live placement fail, and
+on an ended placement it reads as absent, since no sandbox is left for it to reach.
+
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.
 

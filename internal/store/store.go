@@ -56,17 +56,30 @@ type querier interface {
 
 // Store runs queries on a pool or on a single transaction
 type Store struct {
-	q querier
+	q      querier
+	sealer RefSealer
+}
+
+// Option configures a Store
+type Option func(*Store)
+
+// WithRefSealer seals the credential fields of the provider refs the store writes and opens them
+func WithRefSealer(r RefSealer) Option {
+	return func(s *Store) { s.sealer = r }
 }
 
 // New returns a Store backed by pool
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{q: pool}
+func New(pool *pgxpool.Pool, opts ...Option) *Store {
+	s := &Store{q: pool}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Tx returns a Store whose queries all run inside tx
 func (s *Store) Tx(tx pgx.Tx) *Store {
-	return &Store{q: tx}
+	return &Store{q: tx, sealer: s.sealer}
 }
 
 // WithTx runs fn in a transaction, committing when fn returns nil and rolling back otherwise
