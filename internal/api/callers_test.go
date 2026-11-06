@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -35,7 +34,7 @@ var allTokens = api.Tokens{
 	Egress: egressToken, Operator: operatorToken, Payments: paymentsToken,
 }
 
-// budgetDefaults are the [edge_budget] settings of an empty settings file
+// budgetDefaults are the [edge_budget] defaults with 1 GiB of egress, so edge and egress differ
 var budgetDefaults = config.EdgeBudget{
 	BytesPer10Minutes: 2 << 30, BytesPerSecond: 5 << 20, RequestsPerSecond: 100,
 	RequestsBurst: 200, QueuedRequests: 64, WebSockets: 32, EgressBytesPer10Minutes: 1 << 30,
@@ -571,9 +570,6 @@ func TestGetOrderRefusesOtherCallersAndAnEmptyID(t *testing.T) {
 	_, err = e.payments(t).CheckPayer(t.Context(), connect.NewRequest(
 		&routerv1.CheckPayerRequest{}))
 	wantCode(t, err, connect.CodeUnimplemented)
-	if errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
 }
 
 func TestWatchOpensBeforeTheFirstEvent(t *testing.T) {
