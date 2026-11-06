@@ -476,6 +476,21 @@ func (e DeletionOperationResponseType) Valid() bool {
 	}
 }
 
+// Defines values for FileDeleteResponseType.
+const (
+	FileDeleted FileDeleteResponseType = "file.deleted"
+)
+
+// Valid indicates whether the value is a known member of the FileDeleteResponseType enum.
+func (e FileDeleteResponseType) Valid() bool {
+	switch e {
+	case FileDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for FileInfoResponseType.
 const (
 	FileInfo           FileInfoResponseType = "file.info"
@@ -506,6 +521,21 @@ const (
 func (e FileListResponseType) Valid() bool {
 	switch e {
 	case FileList:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileMoveResponseType.
+const (
+	FileMoved FileMoveResponseType = "file.moved"
+)
+
+// Valid indicates whether the value is a known member of the FileMoveResponseType enum.
+func (e FileMoveResponseType) Valid() bool {
+	switch e {
+	case FileMoved:
 		return true
 	default:
 		return false
@@ -626,6 +656,24 @@ const (
 func (e FileWriteResponseType) Valid() bool {
 	switch e {
 	case FileWritten:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for HostPortResponseAccess.
+const (
+	HostPortResponseAccessPrivate HostPortResponseAccess = "private"
+	HostPortResponseAccessPublic  HostPortResponseAccess = "public"
+)
+
+// Valid indicates whether the value is a known member of the HostPortResponseAccess enum.
+func (e HostPortResponseAccess) Valid() bool {
+	switch e {
+	case HostPortResponseAccessPrivate:
+		return true
+	case HostPortResponseAccessPublic:
 		return true
 	default:
 		return false
@@ -1335,6 +1383,18 @@ type ErrorEnvelope struct {
 	Type string `json:"type"`
 }
 
+// FileDeleteResponse defines model for FileDeleteResponse.
+type FileDeleteResponse struct {
+	// Ok Examples: true
+	Ok      bool                   `json:"ok"`
+	Path    string                 `json:"path"`
+	Success *bool                  `json:"success,omitempty"`
+	Type    FileDeleteResponseType `json:"type"`
+}
+
+// FileDeleteResponseType defines model for FileDeleteResponse.Type.
+type FileDeleteResponseType string
+
 // FileEntry defines model for FileEntry.
 type FileEntry struct {
 	IsDir     bool `json:"isDir"`
@@ -1398,6 +1458,30 @@ type FileListResponse struct {
 
 // FileListResponseType defines model for FileListResponse.Type.
 type FileListResponseType string
+
+// FileMoveRequest defines model for FileMoveRequest.
+type FileMoveRequest struct {
+	// Destination The new full path. Missing parent directories are created.
+	Destination string `json:"destination"`
+
+	// Overwrite Replace an existing destination. Without it, an existing destination is an error.
+	Overwrite *bool  `json:"overwrite,omitempty"`
+	Source    string `json:"source"`
+}
+
+// FileMoveResponse defines model for FileMoveResponse.
+type FileMoveResponse struct {
+	Destination string `json:"destination"`
+
+	// Ok Examples: true
+	Ok      bool                 `json:"ok"`
+	Path    string               `json:"path"`
+	Success *bool                `json:"success,omitempty"`
+	Type    FileMoveResponseType `json:"type"`
+}
+
+// FileMoveResponseType defines model for FileMoveResponse.Type.
+type FileMoveResponseType string
 
 // FilePermissionsRequest defines model for FilePermissionsRequest.
 type FilePermissionsRequest struct {
@@ -1502,6 +1586,30 @@ type HostPortRequest struct {
 	// Title Display title for the hosted port.
 	Title *string `json:"title,omitempty"`
 }
+
+// HostPortResponse defines model for HostPortResponse.
+type HostPortResponse struct {
+	Access      *HostPortResponseAccess `json:"access,omitempty"`
+	IsProtected *bool                   `json:"isProtected,omitempty"`
+
+	// Localhost The sandbox relays the URL to a service that listens on localhost only.
+	Localhost *bool `json:"localhost,omitempty"`
+
+	// Ok Examples: true
+	Ok      bool  `json:"ok"`
+	Port    *int  `json:"port,omitempty"`
+	Success *bool `json:"success,omitempty"`
+
+	// Type Examples: port.hosted
+	Type string `json:"type"`
+
+	// Url Public HTTPS URL. Carries the `_token` query parameter unless the port is public; redact from logs.
+	Url                  *string                `json:"url,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// HostPortResponseAccess defines model for HostPortResponse.Access.
+type HostPortResponseAccess string
 
 // PageInfo defines model for PageInfo.
 type PageInfo struct {
@@ -1936,6 +2044,12 @@ type AttachCommandParams struct {
 	StderrOffset *int `form:"stderrOffset,omitempty" json:"stderrOffset,omitempty"`
 }
 
+// DeleteFileParams defines parameters for DeleteFile.
+type DeleteFileParams struct {
+	Path      string `form:"path" json:"path"`
+	Recursive *bool  `form:"recursive,omitempty" json:"recursive,omitempty"`
+}
+
 // ReadFileParams defines parameters for ReadFile.
 type ReadFileParams struct {
 	Path     string                  `form:"path" json:"path"`
@@ -1967,14 +2081,23 @@ type CommandJSONRequestBody = CommandRequest
 // WriteFileJSONRequestBody defines body for WriteFile for application/json ContentType.
 type WriteFileJSONRequestBody = FileWriteRequest
 
+// CreateDownloadUrlJSONRequestBody defines body for CreateDownloadUrl for application/json ContentType.
+type CreateDownloadUrlJSONRequestBody = FileUrlRequest
+
 // CreateFolderJSONRequestBody defines body for CreateFolder for application/json ContentType.
 type CreateFolderJSONRequestBody = FileFolderRequest
+
+// MoveFileJSONRequestBody defines body for MoveFile for application/json ContentType.
+type MoveFileJSONRequestBody = FileMoveRequest
 
 // SetFilePermissionsJSONRequestBody defines body for SetFilePermissions for application/json ContentType.
 type SetFilePermissionsJSONRequestBody = FilePermissionsRequest
 
 // CreateUploadUrlJSONRequestBody defines body for CreateUploadUrl for application/json ContentType.
 type CreateUploadUrlJSONRequestBody = FileUrlRequest
+
+// HostPortJSONRequestBody defines body for HostPort for application/json ContentType.
+type HostPortJSONRequestBody = HostPortRequest
 
 // Getter for additional properties for CreateSandboxResponse_HostedPorts_Item. Returns the specified
 // element and whether it was found
@@ -2114,6 +2237,175 @@ func (a CreateSandboxResponse_HostedPorts_Item) MarshalJSON() ([]byte, error) {
 	object["port"], err = json.Marshal(a.Port)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling 'port': %w", err)
+	}
+
+	if a.Url != nil {
+		object["url"], err = json.Marshal(a.Url)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'url': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for HostPortResponse. Returns the specified
+// element and whether it was found
+func (a HostPortResponse) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for HostPortResponse
+func (a *HostPortResponse) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for HostPortResponse to handle AdditionalProperties
+func (a *HostPortResponse) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["access"]; found {
+		err = json.Unmarshal(raw, &a.Access)
+		if err != nil {
+			return fmt.Errorf("error reading 'access': %w", err)
+		}
+		delete(object, "access")
+	}
+
+	if raw, found := object["isProtected"]; found {
+		err = json.Unmarshal(raw, &a.IsProtected)
+		if err != nil {
+			return fmt.Errorf("error reading 'isProtected': %w", err)
+		}
+		delete(object, "isProtected")
+	}
+
+	if raw, found := object["localhost"]; found {
+		err = json.Unmarshal(raw, &a.Localhost)
+		if err != nil {
+			return fmt.Errorf("error reading 'localhost': %w", err)
+		}
+		delete(object, "localhost")
+	}
+
+	if raw, found := object["ok"]; found {
+		err = json.Unmarshal(raw, &a.Ok)
+		if err != nil {
+			return fmt.Errorf("error reading 'ok': %w", err)
+		}
+		delete(object, "ok")
+	}
+
+	if raw, found := object["port"]; found {
+		err = json.Unmarshal(raw, &a.Port)
+		if err != nil {
+			return fmt.Errorf("error reading 'port': %w", err)
+		}
+		delete(object, "port")
+	}
+
+	if raw, found := object["success"]; found {
+		err = json.Unmarshal(raw, &a.Success)
+		if err != nil {
+			return fmt.Errorf("error reading 'success': %w", err)
+		}
+		delete(object, "success")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if raw, found := object["url"]; found {
+		err = json.Unmarshal(raw, &a.Url)
+		if err != nil {
+			return fmt.Errorf("error reading 'url': %w", err)
+		}
+		delete(object, "url")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for HostPortResponse to handle AdditionalProperties
+func (a HostPortResponse) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Access != nil {
+		object["access"], err = json.Marshal(a.Access)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'access': %w", err)
+		}
+	}
+
+	if a.IsProtected != nil {
+		object["isProtected"], err = json.Marshal(a.IsProtected)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'isProtected': %w", err)
+		}
+	}
+
+	if a.Localhost != nil {
+		object["localhost"], err = json.Marshal(a.Localhost)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'localhost': %w", err)
+		}
+	}
+
+	object["ok"], err = json.Marshal(a.Ok)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'ok': %w", err)
+	}
+
+	if a.Port != nil {
+		object["port"], err = json.Marshal(a.Port)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'port': %w", err)
+		}
+	}
+
+	if a.Success != nil {
+		object["success"], err = json.Marshal(a.Success)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'success': %w", err)
+		}
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
 	}
 
 	if a.Url != nil {
@@ -2353,6 +2645,13 @@ type ClientInterface interface {
 	// Corresponds with GET /sandboxes/{sandboxId}/commands/{processId}/stream (the `AttachCommand` operationId).
 	AttachCommand(ctx context.Context, sandboxId SandboxId, processId ProcessId, params *AttachCommandParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// DeleteFile Delete a file or directory in a sandbox
+	//
+	// A directory needs `recursive=true`. A symlink is deleted itself, never its target. /home/user and /tmp themselves cannot be deleted. Needs `file.write`.
+	//
+	// Corresponds with DELETE /sandboxes/{sandboxId}/files (the `DeleteFile` operationId).
+	DeleteFile(ctx context.Context, sandboxId SandboxId, params *DeleteFileParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ReadFile Read a file from a sandbox
 	//
 	// Files up to 5 MiB. For a larger file, use `POST /sandboxes/{sandboxId}/files/download-url`. On a sandbox that is still starting, the call waits until it is ready (up to 60 s, like a command), so it reads the sandbox's own disk and never the machine's stock one.
@@ -2377,6 +2676,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /sandboxes/{sandboxId}/files (the `WriteFile` operationId).
 	WriteFile(ctx context.Context, sandboxId SandboxId, body WriteFileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateDownloadUrlWithBody Get a download URL for a sandbox file
+	//
+	// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+	CreateDownloadUrlWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateDownloadUrl Get a download URL for a sandbox file
+	//
+	// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+	CreateDownloadUrl(ctx context.Context, sandboxId SandboxId, body CreateDownloadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateFolderWithBody Create a directory in a sandbox
 	//
@@ -2409,6 +2726,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with GET /sandboxes/{sandboxId}/files/list (the `ListFiles` operationId).
 	ListFiles(ctx context.Context, sandboxId SandboxId, params *ListFilesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveFileWithBody Move or rename a file or directory in a sandbox
+	//
+	// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+	MoveFileWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MoveFile Move or rename a file or directory in a sandbox
+	//
+	// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+	MoveFile(ctx context.Context, sandboxId SandboxId, body MoveFileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// SetFilePermissionsWithBody Set file permissions in a sandbox
 	//
@@ -2445,6 +2780,24 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/files/upload-url (the `CreateUploadUrl` operationId).
 	CreateUploadUrl(ctx context.Context, sandboxId SandboxId, body CreateUploadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// HostPortWithBody Expose a sandbox port on a public HTTPS URL
+	//
+	// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+	HostPortWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// HostPort Expose a sandbox port on a public HTTPS URL
+	//
+	// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+	HostPort(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // Sandboxes List sandboxes
@@ -2642,6 +2995,23 @@ func (c *Client) AttachCommand(ctx context.Context, sandboxId SandboxId, process
 	return c.Client.Do(req)
 }
 
+// DeleteFile Delete a file or directory in a sandbox
+//
+// A directory needs `recursive=true`. A symlink is deleted itself, never its target. /home/user and /tmp themselves cannot be deleted. Needs `file.write`.
+//
+// Corresponds with DELETE /sandboxes/{sandboxId}/files (the `DeleteFile` operationId).
+func (c *Client) DeleteFile(ctx context.Context, sandboxId SandboxId, params *DeleteFileParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteFileRequest(c.Server, sandboxId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // ReadFile Read a file from a sandbox
 //
 // Files up to 5 MiB. For a larger file, use `POST /sandboxes/{sandboxId}/files/download-url`. On a sandbox that is still starting, the call waits until it is ready (up to 60 s, like a command), so it reads the sandbox's own disk and never the machine's stock one.
@@ -2687,6 +3057,44 @@ func (c *Client) WriteFileWithBody(ctx context.Context, sandboxId SandboxId, con
 // Corresponds with PUT /sandboxes/{sandboxId}/files (the `WriteFile` operationId).
 func (c *Client) WriteFile(ctx context.Context, sandboxId SandboxId, body WriteFileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewWriteFileRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateDownloadUrlWithBody Get a download URL for a sandbox file
+//
+// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+func (c *Client) CreateDownloadUrlWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDownloadUrlRequestWithBody(c.Server, sandboxId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateDownloadUrl Get a download URL for a sandbox file
+//
+// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+func (c *Client) CreateDownloadUrl(ctx context.Context, sandboxId SandboxId, body CreateDownloadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateDownloadUrlRequest(c.Server, sandboxId, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2769,6 +3177,44 @@ func (c *Client) ListFiles(ctx context.Context, sandboxId SandboxId, params *Lis
 	return c.Client.Do(req)
 }
 
+// MoveFileWithBody Move or rename a file or directory in a sandbox
+//
+// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+func (c *Client) MoveFileWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveFileRequestWithBody(c.Server, sandboxId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// MoveFile Move or rename a file or directory in a sandbox
+//
+// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+func (c *Client) MoveFile(ctx context.Context, sandboxId SandboxId, body MoveFileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMoveFileRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // SetFilePermissionsWithBody Set file permissions in a sandbox
 //
 // Sets the permission bits. Files belong to the sandbox user; the owner and group do not change. Needs `file.write`.
@@ -2835,6 +3281,44 @@ func (c *Client) CreateUploadUrlWithBody(ctx context.Context, sandboxId SandboxI
 // Corresponds with POST /sandboxes/{sandboxId}/files/upload-url (the `CreateUploadUrl` operationId).
 func (c *Client) CreateUploadUrl(ctx context.Context, sandboxId SandboxId, body CreateUploadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateUploadUrlRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// HostPortWithBody Expose a sandbox port on a public HTTPS URL
+//
+// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+func (c *Client) HostPortWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewHostPortRequestWithBody(c.Server, sandboxId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// HostPort Expose a sandbox port on a public HTTPS URL
+//
+// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+func (c *Client) HostPort(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewHostPortRequest(c.Server, sandboxId, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3411,6 +3895,75 @@ func NewAttachCommandRequest(server string, sandboxId SandboxId, processId Proce
 	return req, nil
 }
 
+// NewDeleteFileRequest constructs an http.Request for the DeleteFile method
+func NewDeleteFileRequest(server string, sandboxId SandboxId, params *DeleteFileParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/files", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "path", params.Path, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if params.Recursive != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "recursive", *params.Recursive, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "boolean", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewReadFileRequest constructs an http.Request for the ReadFile method
 func NewReadFileRequest(server string, sandboxId SandboxId, params *ReadFileParams) (*http.Request, error) {
 	var err error
@@ -3518,6 +4071,53 @@ func NewWriteFileRequestWithBody(server string, sandboxId SandboxId, contentType
 	}
 
 	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewCreateDownloadUrlRequest calls the generic CreateDownloadUrl builder with application/json body
+func NewCreateDownloadUrlRequest(server string, sandboxId SandboxId, body CreateDownloadUrlJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateDownloadUrlRequestWithBody(server, sandboxId, "application/json", bodyReader)
+}
+
+// NewCreateDownloadUrlRequestWithBody constructs an http.Request for the CreateDownloadUrl method, with any body, and a specified content type
+func NewCreateDownloadUrlRequestWithBody(server string, sandboxId SandboxId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/files/download-url", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -3692,6 +4292,53 @@ func NewListFilesRequest(server string, sandboxId SandboxId, params *ListFilesPa
 	return req, nil
 }
 
+// NewMoveFileRequest calls the generic MoveFile builder with application/json body
+func NewMoveFileRequest(server string, sandboxId SandboxId, body MoveFileJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMoveFileRequestWithBody(server, sandboxId, "application/json", bodyReader)
+}
+
+// NewMoveFileRequestWithBody constructs an http.Request for the MoveFile method, with any body, and a specified content type
+func NewMoveFileRequestWithBody(server string, sandboxId SandboxId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/files/move", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewSetFilePermissionsRequest calls the generic SetFilePermissions builder with application/json body
 func NewSetFilePermissionsRequest(server string, sandboxId SandboxId, body SetFilePermissionsJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -3767,6 +4414,53 @@ func NewCreateUploadUrlRequestWithBody(server string, sandboxId SandboxId, conte
 	}
 
 	operationPath := fmt.Sprintf("/sandboxes/%s/files/upload-url", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewHostPortRequest calls the generic HostPort builder with application/json body
+func NewHostPortRequest(server string, sandboxId SandboxId, body HostPortJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewHostPortRequestWithBody(server, sandboxId, "application/json", bodyReader)
+}
+
+// NewHostPortRequestWithBody constructs an http.Request for the HostPort method, with any body, and a specified content type
+func NewHostPortRequestWithBody(server string, sandboxId SandboxId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/host", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -3925,6 +4619,15 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /sandboxes/{sandboxId}/commands/{processId}/stream (the `AttachCommand` operationId).
 	AttachCommandWithResponse(ctx context.Context, sandboxId SandboxId, processId ProcessId, params *AttachCommandParams, reqEditors ...RequestEditorFn) (*AttachCommandResponse, error)
 
+	// DeleteFileWithResponse Delete a file or directory in a sandbox
+	//
+	// A directory needs `recursive=true`. A symlink is deleted itself, never its target. /home/user and /tmp themselves cannot be deleted. Needs `file.write`.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /sandboxes/{sandboxId}/files (the `DeleteFile` operationId).
+	DeleteFileWithResponse(ctx context.Context, sandboxId SandboxId, params *DeleteFileParams, reqEditors ...RequestEditorFn) (*DeleteFileResponse, error)
+
 	// ReadFileWithResponse Read a file from a sandbox
 	//
 	// Files up to 5 MiB. For a larger file, use `POST /sandboxes/{sandboxId}/files/download-url`. On a sandbox that is still starting, the call waits until it is ready (up to 60 s, like a command), so it reads the sandbox's own disk and never the machine's stock one.
@@ -3951,6 +4654,24 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with PUT /sandboxes/{sandboxId}/files (the `WriteFile` operationId).
 	WriteFileWithResponse(ctx context.Context, sandboxId SandboxId, body WriteFileJSONRequestBody, reqEditors ...RequestEditorFn) (*WriteFileResponse, error)
+
+	// CreateDownloadUrlWithBodyWithResponse Get a download URL for a sandbox file
+	//
+	// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+	CreateDownloadUrlWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDownloadUrlResponse, error)
+
+	// CreateDownloadUrlWithResponse Get a download URL for a sandbox file
+	//
+	// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+	CreateDownloadUrlWithResponse(ctx context.Context, sandboxId SandboxId, body CreateDownloadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDownloadUrlResponse, error)
 
 	// CreateFolderWithBodyWithResponse Create a directory in a sandbox
 	//
@@ -3988,6 +4709,24 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /sandboxes/{sandboxId}/files/list (the `ListFiles` operationId).
 	ListFilesWithResponse(ctx context.Context, sandboxId SandboxId, params *ListFilesParams, reqEditors ...RequestEditorFn) (*ListFilesResponse, error)
 
+	// MoveFileWithBodyWithResponse Move or rename a file or directory in a sandbox
+	//
+	// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+	MoveFileWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MoveFileResponse, error)
+
+	// MoveFileWithResponse Move or rename a file or directory in a sandbox
+	//
+	// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+	MoveFileWithResponse(ctx context.Context, sandboxId SandboxId, body MoveFileJSONRequestBody, reqEditors ...RequestEditorFn) (*MoveFileResponse, error)
+
 	// SetFilePermissionsWithBodyWithResponse Set file permissions in a sandbox
 	//
 	// Sets the permission bits. Files belong to the sandbox user; the owner and group do not change. Needs `file.write`.
@@ -4023,6 +4762,24 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/files/upload-url (the `CreateUploadUrl` operationId).
 	CreateUploadUrlWithResponse(ctx context.Context, sandboxId SandboxId, body CreateUploadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateUploadUrlResponse, error)
+
+	// HostPortWithBodyWithResponse Expose a sandbox port on a public HTTPS URL
+	//
+	// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+	HostPortWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*HostPortResponse2, error)
+
+	// HostPortWithResponse Expose a sandbox port on a public HTTPS URL
+	//
+	// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+	HostPortWithResponse(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*HostPortResponse2, error)
 }
 
 type SandboxesResponse struct {
@@ -4542,6 +5299,54 @@ func (r AttachCommandResponse) ContentType() string {
 	return ""
 }
 
+type DeleteFileResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *FileDeleteResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DeleteFileResponse) GetJSON200() *FileDeleteResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r DeleteFileResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteFileResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteFileResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteFileResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteFileResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ReadFileResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -4632,6 +5437,75 @@ func (r WriteFileResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r WriteFileResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateDownloadUrlResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *FileUrlResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r CreateDownloadUrlResponse) GetJSON200() *FileUrlResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r CreateDownloadUrlResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r CreateDownloadUrlResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r CreateDownloadUrlResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r CreateDownloadUrlResponse) GetJSON409() *Conflict {
+	return r.JSON409
+}
+
+// GetBody returns the raw response body bytes
+func (r CreateDownloadUrlResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateDownloadUrlResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateDownloadUrlResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateDownloadUrlResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -4782,6 +5656,54 @@ func (r ListFilesResponse) ContentType() string {
 	return ""
 }
 
+type MoveFileResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *FileMoveResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r MoveFileResponse) GetJSON200() *FileMoveResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r MoveFileResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetBody returns the raw response body bytes
+func (r MoveFileResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r MoveFileResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MoveFileResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r MoveFileResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type SetFilePermissionsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -4893,6 +5815,75 @@ func (r CreateUploadUrlResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r CreateUploadUrlResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type HostPortResponse2 struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *HostPortResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON402 the response for an HTTP 402 `application/json` response
+	JSON402 *PaymentRequired
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r HostPortResponse2) GetJSON200() *HostPortResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r HostPortResponse2) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r HostPortResponse2) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON402 returns the response for an HTTP 402 `application/json` response
+func (r HostPortResponse2) GetJSON402() *PaymentRequired {
+	return r.JSON402
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r HostPortResponse2) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r HostPortResponse2) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r HostPortResponse2) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r HostPortResponse2) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r HostPortResponse2) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -5060,6 +6051,21 @@ func (c *ClientWithResponses) AttachCommandWithResponse(ctx context.Context, san
 	return ParseAttachCommandResponse(rsp)
 }
 
+// DeleteFileWithResponse Delete a file or directory in a sandbox
+//
+// A directory needs `recursive=true`. A symlink is deleted itself, never its target. /home/user and /tmp themselves cannot be deleted. Needs `file.write`.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /sandboxes/{sandboxId}/files (the `DeleteFile` operationId).
+func (c *ClientWithResponses) DeleteFileWithResponse(ctx context.Context, sandboxId SandboxId, params *DeleteFileParams, reqEditors ...RequestEditorFn) (*DeleteFileResponse, error) {
+	rsp, err := c.DeleteFile(ctx, sandboxId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteFileResponse(rsp)
+}
+
 // ReadFileWithResponse Read a file from a sandbox
 //
 // Files up to 5 MiB. For a larger file, use `POST /sandboxes/{sandboxId}/files/download-url`. On a sandbox that is still starting, the call waits until it is ready (up to 60 s, like a command), so it reads the sandbox's own disk and never the machine's stock one.
@@ -5103,6 +6109,36 @@ func (c *ClientWithResponses) WriteFileWithResponse(ctx context.Context, sandbox
 		return nil, err
 	}
 	return ParseWriteFileResponse(rsp)
+}
+
+// CreateDownloadUrlWithBodyWithResponse Get a download URL for a sandbox file
+//
+// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+func (c *ClientWithResponses) CreateDownloadUrlWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDownloadUrlResponse, error) {
+	rsp, err := c.CreateDownloadUrlWithBody(ctx, sandboxId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateDownloadUrlResponse(rsp)
+}
+
+// CreateDownloadUrlWithResponse Get a download URL for a sandbox file
+//
+// Returns a short-lived URL that the sandbox serves itself. GET it to download the file as raw bytes, with no size limit and no Authorization header. The URL is bound to this path and expires after `ttlSeconds` (default 15 minutes, at most 1 hour). Needs `file.read`. Treat the URL as a secret until it expires.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/download-url (the `CreateDownloadUrl` operationId).
+func (c *ClientWithResponses) CreateDownloadUrlWithResponse(ctx context.Context, sandboxId SandboxId, body CreateDownloadUrlJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDownloadUrlResponse, error) {
+	rsp, err := c.CreateDownloadUrl(ctx, sandboxId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateDownloadUrlResponse(rsp)
 }
 
 // CreateFolderWithBodyWithResponse Create a directory in a sandbox
@@ -5165,6 +6201,36 @@ func (c *ClientWithResponses) ListFilesWithResponse(ctx context.Context, sandbox
 	return ParseListFilesResponse(rsp)
 }
 
+// MoveFileWithBodyWithResponse Move or rename a file or directory in a sandbox
+//
+// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+func (c *ClientWithResponses) MoveFileWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MoveFileResponse, error) {
+	rsp, err := c.MoveFileWithBody(ctx, sandboxId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMoveFileResponse(rsp)
+}
+
+// MoveFileWithResponse Move or rename a file or directory in a sandbox
+//
+// Works across /home/user and /tmp. A symlink is moved itself, never its target. Needs `file.write`.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/files/move (the `MoveFile` operationId).
+func (c *ClientWithResponses) MoveFileWithResponse(ctx context.Context, sandboxId SandboxId, body MoveFileJSONRequestBody, reqEditors ...RequestEditorFn) (*MoveFileResponse, error) {
+	rsp, err := c.MoveFile(ctx, sandboxId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMoveFileResponse(rsp)
+}
+
 // SetFilePermissionsWithBodyWithResponse Set file permissions in a sandbox
 //
 // Sets the permission bits. Files belong to the sandbox user; the owner and group do not change. Needs `file.write`.
@@ -5223,6 +6289,36 @@ func (c *ClientWithResponses) CreateUploadUrlWithResponse(ctx context.Context, s
 		return nil, err
 	}
 	return ParseCreateUploadUrlResponse(rsp)
+}
+
+// HostPortWithBodyWithResponse Expose a sandbox port on a public HTTPS URL
+//
+// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+func (c *ClientWithResponses) HostPortWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*HostPortResponse2, error) {
+	rsp, err := c.HostPortWithBody(ctx, sandboxId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseHostPortResponse2(rsp)
+}
+
+// HostPortWithResponse Expose a sandbox port on a public HTTPS URL
+//
+// Registers a stable `https://<sandbox-subdomain>-<port>.on.boat.dev` route for a port inside the sandbox and opens the sandbox firewall for it. Idempotent: calling it again for the same sandbox and port returns the same URL and token.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
+func (c *ClientWithResponses) HostPortWithResponse(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*HostPortResponse2, error) {
+	rsp, err := c.HostPort(ctx, sandboxId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseHostPortResponse2(rsp)
 }
 
 // ParseSandboxesResponse parses an HTTP response from a SandboxesWithResponse call
@@ -5625,6 +6721,39 @@ func ParseAttachCommandResponse(rsp *http.Response) (*AttachCommandResponse, err
 	return response, nil
 }
 
+// ParseDeleteFileResponse parses an HTTP response from a DeleteFileWithResponse call
+func ParseDeleteFileResponse(rsp *http.Response) (*DeleteFileResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteFileResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest FileDeleteResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseReadFileResponse parses an HTTP response from a ReadFileWithResponse call
 func ParseReadFileResponse(rsp *http.Response) (*ReadFileResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -5685,6 +6814,60 @@ func ParseWriteFileResponse(rsp *http.Response) (*WriteFileResponse, error) {
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateDownloadUrlResponse parses an HTTP response from a CreateDownloadUrlWithResponse call
+func ParseCreateDownloadUrlResponse(rsp *http.Response) (*CreateDownloadUrlResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateDownloadUrlResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest FileUrlResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	}
 
@@ -5790,6 +6973,39 @@ func ParseListFilesResponse(rsp *http.Response) (*ListFilesResponse, error) {
 	return response, nil
 }
 
+// ParseMoveFileResponse parses an HTTP response from a MoveFileWithResponse call
+func ParseMoveFileResponse(rsp *http.Response) (*MoveFileResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MoveFileResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest FileMoveResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseSetFilePermissionsResponse parses an HTTP response from a SetFilePermissionsWithResponse call
 func ParseSetFilePermissionsResponse(rsp *http.Response) (*SetFilePermissionsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -5871,6 +7087,60 @@ func ParseCreateUploadUrlResponse(rsp *http.Response) (*CreateUploadUrlResponse,
 			return nil, err
 		}
 		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseHostPortResponse2 parses an HTTP response from a HostPortWithResponse call
+func ParseHostPortResponse2(rsp *http.Response) (*HostPortResponse2, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &HostPortResponse2{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HostPortResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 402:
+		var dest PaymentRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON402 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	}
 
