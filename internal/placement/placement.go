@@ -72,7 +72,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		if in.Exclude[name] || !e.health.Healthy(name) {
 			continue
 		}
-		caps := p.Capabilities()
+		caps := e.reg.Capabilities(p)
 		if !capable(caps, req) {
 			continue
 		}
@@ -132,7 +132,7 @@ func (e *Engine) noCandidate(req Requirements) error {
 		return ErrNoCandidate
 	}
 	for _, p := range e.reg.Ordered() {
-		if capable(p.Capabilities(), req) {
+		if capable(e.reg.Capabilities(p), req) {
 			return ErrNoCandidate
 		}
 	}

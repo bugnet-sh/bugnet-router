@@ -171,9 +171,9 @@ func New(opts Options) (*Provider, error) {
 // Name returns "boat"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports the runner upload and Boat's 30 day TTL, and no GPU or egress rules
+// Capabilities reports the runner upload, the 30 day TTL and Exec as user, no GPU or egress rules
 func (p *Provider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{NeedsRunnerUpload: true, MaxLifetime: maxTTL}
+	return provider.Capabilities{NeedsRunnerUpload: true, MaxLifetime: maxTTL, ExecUser: "user"}
 }
 
 // SizeFor picks the cheapest size covering floor, Boat has no GPU

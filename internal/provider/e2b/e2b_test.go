@@ -856,6 +856,7 @@ func TestE2BSizesAndPrices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exec runs as root, so ExecUser stays empty
 	want := provider.Capabilities{
 		EgressControl: true, NeedsRunnerUpload: true, MaxLifetime: time.Hour,
 	}

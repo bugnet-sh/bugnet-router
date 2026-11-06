@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -760,7 +761,14 @@ func TestLocalSizesAndPricing(t *testing.T) {
 	if got := p.BillingIncrement(); got != time.Minute {
 		t.Errorf("BillingIncrement gave %v", got)
 	}
-	want := provider.Capabilities{MaxLifetime: 24 * time.Hour}
+	host, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := provider.Capabilities{MaxLifetime: 24 * time.Hour, ExecUser: host.Username}
+	if host.Uid == "0" {
+		want.ExecUser = ""
+	}
 	if got := p.Capabilities(); got != want {
 		t.Errorf("Capabilities gave %+v, want %+v", got, want)
 	}

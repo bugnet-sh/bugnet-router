@@ -1173,7 +1173,9 @@ func TestBoatForeignRefIsNotFound(t *testing.T) {
 func TestBoatSizesAndPrices(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
-	want := provider.Capabilities{NeedsRunnerUpload: true, MaxLifetime: 30 * 24 * time.Hour}
+	want := provider.Capabilities{
+		NeedsRunnerUpload: true, MaxLifetime: 30 * 24 * time.Hour, ExecUser: "user",
+	}
 	if got := p.Capabilities(); got != want {
 		t.Errorf("capabilities %+v, want %+v", got, want)
 	}

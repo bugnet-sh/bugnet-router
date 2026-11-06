@@ -446,6 +446,15 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
 
-No provider offers SSH, previews or secrets yet. An order that requires any of them finds no
-provider. `Estimate` marks every package, and `PricePackage` the one it prices,
+The registry decides which providers offer previews, SSH and secrets, and the placement engine and
+the API read capabilities only through it. A provider offers previews when it is listed in
+`previews.providers` and its adapter has a gate route, SSH when it is listed in `ssh.providers`
+and has a gate route, or with `boat.ssh_path = "native"` an SSH server of its own, and secrets
+when it is listed in `secrets.providers`. A listed provider whose adapter lacks what the feature
+needs stops both binaries at start, naming it. No adapter has a gate route yet and every list is
+empty, so no provider offers SSH, previews or secrets. An order that requires any of them finds
+no provider. `Estimate` marks every package, and `PricePackage` the one it prices,
 `feature_unavailable` for it.
+
+Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
+running the router on `local`.

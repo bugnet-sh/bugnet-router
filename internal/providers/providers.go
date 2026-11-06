@@ -26,7 +26,7 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 	GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32,
 }}
 
-// Build returns the configured providers in their listed order, sharing state across replicas in vk
+// Build returns the configured providers in their listed order with the features they passed
 func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 	var ps []provider.Provider
 	for _, name := range cfg.Providers {
@@ -78,7 +78,14 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			return nil, fmt.Errorf("providers: %s has no adapter", name)
 		}
 	}
-	return provider.NewRegistry(ps), nil
+	reg, err := provider.NewRegistry(ps, provider.Features{
+		Preview: cfg.Previews.Providers, SSH: cfg.SSH.Providers, Secrets: cfg.Secrets.Providers,
+		BoatNativeSSH: cfg.Boat.SSHPath == "native",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("providers: %w", err)
+	}
+	return reg, nil
 }
 
 // runnerKey names the setting that points at each architecture's bugnet-run build

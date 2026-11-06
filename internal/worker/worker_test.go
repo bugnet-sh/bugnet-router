@@ -212,7 +212,10 @@ func newEnv(t *testing.T, o options) *env {
 	if len(ps) == 0 {
 		ps = []provider.Provider{newLocal(t, "local")}
 	}
-	reg := provider.NewRegistry(ps)
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	tracker := placement.NewTracker(time.Now)
 	out := o.log
 	if out == nil {

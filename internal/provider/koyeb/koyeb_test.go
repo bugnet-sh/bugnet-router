@@ -1224,6 +1224,7 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exec runs as root, so ExecUser stays empty
 	want := provider.Capabilities{
 		GPU: true, EgressControl: true, NeedsRunnerUpload: true,
 		MaxLifetime: 24*time.Hour - 10*time.Minute, OneSandboxPerKey: true,

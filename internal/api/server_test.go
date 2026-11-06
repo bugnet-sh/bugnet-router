@@ -114,7 +114,6 @@ type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
 	maxLifetime time.Duration   // replaces the local provider's cap, when set
-	secrets     bool            // reports the secrets capability, when set
 }
 
 func (f faulty) Capabilities() provider.Capabilities {
@@ -122,7 +121,6 @@ func (f faulty) Capabilities() provider.Capabilities {
 	if f.maxLifetime > 0 {
 		c.MaxLifetime = f.maxLifetime
 	}
-	c.Secrets = c.Secrets || f.secrets
 	return c
 }
 
@@ -158,7 +156,7 @@ type options struct {
 	readyDelay  time.Duration
 	holdReady   <-chan struct{}
 	maxLifetime time.Duration
-	secrets     bool  // the provider reports the secrets capability
+	secrets     bool  // the registry lists the provider for secrets
 	maxRunning  int   // jobs a placement may run at once, the jobs default when zero
 	jobBudget   int64 // what one job's output may cost its stream, the jobs default when zero
 	// opsPerSecond and opsBurst are each placement's operation limit, the defaults when zero
@@ -224,10 +222,16 @@ func newEnv(t *testing.T, opts options) *env {
 		Increment: time.Second, RunnerPath: runnerPath, ReadyDelay: opts.readyDelay,
 	})
 	t.Cleanup(func() { destroyAll(t, prov) })
-	reg := provider.NewRegistry([]provider.Provider{faulty{
+	var features provider.Features
+	if opts.secrets {
+		features.Secrets = []string{"local"}
+	}
+	reg, err := provider.NewRegistry([]provider.Provider{faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
-		secrets: opts.secrets,
-	}})
+	}}, features)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	st := store.New(pool)

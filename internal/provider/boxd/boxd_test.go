@@ -862,7 +862,7 @@ func TestBoxdSizesAndPrices(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 	caps := p.Capabilities()
-	want := provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true}
+	want := provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true, ExecUser: "boxd"}
 	if caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)
 	}

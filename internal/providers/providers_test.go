@@ -364,9 +364,7 @@ func TestRunnersReadsTheBuildsUploadingProvidersNeed(t *testing.T) {
 	newLocal := func(name string) *local.Provider {
 		return local.New(local.Options{Name: name, Root: t.TempDir()})
 	}
-	reg := provider.NewRegistry([]provider.Provider{
-		newLocal("plain"), uploading{newLocal("up"), ""},
-	})
+	reg := registry(t, newLocal("plain"), uploading{newLocal("up"), ""})
 	runners, err := providers.Runners(config.Config{RunnerLinuxAMD64: amd}, reg)
 	if err != nil || string(runners["amd64"]) != "amd64 build" || len(runners) != 1 {
 		t.Fatalf("runners %v, %v, want the amd64 build alone", runners, err)
@@ -381,13 +379,53 @@ func TestRunnersReadsTheBuildsUploadingProvidersNeed(t *testing.T) {
 	if _, err := providers.Runners(missing, reg); err == nil {
 		t.Fatal("runners with an unreadable build gave no error")
 	}
-	arm := provider.NewRegistry([]provider.Provider{uploading{newLocal("arm"), "arm64"}})
+	arm := registry(t, uploading{newLocal("arm"), "arm64"})
 	_, err = providers.Runners(config.Config{RunnerLinuxAMD64: amd}, arm)
 	if err == nil || !strings.Contains(err.Error(), "runner.linux_arm64") {
 		t.Fatalf("runners for an arm64 provider gave %v, want the arm64 key named", err)
 	}
-	if none, err := providers.Runners(config.Config{}, provider.NewRegistry(
-		[]provider.Provider{newLocal("plain")})); err != nil || len(none) != 0 {
+	none, err := providers.Runners(config.Config{}, registry(t, newLocal("plain")))
+	if err != nil || len(none) != 0 {
 		t.Fatalf("runners with no uploading provider gave %v, %v, want none", none, err)
+	}
+}
+
+// registry registers ps with no data-plane features
+func registry(t *testing.T, ps ...provider.Provider) *provider.Registry {
+	t.Helper()
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func TestBuildPassesTheFeatureLists(t *testing.T) {
+	cfg := load(t, `providers = ["e2b", "boat"]
+[secrets]
+providers = ["e2b"]
+`+e2bTemplates, map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
+	reg, err := providers.Build(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2b, _ := reg.Get("e2b")
+	boat, _ := reg.Get("boat")
+	if !reg.Capabilities(e2b).Secrets || reg.Capabilities(boat).Secrets {
+		t.Fatalf("secrets on e2b %v and boat %v, want e2b alone",
+			reg.Capabilities(e2b).Secrets, reg.Capabilities(boat).Secrets)
+	}
+	for _, c := range []struct{ toml, want string }{
+		{"[previews]\nproviders = [\"boat\"]", "boat is listed for previews"},
+		{"[ssh]\nproviders = [\"e2b\"]", "e2b is listed for ssh but has no gate route"},
+		{"[ssh]\nproviders = [\"boat\"]\n[boat]\nssh_path = \"native\"",
+			"boat is listed for ssh on its native path"},
+	} {
+		cfg := load(t, "providers = [\"e2b\", \"boat\"]\n"+c.toml+"\n"+e2bTemplates,
+			map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
+		_, err := providers.Build(cfg, nil)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q gave %v, want an error with %q", c.toml, err, c.want)
+		}
 	}
 }

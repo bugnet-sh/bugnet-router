@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path"
 	"path/filepath"
 	"slices"
@@ -65,6 +66,7 @@ type Options struct {
 type Provider struct {
 	opts     Options
 	attempts atomic.Int64
+	execUser string
 }
 
 // Open builds a provider only when enabled, since the local provider runs commands on the host
@@ -88,15 +90,26 @@ func New(opts Options) *Provider {
 		opts.Name = "local"
 	}
 	opts.Root = filepath.Clean(opts.Root)
-	return &Provider{opts: opts}
+	return &Provider{opts: opts, execUser: hostUser()}
+}
+
+// hostUser names the user the router runs as, empty for root as Capabilities.ExecUser says
+func hostUser() string {
+	if os.Geteuid() == 0 {
+		return ""
+	}
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return os.Getenv("USER")
 }
 
 // Name returns the configured provider name
 func (p *Provider) Name() string { return p.opts.Name }
 
-// Capabilities reports a host with no isolation features and a one-day lifetime cap
+// Capabilities reports a host with no isolation, a one-day lifetime cap and Exec as the host user
 func (p *Provider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{MaxLifetime: 24 * time.Hour}
+	return provider.Capabilities{MaxLifetime: 24 * time.Hour, ExecUser: p.execUser}
 }
 
 // SizeFor returns the first configured size that covers floor

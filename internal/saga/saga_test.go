@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -355,7 +356,10 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg := provider.NewRegistry(ps)
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	tracker := placement.NewTracker(time.Now)
 	st := store.New(pool)
 	deps := saga.Deps{
@@ -1970,7 +1974,7 @@ func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, x := range exts {
-		if pkg, _ := cat.Get(x.Package.ID); x.Package != pkg {
+		if pkg, _ := cat.Get(x.Package.ID); !reflect.DeepEqual(x.Package, pkg) {
 			t.Errorf("listed %+v, the catalog has %+v", x.Package, pkg)
 		}
 	}
@@ -2050,7 +2054,11 @@ func TestListExtensionsOfAnUnknownHandle(t *testing.T) {
 func TestListExtensionsFailsAsCheckExtendWhenTheProviderIsGone(t *testing.T) {
 	e, deps, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
 	_, h := e.placeReady(t, "order-1")
-	deps.Registry = provider.NewRegistry(nil)
+	empty, err := provider.NewRegistry(nil, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.Registry = empty
 	other := saga.New(deps)
 	exts, err := other.ListExtensions(t.Context(), h)
 	if err == nil || errors.Is(err, saga.ErrNotReady) || errors.Is(err, saga.ErrExceedsLifetime) {

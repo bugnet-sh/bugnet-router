@@ -104,10 +104,20 @@ func newEnvWith(t *testing.T, wrap func(*local.Provider) provider.Provider) *env
 	}
 	e := &env{
 		store: store.New(pool), bus: streams.NewBus(vk, prefix), vk: vk, prefix: prefix,
-		root: root, prov: prov, reg: provider.NewRegistry([]provider.Provider{run}),
+		root: root, prov: prov, reg: newRegistry(t, run),
 	}
 	e.place = e.readyPlacement(t)
 	return e
+}
+
+// newRegistry registers ps with no data-plane features
+func newRegistry(t *testing.T, ps ...provider.Provider) *provider.Registry {
+	t.Helper()
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
 }
 
 func randomHex(t *testing.T, n int) string {
@@ -1377,7 +1387,7 @@ func TestTakeoverWithoutTheProviderEndsJobLost(t *testing.T) {
 	if !jobs.StopRenewing(first, res.JobID) {
 		t.Fatal("the first replica does not own the job it started")
 	}
-	second := e.serviceWith(t, "replica-2", provider.NewRegistry(nil))
+	second := e.serviceWith(t, "replica-2", newRegistry(t))
 	scan(t, second)
 
 	j := waitFinished(t, e.store, res.JobID)

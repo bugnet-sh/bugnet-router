@@ -170,9 +170,9 @@ func (p *Provider) Close() error { return p.conn.Close() }
 // Name returns "boxd"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports egress rules and the runner upload, and no lifetime cap
+// Capabilities reports egress rules, the runner upload and Exec as boxd, and no lifetime cap
 func (p *Provider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true}
+	return provider.Capabilities{EgressControl: true, NeedsRunnerUpload: true, ExecUser: "boxd"}
 }
 
 // SizeFor picks the smallest size class covering floor

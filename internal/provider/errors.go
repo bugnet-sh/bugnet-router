@@ -20,6 +20,7 @@ const (
 	CodeNotFound       Code = "not_found"
 	CodeOutcomeUnknown Code = "outcome_unknown"
 	CodeInternal       Code = "internal"
+	CodeNoSpace        Code = "no_space"
 )
 
 // Error is a classified provider failure

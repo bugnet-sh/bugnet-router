@@ -22,14 +22,21 @@ type Size struct {
 
 // Capabilities says what a provider supports, a zero MaxLifetime means unlimited
 type Capabilities struct {
-	SSH, Preview, GPU, EgressControl, NeedsRunnerUpload bool
-	MaxLifetime                                         time.Duration
+	// SSH means users reach sandboxes through the SSH gateway, set by the registry alone
+	SSH bool
+	// Preview means the edges serve sandbox ports as previews, set by the registry alone
+	Preview bool
+
+	GPU, EgressControl, NeedsRunnerUpload bool
+	MaxLifetime                           time.Duration
 	// Arch is the CPU architecture of the provider's sandboxes, amd64 when empty
 	Arch string
 	// OneSandboxPerKey means a create repeated under one idempotency key never makes a second
 	OneSandboxPerKey bool
-	// Secrets means the provider's secret egress path is proven live, so an order may add secrets
+	// Secrets means sandboxes can run the egress forwarder and trust the CA, set by the registry
 	Secrets bool
+	// ExecUser is the user Exec runs as, root when empty
+	ExecUser string
 }
 
 // RunnerArch names the bugnet-run build the provider's sandboxes run
@@ -71,6 +78,8 @@ type FileEntry struct {
 	IsDir    bool
 	Mode     fs.FileMode
 	Modified time.Time
+	// Regular reports a regular file, false for directories, devices, FIFOs and sockets
+	Regular bool
 }
 
 // Summary is one sandbox found by ListOwned
@@ -110,4 +119,33 @@ type Provider interface {
 type StartCoster interface {
 	// StartCostMicros is what the next start of size costs, false when it would be refused
 	StartCostMicros(size Size) (int64, bool)
+}
+
+// GateRoute is how the edges reach the bugnet-run gate in one sandbox, never shown to users
+type GateRoute struct {
+	BaseURL         string            // the gate's https origin, its port only when not 443
+	Header          map[string]string // provider credential headers
+	Cookies         map[string]string // provider credential cookies
+	BlockedPrefixes []string          // paths the edges never forward
+}
+
+// Gater is a provider whose sandboxes the edges reach through the bugnet-run gate
+type Gater interface {
+	// PrepareGate opens the provider's route to port and returns Ref.Meta entries to store
+	PrepareGate(ctx context.Context, ref Ref, port int) (map[string]string, error)
+	// GateRoute builds the route from ref alone, without calling the provider
+	GateRoute(ref Ref, port int) (GateRoute, error)
+}
+
+// NativeSSH is a provider's own SSH server, used only when the gate path fails there
+type NativeSSH struct {
+	Address string // host and port, built with net.JoinHostPort
+	User    string
+	HostKey string // authorized_keys format
+}
+
+// NativeSSHer is a provider with an SSH server of its own, Boat only
+type NativeSSHer interface {
+	// AuthorizeNativeSSH adds gatewayKey, an authorized_keys line, to the sandbox's SSH server
+	AuthorizeNativeSSH(ctx context.Context, ref Ref, gatewayKey string) (NativeSSH, error)
 }

@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -24,12 +25,21 @@ type fakeHealth struct {
 func (f fakeHealth) Healthy(name string) bool           { return !f.down[name] }
 func (f fakeHealth) ReadyP95(name string) time.Duration { return f.p95[name] }
 
+// capsProvider is a local provider with fixed capabilities and a gate route
 type capsProvider struct {
 	*local.Provider
 	caps provider.Capabilities
 }
 
 func (c capsProvider) Capabilities() provider.Capabilities { return c.caps }
+
+func (capsProvider) PrepareGate(context.Context, provider.Ref, int) (map[string]string, error) {
+	return nil, nil
+}
+
+func (capsProvider) GateRoute(provider.Ref, int) (provider.GateRoute, error) {
+	return provider.GateRoute{}, nil
+}
 
 var smallSize = provider.Size{
 	Name: "small", Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
@@ -62,8 +72,25 @@ func names(cs []Candidate) []string {
 	return out
 }
 
+// engine lists each provider for the data-plane features its own capabilities claim
 func engine(h Health, ps ...provider.Provider) *Engine {
-	return New(provider.NewRegistry(ps), h)
+	var f provider.Features
+	for _, p := range ps {
+		c := p.Capabilities()
+		for _, l := range []struct {
+			on   bool
+			into *[]string
+		}{{c.Preview, &f.Preview}, {c.SSH, &f.SSH}, {c.Secrets, &f.Secrets}} {
+			if l.on {
+				*l.into = append(*l.into, p.Name())
+			}
+		}
+	}
+	reg, err := provider.NewRegistry(ps, f)
+	if err != nil {
+		panic(err)
+	}
+	return New(reg, h)
 }
 
 func TestCandidatesCheapestFirst(t *testing.T) {
@@ -352,18 +379,52 @@ func adapters(t *testing.T) []provider.Provider {
 	return []provider.Provider{newLocal(t, "local", 0, time.Second), bx, eb, ky, bt}
 }
 
-func TestCandidatesForSecretsTakeOnlyAProviderReportingThem(t *testing.T) {
-	secrets := capsProvider{
-		Provider: newLocal(t, "secrets", 1000, time.Second),
-		caps:     provider.Capabilities{Secrets: true, MaxLifetime: time.Hour},
+func TestCandidatesSkipProviderWithoutSecrets(t *testing.T) {
+	claims := func(name string) capsProvider {
+		return capsProvider{
+			Provider: newLocal(t, name, 1000, time.Second),
+			caps:     provider.Capabilities{Secrets: true, MaxLifetime: time.Hour},
+		}
 	}
-	plain := newLocal(t, "plain", 1000, time.Second)
-	got, err := engine(fakeHealth{}, plain, secrets).Candidates(Inputs{
+	reg, err := provider.NewRegistry([]provider.Provider{claims("unlisted"), claims("listed")},
+		provider.Features{Secrets: []string{"listed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := New(reg, fakeHealth{}).Candidates(Inputs{
 		Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
 	})
-	if err != nil || !slices.Equal(names(got), []string{"secrets"}) {
-		t.Fatalf("got %v, %v", names(got), err)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"listed"})
+}
+
+func TestCandidatesReadCapabilitiesThroughTheRegistry(t *testing.T) {
+	// The gated provider's adapter claims nothing, the other claims everything but is unlisted
+	gated := capsProvider{
+		Provider: newLocal(t, "gated", 1000, time.Second),
+		caps:     provider.Capabilities{MaxLifetime: time.Hour},
 	}
+	claiming := capsProvider{
+		Provider: newLocal(t, "claiming", 1000, time.Second),
+		caps: provider.Capabilities{
+			SSH: true, Preview: true, Secrets: true, MaxLifetime: time.Hour,
+		},
+	}
+	reg, err := provider.NewRegistry([]provider.Provider{claiming, gated},
+		provider.Features{Preview: []string{"gated"}, SSH: []string{"gated"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(reg, fakeHealth{})
+	got, err := e.Candidates(Inputs{
+		Package: pkg(10, 100000), Requirements: Requirements{SSH: true, Preview: true},
+	})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"gated"})
+	_, err = e.Candidates(Inputs{
+		Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
+	})
+	eq(t, errors.Is(err, ErrNoCapableProvider), true)
 }
 
 func TestCandidatesForSSHPreviewOrSecretsFindNone(t *testing.T) {

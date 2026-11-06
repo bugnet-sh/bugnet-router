@@ -219,7 +219,7 @@ func hourlyMicros(r provider.Resources) int64 {
 // Name returns "e2b"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports egress rules, the runner upload and the plan's lifetime cap
+// Capabilities reports egress rules, the runner upload, the plan's lifetime cap and Exec as root
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		EgressControl: true, NeedsRunnerUpload: true, MaxLifetime: p.maxLifetime,
