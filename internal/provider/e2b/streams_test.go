@@ -173,6 +173,22 @@ func TestE2BReaderFromAnOffset(t *testing.T) {
 	}
 }
 
+func TestE2BReaderRefusesAWrongRangeStart(t *testing.T) {
+	f := newFake(t)
+	f.wrongRangeStart = true
+	p := f.provider(t, fakeKey)
+	ref := f.add(nil)
+	name := filepath.Join(t.TempDir(), "f")
+	streamUp(t, p, ref, name, bytes.Repeat([]byte("x"), 100), 0o644)
+	r, err := p.OpenReader(t.Context(), ref, name, 37)
+	if err == nil {
+		_ = r.Close()
+		t.Fatal("OpenReader from 37 took a partial answer that starts at 0")
+	}
+	eq(t, isCode(err, provider.CodeInternal), true)
+	eq(t, f.rangesAsked(), []string{"bytes=37-99"})
+}
+
 func TestE2BWriteBlocksUnderBackPressure(t *testing.T) {
 	f := newFake(t)
 	release := make(chan struct{})

@@ -101,7 +101,9 @@ type fakeE2B struct {
 	noRange bool
 	// noContentRange drops Content-Range from partial answers like a proxy that strips it
 	noContentRange bool
-	pageSize       int
+	// wrongRangeStart answers a ranged GET with 206 and the file from byte 0
+	wrongRangeStart bool
+	pageSize        int
 	// noSpace answers every upload with envd's 507 once its body arrived
 	noSpace atomic.Bool
 	// shortBody declares a whole file on download and sends half of it
@@ -953,6 +955,14 @@ func (f *fakeE2B) download(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.CopyN(w, file, info.Size()/2)
+		return
+	}
+	if f.wrongRangeStart && r.Header.Get("Range") != "" {
+		w.Header().Set("Content-Range",
+			fmt.Sprintf("bytes 0-%d/%d", info.Size()-1, info.Size()))
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.Copy(w, file)
 		return
 	}
 	if f.noContentRange {
