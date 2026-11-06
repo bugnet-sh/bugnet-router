@@ -236,6 +236,10 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"valkey socket not absolute", "[valkey]\naddr = \"unix://run/valkey.sock\"",
 			"valkey.addr must be host:port, or unix:// and an absolute socket path"},
 		{"valkey socket missing", "[valkey]\naddr = \"unix://\"", "valkey.addr must be"},
+		{"valkey address without a port", "[valkey]\naddr = \"127.0.0.1\"",
+			"valkey.addr must be host:port"},
+		{"valkey name without a port", "[valkey]\naddr = \"localhost\"",
+			"valkey.addr must be host:port"},
 		{"no dataplane workers", "[worker]\ndataplane_workers = 0",
 			"worker.dataplane_workers must be a positive whole number"},
 		{"preview domain with a scheme", "[names]\npreview_domain = \"https://p.example.com\"",
@@ -297,6 +301,12 @@ func TestDataPlaneValidation(t *testing.T) {
 			"ssh.host_keys entry 1"},
 		{"private host key", "[ssh]\nhost_keys = [\"-----BEGIN OPENSSH PRIVATE KEY-----\"]",
 			"ssh.host_keys entry 1"},
+		{"host key with a second line",
+			"[ssh]\nhost_keys = [\"ssh-ed25519 AAAA\\nssh-ed25519 AAAA\"]",
+			"ssh.host_keys entry 1 must be a public key line"},
+		{"host key with a carriage return",
+			"[ssh]\nhost_keys = [\"ssh-ed25519 AAAA\\rssh-ed25519 AAAA\"]",
+			"ssh.host_keys entry 1 must be a public key line"},
 		{"sshd ports equal", "[ssh]\nsshd_port = 2022", "ssh.sshd_port and " +
 			"ssh.sshd_fallback_port must differ"},
 		{"sshd port too high", "[ssh]\nsshd_fallback_port = 70000", "ssh.sshd_fallback_port"},
@@ -335,6 +345,8 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"fetch address without a port", "[fetch]\negress_addr = \"127.0.0.1\"",
 			"fetch.egress_addr must be host:port"},
 		{"fetch port zero", "[fetch]\negress_addr = \"127.0.0.1:0\"", "fetch.egress_addr"},
+		{"fetch address without a host", "[fetch]\negress_addr = \":9443\"",
+			"fetch.egress_addr must be host:port"},
 		{"gate route unknown", "[boxd]\ngate_route = \"tunnel\"",
 			`boxd.gate_route must be "subdomain" or "default"`},
 		{"ssh path unknown", "[boat]\nssh_path = \"direct\"",
@@ -346,7 +358,10 @@ func TestDataPlaneValidation(t *testing.T) {
 		if !strings.Contains(msg, c.want) {
 			t.Errorf("%s: %q, want an error with %q", c.name, msg, c.want)
 		}
-		for _, v := range []string{"nimbus", "tunnel", "direct", "!!!", "AAAA", "BEGIN"} {
+		for _, v := range []string{
+			"nimbus", "tunnel", "direct", "!!!", "AAAA", "BEGIN", "127.0.0.1", "localhost",
+			"9443",
+		} {
 			if strings.Contains(msg, v) {
 				t.Errorf("%s: error quotes %q: %s", c.name, v, msg)
 			}
