@@ -115,6 +115,40 @@ type Provider interface {
 	ListOwned(ctx context.Context, labels map[string]string) ([]Summary, error)
 }
 
+// FileReader streams a regular file from an offset to the size it had when opened
+type FileReader interface {
+	// Read returns io.EOF exactly at Info().Size, and an error if the provider ends early
+	Read(p []byte) (int, error)
+	Info() FileEntry
+	Close() error
+}
+
+// WriteSpec describes the file a FileWriter makes
+type WriteSpec struct {
+	Size   int64       // exact byte count
+	Mode   fs.FileMode // always set, 0644 when the caller gave none
+	SHA256 []byte      // expected digest when the caller gave one, nil otherwise
+}
+
+// FileWriter streams a new file, no Write makes it visible and only Commit replaces the path
+type FileWriter interface {
+	Write(p []byte) (int, error)
+	// Commit sends sum where the provider checks digests, then replaces the path
+	Commit(ctx context.Context, sum []byte) (FileEntry, error)
+	// Abort drops what was written and leaves the path as it was, a no-op after Commit
+	Abort() error
+}
+
+// FileStreamer is a provider that streams whole files in and out of its sandboxes
+type FileStreamer interface {
+	// StatFile describes one path without following a final symlink
+	StatFile(ctx context.Context, ref Ref, path string) (FileEntry, error)
+	// OpenReader streams a regular file from offset to the size it had when opened
+	OpenReader(ctx context.Context, ref Ref, path string, offset int64) (FileReader, error)
+	// OpenWriter streams spec.Size bytes into path, creating parents, replacing it only on Commit
+	OpenWriter(ctx context.Context, ref Ref, path string, spec WriteSpec) (FileWriter, error)
+}
+
 // StartCoster is a provider that charges a fee per sandbox start beside its hourly price
 type StartCoster interface {
 	// StartCostMicros is what the next start of size costs, false when it would be refused
