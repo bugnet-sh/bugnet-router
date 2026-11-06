@@ -329,7 +329,9 @@ func TestE2EOwnerCrashNoGap(t *testing.T) {
 func TestE2ESandboxOpsLimitIsShared(t *testing.T) {
 	t.Parallel()
 	// One token a second keeps the spent bucket empty for the few calls that follow
-	s := startStackWith(t, "[limits]\nsandbox_ops_per_second = 1\nsandbox_ops_burst = 2\n")
+	s := startStackWith(t, stackOptions{
+		extra: "[limits]\nsandbox_ops_per_second = 1\nsandbox_ops_burst = 2\n",
+	})
 	a, b := s.client(t, s.a), s.client(t, s.b)
 	h, _ := s.place(t, a, smallPkg, smallPrice)
 	list := func(c routerv1connect.SandboxRouterServiceClient) error {
@@ -351,6 +353,39 @@ func TestE2ESandboxOpsLimitIsShared(t *testing.T) {
 	}
 }
 
+func TestE2EValkeyOverAUnixSocket(t *testing.T) {
+	t.Parallel()
+	socket, accepted := testenv.ValkeySocket(t)
+	s := startStackWith(t, stackOptions{
+		valkey: "unix://" + socket, worker: "dataplane_workers = 3\n",
+	})
+	if n := accepted.Load(); n < 3 {
+		t.Fatalf("%d connections came through the socket, want one from each of 3 processes", n)
+	}
+	h, p := s.place(t, s.client(t, s.a), smallPkg, smallPrice)
+	s.events.await(t, "placement.ready", p.GetPlacementId(), eventWait)
+	if got := parseKV(s.devOK(t, s.b, "stop", "--handle", h)); got["state"] != "terminated" {
+		t.Errorf("bugnet-dev stop printed %v, want terminated", got)
+	}
+	raw, err := os.ReadFile(s.worker.log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(raw)) {
+		var l struct {
+			Msg     string `json:"msg"`
+			Workers int    `json:"dataplane_workers"`
+		}
+		if json.Unmarshal([]byte(line), &l) == nil && l.Msg == "working" {
+			if l.Workers != 3 {
+				t.Errorf("router-worker gave the dataplane queue %d workers, want 3", l.Workers)
+			}
+			return
+		}
+	}
+	t.Error("router-worker logged no working line")
+}
+
 /* Stack */
 
 type stack struct {
@@ -362,21 +397,32 @@ type stack struct {
 	env      []string // environment of every router process, the secrets only
 	events   *receiver
 	procs    []*proc
-	a, b     *proc  // router-api replicas
-	extra    string // settings every process's file ends with
+	a, b     *proc // router-api replicas
+	worker   *proc
+	opts     stackOptions
+}
+
+// stackOptions change the settings files of a stack
+type stackOptions struct {
+	valkey string // valkey.addr, the test Valkey over TCP when empty
+	worker string // lines in router-worker's [worker] table
+	extra  string // settings every process's file ends with
 }
 
 func startStack(t *testing.T) *stack {
 	t.Helper()
-	return startStackWith(t, "")
+	return startStackWith(t, stackOptions{})
 }
 
-// startStackWith starts a stack whose settings files all end with extra
-func startStackWith(t *testing.T, extra string) *stack {
+// startStackWith starts a stack whose settings files hold o
+func startStackWith(t *testing.T, o stackOptions) *stack {
 	t.Helper()
 	dbURL := testenv.DatabaseURL(t)
 	_, prefix := testenv.Valkey(t)
-	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t), extra: extra}
+	if o.valkey == "" {
+		o.valkey = valkeyAddr()
+	}
+	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t), opts: o}
 	seed := decodeKey(t, s.keys, "BUGNET_ORDER_PRIVATE_KEY", ed25519.SeedSize)
 	s.priv = ed25519.NewKeyFromSeed(seed)
 	eventSeed := decodeKey(t, s.keys, "BUGNET_EVENT_SIGNING_KEY", ed25519.SeedSize)
@@ -402,7 +448,7 @@ func startStackWith(t *testing.T, extra string) *stack {
 	t.Cleanup(func() { s.stop(t) })
 	s.a = s.start(t, logs, "api-a", bin.api, "api")
 	s.b = s.start(t, logs, "api-b", bin.api, "api")
-	s.start(t, logs, "worker", bin.worker, "worker")
+	s.worker = s.start(t, logs, "worker", bin.worker, "worker")
 	for _, p := range s.procs {
 		p.waitReady(t)
 	}
@@ -428,6 +474,10 @@ func devKeys(t *testing.T) map[string]string {
 func (s *stack) settings(t *testing.T, name, table, addr string) string {
 	t.Helper()
 	pub := s.priv.Public().(ed25519.PublicKey)
+	var lines string
+	if table == "worker" {
+		lines = s.opts.worker
+	}
 	content := fmt.Sprintf(`order_token_public_key = %q
 packages_file = %q
 providers = ["local"]
@@ -436,7 +486,7 @@ events_url = %q
 
 [%s]
 listen_addr = %q
-
+%s
 [valkey]
 addr = %q
 prefix = %q
@@ -446,7 +496,7 @@ enabled = true
 root = %q
 runner = %q
 %s`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
-		valkeyAddr(), s.prefix, s.root, bin.runner, s.extra)
+		lines, s.opts.valkey, s.prefix, s.root, bin.runner, s.opts.extra)
 	path := filepath.Join(t.TempDir(), name+".toml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
