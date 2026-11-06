@@ -12,6 +12,9 @@ settings from a TOML file and their secrets from the environment.
 `router-api` serves `SandboxRouterService` from `bugnet-proto`. Its previews, transfers, SSH keys,
 secrets and `FetchSource` RPCs answer `Unimplemented` until the router builds them.
 
+A `Placement`'s `ended_at` is when it became terminated, and never moves after that. It is unset
+before, and on a failed placement, since the router records no time for a failure.
+
 ## Layout
 
 | Path | What it holds |
