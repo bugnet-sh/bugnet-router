@@ -1,11 +1,11 @@
 // Package dpkeys derives the data plane's tokens and keys from the router's root keys.
 //
-// BUGNET_DATA_PLANE_KEYS lists the roots as <id>:<base64 of 32 bytes>, newest first. Each
-// purpose key is HKDF-SHA256 of a root with info bugnet/<purpose>/v1, and each derived value is
-// HMAC-SHA256 under a purpose key over its parts joined by zero bytes. A value tied to a
-// placement's root takes that root's id. Grants derive from the newest root and verify against
-// every listed one, as preview tokens do. Provider credentials are sealed with AES-256-GCM under
-// the ref purpose key, with the placement id as additional data.
+// BUGNET_DATA_PLANE_KEYS lists the roots newest first, each an id, a colon and the standard
+// base64 of 32 bytes. Each purpose key is HKDF-SHA256 of a root with info bugnet/<purpose>/v1,
+// and each derived value is HMAC-SHA256 under a purpose key over its parts joined by zero bytes.
+// A value tied to a placement's root takes that root's id. Grants derive from the newest root and
+// verify against every listed one, as preview tokens do. Provider credentials are sealed with
+// AES-256-GCM under the ref purpose key, with the placement id as additional data.
 package dpkeys
 
 import (
@@ -100,7 +100,7 @@ type root struct {
 	seal     cipher.AEAD
 }
 
-// Parse reads "<id>:<base64 of 32 bytes>,...", newest first, quoting no key in its errors
+// Parse reads the roots of BUGNET_DATA_PLANE_KEYS, newest first, quoting no key in its errors
 func Parse(env string) (Keys, error) {
 	if env == "" {
 		return Keys{}, errors.New("must list at least one root")
