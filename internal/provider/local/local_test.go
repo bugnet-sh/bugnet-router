@@ -875,6 +875,29 @@ func TestLocalReaderRefusesAFifo(t *testing.T) {
 	requireCode(t, "OpenReader of a FIFO", err, provider.CodeInvalid)
 }
 
+func TestLocalReaderRefusesAFileSwappedAfterItsStat(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	for name, data := range map[string]string{"/root/f": "0123456789", "/root/g": "swapped"} {
+		if err := p.WriteFile(t.Context(), ref, name, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := filepath.Join(root, ref.ID, "fs", "root", "g")
+	local.SetBeforeOpen(func(host string) {
+		if err := os.Rename(other, host); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(func() { local.SetBeforeOpen(nil) })
+	r, err := p.OpenReader(t.Context(), ref, "/root/f", 0)
+	if err == nil {
+		_ = r.Close()
+	}
+	requireCode(t, "OpenReader of a file replaced after its Lstat", err, provider.CodeInvalid)
+}
+
 func TestLocalFileErrors(t *testing.T) {
 	for errno, code := range map[syscall.Errno]provider.Code{
 		syscall.ENOSPC: provider.CodeNoSpace,

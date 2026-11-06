@@ -18,6 +18,9 @@ const tempTries = 100
 
 var _ provider.FileStreamer = (*Provider)(nil)
 
+// beforeOpen runs between a reader's Lstat and its open, so a test can swap the file there
+var beforeOpen func(host string)
+
 // entry describes host as the sandbox sees it, from info that did not follow a final symlink
 func (s sandbox) entry(host string, info fs.FileInfo) provider.FileEntry {
 	return provider.FileEntry{
@@ -68,6 +71,9 @@ func (p *Provider) OpenReader(
 	}
 	if !info.Mode().IsRegular() {
 		return nil, invalid(fmt.Errorf("%s is not a regular file", name))
+	}
+	if beforeOpen != nil {
+		beforeOpen(host)
 	}
 	f, err := os.OpenFile(host, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
