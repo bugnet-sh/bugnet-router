@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -872,4 +873,15 @@ func TestLocalReaderRefusesAFifo(t *testing.T) {
 	}
 	_, err = p.OpenReader(t.Context(), ref, "/tmp/fifo", 0)
 	requireCode(t, "OpenReader of a FIFO", err, provider.CodeInvalid)
+}
+
+func TestLocalFileErrors(t *testing.T) {
+	for errno, code := range map[syscall.Errno]provider.Code{
+		syscall.ENOSPC: provider.CodeNoSpace,
+		syscall.ENOENT: provider.CodeNotFound,
+		syscall.EIO:    provider.CodeInternal,
+	} {
+		err := local.FileErr(&fs.PathError{Op: "write", Path: "/x", Err: errno})
+		requireCode(t, "fileErr of "+errno.Error(), err, code)
+	}
 }
