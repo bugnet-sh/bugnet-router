@@ -59,17 +59,21 @@ func TestFailedPlacementEndedAtIsItsRecordedTime(t *testing.T) {
 	_, err := e.createWith(t, tok)
 	wantCode(t, err, connect.CodeResourceExhausted)
 	h, _ := handle.Derive(e.handleKey, order)
-	failed := e.get(t, h, 0, 0)
-	eq(t, failed.GetState(), routerv1.PlacementState_PLACEMENT_STATE_FAILED)
-	wantEndedAt(t, "failed with no recorded time", failed, nil)
-
-	at := time.Date(2026, 11, 6, 1, 2, 3, 456789000, time.UTC)
-	_, err = e.pool.Exec(t.Context(),
-		`update placements set terminated_at = $2 where id = $1`, e.stored(t, h).ID, at)
-	if err != nil {
-		t.Fatalf("record the failure time: %v", err)
+	p := e.stored(t, h)
+	if p.State != store.PlacementFailed || p.TerminatedAt == nil {
+		t.Fatalf("stored placement is %s with terminated_at %v", p.State, p.TerminatedAt)
 	}
-	wantEndedAt(t, "failed", e.get(t, h, 0, 0), timestamppb.New(at))
+	want := timestamppb.New(*p.TerminatedAt)
+
+	first := e.get(t, h, 0, 0)
+	time.Sleep(100 * time.Millisecond)
+	second := e.get(t, h, 0, 0)
+	eq(t, first.GetState(), routerv1.PlacementState_PLACEMENT_STATE_FAILED)
+	eq(t, first.GetFailureReason(), "no_candidate")
+	eq(t, first.GetTerminationReason(), "")
+	wantEndedAt(t, "first read", first, want)
+	wantEndedAt(t, "second read", second, want)
+	wantEndedAt(t, "created failed", first, first.GetCreatedAt())
 }
 
 func TestPlacingAndReadyPlacementsHaveNoEndedAt(t *testing.T) {

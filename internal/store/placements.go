@@ -15,17 +15,18 @@ import (
 
 // Placement is a sandbox the router placed or is placing for an order
 type Placement struct {
-	ID            uuid.UUID
-	HandleSHA256  []byte
-	OrderID       string
-	PackageID     string
-	State         string
-	Provider      string
-	ProviderRef   *provider.Ref
-	SizeName      string
-	Deadline      *time.Time
-	CreatedAt     time.Time
-	ReadyAt       *time.Time
+	ID           uuid.UUID
+	HandleSHA256 []byte
+	OrderID      string
+	PackageID    string
+	State        string
+	Provider     string
+	ProviderRef  *provider.Ref
+	SizeName     string
+	Deadline     *time.Time
+	CreatedAt    time.Time
+	ReadyAt      *time.Time
+	// TerminatedAt is when the placement ended, as terminated or failed, nil before it did
 	TerminatedAt  *time.Time
 	FailureReason string
 	Refundable    bool
@@ -144,16 +145,18 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 			out, err = ts.PlacementByID(ctx, id)
 			return err
 		}
+		failed := p.FailureReason != ""
 		state := PlacementPlacing
-		if p.FailureReason != "" {
+		if failed {
 			state = PlacementFailed
 		}
+		// now() is the transaction's start, so a placement created failed ends at its created_at
 		_, err = tx.Exec(ctx, `
-			insert into placements
-				(id, handle_sha256, order_id, package_id, state, failure_reason, refundable)
-			values ($1, $2, $3, $4, $5, $6, $7)`,
+			insert into placements (id, handle_sha256, order_id, package_id, state,
+				failure_reason, refundable, terminated_at)
+			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end)`,
 			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
-			p.FailureReason != "")
+			failed)
 		if err != nil {
 			return fmt.Errorf("insert placement: %w", err)
 		}
@@ -298,12 +301,13 @@ func (s *Store) MarkPlacementReady(
 		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing)
 }
 
-// MarkPlacementFailed moves a placing placement to failed
+// MarkPlacementFailed moves a placing placement to failed, ending it now
 func (s *Store) MarkPlacementFailed(
 	ctx context.Context, id uuid.UUID, reason string, refundable bool,
 ) error {
 	return s.transition(ctx, id, "mark failed", `
-		update placements set state = $2, failure_reason = $3, refundable = $4
+		update placements set state = $2, failure_reason = $3, refundable = $4,
+			terminated_at = now()
 		where id = $1 and state = $5`, PlacementFailed, reason, refundable, PlacementPlacing)
 }
 

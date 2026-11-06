@@ -1047,15 +1047,47 @@ func TestCreatePlacementInitiallyFailed(t *testing.T) {
 	if p.State != store.PlacementFailed || p.FailureReason != "no_candidate" || !p.Refundable {
 		t.Fatalf("placement = %+v", p)
 	}
+	if p.TerminatedAt == nil || !p.TerminatedAt.Equal(p.CreatedAt) {
+		t.Fatalf("terminated at %v, want its created_at %v", p.TerminatedAt, p.CreatedAt)
+	}
 	again, created, err := s.CreatePlacement(ctx, store.NewPlacement{
 		OrderID: "o", HandleSHA256: []byte("o-handle"), PackageID: "pkg",
 	})
-	if err != nil || created || again.ID != p.ID || again.State != store.PlacementFailed {
+	if err != nil || created || again.ID != p.ID || again.State != store.PlacementFailed ||
+		again.TerminatedAt == nil || !again.TerminatedAt.Equal(*p.TerminatedAt) {
 		t.Fatalf("repeat created=%v err=%v placement=%+v", created, err, again)
 	}
 	placing := newPlacement(t, s, "o2")
-	if placing.FailureReason != "" || placing.Refundable {
+	if placing.FailureReason != "" || placing.Refundable || placing.TerminatedAt != nil {
 		t.Fatalf("placing placement = %+v", placing)
+	}
+}
+
+func TestMarkPlacementFailedRecordsWhenItEnded(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o")
+	clock := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	before := clock()
+	if err := s.MarkPlacementFailed(ctx, p.ID, "boot_failed", true); err != nil {
+		t.Fatal(err)
+	}
+	after := clock()
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TerminatedAt == nil || got.TerminatedAt.Before(before) ||
+		got.TerminatedAt.After(after) || got.TerminatedAt.Location() != time.UTC {
+		t.Fatalf("terminated at %v, want a UTC time from %v to %v", got.TerminatedAt, before,
+			after)
 	}
 }
 

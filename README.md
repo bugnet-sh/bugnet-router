@@ -12,8 +12,9 @@ settings from a TOML file and their secrets from the environment.
 `router-api` serves `SandboxRouterService` from `bugnet-proto`. Its previews, transfers, SSH keys,
 secrets and `FetchSource` RPCs answer `Unimplemented` until the router builds them.
 
-A `Placement`'s `ended_at` is when it became terminated, and never moves after that. It is unset
-before, and on a failed placement, since the router records no time for a failure.
+A `Placement`'s `ended_at` is when it became terminated or failed, and never moves after that. It
+is unset before. A placement that fails at once, with no provider for its order, ends at its
+`created_at`.
 
 A terminating or terminated placement's `termination_reason` is `stop` or `deadline`. It is empty
 in every other state. A failed placement says why in `failure_reason` alone.

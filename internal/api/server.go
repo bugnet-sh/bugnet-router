@@ -705,7 +705,6 @@ func placementMsg(p store.Placement) *routerv1.Placement {
 	if p.State == store.PlacementTerminating || p.State == store.PlacementTerminated {
 		out.TerminationReason = p.TerminationReason
 	}
-	// A failed placement has no column of its own for when it failed
 	ended := p.State == store.PlacementTerminated || p.State == store.PlacementFailed
 	if ended && p.TerminatedAt != nil {
 		out.EndedAt = timestamppb.New(*p.TerminatedAt)
