@@ -1272,7 +1272,7 @@ func TestWatchJobMapsFrames(t *testing.T) {
 		{Kind: frame.KindError, Reason: frame.ReasonJobExists},
 		{Kind: frame.KindStderr, Data: []byte("bc")},
 		{Kind: frame.KindSkip, Out: 9, Err: 2},
-		{Kind: frame.KindExit, Code: 2, Out: 9, Err: 2},
+		{Kind: frame.KindExit, Code: 2, Out: 9, Err: 2, OOM: true, PeakMiB: 700},
 	} {
 		entry, err := lease.Append(ctx, f)
 		if err != nil {
@@ -1296,8 +1296,9 @@ func TestWatchJobMapsFrames(t *testing.T) {
 				o.GetOffset(), o.GetData()))
 		case m.GetExit() != nil:
 			x := m.GetExit()
-			got = append(got, fmt.Sprintf("%s exit %d %d %d", m.GetCursor(), x.GetExitCode(),
-				x.GetStdoutBytes(), x.GetStderrBytes()))
+			got = append(got, fmt.Sprintf("%s exit %d %d %d oom %v peak %d", m.GetCursor(),
+				x.GetExitCode(), x.GetStdoutBytes(), x.GetStderrBytes(), x.GetOomKilled(),
+				x.GetPeakMemoryMib()))
 		case m.GetHeartbeat():
 			got = append(got, m.GetCursor()+" heartbeat")
 		case m.GetSkip() != nil:
@@ -1316,7 +1317,7 @@ func TestWatchJobMapsFrames(t *testing.T) {
 		ids[1] + " heartbeat",
 		ids[3] + " OUTPUT_STREAM_STDERR 0 bc",
 		ids[4] + " skip 9 2",
-		ids[5] + " exit 2 9 2",
+		ids[5] + " exit 2 9 2 oom true peak 700",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("watch sent %q, want %q", got, want)

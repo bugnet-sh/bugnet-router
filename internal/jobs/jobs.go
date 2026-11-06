@@ -145,6 +145,8 @@ type ExecResult struct {
 	StderrTail []byte // last 8 KiB
 	Cursor     string
 	Truncated  bool // the tails or the job's stream leave output out
+	// OOMKilled is read from the exit frame, so a job ended before Exec saw its stream has none
+	OOMKilled bool
 }
 
 var idEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -351,6 +353,7 @@ func (s *Service) collect(
 	switch {
 	case end.final != nil:
 		res.State, res.ExitCode = outcome(*end.final)
+		res.OOMKilled = end.final.Kind == frame.KindExit && end.final.OOM
 	case end.job != nil:
 		res.State, res.ExitCode = end.job.State, end.job.ExitCode
 		res.Truncated = res.Truncated || end.job.OutputTruncated

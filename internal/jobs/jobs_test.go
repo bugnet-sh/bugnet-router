@@ -323,6 +323,42 @@ func TestExecEchoReturnsTailsAndExit(t *testing.T) {
 	}
 }
 
+func TestExecReportsAnOOMKillFromTheExitFrame(t *testing.T) {
+	edited := &editedStream{edit: func(f frame.Frame, line []byte, emit func([]byte)) bool {
+		if f.Kind != frame.KindExit {
+			emit(line)
+			return false
+		}
+		f.Code, f.OOM, f.PeakMiB = 137, true, 700
+		b, err := json.Marshal(f)
+		if err != nil {
+			t.Error(err)
+		}
+		emit(append(b, '\n'))
+		return true
+	}}
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		edited.Provider = p
+		return edited
+	})
+	s := e.service(t, "r1")
+	res := e.exec(t, s, []string{"sh", "-c", "echo hi"}, "", 10*time.Second, jobs.Until{})
+	if !edited.edited.Load() {
+		t.Fatal("the exit frame was never edited")
+	}
+	if res.State != store.JobExited || res.ExitCode == nil || *res.ExitCode != 137 ||
+		!res.OOMKilled {
+		t.Fatalf("state %s exit %v oom %v, want exited with 137 and an OOM kill", res.State,
+			res.ExitCode, res.OOMKilled)
+	}
+	plain := newEnv(t)
+	quiet := plain.exec(t, plain.service(t, "r1"), []string{"true"}, "", 10*time.Second,
+		jobs.Until{})
+	if quiet.OOMKilled {
+		t.Fatal("a job with no OOM kill reports one")
+	}
+}
+
 func TestExecPassesCwdAndEnv(t *testing.T) {
 	e := newEnv(t)
 	s := e.service(t, "r1")

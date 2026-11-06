@@ -463,6 +463,7 @@ func (s *Server) Exec(
 		StderrTail: res.StderrTail,
 		Cursor:     res.Cursor,
 		Truncated:  res.Truncated,
+		OomKilled:  res.OOMKilled,
 	}
 	if res.ExitCode != nil {
 		code := int32(*res.ExitCode)
@@ -503,6 +504,7 @@ func (s *Server) WatchJob(
 		case frame.KindExit:
 			resp.Frame = &routerv1.WatchJobResponse_Exit{Exit: &routerv1.JobExit{
 				ExitCode: int32(f.Code), StdoutBytes: uint64(f.Out), StderrBytes: uint64(f.Err),
+				OomKilled: f.OOM, PeakMemoryMib: f.PeakMiB,
 			}}
 		case frame.KindHeartbeat:
 			resp.Frame = &routerv1.WatchJobResponse_Heartbeat{Heartbeat: true}

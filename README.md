@@ -286,6 +286,11 @@ A `skip` frame names the offsets the stored output goes on from. `WatchJob` send
 sandbox in `/tmp/bugnet/jobs/<job>/out` and `err`, which `ReadFile` reads. A placement runs at
 most `limits.max_running_jobs` jobs at once, and `Exec` answers `ResourceExhausted` past that.
 
+`bugnet-run`'s exit frame says whether the kernel's OOM killer ended a process of the job and the
+job's peak memory. `WatchJob`'s exit carries both as `oom_killed` and `peak_memory_mib`, and
+`Exec` sets `oom_killed` when it saw the exit frame. A job that ended before `Exec` read its
+stream reports no OOM kill, since the job row does not keep it.
+
 ## Operation limit
 
 Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile` and `ListFiles` calls spend one
