@@ -37,7 +37,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
 | `internal/worker` | River workers for deadlines, the sweep and the outbox |
 | `internal/store`, `migrations` | Postgres access and schema |
-| `internal/provider`, `internal/providers` | Provider port, adapters and the registry |
+| `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
 | `internal/hostname` | The one exact host name rule that `[names]` and a package's `egress.allow` share |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
@@ -90,7 +90,8 @@ The script fails with the variable's name when a key is empty, and otherwise run
 `go test -run Live` for each provider named, with every other setting from `config/dev.toml`
 (E2B uses its `[[e2b.templates]]`). The tests create real sandboxes and remove them again, which
 costs a little on the provider's account. The boxd run also starts `python3 -m http.server 8000`
-in a machine and checks that its public default proxy does not serve it.
+in a machine and checks that its public default proxy does not serve it. The E2B run streams
+files of 0 B to 101 MiB up and back and compares their SHA-256 with `sha256sum` in the sandbox.
 
 ## Running locally
 
@@ -583,3 +584,10 @@ no provider. `Estimate` marks every package, and `PricePackage` the one it price
 
 Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
 running the router on `local`.
+
+The `local` and E2B adapters stream whole files in and out of sandboxes, for transfers. A write
+fills a hidden file `.<name>.bugnet-<8 hex>.part` beside the target and replaces the target only
+once every byte arrived. An abort, or the end of the writer's context, removes that file. A read
+stops at the size the file had when it opened and fails if the file ends sooner. E2B streams use
+an HTTP/1.1 client of their own that asks for `identity` encoding, so lengths stay exact, and
+envd's `507` reads as a full disk. `contract.Streams` checks every adapter the same way.
