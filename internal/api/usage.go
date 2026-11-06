@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 
@@ -116,8 +117,7 @@ func withWriter(path string, h http.Handler) (string, http.Handler) {
 	})
 }
 
-// sendHeaders sends a stream's response headers before its first message, which may be long in
-// coming, so the caller's open returns and it knows the stream is up
+// sendHeaders flushes a stream's headers at once, so the caller's open returns before any event
 func sendHeaders(ctx context.Context) {
 	if w, ok := ctx.Value(writerKey{}).(http.ResponseWriter); ok {
 		_ = http.NewResponseController(w).Flush()
@@ -126,9 +126,13 @@ func sendHeaders(ctx context.Context) {
 
 // watch sends the edge events after cursor until the caller or the server goes away
 func (s *Server) watch(
-	ctx context.Context, cursor string, send func(string, *routerv1.EdgeEvent) error,
+	ctx context.Context, peer connect.Peer, cursor string,
+	send func(string, *routerv1.EdgeEvent) error,
 ) error {
-	sendHeaders(ctx)
+	// gRPC-Web carries an error before the first message in the headers, so they must wait
+	if peer.Protocol != connect.ProtocolGRPCWeb {
+		sendHeaders(ctx)
+	}
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(s.ctx, cancel)()

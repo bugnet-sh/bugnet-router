@@ -55,7 +55,8 @@ func (e *EdgeServer) WatchEdgeEvents(
 	ctx context.Context, req *connect.Request[routerv1.WatchEdgeEventsRequest],
 	stream *connect.ServerStream[routerv1.WatchEdgeEventsResponse],
 ) error {
-	return e.s.watch(ctx, req.Msg.GetCursor(), func(c string, ev *routerv1.EdgeEvent) error {
+	send := func(c string, ev *routerv1.EdgeEvent) error {
 		return stream.Send(&routerv1.WatchEdgeEventsResponse{Cursor: c, Event: ev})
-	})
+	}
+	return e.s.watch(ctx, req.Peer(), req.Msg.GetCursor(), send)
 }

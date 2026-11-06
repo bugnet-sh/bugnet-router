@@ -31,8 +31,7 @@ func (g *EgressServer) ReportEgressUsage(
 	return connect.NewResponse(&routerv1.ReportEgressUsageResponse{BytesRemaining: left}), nil
 }
 
-// CheckEgressLeases answers the deadline, egress bytes left and secrets version of each
-// placement still ready
+// CheckEgressLeases answers each ready placement's deadline, egress bytes left and secrets version
 func (g *EgressServer) CheckEgressLeases(
 	ctx context.Context, req *connect.Request[routerv1.CheckEgressLeasesRequest],
 ) (*connect.Response[routerv1.CheckEgressLeasesResponse], error) {
@@ -55,7 +54,8 @@ func (g *EgressServer) WatchEgressEvents(
 	ctx context.Context, req *connect.Request[routerv1.WatchEgressEventsRequest],
 	stream *connect.ServerStream[routerv1.WatchEgressEventsResponse],
 ) error {
-	return g.s.watch(ctx, req.Msg.GetCursor(), func(c string, ev *routerv1.EdgeEvent) error {
+	send := func(c string, ev *routerv1.EdgeEvent) error {
 		return stream.Send(&routerv1.WatchEgressEventsResponse{Cursor: c, Event: ev})
-	})
+	}
+	return g.s.watch(ctx, req.Peer(), req.Msg.GetCursor(), send)
 }

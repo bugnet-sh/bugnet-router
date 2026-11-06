@@ -493,6 +493,50 @@ func TestWatchRefusesABadCursorAndEndsOnClose(t *testing.T) {
 	}
 }
 
+// protocols are the client options of each protocol a caller may speak
+var protocols = map[string][]connect.ClientOption{
+	"connect": nil, "grpc": {connect.WithGRPC()}, "grpc-web": {connect.WithGRPCWeb()},
+}
+
+func TestWatchErrorsReachEveryProtocol(t *testing.T) {
+	e := newEnv(t, options{})
+	for name, opts := range protocols {
+		edge := routerv1connect.NewEdgeServiceClient(e.httpClient(t, edgeToken), e.url, opts...)
+		stream, err := edge.WatchEdgeEvents(t.Context(), connect.NewRequest(
+			&routerv1.WatchEdgeEventsRequest{Cursor: "not-a-cursor"}))
+		if err == nil {
+			for stream.Receive() {
+			}
+			err = stream.Err()
+		}
+		if connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("over %s a bad cursor gave %v, want InvalidArgument", name, err)
+		}
+	}
+
+	web := routerv1connect.NewSshGatewayServiceClient(e.httpClient(t, sshToken), e.url,
+		connect.WithGRPCWeb())
+	ended := make(chan error, 1)
+	go func() {
+		stream, err := web.WatchSshEvents(t.Context(), connect.NewRequest(
+			&routerv1.WatchSshEventsRequest{}))
+		if err == nil {
+			for stream.Receive() {
+			}
+			err = stream.Err()
+		}
+		ended <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	e.api.Close()
+	select {
+	case err := <-ended:
+		wantCode(t, err, connect.CodeUnavailable)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gRPC-Web event stream outlived Close")
+	}
+}
+
 /* Payments */
 
 func (e *env) getOrder(t *testing.T, id string) *routerv1.GetOrderResponse {
@@ -574,16 +618,20 @@ func TestGetOrderRefusesOtherCallersAndAnEmptyID(t *testing.T) {
 
 func TestWatchOpensBeforeTheFirstEvent(t *testing.T) {
 	e := newEnv(t, options{})
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	start := time.Now()
-	stream, err := e.egress(t).WatchEgressEvents(ctx, connect.NewRequest(
-		&routerv1.WatchEgressEventsRequest{}))
-	if err != nil {
-		t.Fatalf("opening a stream with no event yet gave %v", err)
-	}
-	defer func() { _ = stream.Close() }()
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("opening the stream took %v, want its headers at once", took)
+	for _, name := range []string{"connect", "grpc"} {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		egress := routerv1connect.NewEgressServiceClient(e.httpClient(t, egressToken), e.url,
+			protocols[name]...)
+		start := time.Now()
+		stream, err := egress.WatchEgressEvents(ctx, connect.NewRequest(
+			&routerv1.WatchEgressEventsRequest{}))
+		if err != nil {
+			t.Fatalf("opening a stream with no event yet over %s gave %v", name, err)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Fatalf("opening the stream over %s took %v, want its headers at once", name, took)
+		}
+		_ = stream.Close()
+		cancel()
 	}
 }

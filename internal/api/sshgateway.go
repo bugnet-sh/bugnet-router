@@ -37,7 +37,8 @@ func (g *SSHGatewayServer) WatchSshEvents(
 	ctx context.Context, req *connect.Request[routerv1.WatchSshEventsRequest],
 	stream *connect.ServerStream[routerv1.WatchSshEventsResponse],
 ) error {
-	return g.s.watch(ctx, req.Msg.GetCursor(), func(c string, ev *routerv1.EdgeEvent) error {
+	send := func(c string, ev *routerv1.EdgeEvent) error {
 		return stream.Send(&routerv1.WatchSshEventsResponse{Cursor: c, Event: ev})
-	})
+	}
+	return g.s.watch(ctx, req.Peer(), req.Msg.GetCursor(), send)
 }

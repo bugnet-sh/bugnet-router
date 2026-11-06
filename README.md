@@ -471,9 +471,11 @@ after the commit that causes an event, retrying a failed append 3 times before l
 | `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
 | `BudgetSpent` | A report first reaches a placement's edge or egress budget |
 
-`WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Each sends its
-response headers at once, then every event after the cursor, from now when the cursor is empty,
-each with the stream id to resume from. A cursor the stream does not hold, because the stream was
+`WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Over Connect
+and gRPC each sends its response headers at once, so the caller's open returns before the first
+event. Over gRPC-Web the headers wait for the first event, since gRPC-Web puts an error that comes
+before any event in the headers. Each then sends every event after the cursor, from now when the
+cursor is empty, each with the stream id to resume from. A cursor the stream does not hold, because the stream was
 trimmed past it or lost with Valkey's data, gets one `Resync` first, after which the caller
 re-checks every lease it holds. A cursor that is not a stream id answers `InvalidArgument`.
 
