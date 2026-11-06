@@ -255,6 +255,20 @@ each once. `secrets.providers` never takes `local`, whose sandboxes share the ho
 `secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
 32-byte X25519 public key.
 
+A package in the catalog may carry its own edge budget and a restricted egress list:
+
+```json
+{"id": "small-10m", "minutes": 10, "edge": {"bytes": "4GiB", "transfer_max_bytes": "4GiB"},
+ "egress": {"allow": ["huggingface.co"]}}
+```
+
+`edge` takes `bytes`, `bytes_per_second`, `requests_per_second`, `requests_burst`,
+`queued_requests`, `websockets`, `transfer_max_bytes`, `egress_bytes`, `egress_bytes_per_second`
+and `egress_requests_in_flight`, each optional, sizes as strings. A field left out keeps the
+router's setting. `egress.allow` lists exact lowercase host names, at least one. An extension must
+carry the same `egress.allow` as the package it extends, since a sandbox keeps the egress rules
+it was created with.
+
 Money is integer micro-USD and times are UTC.
 
 ## Prices and availability
