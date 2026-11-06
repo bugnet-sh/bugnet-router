@@ -1,12 +1,19 @@
-// Package api serves the SandboxRouterService over Connect, plus health and readiness checks.
+// Package api serves the router's Connect services, plus health and readiness checks.
+//
+// Each caller has its own service and bearer token. The gateway calls SandboxRouterService,
+// bugnet-edge EdgeService, bugnet-secrets SecretsRouteService, bugnet-ssh SshGatewayService,
+// bugnet-egress EgressService, bugnet-dev's operator commands OperatorService and Payments
+// PaymentsService. A service admits only its own token, and one whose token is empty admits no
+// calls. RPCs not built yet answer Unimplemented.
 //
 // Placements go through the saga, commands through the jobs service and file operations
 // straight to the placement's provider. Exec, CancelJob and each file operation first spend a
 // token of the placement's operation bucket, which every replica shares in Valkey. GetPlacement
 // and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
 // server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
-// only delays a reader until its next read. Close ends long polls and streams so an HTTP server
-// shutting down can drain its connections.
+// only delays a reader until its next read. The edge-side services meter usage against each
+// placement's budgets, answer lease checks and serve the edge event stream. Close ends long
+// polls and streams so an HTTP server shutting down can drain its connections.
 package api
 
 import (
@@ -30,7 +37,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/oynozan/bugnet-router/internal/budget"
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
@@ -74,6 +84,8 @@ type Deps struct {
 	SandboxOpsPerSecond int
 	// SandboxOpsBurst is what a placement's full operation bucket holds, a default when zero
 	SandboxOpsBurst int
+	// Budget sizes the paces the usage reports answer
+	Budget config.EdgeBudget
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -83,6 +95,8 @@ type Server struct {
 	d      Deps
 	notes  *notifier
 	ops    *ratelimit.Limiter
+	meter  *budget.Meter
+	events *edgeevents.Bus
 	ctx    context.Context // ends when Close is called
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -101,6 +115,8 @@ func New(deps Deps) *Server {
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
 		ops:    ops,
+		meter:  budget.New(deps.Valkey, deps.Prefix, deps.Budget),
+		events: edgeevents.New(deps.Valkey, deps.Prefix, deps.Log),
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -118,14 +134,48 @@ func (s *Server) Close() {
 	<-s.done
 }
 
-// Mount serves s on mux behind the internal token, with /healthz and /readyz left open
-func Mount(mux *http.ServeMux, s *Server, internalToken string) {
-	path, h := routerv1connect.NewSandboxRouterServiceHandler(s,
-		connect.WithInterceptors(auth{token: []byte(internalToken)}),
-		connect.WithReadMaxBytes(maxRequestBytes))
-	mux.Handle(path, h)
+// Tokens are the callers' bearer tokens, one per service, an empty one admitting no calls
+type Tokens struct {
+	Internal, Edge, Secrets, SSH, Egress, Operator, Payments string
+}
+
+// Servers are the handlers of every caller service
+type Servers struct {
+	Router   *Server
+	Edge     *EdgeServer
+	Secrets  *SecretsRouteServer
+	SSH      *SSHGatewayServer
+	Egress   *EgressServer
+	Operator *OperatorServer
+	Payments *PaymentsServer
+}
+
+// Servers returns s and one server per other caller service, all sharing s's deps and Close
+func (s *Server) Servers() Servers {
+	return Servers{
+		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{},
+		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{},
+		Payments: &PaymentsServer{s: s},
+	}
+}
+
+// Mount serves each service on mux behind its own token, with /healthz and /readyz left open
+func Mount(mux *http.ServeMux, s Servers, t Tokens) {
+	opts := func(token string) []connect.HandlerOption {
+		return []connect.HandlerOption{
+			connect.WithInterceptors(auth{token: []byte(token)}),
+			connect.WithReadMaxBytes(maxRequestBytes),
+		}
+	}
+	mux.Handle(routerv1connect.NewSandboxRouterServiceHandler(s.Router, opts(t.Internal)...))
+	mux.Handle(withWriter(routerv1connect.NewEdgeServiceHandler(s.Edge, opts(t.Edge)...)))
+	mux.Handle(routerv1connect.NewSecretsRouteServiceHandler(s.Secrets, opts(t.Secrets)...))
+	mux.Handle(withWriter(routerv1connect.NewSshGatewayServiceHandler(s.SSH, opts(t.SSH)...)))
+	mux.Handle(withWriter(routerv1connect.NewEgressServiceHandler(s.Egress, opts(t.Egress)...)))
+	mux.Handle(routerv1connect.NewOperatorServiceHandler(s.Operator, opts(t.Operator)...))
+	mux.Handle(routerv1connect.NewPaymentsServiceHandler(s.Payments, opts(t.Payments)...))
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.HandleFunc("GET /readyz", s.Router.readyz)
 }
 
 /* Health */

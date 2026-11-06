@@ -9,8 +9,10 @@ sweeps stray sandboxes and posts signed events to `events_url`. Postgres is the 
 Valkey carries output streams and job leases, and River runs durable jobs. Both read their
 settings from a TOML file and their secrets from the environment.
 
-`router-api` serves `SandboxRouterService` from `bugnet-proto`. Its previews, transfers, SSH keys,
-secrets and `FetchSource` RPCs answer `Unimplemented` until the router builds them.
+`router-api` serves `SandboxRouterService` from `bugnet-proto`, and one more Connect service for
+each other caller (see [Caller services](#caller-services)). Its previews, transfers, SSH keys,
+secrets and `FetchSource` RPCs, and every other RPC not built yet, answer `Unimplemented` until the
+router builds them.
 
 A `Placement`'s `ended_at` is when it became terminated or failed, and never moves after that. It
 is unset before. A placement that fails at once, with no provider for its order, ends at its
@@ -413,6 +415,75 @@ with only the context error as its message.
 An `Exec` whose `idempotency_key` another call holds waits for that call to record the job. When
 it records none within the wait, `Exec` answers `Unavailable` with no reason, and a retry with the
 same key runs the command once.
+
+## Caller services
+
+`router-api` serves seven Connect services on its one listener. Each admits only its own bearer
+token, and a service whose token is empty admits no calls, so a router without edges serves only
+the gateway.
+
+| Service | Caller | Token | Built so far |
+| --- | --- | --- | --- |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands and files |
+| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents` |
+| `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
+| `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
+| `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
+| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | None |
+| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
+
+### Budgets
+
+Each placement has an edge budget, shared by its previews, transfers and SSH, and an egress
+budget for its secret tunnels. The transaction that makes it ready sets both from the start
+package, each extension's transaction adds its own package's, and a placement records the id of
+the `BUGNET_DATA_PLANE_KEYS` root it was created under in `key_id`.
+
+| Budget | Bytes | Pace each way |
+| --- | --- | --- |
+| Edge | The package's `edge.bytes`, or `edge_budget.bytes_per_10_minutes` times its minutes over 10 | `edge.bytes_per_second`, or `edge_budget.bytes_per_second` |
+| Egress | `edge.egress_bytes`, or `edge_budget.egress_bytes_per_10_minutes` scaled the same way | `edge.egress_bytes_per_second`, or `edge_budget.egress_bytes_per_second` |
+
+The pace is the start package's. The edges report the bytes they carry every few seconds, and
+`router-api` adds them to `edge:used:<placement>` or `egress:used:<placement>` under
+`valkey.prefix`. Every report answers each named placement's bytes left, 0 once spent, and, for
+the edge budget, the pace to keep: the full figure while only the reporting process carried the
+placement's bytes in the last 10 s, half while `bugnet-edge` and `bugnet-ssh` both did. A
+placement that is not ready, or an id that is unknown or malformed, gets no entry. The first report
+that reaches a budget writes `BudgetSpent`, once across every replica. An extension clears the
+spent marks, so a later crossing writes it again. Every key expires an hour after the deadline.
+
+`CheckEdgeLeases` and `CheckEgressLeases` answer each named placement that is still ready with its
+deadline and bytes left, and the egress check its `secrets_version`. Ended placements are absent.
+
+### Edge events
+
+The edges learn of stops, extensions and spent budgets from one Valkey stream, `edge:events` under
+`valkey.prefix`, kept to about 100,000 entries. `router-api` and `router-worker` append to it right
+after the commit that causes an event, retrying a failed append 3 times before logging
+`edge event lost`, and the edges' lease checks repair a lost one.
+
+| Event | Sent when |
+| --- | --- |
+| `PlacementEnded` | A stop (`STOPPED`) or the deadline (`EXPIRED`) moves a placement out of ready, before its sandbox is destroyed |
+| `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
+| `BudgetSpent` | A report first reaches a placement's edge or egress budget |
+
+`WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Each sends its
+response headers at once, then every event after the cursor, from now when the cursor is empty,
+each with the stream id to resume from. A cursor the stream does not hold, because the stream was
+trimmed past it or lost with Valkey's data, gets one `Resync` first, after which the caller
+re-checks every lease it holds. A cursor that is not a stream id answers `InvalidArgument`.
+
+### Orders for Payments
+
+`GetOrder` tells Payments what became of an order, so it can refund one that no event reached.
+An order the router never took answers `redeemed` false, and Payments refunds it in full. Any
+other answers `redeemed` true with the order's `kind` (`start` or `extend`), its placement's
+state now, and the placement's `failure_reason`, `termination_reason` and `ended_at` as
+`Placement` carries them. `refundable` is the placement's, for a start order only, since the
+router records an extension only once it applied it. An empty `order_id` answers
+`InvalidArgument`. `CheckPayer` answers `Unimplemented` until the wallet checks land.
 
 ## Deployment
 

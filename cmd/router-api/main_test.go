@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/testenv"
@@ -120,5 +121,19 @@ func TestJobDepsCarryTheOutputLimits(t *testing.T) {
 	}
 	if d != want {
 		t.Fatalf("jobs deps %+v, want %+v", d, want)
+	}
+}
+
+func TestTokensComeFromTheSettings(t *testing.T) {
+	got := tokens(config.Config{
+		InternalToken: "i", EdgeToken: "e", SecretsToken: "s", SSHToken: "h", EgressToken: "g",
+		EgressFetchToken: "f", OperatorToken: "o", PaymentsToken: "p",
+	})
+	want := api.Tokens{
+		Internal: "i", Edge: "e", Secrets: "s", SSH: "h", Egress: "g", Operator: "o",
+		Payments: "p",
+	}
+	if got != want {
+		t.Fatalf("tokens %+v, want %+v", got, want)
 	}
 }

@@ -35,8 +35,8 @@ const (
 
 // Order kinds
 const (
-	orderStart  = "start"
-	orderExtend = "extend"
+	OrderStart  = "start"
+	OrderExtend = "extend"
 )
 
 var (

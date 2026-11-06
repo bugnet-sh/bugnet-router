@@ -173,11 +173,12 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Log:                 log,
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,
+		Budget:              cfg.EdgeBudget,
 	})
 	defer srv.Close()
 
 	mux := http.NewServeMux()
-	api.Mount(mux, srv, cfg.InternalToken)
+	api.Mount(mux, srv.Servers(), tokens(cfg))
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
@@ -203,6 +204,15 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	shutdown(log, hs, js, sg)
 	scanner.Wait()
 	return serveErr
+}
+
+// tokens are the callers' bearer tokens from the environment
+func tokens(cfg config.Config) api.Tokens {
+	return api.Tokens{
+		Internal: cfg.InternalToken, Edge: cfg.EdgeToken, Secrets: cfg.SecretsToken,
+		SSH: cfg.SSHToken, Egress: cfg.EgressToken, Operator: cfg.OperatorToken,
+		Payments: cfg.PaymentsToken,
+	}
 }
 
 // jobDeps gives the jobs service its dependencies and the configured output limits

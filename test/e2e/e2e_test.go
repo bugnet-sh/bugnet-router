@@ -75,6 +75,12 @@ var keyNames = []string{
 	"BUGNET_EVENT_SIGNING_KEY", "BUGNET_DATA_PLANE_KEYS",
 }
 
+// callerTokens are the caller tokens every router process gets from bugnet-dev keys
+var callerTokens = []string{
+	"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
+	"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
+}
+
 var bin struct{ runner, api, worker, dev string }
 
 func TestMain(m *testing.M) {
@@ -235,6 +241,12 @@ func TestE2EDeadlineExpiry(t *testing.T) {
 	}
 	if got := parseKV(s.devOK(t, s.a, "get", "--handle", h)); got["state"] != "terminated" {
 		t.Errorf("bugnet-dev get printed %v after the deadline, want terminated", got)
+	}
+	// router-worker ended it, so router-worker told the edges
+	evs := s.edgeEvents(t)
+	if len(evs) != 1 || evs[0].GetPlacementEnded().GetPlacementId() != id ||
+		evs[0].GetPlacementEnded().GetReason() != routerv1.EndReason_END_REASON_EXPIRED {
+		t.Errorf("edge events %v, want one PlacementEnded EXPIRED for %s", evs, id)
 	}
 }
 
@@ -438,6 +450,9 @@ func startStackWith(t *testing.T, o stackOptions) *stack {
 		"BUGNET_EVENT_SIGNING_KEY="+s.keys["BUGNET_EVENT_SIGNING_KEY"],
 		"BUGNET_DATA_PLANE_KEYS="+s.keys["BUGNET_DATA_PLANE_KEYS"],
 	)
+	for _, name := range callerTokens {
+		s.env = append(s.env, name+"="+s.keys[name])
+	}
 
 	migrate := exec.Command(bin.api, "migrate")
 	migrate.Env = append(hostEnv(), "BUGNET_DATABASE_URL="+dbURL)
@@ -463,7 +478,7 @@ func devKeys(t *testing.T) map[string]string {
 		t.Fatalf("bugnet-dev keys: %v", err)
 	}
 	keys := parseKV(string(out))
-	for _, name := range keyNames {
+	for _, name := range slices.Concat(keyNames, callerTokens) {
 		if keys[name] == "" {
 			t.Fatalf("bugnet-dev keys printed no %s:\n%s", name, out)
 		}

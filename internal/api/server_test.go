@@ -241,7 +241,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
-		Events: edgeevents.New(vk, prefix, discard), Keys: keys,
+		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
@@ -277,6 +277,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
+		Budget: budgetDefaults,
 	})
 	t.Cleanup(srv.Close)
 
@@ -286,7 +287,7 @@ func newEnv(t *testing.T, opts options) *env {
 		priv: priv, handleKey: handleKey,
 	}
 	mux := http.NewServeMux()
-	api.Mount(mux, srv, internalToken)
+	api.Mount(mux, srv.Servers(), allTokens)
 	record := func(w http.ResponseWriter, r *http.Request) {
 		e.proto.Store(r.Proto)
 		mux.ServeHTTP(w, r)
@@ -2175,7 +2176,7 @@ func TestHealthAndReady(t *testing.T) {
 		srv := api.New(deps)
 		t.Cleanup(srv.Close)
 		mux := http.NewServeMux()
-		api.Mount(mux, srv, internalToken)
+		api.Mount(mux, srv.Servers(), allTokens)
 		hs := httptest.NewServer(mux)
 		t.Cleanup(hs.Close)
 		if code, body := httpGet(t, hs.URL+"/readyz"); code != http.StatusServiceUnavailable {

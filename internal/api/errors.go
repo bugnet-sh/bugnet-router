@@ -11,6 +11,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/placement"
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -63,6 +64,7 @@ var codes = []struct {
 	{saga.ErrNotExtension, connect.CodeInvalidArgument, ""},
 	{jobs.ErrInvalid, connect.CodeInvalidArgument, ""},
 	{streams.ErrBadCursor, connect.CodeInvalidArgument, ""},
+	{edgeevents.ErrBadCursor, connect.CodeInvalidArgument, ""},
 	{saga.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},
 	{saga.ErrExceedsLifetime, connect.CodeFailedPrecondition, reasonExceedsLifetime},
 	{jobs.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},

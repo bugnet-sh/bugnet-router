@@ -66,7 +66,7 @@ type NewPlacement struct {
 // Order is a start or extend order the router took, with the placement it is for
 type Order struct {
 	ID          string
-	Kind        string // start or extend
+	Kind        string // OrderStart or OrderExtend
 	PlacementID uuid.UUID
 }
 
@@ -207,7 +207,7 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 		ts := s.Tx(tx)
 		tag, err := tx.Exec(ctx, `
 			insert into orders (order_id, kind, placement_id) values ($1, $2, $3)
-			on conflict (order_id) do nothing`, p.OrderID, orderStart, p.ID)
+			on conflict (order_id) do nothing`, p.OrderID, OrderStart, p.ID)
 		if err != nil {
 			return fmt.Errorf("insert order: %w", err)
 		}
@@ -458,7 +458,7 @@ func (s *Store) HasExtendOrder(
 	err := s.q.QueryRow(ctx, `
 		select exists (select 1 from orders
 			where order_id = $1 and kind = $2 and placement_id = $3)`,
-		orderID, orderExtend, placementID).Scan(&found)
+		orderID, OrderExtend, placementID).Scan(&found)
 	if err != nil {
 		return false, fmt.Errorf("select extend order: %w", err)
 	}
@@ -480,7 +480,7 @@ func (s *Store) ExtendDeadline(
 		out = cur
 		tag, err := tx.Exec(ctx, `
 			insert into orders (order_id, kind, placement_id) values ($1, $2, $3)
-			on conflict (order_id) do nothing`, orderID, orderExtend, placementID)
+			on conflict (order_id) do nothing`, orderID, OrderExtend, placementID)
 		if err != nil {
 			return fmt.Errorf("insert extend order: %w", err)
 		}
@@ -493,7 +493,7 @@ func (s *Store) ExtendDeadline(
 			if err != nil {
 				return fmt.Errorf("select order: %w", err)
 			}
-			if kind != orderExtend || owner != placementID {
+			if kind != OrderExtend || owner != placementID {
 				return fmt.Errorf("order %s already used as %s for %s: %w",
 					orderID, kind, owner, ErrStateConflict)
 			}

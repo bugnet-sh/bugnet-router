@@ -10,9 +10,9 @@ import (
 	"connectrpc.com/connect"
 )
 
-var errUnauthenticated = errors.New("api: missing or wrong internal token")
+var errUnauthenticated = errors.New("api: missing or wrong bearer token")
 
-// auth admits only calls bearing the internal token, an empty token admitting none
+// auth admits only calls bearing one service's token, an empty token admitting none
 type auth struct{ token []byte }
 
 func (a auth) check(h http.Header) error {
