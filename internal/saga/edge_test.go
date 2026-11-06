@@ -15,6 +15,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/budget"
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/placement"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
 	"github.com/oynozan/bugnet-router/internal/saga"
@@ -137,6 +138,21 @@ func TestStopPublishesPlacementEnded(t *testing.T) {
 	eq(t, len(evs), 2)
 	eq(t, evs[1].GetPlacementEnded().GetPlacementId(), q.ID.String())
 	eq(t, evs[1].GetPlacementEnded().GetReason(), routerv1.EndReason_END_REASON_EXPIRED)
+}
+
+func TestStopWhilePlacingSendsNoEndEvent(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	h, sha := handle.Derive(e.handleKey, "order-1")
+	p, _, err := e.store.CreatePlacement(t.Context(), store.NewPlacement{
+		HandleSHA256: sha, OrderID: "order-1", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.saga.Stop(t.Context(), h)
+	eq(t, errors.Is(err, saga.ErrNotReady), true)
+	eq(t, e.reload(t, p.ID).State, store.PlacementPlacing)
+	eq(t, len(e.edgeEvents(t)), 0)
 }
 
 func TestNoEndEventWhenThePlacementStaysReady(t *testing.T) {
