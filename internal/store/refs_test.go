@@ -166,14 +166,17 @@ func TestStoreWithoutSealerRefusesCredentials(t *testing.T) {
 	}
 }
 
-func TestUnopenableRefFailsOnlyWhileTheSandboxLives(t *testing.T) {
+func TestUnopenableRefFailsOnlyWhileReady(t *testing.T) {
 	_, keys := testenv.DataPlaneKeys(t)
 	s, pool := newStoreWithPool(t, store.WithRefSealer(keys))
 	ctx := context.Background()
 	live := readyPlacement(t, s, "o-live", credentialRef())
+	stopping := readyPlacement(t, s, "o-stopping", credentialRef())
 	ended := readyPlacement(t, s, "o-ended", credentialRef())
-	if _, err := s.MarkPlacementTerminating(ctx, ended, "stop", time.Now()); err != nil {
-		t.Fatal(err)
+	for _, id := range []uuid.UUID{stopping, ended} {
+		if _, err := s.MarkPlacementTerminating(ctx, id, "stop", time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.MarkPlacementTerminated(ctx, ended, time.Now()); err != nil {
 		t.Fatal(err)
@@ -182,22 +185,24 @@ func TestUnopenableRefFailsOnlyWhileTheSandboxLives(t *testing.T) {
 	other := store.New(pool, store.WithRefSealer(mustKeys(t,
 		"k9:"+base64.StdEncoding.EncodeToString(make([]byte, 32)))))
 	if _, err := other.PlacementByID(ctx, live); err == nil {
-		t.Error("a live placement whose credentials no root opens read without an error")
+		t.Error("a ready placement whose credentials no root opens read without an error")
 	}
-	got, err := other.PlacementByID(ctx, ended)
-	if err != nil {
-		t.Fatalf("an ended placement: %v", err)
-	}
-	if got.ProviderRef.ID != "sb-1" || got.ProviderRef.Meta["domain"] != "e2b.app" {
-		t.Errorf("an ended placement lost its plain fields: %+v", got.ProviderRef)
-	}
-	for name := range credentials {
-		if v, ok := got.ProviderRef.Meta[name]; ok {
-			t.Errorf("an ended placement kept %s as %q, want it absent", name, v)
+	for name, id := range map[string]uuid.UUID{"terminating": stopping, "terminated": ended} {
+		got, err := other.PlacementByID(ctx, id)
+		if err != nil {
+			t.Fatalf("a %s placement: %v", name, err)
+		}
+		if got.ProviderRef.ID != "sb-1" || got.ProviderRef.Meta["domain"] != "e2b.app" {
+			t.Errorf("a %s placement lost its plain fields: %+v", name, got.ProviderRef)
+		}
+		for field := range credentials {
+			if v, ok := got.ProviderRef.Meta[field]; ok {
+				t.Errorf("a %s placement kept %s as %q, want it absent", name, field, v)
+			}
 		}
 	}
 
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		update placements set provider_ref = (select provider_ref from placements where id = $2)
 		where id = $1`, live, ended)
 	if err != nil {

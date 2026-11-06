@@ -44,7 +44,6 @@ func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, er
 
 // openRef opens the sealed credential fields of p's ref in place
 func (s *Store) openRef(p *Placement) error {
-	ended := p.State == PlacementTerminated || p.State == PlacementFailed
 	for _, field := range credentialFields {
 		v, ok := p.ProviderRef.Meta[field]
 		if !ok || !strings.HasPrefix(v, sealedPrefix) {
@@ -57,8 +56,8 @@ func (s *Store) openRef(p *Placement) error {
 		switch {
 		case err == nil:
 			p.ProviderRef.Meta[field] = plain
-		case ended:
-			// No sandbox is left for the credential to reach, and its root may be gone
+		case p.State != PlacementReady:
+			// Only a ready placement uses its credentials, a destroy needs only the sandbox id
 			delete(p.ProviderRef.Meta, field)
 		default:
 			return fmt.Errorf("open %s: %w", field, err)
