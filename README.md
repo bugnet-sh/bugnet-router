@@ -258,7 +258,8 @@ each once. `secrets.providers` never takes `local`, whose sandboxes share the ho
 32-byte X25519 public key.
 
 `worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
-data-plane jobs away from deadlines, the sweep and the outbox.
+data-plane jobs away from deadlines, the sweep and the outbox. It takes 1 to 10000, the most
+River runs on one queue.
 
 A package in the catalog may carry its own edge budget and a restricted egress list:
 

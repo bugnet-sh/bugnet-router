@@ -15,12 +15,19 @@ import (
 	"time"
 )
 
+// maxDataplaneWorkers is the most workers River lets one queue run
+const maxDataplaneWorkers = 10_000
+
 // dataPlane checks the data-plane tables of f and sets them on c
 func (f file) dataPlane(c *Config) error {
 	d := defaults()
 	if err := checkValkeyAddr(c.ValkeyAddr); err != nil {
 		return err
 	}
+	if w := f.Worker.DataplaneWorkers; w < 1 || w > maxDataplaneWorkers {
+		return fmt.Errorf("worker.dataplane_workers must be 1 to %d", maxDataplaneWorkers)
+	}
+	c.DataplaneWorkers = int(f.Worker.DataplaneWorkers)
 	c.Previews = f.Previews
 	b, x, s, k := f.EdgeBudget, f.Transfers, f.SSH, f.Secrets
 	for _, n := range []struct {
@@ -28,7 +35,6 @@ func (f file) dataPlane(c *Config) error {
 		raw  int64
 		into *int
 	}{
-		{"worker.dataplane_workers", f.Worker.DataplaneWorkers, &c.DataplaneWorkers},
 		{"edge_budget.requests_per_second", b.RequestsPerSecond, &c.EdgeBudget.RequestsPerSecond},
 		{"edge_budget.requests_burst", b.RequestsBurst, &c.EdgeBudget.RequestsBurst},
 		{"edge_budget.queued_requests", b.QueuedRequests, &c.EdgeBudget.QueuedRequests},

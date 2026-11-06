@@ -241,7 +241,9 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"valkey name without a port", "[valkey]\naddr = \"localhost\"",
 			"valkey.addr must be host:port"},
 		{"no dataplane workers", "[worker]\ndataplane_workers = 0",
-			"worker.dataplane_workers must be a positive whole number"},
+			"worker.dataplane_workers must be 1 to 10000"},
+		{"dataplane workers past river's limit", "[worker]\ndataplane_workers = 10001",
+			"worker.dataplane_workers must be 1 to 10000"},
 		{"preview domain with a scheme", "[names]\npreview_domain = \"https://p.example.com\"",
 			"names.preview_domain must be a lowercase host name"},
 		{"transfer host in capitals", "[names]\ntransfer_host = \"Transfer.example.com\"",
@@ -360,7 +362,7 @@ func TestDataPlaneValidation(t *testing.T) {
 		}
 		for _, v := range []string{
 			"nimbus", "tunnel", "direct", "!!!", "AAAA", "BEGIN", "127.0.0.1", "localhost",
-			"9443",
+			"9443", "10001",
 		} {
 			if strings.Contains(msg, v) {
 				t.Errorf("%s: error quotes %q: %s", c.name, v, msg)

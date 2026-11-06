@@ -16,7 +16,7 @@ listen_addr = ":8080"         # router-api serves the Connect API here
 
 [worker]
 listen_addr = ":8081"         # /healthz, /readyz and /monitor
-dataplane_workers = 8         # River workers on the dataplane queue
+dataplane_workers = 8         # River workers on the dataplane queue, 1 to 10000
 
 [valkey]
 addr = "127.0.0.1:6379"       # host:port, or unix:///run/valkey/valkey.sock for a Unix socket
