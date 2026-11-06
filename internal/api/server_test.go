@@ -1630,16 +1630,16 @@ func TestErrorCodes(t *testing.T) {
 				t.Errorf("%s error %q carries the provider's text", code, msg)
 			}
 			if code == "not_found" {
-				wantNoInfo(t, err)
+				wantInfo(t, err, "FILE_NOT_FOUND")
 				continue
 			}
 			wantInfo(t, err, code)
 		}
 	})
-	t.Run("missing file is not found without a reason", func(t *testing.T) {
+	t.Run("missing file is not found with its own reason", func(t *testing.T) {
 		err := readErr(h, "/root/missing.txt")
 		wantCode(t, err, connect.CodeNotFound)
-		wantNoInfo(t, err)
+		wantInfo(t, err, "FILE_NOT_FOUND")
 	})
 	t.Run("provider invalid is invalid", func(t *testing.T) {
 		err := readErr(h, "/root")

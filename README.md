@@ -295,15 +295,15 @@ for the destroy already in flight instead of calling the provider again.
 
 ## Error reasons
 
-Each refusal below but the missing file carries a `google.rpc.ErrorInfo` in domain
-`bugnet.router`, so the gateway tells them apart without another call. No message or detail
+Each refusal below carries a `google.rpc.ErrorInfo` in domain `bugnet.router`, so the gateway
+tells them apart without another call. No message or detail
 holds a handle or a job ID.
 
 | Code | Reason | When |
 | --- | --- | --- |
 | `NotFound` | `HANDLE_UNKNOWN` | A call taking a handle gets a malformed one or one never issued |
 | `NotFound` | `JOB_UNKNOWN` | `WatchJob` or `CancelJob` names a job the handle's placement lacks |
-| `NotFound` | None | A file or directory that does not exist |
+| `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile` or `ListFiles` names a path that does not exist |
 | `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |

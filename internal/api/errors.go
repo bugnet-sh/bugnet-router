@@ -163,8 +163,8 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		case e.Code == provider.CodeInvalid:
 			code, msg = connect.CodeInvalidArgument, "sandbox provider refused the request"
 		case e.Code == provider.CodeNotFound && fileOp:
-			// No reason keeps a missing file apart from HANDLE_UNKNOWN and JOB_UNKNOWN
-			return connect.NewError(connect.CodeNotFound, errors.New("no such file or directory"))
+			return withInfo(connect.NewError(connect.CodeNotFound,
+				errors.New("no such file or directory")), "FILE_NOT_FOUND")
 		}
 		return withInfo(connect.NewError(code, errors.New(msg)), string(e.Code))
 	}

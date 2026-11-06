@@ -116,8 +116,7 @@ func TestUnknownJobIsJobUnknownAndMissingFileHasNoReason(t *testing.T) {
 	t.Run("ReadFile of a missing path", func(t *testing.T) {
 		_, err := e.client.ReadFile(ctx, connect.NewRequest(
 			&routerv1.ReadFileRequest{Handle: h, Path: "/root/missing.txt"}))
-		mustCode(t, err, connect.CodeNotFound, "")
-		wantNoInfo(t, err)
+		mustCode(t, err, connect.CodeNotFound, "FILE_NOT_FOUND")
 		quotesNone(t, err, h)
 	})
 }
