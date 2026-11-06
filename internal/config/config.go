@@ -93,6 +93,10 @@ type Config struct {
 	EgressToken string
 	// EgressFetchToken is the bnf_ token the router's private fetch opens egress tunnels with
 	EgressFetchToken string
+	// OperatorToken admits bugnet-dev's operator commands to OperatorService, none when empty
+	OperatorToken string
+	// PaymentsToken admits Payments to PaymentsService, no caller when empty
+	PaymentsToken string
 	// DataPlaneKeys are the roots every derived data-plane value and sealed provider ref uses
 	DataPlaneKeys dpkeys.Keys
 }
@@ -730,16 +734,16 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 	return nil
 }
 
-// callerTokens are the environment variables of the edge processes' bearer tokens, in order
+// callerTokens are the environment variables of the callers' bearer tokens, in order
 var callerTokens = []string{
 	"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
-	"BUGNET_EGRESS_FETCH_TOKEN",
+	"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
 }
 
 // readCallerTokens reads each caller token, empty or 32 characters and unlike every other token
 func (c *Config) readCallerTokens(get func(string) string) error {
 	into := []*string{&c.EdgeToken, &c.SecretsToken, &c.SSHToken, &c.EgressToken,
-		&c.EgressFetchToken}
+		&c.EgressFetchToken, &c.OperatorToken, &c.PaymentsToken}
 	seen := map[string]string{c.InternalToken: "BUGNET_INTERNAL_TOKEN"}
 	for i, name := range callerTokens {
 		v := get(name)

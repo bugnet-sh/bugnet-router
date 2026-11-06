@@ -84,7 +84,8 @@ func TestKeysMakeAValidConfig(t *testing.T) {
 		"BUGNET_INTERNAL_TOKEN", "BUGNET_ORDER_PRIVATE_KEY", "BUGNET_HANDLE_KEY",
 		"BUGNET_EVENT_SIGNING_KEY", "BUGNET_DATA_PLANE_KEYS", "BUGNET_EDGE_TOKEN",
 		"BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
-		"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_HOOK_PATH_SECRET",
+		"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
+		"BUGNET_HOOK_PATH_SECRET",
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("keys printed %v, want only the secrets %v", names, want)
@@ -115,7 +116,7 @@ packages_file = "packages.json"
 		t.Fatalf("data-plane keys hold %d roots, want only k1", len(roots))
 	}
 	tokens := []string{cfg.InternalToken, cfg.EdgeToken, cfg.SecretsToken, cfg.SSHToken,
-		cfg.EgressToken, cfg.EgressFetchToken}
+		cfg.EgressToken, cfg.EgressFetchToken, cfg.OperatorToken, cfg.PaymentsToken}
 	for i, tok := range tokens {
 		if len(tok) < 32 || slices.Contains(tokens[:i], tok) {
 			t.Fatalf("caller token %d is short or repeated", i)

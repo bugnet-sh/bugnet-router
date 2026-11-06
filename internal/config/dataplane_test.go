@@ -393,17 +393,25 @@ func TestShortCallerTokenRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, []string{c.EdgeToken, c.SecretsToken, c.SSHToken, c.EgressToken, c.EgressFetchToken},
-		[]string{
-			tokens["BUGNET_EDGE_TOKEN"], tokens["BUGNET_SECRETS_TOKEN"], tokens["BUGNET_SSH_TOKEN"],
-			tokens["BUGNET_EGRESS_TOKEN"], tokens["BUGNET_EGRESS_FETCH_TOKEN"],
-		})
+	eq(t, []string{
+		c.EdgeToken, c.SecretsToken, c.SSHToken, c.EgressToken, c.EgressFetchToken,
+		c.OperatorToken, c.PaymentsToken,
+	}, []string{
+		tokens["BUGNET_EDGE_TOKEN"], tokens["BUGNET_SECRETS_TOKEN"], tokens["BUGNET_SSH_TOKEN"],
+		tokens["BUGNET_EGRESS_TOKEN"], tokens["BUGNET_EGRESS_FETCH_TOKEN"],
+		tokens["BUGNET_OPERATOR_TOKEN"], tokens["BUGNET_PAYMENTS_ROUTER_TOKEN"],
+	})
 	none, err := Load(path, env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	eq(t, none.EdgeToken+none.SecretsToken+none.SSHToken+none.EgressToken+
-		none.EgressFetchToken, "")
+		none.EgressFetchToken+none.OperatorToken+none.PaymentsToken, "")
+}
+
+func TestOperatorAndPaymentsTokensAreCallerTokens(t *testing.T) {
+	eq(t, callerTokens[len(callerTokens)-2:],
+		[]string{"BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN"})
 }
 
 func TestCallerTokensMustDiffer(t *testing.T) {
@@ -424,6 +432,13 @@ func TestCallerTokensMustDiffer(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("two equal caller tokens gave %v, want %q", err, want)
 	}
+	_, err = Load(path, env(map[string]string{
+		"BUGNET_OPERATOR_TOKEN": same, "BUGNET_PAYMENTS_ROUTER_TOKEN": same,
+	}))
+	want = "BUGNET_PAYMENTS_ROUTER_TOKEN must differ from BUGNET_OPERATOR_TOKEN"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("equal operator and payments tokens gave %v, want %q", err, want)
+	}
 }
 
 func TestCallerTokensInTheFileAreSecrets(t *testing.T) {
@@ -437,6 +452,9 @@ func TestCallerTokensInTheFileAreSecrets(t *testing.T) {
 			"BUGNET_HOOK_PATH_SECRET"},
 		{"[e2b]\nwebhook_secret = \"" + secretToken + "\"", "e2b.webhook_secret",
 			"E2B_WEBHOOK_SECRET"},
+		{"operator_token = \"" + secretToken + "\"", "operator_token", "BUGNET_OPERATOR_TOKEN"},
+		{"payments_router_token = \"" + secretToken + "\"", "payments_router_token",
+			"BUGNET_PAYMENTS_ROUTER_TOKEN"},
 	} {
 		msg := problem(t, c.toml)
 		want := c.key + " is a secret, set " + c.env + " in the environment instead"
