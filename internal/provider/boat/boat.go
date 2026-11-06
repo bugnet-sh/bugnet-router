@@ -1,15 +1,17 @@
 // Package boat places sandboxes on Boat through its public REST API.
 //
 // Every sandbox is created with noEnv, snapshots and monitoring off and failFast on, so it gets
-// none of the account's secrets, keeps nothing after it ends and is refused at once when no
-// machine is ready. Its TTL is the lifetime, which SetLifetime moves by setting a new TTL from
-// now. The request's key travels as an Idempotency-Key, so a repeated create returns the first
-// sandbox. Commands run detached and their output is followed on the attach stream, which the
-// adapter reopens from the delivered offsets whenever it ends early. File calls are JSON with a
-// 5 MiB cap, so a larger upload goes through a signed upload URL and a larger read through tail
-// in the sandbox. StartCostMicros prices the next start from GET /limits, read at most every
-// 10 s, or when the key cannot read it from the starts every replica counts in Valkey, and this
-// process's own count while Valkey cannot answer. The client in ./api is generated from the
+// none of the account's secrets, keeps nothing after it ends and is refused at once when no machine
+// is ready. Its TTL is the lifetime, which SetLifetime moves by setting a new TTL from now. The
+// request's key travels as an Idempotency-Key, so a repeated create returns the first sandbox.
+// Commands run detached and their output is followed on the attach stream, which the adapter
+// reopens from the delivered offsets whenever it ends early. File calls are JSON with a 5 MiB cap,
+// so a larger upload goes through a signed upload URL and a larger read through tail in the
+// sandbox. File streams use signed URLs for paths under /home/user and /tmp only, upload to a
+// hidden temp file that Commit moves over the target, and ask the shell for a file's type, which
+// Boat's file info lacks. StartCostMicros prices the next start from GET /limits, read at most
+// every 10 s, or when the key cannot read it from the starts every replica counts in Valkey, and
+// this process's own count while Valkey cannot answer. The client in ./api is generated from the
 // vendored OpenAPI document.
 package boat
 
@@ -126,7 +128,9 @@ type Provider struct {
 	baseURL string
 	key     string
 	// direct sends uploads to signed URLs, which take no Authorization header
-	direct       *http.Client
+	direct *http.Client
+	// streams carries file streams over HTTP/1.1, never asking for compression
+	streams      *http.Client
 	sizes        []size
 	pollInterval time.Duration
 	reattachWait time.Duration
@@ -158,7 +162,8 @@ func New(opts Options) (*Provider, error) {
 	}
 	p := &Provider{
 		api: client, control: control, baseURL: base, key: key,
-		direct: &http.Client{CheckRedirect: provider.NoRedirect}, sizes: sizes,
+		direct: &http.Client{CheckRedirect: provider.NoRedirect}, streams: newStreamClient(),
+		sizes:        sizes,
 		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 	}

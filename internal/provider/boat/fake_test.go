@@ -130,6 +130,7 @@ type keyRecord struct {
 
 type uploadGrant struct {
 	sandbox, path string
+	method        string
 	expires       time.Time
 }
 
@@ -162,6 +163,12 @@ type fakeBoat struct {
 	drift string
 	// uploadBase serves upload URLs from another server instead of the fake itself
 	uploadBase string
+	// ignoreRange answers a ranged download with the whole file and 200
+	ignoreRange bool
+	// shortDownload aborts every download halfway, its length already sent
+	shortDownload bool
+	// holdUploads keeps every upload from reading its body until it is closed
+	holdUploads chan struct{}
 
 	mu sync.Mutex
 	// limits is the GET /limits reply, limitsStatus its status when not 200
@@ -184,6 +191,9 @@ type fakeBoat struct {
 	bodies       map[string][]int
 	perms        []string
 	grants       map[string]uploadGrant
+	ttls         []int
+	downloads    []http.Header
+	moves        [][2]string
 	nextPID      int
 	requests     atomic.Int64
 	cleanup      []string
@@ -219,11 +229,15 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/files/folder":         f.folder,
 		"POST " + sb + "/files/permissions":    f.permissions,
 		"POST " + sb + "/files/upload-url":     f.uploadURL,
+		"POST " + sb + "/files/download-url":   f.downloadURL,
+		"POST " + sb + "/files/move":           f.move,
+		"DELETE " + sb + "/files":              f.deleteFile,
 		"GET /api/v1/limits":                   f.readLimits,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
 	mux.HandleFunc("PUT /upload/{token}", f.upload)
+	mux.HandleFunc("GET /download/{token}", f.download)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("adapter called the unexpected route %s %s", r.Method, r.URL.Path)
 		f.fail(w, http.StatusNotFound, "not_found", "not in the fake", nil, nil)
@@ -284,6 +298,17 @@ func (f *fakeBoat) callCount(pattern string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[pattern]
+}
+
+// totalCalls counts every API call the fake served
+func (f *fakeBoat) totalCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		n += c
+	}
+	return n
 }
 
 // gate checks the key, keeps the body size and applies any fault injected for the route
@@ -1282,6 +1307,15 @@ func (f *fakeBoat) bodySizes(pattern string) []int {
 }
 
 func (f *fakeBoat) uploadURL(w http.ResponseWriter, r *http.Request) {
+	f.grant(w, r, http.MethodPut, "/upload/", "file.upload_url")
+}
+
+func (f *fakeBoat) downloadURL(w http.ResponseWriter, r *http.Request) {
+	f.grant(w, r, http.MethodGet, "/download/", "file.download_url")
+}
+
+// grant signs a URL bound to one path and one method, as both URL routes do
+func (f *fakeBoat) grant(w http.ResponseWriter, r *http.Request, method, route, kind string) {
 	var req struct {
 		Path string `json:"path"`
 		TTL  *int   `json:"ttlSeconds"`
@@ -1306,35 +1340,47 @@ func (f *fakeBoat) uploadURL(w http.ResponseWriter, r *http.Request) {
 	token := make([]byte, 16)
 	_, _ = rand.Read(token)
 	grant := uploadGrant{
-		sandbox: r.PathValue("id"), path: name,
+		sandbox: r.PathValue("id"), path: name, method: method,
 		expires: time.Now().Add(time.Duration(ttl) * time.Second),
 	}
 	f.mu.Lock()
 	f.grants[hex.EncodeToString(token)] = grant
+	f.ttls = append(f.ttls, ttl)
 	f.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "type": "file.upload_url", "method": "PUT", "path": name,
-		"url":       cmp.Or(f.uploadBase, f.srv.URL) + "/upload/" + hex.EncodeToString(token),
+		"ok": true, "type": kind, "method": method, "path": name,
+		"url":       cmp.Or(f.uploadBase, f.srv.URL) + route + hex.EncodeToString(token),
 		"expiresAt": grant.expires.UTC().Format(time.RFC3339),
 	})
 }
 
-// upload takes the raw body for a signed URL, creating missing directories like Boat
-func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
+// signed finds the live grant for a URL token and method, answering 403 like Boat otherwise
+func (f *fakeBoat) signed(
+	w http.ResponseWriter, r *http.Request, method string,
+) (uploadGrant, bool) {
 	if r.Header.Get("Authorization") != "" {
-		f.t.Errorf("upload to a signed URL carried an Authorization header")
+		f.t.Errorf("a signed URL request carried an Authorization header")
 	}
 	f.mu.Lock()
-	f.uploads = append(f.uploads, r.Header.Clone())
 	grant, ok := f.grants[r.PathValue("token")]
 	s := f.sandboxes[grant.sandbox]
 	f.mu.Unlock()
-	if !ok || time.Now().After(grant.expires) || s == nil || s.deleted {
-		http.Error(w, "invalid or expired upload URL", http.StatusForbidden)
-		return
+	if !ok || grant.method != method || time.Now().After(grant.expires) || s == nil ||
+		s.deleted {
+		http.Error(w, "invalid or expired URL", http.StatusForbidden)
+		return uploadGrant{}, false
 	}
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
+	return grant, true
+}
+
+// upload streams the body into the granted path at once and keeps a cut upload, the worst case
+func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.uploads = append(f.uploads, r.Header.Clone())
+	hold := f.holdUploads
+	f.mu.Unlock()
+	grant, ok := f.signed(w, r, http.MethodPut)
+	if !ok {
 		return
 	}
 	f.track(grant.path)
@@ -1342,11 +1388,136 @@ func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := replace(grant.path, data); err != nil {
+	file, err := os.OpenFile(grant.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "size": len(data)})
+	defer func() { _ = file.Close() }()
+	if hold != nil {
+		<-hold
+	}
+	n, err := io.Copy(file, r.Body)
+	if err != nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "size": n})
+}
+
+// download serves the granted file with Range, the whole of it when ignoreRange is set
+func (f *fakeBoat) download(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.downloads = append(f.downloads, r.Header.Clone())
+	ignore, short := f.ignoreRange, f.shortDownload
+	f.mu.Unlock()
+	grant, ok := f.signed(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+	file, err := os.Open(grant.path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "not a regular file", http.StatusBadRequest)
+		return
+	}
+	if ignore {
+		r.Header.Del("Range")
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if short {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		_, _ = io.CopyN(w, file, info.Size()/2)
+		_ = http.NewResponseController(w).Flush()
+		panic(http.ErrAbortHandler)
+	}
+	http.ServeContent(w, r, "", info.ModTime(), file)
+}
+
+func (f *fakeBoat) move(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Source      string `json:"source"`
+		Destination string `json:"destination"`
+		Overwrite   bool   `json:"overwrite"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		f.fail(w, http.StatusBadRequest, "invalid_json", "Request body must be valid JSON.", nil,
+			nil)
+		return
+	}
+	from, ok := f.liveFile(w, r, req.Source)
+	if !ok {
+		return
+	}
+	to, ok := f.resolve(w, req.Destination)
+	if !ok {
+		return
+	}
+	if _, err := os.Lstat(to); err == nil && !req.Overwrite {
+		f.fail(w, http.StatusConflict, "file_exists", "destination exists", nil, nil)
+		return
+	}
+	f.track(to)
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		f.fileError(w, err)
+		return
+	}
+	if err := os.Rename(from, to); err != nil {
+		f.fileError(w, err)
+		return
+	}
+	f.mu.Lock()
+	f.moves = append(f.moves, [2]string{from, to})
+	f.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "type": "file.moved", "success": true, "path": from, "destination": to,
+	})
+}
+
+func (f *fakeBoat) deleteFile(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	name, ok := f.liveFile(w, r, q.Get("path"))
+	if !ok {
+		return
+	}
+	remove := os.Remove
+	if q.Get("recursive") == "true" {
+		remove = os.RemoveAll
+	}
+	if _, err := os.Lstat(name); err != nil {
+		f.fileError(w, err)
+		return
+	}
+	if err := remove(name); err != nil {
+		f.fileError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "type": "file.deleted", "path": name})
+}
+
+// grantTTLs lists the ttlSeconds of every signed URL asked for, oldest first
+func (f *fakeBoat) grantTTLs() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.ttls)
+}
+
+// downloadHeaders lists the request headers of every signed download, oldest first
+func (f *fakeBoat) downloadHeaders() []http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.downloads)
+}
+
+// movesSeen lists every move as its source and destination, oldest first
+func (f *fakeBoat) movesSeen() [][2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.moves)
 }
 
 func (f *fakeBoat) uploadCount() int {
