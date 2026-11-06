@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 )
@@ -18,7 +21,8 @@ import (
 const (
 	defaultPGURL     = "postgres://localhost:5432/postgres?sslmode=disable"
 	defaultValkeyURL = "localhost:6379"
-	cleanupTimeout   = 10 * time.Second
+	cleanupTimeout   = 60 * time.Second
+	dropRetryWait    = 2 * time.Second
 )
 
 func randomHex(t *testing.T) string {
@@ -54,16 +58,8 @@ func DatabaseURL(t *testing.T) string {
 		t.Fatalf("create database: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
-		defer cancel()
-		c, err := pgx.Connect(ctx, admin)
+		err := retryOnTimeout(dropRetryWait, func() error { return dropDatabase(admin, name) })
 		if err != nil {
-			t.Errorf("connect to postgres for drop: %v", err)
-			return
-		}
-		defer func() { _ = c.Close(ctx) }()
-		drop := "drop database if exists " + pgx.Identifier{name}.Sanitize() + " with (force)"
-		if _, err := c.Exec(ctx, drop); err != nil {
 			t.Errorf("drop database %s: %v", name, err)
 		}
 	})
@@ -74,6 +70,30 @@ func DatabaseURL(t *testing.T) string {
 	}
 	u.Path = "/" + name
 	return u.String()
+}
+
+// dropDatabase drops name and every connection to it, giving up after cleanupTimeout
+func dropDatabase(admin, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	c, err := pgx.Connect(ctx, admin)
+	if err != nil {
+		return fmt.Errorf("connect to postgres: %w", err)
+	}
+	defer func() { _ = c.Close(ctx) }()
+	drop := "drop database if exists " + pgx.Identifier{name}.Sanitize() + " with (force)"
+	_, err = c.Exec(ctx, drop)
+	return err
+}
+
+// retryOnTimeout runs try once more after wait when its first run timed out
+func retryOnTimeout(wait time.Duration, try func() error) error {
+	err := try()
+	if !errors.Is(err, context.DeadlineExceeded) && !pgconn.Timeout(err) {
+		return err
+	}
+	time.Sleep(wait)
+	return try()
 }
 
 // Postgres returns a pool on a fresh database that is dropped when the test ends
