@@ -1481,3 +1481,95 @@ func TestPlacementReadsDataPlaneColumns(t *testing.T) {
 	eq(got.SecretsVersion, int64(7), "secrets version")
 	eq(got.GateReadyAt, &gate, "gate ready at")
 }
+
+func TestNewPlacementRecordsKeyID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+		OrderID: "o-key", HandleSHA256: []byte("o-key-handle"), PackageID: "pkg", KeyID: "k2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.KeyID != "k2" {
+		t.Fatalf("key id %q, want k2", p.KeyID)
+	}
+	failed, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+		OrderID: "o-key-failed", HandleSHA256: []byte("o-key-failed-handle"), PackageID: "pkg",
+		KeyID: "k1", FailureReason: "no_candidate",
+	})
+	if err != nil || failed.KeyID != "k1" {
+		t.Fatalf("failed placement key id %q, %v, want k1", failed.KeyID, err)
+	}
+	if p := newPlacement(t, s, "o-nokey"); p.KeyID != "" {
+		t.Fatalf("key id %q without one given", p.KeyID)
+	}
+}
+
+func TestAddPlacementBudgets(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o-budget")
+	if err := s.AddPlacementBudgets(ctx, p.ID, 2<<30, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddPlacementBudgets(ctx, p.ID, 1<<30, 3<<30); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil || got.EdgeBudgetBytes != 3<<30 || got.EgressBudgetBytes != 4<<30 {
+		t.Fatalf("budgets %d and %d (%v), want 3 GiB and 4 GiB", got.EdgeBudgetBytes,
+			got.EgressBudgetBytes, err)
+	}
+	err = s.AddPlacementBudgets(ctx, uuid.New(), 1, 1)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("budgets of an unknown placement gave %v, want ErrNotFound", err)
+	}
+}
+
+func TestPlacementsByIDs(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	a, b := newPlacement(t, s, "o-a"), newPlacement(t, s, "o-b")
+	newPlacement(t, s, "o-c")
+	got, err := s.PlacementsByIDs(ctx, []uuid.UUID{b.ID, uuid.New(), a.ID, b.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []uuid.UUID
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	want := []uuid.UUID{a.ID, b.ID}
+	slices.SortFunc(want, func(x, y uuid.UUID) int { return slices.Compare(x[:], y[:]) })
+	if !slices.Equal(ids, want) {
+		t.Fatalf("placements %v, want %v", ids, want)
+	}
+	none, err := s.PlacementsByIDs(ctx, nil)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("no ids gave %v, %v", none, err)
+	}
+}
+
+func TestOrderByID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o-start")
+	now := time.Now().UTC()
+	ref := provider.Ref{Provider: "local", ID: "sb"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ExtendDeadline(ctx, "o-extend", p.ID, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for id, kind := range map[string]string{"o-start": "start", "o-extend": "extend"} {
+		o, err := s.OrderByID(ctx, id)
+		if err != nil || o.ID != id || o.Kind != kind || o.PlacementID != p.ID {
+			t.Fatalf("order %s is %+v, %v, want %s of %s", id, o, err, kind, p.ID)
+		}
+	}
+	if _, err := s.OrderByID(ctx, "o-unknown"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown order gave %v, want ErrNotFound", err)
+	}
+}

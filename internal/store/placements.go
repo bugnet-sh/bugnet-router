@@ -59,6 +59,15 @@ type NewPlacement struct {
 	OrderID       string
 	PackageID     string
 	FailureReason string // creates the placement already failed and refundable
+	// KeyID names the data-plane root the placement's derived values come from
+	KeyID string
+}
+
+// Order is a start or extend order the router took, with the placement it is for
+type Order struct {
+	ID          string
+	Kind        string // start or extend
+	PlacementID uuid.UUID
 }
 
 // Attempt is one try at creating a sandbox on a provider
@@ -134,6 +143,54 @@ func (s *Store) PlacementByID(ctx context.Context, id uuid.UUID) (Placement, err
 	return s.placementWhere(ctx, "id = $1", id)
 }
 
+// PlacementsByIDs returns the placements of ids that exist, ordered by id
+func (s *Store) PlacementsByIDs(ctx context.Context, ids []uuid.UUID) ([]Placement, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.q.Query(ctx, `select `+placementColumns+
+		` from placements where id = any($1) order by id`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("select placements: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Placement, error) {
+		return s.scanPlacement(r)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("select placements: %w", err)
+	}
+	return out, nil
+}
+
+// OrderByID returns the order the router took under this id, or ErrNotFound
+func (s *Store) OrderByID(ctx context.Context, id string) (Order, error) {
+	o := Order{ID: id}
+	err := s.q.QueryRow(ctx, `select kind, placement_id from orders where order_id = $1`, id).
+		Scan(&o.Kind, &o.PlacementID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Order{}, ErrNotFound
+	}
+	if err != nil {
+		return Order{}, fmt.Errorf("select order: %w", err)
+	}
+	return o, nil
+}
+
+// AddPlacementBudgets grows the placement's edge and egress budgets by these bytes
+func (s *Store) AddPlacementBudgets(ctx context.Context, id uuid.UUID, edge, egress int64) error {
+	tag, err := s.q.Exec(ctx, `
+		update placements set edge_budget_bytes = edge_budget_bytes + $2,
+			egress_budget_bytes = egress_budget_bytes + $3
+		where id = $1`, id, edge, egress)
+	if err != nil {
+		return fmt.Errorf("add budgets: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("add budgets of %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // PlacementForUpdate returns the placement and locks its row until the transaction ends
 func (s *Store) PlacementForUpdate(ctx context.Context, id uuid.UUID) (Placement, error) {
 	return s.placementWhere(ctx, "id = $1 for update", id)
@@ -172,10 +229,10 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 		// now() is the transaction's start, so a placement created failed ends at its created_at
 		_, err = tx.Exec(ctx, `
 			insert into placements (id, handle_sha256, order_id, package_id, state,
-				failure_reason, refundable, terminated_at)
-			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end)`,
+				failure_reason, refundable, terminated_at, key_id)
+			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8)`,
 			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
-			failed)
+			failed, nullIfEmpty(p.KeyID))
 		if err != nil {
 			return fmt.Errorf("insert placement: %w", err)
 		}
