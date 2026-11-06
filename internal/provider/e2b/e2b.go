@@ -1020,6 +1020,9 @@ func fileEntry(dir string, e *filesystempb.EntryInfo) provider.FileEntry {
 		mode |= fs.ModeSymlink
 	case e.GetType() == filesystempb.FileType_FILE_TYPE_DIRECTORY:
 		mode |= fs.ModeDir
+	case e.GetType() == filesystempb.FileType_FILE_TYPE_UNSPECIFIED:
+		// envd names no type for devices, FIFOs and sockets
+		mode |= fs.ModeIrregular
 	}
 	entry := provider.FileEntry{
 		Path:  cmp.Or(e.GetPath(), path.Join(dir, e.GetName())),

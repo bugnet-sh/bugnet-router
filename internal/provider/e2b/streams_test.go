@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"testing"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -248,4 +250,20 @@ func TestE2BStreamsRefuseAgentRedirects(t *testing.T) {
 	if reached.Load() {
 		t.Fatal("a stream followed an envd redirect")
 	}
+}
+
+func TestE2BFifoIsNotRegular(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := f.add(nil)
+	name := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(name, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := p.StatFile(t.Context(), ref, name)
+	if err != nil || entry.Regular || entry.IsDir || entry.Mode&fs.ModeIrregular == 0 {
+		t.Fatalf("StatFile of a FIFO gave %+v, %v, want an irregular entry", entry, err)
+	}
+	_, err = p.OpenReader(t.Context(), ref, name, 0)
+	eq(t, isCode(err, provider.CodeInvalid), true)
 }
