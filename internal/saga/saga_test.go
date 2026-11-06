@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -361,7 +363,9 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 		t.Fatal(err)
 	}
 	tracker := placement.NewTracker(time.Now)
-	st := store.New(pool)
+	_, keys := testenv.DataPlaneKeys(t)
+	st := store.New(pool, store.WithRefSealer(keys),
+		store.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	deps := saga.Deps{
 		Store:       st,
 		Engine:      placement.New(reg, tracker),
@@ -2259,6 +2263,52 @@ func stopTogether(t *testing.T, e *env, h string, n int) []error {
 	}
 	wg.Wait()
 	return errs
+}
+
+// sealUnderUnlistedRoot gives a placement's ref a credential that no root the store lists opens
+func (e *env) sealUnderUnlistedRoot(t *testing.T, id uuid.UUID) {
+	t.Helper()
+	k9, err := dpkeys.Parse("k9:" + base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.pool.Exec(t.Context(), `
+		update placements set provider_ref = jsonb_set(provider_ref, '{meta}',
+			coalesce(provider_ref->'meta', '{}') || jsonb_build_object('envd_token', $2::text))
+		where id = $1`, id, k9.SealRef(id, "envd-plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnopenableCredentialStillStopsAndTerminates(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
+	stopped, h := e.placeReady(t, "order-1")
+	due, _ := e.placeReady(t, "order-2")
+	for _, p := range []store.Placement{stopped, due} {
+		e.sealUnderUnlistedRoot(t, p.ID)
+	}
+	if n := e.inUse(t, "a"); n != 2 {
+		t.Fatalf("in use %d, want 2", n)
+	}
+
+	got, err := e.saga.Stop(t.Context(), h)
+	if err != nil || got.State != store.PlacementTerminated {
+		t.Fatalf("stop gave %s, %v, want terminated", got.State, err)
+	}
+	if err := e.saga.Terminate(t.Context(), due.ID, *due.Deadline); err != nil {
+		t.Fatalf("terminate: %v", err)
+	}
+	if got := e.reload(t, due.ID); got.State != store.PlacementTerminated {
+		t.Fatalf("placement is %s after terminate, want terminated", got.State)
+	}
+	if n := len(owned(t, a)); n != 0 {
+		t.Fatalf("%d sandboxes left", n)
+	}
+	if n := e.inUse(t, "a"); n != 0 {
+		t.Fatalf("in use %d, want both slots released", n)
+	}
 }
 
 func TestConcurrentStopsShareOneDestroy(t *testing.T) {

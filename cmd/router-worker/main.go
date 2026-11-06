@@ -106,8 +106,8 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 }
 
 // openStore returns the store, sealing provider credentials under the data-plane keys
-func openStore(pool *pgxpool.Pool, cfg config.Config) *store.Store {
-	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys))
+func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
+	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log))
 }
 
 func serve(
@@ -136,7 +136,7 @@ func serve(
 		return err
 	}
 
-	st := openStore(pool, cfg)
+	st := openStore(pool, cfg, log)
 	tracker := placement.NewTracker(time.Now)
 	w, err := worker.New(pool, saga.Deps{
 		Store:        st,

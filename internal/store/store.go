@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,7 @@ type querier interface {
 type Store struct {
 	q      querier
 	sealer RefSealer
+	log    *slog.Logger
 }
 
 // Option configures a Store
@@ -68,9 +70,18 @@ func WithRefSealer(r RefSealer) Option {
 	return func(s *Store) { s.sealer = r }
 }
 
+// WithLogger sets where the store reports a credential it cannot open, slog.Default when unset
+func WithLogger(log *slog.Logger) Option {
+	return func(s *Store) {
+		if log != nil {
+			s.log = log
+		}
+	}
+}
+
 // New returns a Store backed by pool
 func New(pool *pgxpool.Pool, opts ...Option) *Store {
-	s := &Store{q: pool}
+	s := &Store{q: pool, log: slog.Default()}
 	for _, o := range opts {
 		o(s)
 	}
@@ -79,7 +90,7 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 
 // Tx returns a Store whose queries all run inside tx
 func (s *Store) Tx(tx pgx.Tx) *Store {
-	return &Store{q: tx, sealer: s.sealer}
+	return &Store{q: tx, sealer: s.sealer, log: s.log}
 }
 
 // WithTx runs fn in a transaction, committing when fn returns nil and rolling back otherwise

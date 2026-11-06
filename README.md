@@ -220,9 +220,10 @@ The store seals the provider credentials in `provider_ref` (E2B's `envd_token` a
 `traffic_token`, Koyeb's `secret`, Boat's `_token`) with AES-256-GCM under a key derived from the
 newest root, as `v1.<root id>.<base64url>`, so a copy of the database without these keys reveals
 none of them. Every other field, `id` included, stays plaintext. A field written before sealing
-reads as plaintext. A sealed field no listed root opens makes reading a ready placement fail. In
-any other state it reads as absent, since only a ready placement uses its credentials and a
-destroy needs only the sandbox id.
+reads as plaintext. A sealed field no listed root opens reads as absent, and the store logs a
+warning that names the placement and the field. A destroy needs only the sandbox id, so a stop or
+a deadline still ends the placement and frees its slot. Only a call that uses the credential
+fails.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.

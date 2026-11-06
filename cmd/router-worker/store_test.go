@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,9 @@ import (
 func TestStoreSealsProviderCredentials(t *testing.T) {
 	pool := migrated(t)
 	_, keys := testenv.DataPlaneKeys(t)
-	st := openStore(pool, config.Config{DataPlaneKeys: keys})
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	st := openStore(pool, config.Config{DataPlaneKeys: keys}, log)
 	p, _, err := st.CreatePlacement(t.Context(), store.NewPlacement{
 		OrderID: "o", HandleSHA256: []byte("h"), PackageID: "p",
 	})
@@ -36,5 +40,17 @@ func TestStoreSealsProviderCredentials(t *testing.T) {
 	got, err := st.PlacementByID(t.Context(), p.ID)
 	if err != nil || got.ProviderRef.Meta["envd_token"] != "tok" {
 		t.Fatalf("read back %+v, %v", got.ProviderRef, err)
+	}
+
+	_, err = pool.Exec(t.Context(), `update placements set provider_ref = jsonb_set(provider_ref,
+		'{meta,envd_token}', '"v1.k9.AAAA"')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PlacementByID(t.Context(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "field=envd_token") {
+		t.Fatalf("an unopenable credential was not reported to the binary's log: %q", logs.String())
 	}
 }

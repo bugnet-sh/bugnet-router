@@ -1,8 +1,10 @@
 package store_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"maps"
 	"strings"
 	"testing"
@@ -139,7 +141,7 @@ func TestRefWrittenBeforeSealingReadsAsPlaintext(t *testing.T) {
 	}
 }
 
-func TestStoreWithoutSealerRefusesCredentials(t *testing.T) {
+func TestStoreWithoutSealerRefusesToWriteCredentials(t *testing.T) {
 	plain, pool := newStoreWithPool(t)
 	ctx := context.Background()
 	p := newPlacement(t, plain, "o-plain")
@@ -153,7 +155,10 @@ func TestStoreWithoutSealerRefusesCredentials(t *testing.T) {
 			t.Fatalf("error quotes a credential: %v", err)
 		}
 	}
-	got, _ := plain.PlacementByID(ctx, p.ID)
+	got, err := plain.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.State != store.PlacementPlacing || got.ProviderRef != nil {
 		t.Fatalf("a refused write left %s with ref %+v", got.State, got.ProviderRef)
 	}
@@ -161,12 +166,18 @@ func TestStoreWithoutSealerRefusesCredentials(t *testing.T) {
 	_, keys := testenv.DataPlaneKeys(t)
 	id := readyPlacement(t, store.New(pool, store.WithRefSealer(keys)), "o-sealed",
 		credentialRef())
-	if _, err := plain.PlacementByID(ctx, id); err == nil {
-		t.Fatal("a store without a sealer read a sealed ref")
+	got, err = plain.PlacementByID(ctx, id)
+	if err != nil {
+		t.Fatalf("a store without a sealer read a sealed ref: %v", err)
+	}
+	for field := range credentials {
+		if v, ok := got.ProviderRef.Meta[field]; ok {
+			t.Errorf("a store without a sealer read %s as %q, want it absent", field, v)
+		}
 	}
 }
 
-func TestUnopenableRefFailsOnlyWhileReady(t *testing.T) {
+func TestUnopenableRefReadsAsAbsentInEveryState(t *testing.T) {
 	_, keys := testenv.DataPlaneKeys(t)
 	s, pool := newStoreWithPool(t, store.WithRefSealer(keys))
 	ctx := context.Background()
@@ -182,12 +193,11 @@ func TestUnopenableRefFailsOnlyWhileReady(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	other := store.New(pool, store.WithRefSealer(mustKeys(t,
-		"k9:"+base64.StdEncoding.EncodeToString(make([]byte, 32)))))
-	if _, err := other.PlacementByID(ctx, live); err == nil {
-		t.Error("a ready placement whose credentials no root opens read without an error")
-	}
-	for name, id := range map[string]uuid.UUID{"terminating": stopping, "terminated": ended} {
+	var logs bytes.Buffer
+	other := store.New(pool, store.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
+		store.WithRefSealer(mustKeys(t, "k9:"+base64.StdEncoding.EncodeToString(make([]byte, 32)))))
+	states := map[string]uuid.UUID{"ready": live, "terminating": stopping, "terminated": ended}
+	for name, id := range states {
 		got, err := other.PlacementByID(ctx, id)
 		if err != nil {
 			t.Fatalf("a %s placement: %v", name, err)
@@ -201,6 +211,23 @@ func TestUnopenableRefFailsOnlyWhileReady(t *testing.T) {
 			}
 		}
 	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != len(states)*len(credentials) {
+		t.Fatalf("%d log lines, want one per placement and field:\n%s", len(lines), logs.String())
+	}
+	for name, id := range states {
+		for field := range credentials {
+			want := "placement=" + id.String() + " field=" + field
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("no warning names the %s placement's %s:\n%s", name, field, logs.String())
+			}
+		}
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "level=WARN") || strings.Contains(line, "v1.") {
+			t.Errorf("want a warning without the sealed value, got %s", line)
+		}
+	}
 
 	_, err := pool.Exec(ctx, `
 		update placements set provider_ref = (select provider_ref from placements where id = $2)
@@ -208,7 +235,11 @@ func TestUnopenableRefFailsOnlyWhileReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PlacementByID(ctx, live); err == nil {
-		t.Error("credentials moved from another placement's row opened")
+	got, err := s.PlacementByID(ctx, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got.ProviderRef.Meta["envd_token"]; ok {
+		t.Errorf("credentials moved from another placement's row opened as %q", v)
 	}
 }

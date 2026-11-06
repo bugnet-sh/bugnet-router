@@ -99,9 +99,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		if err := json.Unmarshal(ref, p.ProviderRef); err != nil {
 			return Placement{}, fmt.Errorf("decode provider ref: %w", err)
 		}
-		if err := s.openRef(&p); err != nil {
-			return Placement{}, fmt.Errorf("provider ref of %s: %w", p.ID, err)
-		}
+		s.openRef(&p)
 	}
 	p.CreatedAt = utc(p.CreatedAt)
 	p.Deadline = utcPtr(p.Deadline)

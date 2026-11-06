@@ -42,26 +42,28 @@ func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, er
 	return out, nil
 }
 
-// openRef opens the sealed credential fields of p's ref in place
-func (s *Store) openRef(p *Placement) error {
+// openRef opens the sealed credential fields of p's ref in place and drops any it cannot open
+func (s *Store) openRef(p *Placement) {
 	for _, field := range credentialFields {
 		v, ok := p.ProviderRef.Meta[field]
 		if !ok || !strings.HasPrefix(v, sealedPrefix) {
 			continue
 		}
-		if s.sealer == nil {
-			return fmt.Errorf("open %s: %w", field, errNoSealer)
-		}
-		plain, err := s.sealer.OpenRef(p.ID, v)
-		switch {
-		case err == nil:
-			p.ProviderRef.Meta[field] = plain
-		case p.State != PlacementReady:
-			// Only a ready placement uses its credentials, a destroy needs only the sandbox id
+		plain, err := s.open(p.ID, v)
+		if err != nil {
+			// A destroy needs only the sandbox id, so only a call that uses the credential fails
 			delete(p.ProviderRef.Meta, field)
-		default:
-			return fmt.Errorf("open %s: %w", field, err)
+			s.log.Warn("provider credential does not open, it reads as absent",
+				"placement", p.ID, "field", field, "err", err)
+			continue
 		}
+		p.ProviderRef.Meta[field] = plain
 	}
-	return nil
+}
+
+func (s *Store) open(placement uuid.UUID, sealed string) (string, error) {
+	if s.sealer == nil {
+		return "", errNoSealer
+	}
+	return s.sealer.OpenRef(placement, sealed)
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobargs"
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
@@ -223,7 +224,9 @@ func newEnv(t *testing.T, o options) *env {
 	if out == nil {
 		out = io.Discard
 	}
-	st := store.New(pool)
+	_, keys := testenv.DataPlaneKeys(t)
+	st := store.New(pool, store.WithRefSealer(keys),
+		store.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	sd := saga.Deps{
 		Store:        st,
 		Engine:       placement.New(reg, tracker),
@@ -541,6 +544,33 @@ func TestDeadlineTerminates(t *testing.T) {
 	e.run(t, jobargs.Deadline{PlacementID: uuid.New()})
 	if evs := e.pendingEvents(t, saga.EventTerminated); len(evs) != 1 {
 		t.Fatalf("%d terminated events after repeated deadlines, want 1", len(evs))
+	}
+}
+
+func TestDeadlineTerminatesWithUnopenableCredential(t *testing.T) {
+	e := newEnv(t, options{sagaClock: pastPaidTime()})
+	p, _ := e.placeReady(t, "order-1")
+	k9, err := dpkeys.Parse("k9:" + base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.pool.Exec(t.Context(), `
+		update placements set provider_ref = jsonb_set(provider_ref, '{meta}',
+			coalesce(provider_ref->'meta', '{}') || jsonb_build_object('envd_token', $2::text))
+		where id = $1`, p.ID, k9.SealRef(p.ID, "envd-plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.start(t)
+	e.finished(t, "deadline")
+
+	got := e.reload(t, p.ID)
+	if got.State != store.PlacementTerminated || got.CapacityProvider != "" {
+		t.Fatalf("placement %+v, want terminated holding no slot", got)
+	}
+	if exists(t, e.local, *p.ProviderRef) || e.inUse(t, "local") != 0 {
+		t.Fatalf("sandbox exists %v with %d in use, want gone and 0",
+			exists(t, e.local, *p.ProviderRef), e.inUse(t, "local"))
 	}
 }
 
