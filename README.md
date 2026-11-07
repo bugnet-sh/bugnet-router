@@ -41,6 +41,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
 | `internal/hostname` | The one exact host name rule that `[names]` and a package's `egress.allow` share |
 | `internal/hostrules` | The one set of host rules that secret hosts and x402 hosts share |
+| `internal/x402` | x402 service checks, service ids, path rules, event codes and statuses |
 | `internal/solana` | The one base58 decoder, for Solana keys and signatures |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
