@@ -208,6 +208,39 @@ func TestExtensionClearsSpentAndCountsOnFromWhatWasUsed(t *testing.T) {
 	eq(t, spent, []uuid.UUID{p})
 }
 
+func TestUncrossTakesBackOnlyACrossingUnderTheGrownBudget(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 1<<20)
+	spentNow := func() bool {
+		t.Helper()
+		spent, err := m.Spent(t.Context(), budget.Edge, p)
+		eq(t, err, nil)
+		return spent
+	}
+	eq(t, spentNow(), false)
+	_, spent := m.report(budget.Edge, budget.ByEdge, l, 3<<20/2)
+	eq(t, spent, []uuid.UUID{p})
+	eq(t, spentNow(), true)
+	back, err := m.Uncross(t.Context(), budget.Edge, p, 3<<20/2)
+	eq(t, err == nil && !back, true)
+	eq(t, spentNow(), true)
+	back, err = m.Uncross(t.Context(), budget.Edge, p, 2<<20)
+	eq(t, err == nil && back, true)
+	eq(t, spentNow(), false)
+	back, err = m.Uncross(t.Context(), budget.Edge, p, 2<<20)
+	eq(t, err == nil && !back, true)
+}
+
+func TestSeenLastsThirtySecondsPastTheLastReportWithBytes(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	m.report(budget.Edge, budget.ByEdge, limit(p, 1<<30), 1)
+	if ttl := m.pttl("edge:seen:" + p.String()); ttl <= 29*time.Second || ttl > 30*time.Second {
+		t.Fatalf("edge:seen expires in %v, want 30 s", ttl)
+	}
+}
+
 // expiresAt is the key's expiry in Unix milliseconds, -2 when the key is absent
 func (m meter) expiresAt(key string) int64 {
 	m.t.Helper()

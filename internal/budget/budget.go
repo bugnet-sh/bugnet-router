@@ -7,9 +7,11 @@
 // the budget and clears the spent keys, so a later crossing writes it again.
 //
 // The pace halves while both carriers carried the placement's bytes in the last 10 s, which
-// edge:seen:<placement> records by Valkey's clock. Every key expires an hour after the
-// placement's deadline. MoveDeadline carries the used counters to a new deadline, and an expiry
-// only ever moves later, so a report still holding the old deadline cannot shorten it.
+// edge:seen:<placement> records by Valkey's clock and keeps for 30 s after the last report that
+// carried bytes. The used counters and spent keys expire an hour after the placement's deadline.
+// MoveDeadline carries the used counters to a new deadline, and an expiry only ever moves later,
+// so a report still holding the old deadline cannot shorten it. A report that crossed a budget an
+// extension had already grown takes its spent key back through Uncross.
 package budget
 
 import (
@@ -104,6 +106,15 @@ for _, key in ipairs(KEYS) do
 	if redis.call('PEXPIRETIME', key) < tonumber(ARGV[1]) then
 		redis.call('PEXPIREAT', key, ARGV[1])
 	end
+end
+return 0
+`)
+
+// uncrossScript deletes the spent key KEYS[2] while the sum KEYS[1] is under the budget ARGV[1]
+var uncrossScript = valkey.NewLuaScript(`
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+if used < tonumber(ARGV[1]) then
+	return redis.call('DEL', KEYS[2])
 end
 return 0
 `)
@@ -231,6 +242,29 @@ func (m *Meter) RemainingAll(
 		out[l.Placement] = left(l.Budget, used)
 	}
 	return out, nil
+}
+
+// Spent reports whether the placement's budget of kind was crossed and not grown since
+func (m *Meter) Spent(ctx context.Context, kind Kind, placement uuid.UUID) (bool, error) {
+	n, err := m.c.Do(ctx, m.c.B().Exists().Key(m.key(kind, "spent", placement)).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("budget: read the %s spent key of %s: %w", kind, placement, err)
+	}
+	return n == 1, nil
+}
+
+// Uncross deletes the spent key of kind while the sum is under budget, reporting whether it did
+func (m *Meter) Uncross(
+	ctx context.Context, kind Kind, placement uuid.UUID, budget int64,
+) (bool, error) {
+	keys := []string{m.key(kind, "used", placement), m.key(kind, "spent", placement)}
+	n, err := uncrossScript.Exec(ctx, m.c, keys, []string{strconv.FormatInt(budget, 10)}).
+		AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("budget: take back the %s spent key of %s: %w", kind,
+			placement, err)
+	}
+	return n == 1, nil
 }
 
 // ClearSpent deletes both spent keys, so a later crossing writes BudgetSpent again

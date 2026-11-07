@@ -635,3 +635,32 @@ func TestWatchOpensBeforeTheFirstEvent(t *testing.T) {
 		cancel()
 	}
 }
+
+func TestAReportNeverSpendsABudgetAnExtensionGrew(t *testing.T) {
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	extend := sync.OnceFunc(func() {
+		ext := e.extendToken(t, h, morePkg, morePrice)
+		if _, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.ExtendPlacementRequest{Handle: h, OrderToken: ext})); err != nil {
+			t.Error(err)
+		}
+	})
+	api.SetBeforeReport(t, extend)
+	a := e.reportEdge(t, usage(id, 0, 2<<30+1))
+	eq(t, a.GetBytesRemaining()[id], uint64(2<<30-1))
+	for _, ev := range e.edgeEvents(t) {
+		if ev.GetBudgetSpent() != nil {
+			t.Fatalf("a report read before the extension wrote %v", ev)
+		}
+	}
+	n, err := e.vk.Do(t.Context(), e.vk.B().Exists().Key(e.prefix+"edge:spent:"+id).Build()).
+		AsInt64()
+	eq(t, err == nil && n == 0, true)
+
+	a = e.reportEdge(t, usage(id, 0, 2<<30))
+	eq(t, a.GetBytesRemaining()[id], uint64(0))
+	evs := e.edgeEvents(t)
+	eq(t, evs[len(evs)-1].GetBudgetSpent().GetPlacementId(), id)
+}

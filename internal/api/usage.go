@@ -71,11 +71,12 @@ func (s *Server) report(
 				Out: u.GetBytesOut()})
 		}
 	}
+	beforeReport()
 	answers, spent, err := s.meter.Report(ctx, kind, by, usage, limits)
 	if err != nil {
 		return nil, nil, s.status(err)
 	}
-	for _, id := range spent {
+	for _, id := range s.crossed(ctx, kind, spent, limits, answers) {
 		s.events.Publish(ctx, &routerv1.EdgeEvent{Event: &routerv1.EdgeEvent_BudgetSpent{
 			BudgetSpent: &routerv1.BudgetSpent{PlacementId: id.String(), Kind: budgetKinds[kind]},
 		}})
@@ -86,6 +87,53 @@ func (s *Server) report(
 		left[id.String()], pace[id.String()] = a.Remaining, a.Pace
 	}
 	return left, pace, nil
+}
+
+// beforeReport runs between a report reading its budgets and counting its bytes, for tests
+var beforeReport = func() {}
+
+// crossed keeps the placements whose crossing stands, taking back one an extension outgrew
+func (s *Server) crossed(
+	ctx context.Context, kind budget.Kind, spent []uuid.UUID, limits map[uuid.UUID]budget.Limit,
+	answers map[uuid.UUID]budget.Answer,
+) []uuid.UUID {
+	if len(spent) == 0 {
+		return nil
+	}
+	// The budgets were read before the bytes were counted, so an extension may have come between
+	now, err := s.d.Store.PlacementsByIDs(ctx, spent)
+	if err != nil {
+		s.d.Log.Warn("api: reread budgets after a crossing, keeping it", "err", err)
+		return spent
+	}
+	grown := map[uuid.UUID]budget.Limit{}
+	for _, p := range now {
+		if p.Deadline == nil {
+			continue
+		}
+		if l := s.limit(p, kind); l.Budget > limits[p.ID].Budget {
+			grown[p.ID] = l
+		}
+	}
+	var out []uuid.UUID
+	for _, id := range spent {
+		l, ok := grown[id]
+		if !ok {
+			out = append(out, id)
+			continue
+		}
+		back, err := s.meter.Uncross(ctx, kind, id, l.Budget)
+		if err != nil || !back {
+			out = append(out, id)
+			continue
+		}
+		if left, err := s.meter.Remaining(ctx, kind, l); err == nil {
+			a := answers[id]
+			a.Remaining = left
+			answers[id] = a
+		}
+	}
+	return out
 }
 
 // leases returns the live placements among ids and the bytes each has left of kind
