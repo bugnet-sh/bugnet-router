@@ -59,10 +59,11 @@ func newStreamClient() *http.Client {
 	}
 }
 
-// streamPath cleans a path and refuses one outside /home/user and /tmp before any call
-func streamPath(name string) (string, error) {
+// streamPath cleans a path under /home/user or /tmp, the two themselves only when roots is set
+func streamPath(name string, roots bool) (string, error) {
 	clean := path.Clean(name)
-	if strings.HasPrefix(clean, "/home/user/") || strings.HasPrefix(clean, "/tmp/") {
+	under := strings.HasPrefix(clean, "/home/user/") || strings.HasPrefix(clean, "/tmp/")
+	if under || (roots && (clean == "/home/user" || clean == "/tmp")) {
 		return clean, nil
 	}
 	return "", invalid(fmt.Errorf(
@@ -79,7 +80,7 @@ func (p *Provider) StatFile(
 	if err != nil {
 		return provider.FileEntry{}, err
 	}
-	clean, err := streamPath(name)
+	clean, err := streamPath(name, true)
 	if err != nil {
 		return provider.FileEntry{}, err
 	}
@@ -282,7 +283,7 @@ func (p *Provider) OpenWriter(
 	if err := spec.Check(); err != nil {
 		return nil, err
 	}
-	target, err := streamPath(name)
+	target, err := streamPath(name, false)
 	if err != nil {
 		return nil, err
 	}

@@ -1019,7 +1019,11 @@ func (f *fakeBoat) resolve(w http.ResponseWriter, name string) (string, bool) {
 		canonical = path.Join(canonical, rest)
 	}
 	for _, root := range []string{f.tmp, "/home/user"} {
-		if err == nil && strings.HasPrefix(canonical+"/", root+"/") && canonical != root {
+		if err == nil && canonical == root {
+			// The sandbox's roots are directories, though the host's /tmp may be a link
+			return canonical, true
+		}
+		if err == nil && strings.HasPrefix(canonical, root+"/") {
 			return name, true
 		}
 	}
@@ -1482,6 +1486,10 @@ func (f *fakeBoat) deleteFile(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	name, ok := f.liveFile(w, r, q.Get("path"))
 	if !ok {
+		return
+	}
+	if name == f.tmp || name == "/home/user" {
+		f.fail(w, http.StatusBadRequest, "invalid_path", "the root cannot be deleted", nil, nil)
 		return
 	}
 	remove := os.Remove

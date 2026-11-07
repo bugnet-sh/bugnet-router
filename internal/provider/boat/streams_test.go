@@ -166,8 +166,8 @@ func TestBoatRefusesPathsOutsideHomeAndTmp(t *testing.T) {
 	ref := readySandbox(t, f)
 	spec := provider.WriteSpec{Size: 1, Mode: 0o644}
 	for _, bad := range []string{
-		"/opt/x", "/etc/passwd", "/tmp", "/home/user", "/home/username/f", "relative/f", "",
-		"/tmp/../etc/x", "/", "/root/f",
+		"/opt/x", "/etc/passwd", "/home/username/f", "relative/f", "", "/tmp/../etc/x", "/",
+		"/root/f", "/tmpfile", "/home",
 	} {
 		_, err := p.StatFile(t.Context(), ref, bad)
 		eq(t, isCode(err, provider.CodeInvalid), true)
@@ -177,6 +177,27 @@ func TestBoatRefusesPathsOutsideHomeAndTmp(t *testing.T) {
 		eq(t, isCode(err, provider.CodeInvalid), true)
 	}
 	eq(t, f.totalCalls(), 0)
+}
+
+func TestBoatStatsTheRootsAsDirectories(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	for _, root := range []string{"/tmp", "/tmp/", "/tmp/."} {
+		entry, err := p.StatFile(t.Context(), ref, root)
+		if err != nil || !entry.IsDir || entry.Regular || entry.Path != "/tmp" {
+			t.Fatalf("StatFile of %q gave %+v, %v, want the directory /tmp", root, entry, err)
+		}
+	}
+	_, err := p.OpenReader(t.Context(), ref, "/tmp", 0)
+	eq(t, isCode(err, provider.CodeInvalid), true)
+	calls := f.totalCalls()
+	for _, root := range []string{"/tmp", "/home/user", "/home/user/"} {
+		_, err = p.OpenWriter(t.Context(), ref, root, provider.WriteSpec{Size: 1, Mode: 0o644})
+		eq(t, isCode(err, provider.CodeInvalid), true)
+	}
+	eq(t, f.totalCalls(), calls)
+	eq(t, f.callCount(routeDownloadURL), 0)
 }
 
 func TestBoatFifoIsNotRegular(t *testing.T) {

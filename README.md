@@ -620,5 +620,6 @@ sent again up to 3 times, after the answer's `Retry-After` (at most 30 s) or els
 that doubles each time. All part buffers of one process stay under
 `transfers.koyeb_buffer_total`, a writer waiting for room. Koyeb's `GET /files/stat` follows a
 final symlink, so `StatFile` reads the directory's listing instead. Boat's file API reaches only
-`/home/user` and `/tmp`, so any other path is refused before a call, and its file info has no
-type, so `StatFile` asks the shell whether a path is a regular file.
+`/home/user`, `/tmp` and the paths under them, so any other path is refused before a call.
+`StatFile` describes the two directories themselves, which a writer refuses. Boat's file info has
+no type, so `StatFile` asks the shell whether a path is a regular file.
