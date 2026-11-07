@@ -41,6 +41,7 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobs"
@@ -179,6 +180,9 @@ type options struct {
 	catalog      string       // the saga's and API server's catalog JSON, catalogJSON when empty
 	apiCatalog   string       // the API server's catalog JSON, the saga's when empty
 	apiEngine    api.Engine   // the API server's engine, the saga's engine when nil
+	// wrap replaces the faulty local provider in the registry, given the local provider's root
+	wrap      func(l *local.Provider, root string) provider.Provider
+	transfers config.Transfers // the transfer settings, each zero field at its default
 }
 
 type env struct {
@@ -239,9 +243,13 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.secrets {
 		features.Secrets = []string{"local"}
 	}
-	reg, err := provider.NewRegistry([]provider.Provider{faulty{
+	var listed provider.Provider = faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
-	}}, features)
+	}
+	if opts.wrap != nil {
+		listed = opts.wrap(prov, root)
+	}
+	reg, err := provider.NewRegistry([]provider.Provider{listed}, features)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +297,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
-		Budget: budgetDefaults,
+		Budget: budgetDefaults, Keys: keys, Transfers: opts.transfers, TransferHost: transferHost,
 	})
 	t.Cleanup(srv.Close)
 

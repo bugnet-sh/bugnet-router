@@ -21,13 +21,6 @@ func unbuilt(
 				&routerv1.CreatePreviewRequest{Handle: h, Port: 3000}))
 			return err
 		},
-		"CreateTransfer": func() error {
-			_, err := c.CreateTransfer(ctx, connect.NewRequest(&routerv1.CreateTransferRequest{
-				Handle: h, Direction: routerv1.TransferDirection_TRANSFER_DIRECTION_DOWNLOAD,
-				Path: "~/out.csv",
-			}))
-			return err
-		},
 		"AddSshKey": func() error {
 			_, err := c.AddSshKey(ctx, connect.NewRequest(&routerv1.AddSshKeyRequest{Handle: h}))
 			return err
@@ -78,7 +71,7 @@ func unbuilt(
 var built = []string{
 	"Estimate", "PricePackage", "CreatePlacement", "GetPlacement", "WatchPlacement",
 	"ExtendPlacement", "CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec",
-	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles",
+	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {

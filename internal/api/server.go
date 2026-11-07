@@ -12,8 +12,13 @@
 // and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
 // server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
 // only delays a reader until its next read. The edge-side services meter usage against each
-// placement's budgets, answer lease checks and serve the edge event stream. Close ends long
-// polls and streams so an HTTP server shutting down can drain its connections.
+// placement's budgets, answer lease checks and serve the edge event stream.
+//
+// CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
+// and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
+// edge event reader per server fans out, or when it goes idle or reaches its hard stop. Drain
+// ends long polls and watch streams so an HTTP server shutting down can drain its connections
+// while transfer streams finish, and Close ends everything.
 package api
 
 import (
@@ -27,6 +32,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -40,6 +46,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/budget"
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobs"
@@ -49,6 +56,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/streams"
+	"github.com/oynozan/bugnet-router/internal/transfer"
 )
 
 const (
@@ -86,6 +94,12 @@ type Deps struct {
 	SandboxOpsBurst int
 	// Budget sizes the paces the usage reports answer
 	Budget config.EdgeBudget
+	// Keys derive the tokens of transfers minted under an idempotency key
+	Keys dpkeys.Keys
+	// Transfers are the transfer settings, a zero field taking its default
+	Transfers config.Transfers
+	// TransferHost names transfer URLs, and CreateTransfer refuses every call while it is empty
+	TransferHost string
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -97,8 +111,13 @@ type Server struct {
 	ops    *ratelimit.Limiter
 	meter  *budget.Meter
 	events *edgeevents.Bus
-	ctx    context.Context // ends when Close is called
+	hub    *hub
+	xfers  *transfer.Store
+	x      config.Transfers
+	ctx    context.Context // ends when Drain or Close is called
 	cancel context.CancelFunc
+	life   context.Context // ends when Close is called, transfer streams run on it
+	end    context.CancelFunc
 	done   chan struct{}
 }
 
@@ -110,27 +129,45 @@ func New(deps Deps) *Server {
 		deps.Log = slog.Default()
 	}
 	ops := ratelimit.New(deps.Valkey, deps.Prefix, deps.SandboxOpsPerSecond, deps.SandboxOpsBurst)
-	ctx, cancel := context.WithCancel(context.Background())
+	life, end := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(life)
+	x := transferSettings(deps.Transfers)
+	events := edgeevents.New(deps.Valkey, deps.Prefix, deps.Log)
 	s := &Server{
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
 		ops:    ops,
 		meter:  budget.New(deps.Valkey, deps.Prefix, deps.Budget),
-		events: edgeevents.New(deps.Valkey, deps.Prefix, deps.Log),
+		events: events,
+		hub:    newHub(events, deps.Log),
+		xfers: transfer.NewStore(deps.Valkey, deps.Prefix, transfer.Limits{
+			MaxTokens: x.MaxTokensPerPlacement, MaxActive: x.MaxActivePerPlacement,
+			MaxClaims: x.MaxClaims, TTL: x.URLTTL + x.MaxDuration,
+		}),
+		x:      x,
 		ctx:    ctx,
 		cancel: cancel,
+		life:   life,
+		end:    end,
 		done:   make(chan struct{}),
 	}
+	var wg sync.WaitGroup
+	wg.Go(func() { s.notes.run(life) })
+	wg.Go(func() { s.hub.run(life) })
 	go func() {
-		defer close(s.done)
-		s.notes.run(ctx)
+		wg.Wait()
+		close(s.done)
 	}()
 	return s
 }
 
-// Close ends long polls and streams and stops the subscription, safe to call more than once
+// Drain ends long polls and watch streams, leaving transfer streams to finish
+func (s *Server) Drain() { s.cancel() }
+
+// Close ends long polls and every stream and stops the subscriptions, safe to call more than once
 func (s *Server) Close() {
 	s.cancel()
+	s.end()
 	<-s.done
 }
 
@@ -440,18 +477,26 @@ func (s *Server) sandbox(
 	if err != nil {
 		return store.Placement{}, nil, err
 	}
-	if p.State != store.PlacementReady || p.ProviderRef == nil {
-		return store.Placement{}, nil, fmt.Errorf("%w: placement is %s", errNotReady, p.State)
-	}
-	prov, ok := s.d.Registry.Get(p.ProviderRef.Provider)
-	if !ok {
-		return store.Placement{}, nil, fmt.Errorf("provider %q is not configured",
-			p.ProviderRef.Provider)
+	prov, err := s.home(p)
+	if err != nil {
+		return store.Placement{}, nil, err
 	}
 	if err := s.spend(ctx, p); err != nil {
 		return store.Placement{}, nil, err
 	}
 	return p, prov, nil
+}
+
+// home is the provider a ready placement's sandbox runs on
+func (s *Server) home(p store.Placement) (provider.Provider, error) {
+	if p.State != store.PlacementReady || p.ProviderRef == nil || p.Deadline == nil {
+		return nil, fmt.Errorf("%w: placement is %s", errNotReady, p.State)
+	}
+	prov, ok := s.d.Registry.Get(p.ProviderRef.Provider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q is not configured", p.ProviderRef.Provider)
+	}
+	return prov, nil
 }
 
 // spend takes one of the placement's operation tokens, refusing the operation when none is left
