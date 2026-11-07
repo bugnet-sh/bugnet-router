@@ -1,10 +1,11 @@
 // Package transfer resolves, stages and records the file transfers the edges serve.
 //
 // A transfer is a Valkey hash, xfer:<sha256 hex of its bnx_ token>, with the fields DP 8.3.1
-// names, that lives for the start window plus the longest a transfer may run. The window bounds
-// when a transfer may start, and xfer:open:<placement> holds each unexpired token by its
-// window's end, so a placement holds at most a fixed number. Claim turns an issued record active
-// under a fresh lease in one script, which also counts the placement's active transfers in
+// names, that lives for the start window plus the longest a transfer may run, and at least until
+// its last lease ends, so a resume claimed late keeps its record. The window bounds when a
+// transfer may start, and xfer:open:<placement> holds each unexpired token by its window's end,
+// so a placement holds at most a fixed number. Claim turns an issued record active under a fresh
+// lease in one script, which also counts the placement's active transfers in
 // xfer:active:<placement>, the claims of one URL and the bytes it moved. A lease lapses unless
 // renewed, and a lapsed record is issued again. Release hands a failed attempt back, and Done
 // makes the URL used for good.
@@ -16,6 +17,7 @@
 package transfer
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	_ "embed"
@@ -85,6 +87,8 @@ type Limits struct {
 	MaxTokens, MaxActive, MaxClaims int
 	// TTL is how long a record lives, the start window plus the longest transfer
 	TTL time.Duration
+	// Lease is how long a claim holds a record without a renewal, LeaseLength when zero
+	Lease time.Duration
 }
 
 // Store keeps transfer records in Valkey under one key prefix
@@ -96,6 +100,7 @@ type Store struct {
 
 // NewStore returns a store holding placements and URLs to l
 func NewStore(c valkey.Client, prefix string, l Limits) *Store {
+	l.Lease = cmp.Or(l.Lease, LeaseLength)
 	return &Store{c: c, prefix: prefix, l: l}
 }
 
@@ -143,6 +148,9 @@ end
 local leaseUntil = tonumber(ARGV[2]) + tonumber(ARGV[3])
 redis.call('HSET', KEYS[1], 'lease_until', leaseUntil)
 redis.call('HINCRBY', KEYS[1], 'bytes_sent', ARGV[4])
+if redis.call('PEXPIRETIME', KEYS[1]) < leaseUntil then
+	redis.call('PEXPIREAT', KEYS[1], leaseUntil)
+end
 redis.call('ZADD', KEYS[2], leaseUntil, ARGV[5])
 if redis.call('PEXPIRETIME', KEYS[2]) < leaseUntil then
 	redis.call('PEXPIREAT', KEYS[2], leaseUntil)
@@ -222,7 +230,7 @@ func (s *Store) Claim(
 	lease := newLease()
 	keys := []string{s.recordKey(id), s.setKey("active", p)}
 	args := []string{
-		ms(now), lease, strconv.FormatInt(LeaseLength.Milliseconds(), 10), edgeID,
+		ms(now), lease, strconv.FormatInt(s.l.Lease.Milliseconds(), 10), edgeID,
 		strconv.Itoa(s.l.MaxClaims), strconv.Itoa(s.l.MaxActive), strconv.Itoa(ByteSlack), id,
 	}
 	out, err := claimScript.Exec(ctx, s.c, keys, args).AsStrSlice()
@@ -245,7 +253,7 @@ func (s *Store) Renew(
 ) (Record, error) {
 	keys := []string{s.recordKey(r.ID), s.setKey("active", r.Placement)}
 	args := []string{
-		lease, ms(now), strconv.FormatInt(LeaseLength.Milliseconds(), 10),
+		lease, ms(now), strconv.FormatInt(s.l.Lease.Milliseconds(), 10),
 		strconv.FormatInt(sent, 10), r.ID,
 	}
 	out, err := renewScript.Exec(ctx, s.c, keys, args).AsStrSlice()

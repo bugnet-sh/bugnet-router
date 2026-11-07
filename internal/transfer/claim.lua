@@ -32,6 +32,9 @@ end
 local leaseUntil = now + tonumber(ARGV[3])
 redis.call('HSET', KEYS[1], 'state', 'active', 'lease', ARGV[2], 'lease_until', leaseUntil,
 	'claims', claims + 1, 'edge', ARGV[4])
+if redis.call('PEXPIRETIME', KEYS[1]) < leaseUntil then
+	redis.call('PEXPIREAT', KEYS[1], leaseUntil)
+end
 redis.call('ZADD', KEYS[2], leaseUntil, ARGV[8])
 if redis.call('PEXPIRETIME', KEYS[2]) < leaseUntil then
 	redis.call('PEXPIREAT', KEYS[2], leaseUntil)

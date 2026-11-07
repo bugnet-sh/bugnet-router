@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/oynozan/bugnet-router/internal/testenv"
 	"github.com/oynozan/bugnet-router/internal/transfer"
@@ -200,4 +201,61 @@ func TestRecordFieldsCarryTheSpecNames(t *testing.T) { // DP 8.3.1
 	}
 	eq(t, m["placement_id"], r.Placement.String())
 	eq(t, m["staged_path"], r.StagedPath)
+}
+
+// expiresAt is when Valkey drops the record of id, in Unix milliseconds
+func expiresAt(t *testing.T, vk valkey.Client, prefix, id string) int64 {
+	t.Helper()
+	at, err := vk.Do(t.Context(), vk.B().Pexpiretime().Key(prefix+"xfer:"+id).Build()).AsInt64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+func TestAClaimKeepsTheRecordUntilItsLeaseEnds(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	short := limits
+	short.TTL = time.Second
+	s := transfer.NewStore(vk, prefix, short)
+	now := time.Now()
+	r := record(uuid.New(), 0, now)
+	put(t, s, r, now)
+	r, lease, err := claim(t, s, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, expiresAt(t, vk, prefix, r.ID) >= now.Add(transfer.LeaseLength).UnixMilli(), true)
+	later := now.Add(20 * time.Second)
+	if _, err := s.Renew(t.Context(), r, lease, 0, later); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, expiresAt(t, vk, prefix, r.ID) >= later.Add(transfer.LeaseLength).UnixMilli(), true)
+}
+
+func TestAResumeNearTheRecordsEndKeepsItsRecord(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	short := limits
+	short.TTL, short.Lease = 500*time.Millisecond, 400*time.Millisecond
+	s := transfer.NewStore(vk, prefix, short)
+	now := time.Now()
+	r := record(uuid.New(), 0, now)
+	r.Direction, r.ExpiresAt = download, now.Add(100*time.Millisecond)
+	put(t, s, r, now)
+	first, lease, err := claim(t, s, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Release(t.Context(), first, lease, 1); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	resumed, lease, err := claim(t, s, 0, time.Now())
+	if err != nil {
+		t.Fatalf("a resume after the window: %v", err)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err := s.Renew(t.Context(), resumed, lease, 1, time.Now()); err != nil {
+		t.Fatalf("a renewal past the record's first end: %v", err)
+	}
 }
