@@ -179,3 +179,25 @@ func TestLeaseLapseReturnsToIssued(t *testing.T) {
 	is(t, err, transfer.ErrInUse)
 	is(t, s.Done(t.Context(), r, lease, 1), transfer.ErrInUse)
 }
+
+func TestRecordFieldsCarryTheSpecNames(t *testing.T) { // DP 8.3.1
+	vk, prefix := testenv.Valkey(t)
+	s := transfer.NewStore(vk, prefix, limits)
+	now := time.Now()
+	r := record(uuid.New(), 0, now)
+	put(t, s, r, now)
+	m, err := vk.Do(t.Context(), vk.B().Hgetall().Key(prefix+"xfer:"+r.ID).Build()).AsStrMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"placement_id", "direction", "path", "size", "mode", "sha256", "etag", "expires_at",
+		"state", "lease", "claims", "bytes_sent", "staged_path",
+	} {
+		if _, ok := m[name]; !ok {
+			t.Errorf("the record has no %s field, it has %v", name, m)
+		}
+	}
+	eq(t, m["placement_id"], r.Placement.String())
+	eq(t, m["staged_path"], r.StagedPath)
+}

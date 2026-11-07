@@ -1,4 +1,4 @@
--- Claims a transfer record for one stream, checking every budget a claim spends.
+-- Claims a transfer record for one stream, checking every budget a claim spends
 -- KEYS[1] the record, KEYS[2] the placement's active set
 -- ARGV now in ms, lease, lease length in ms, edge id, max claims, max active, byte slack, id
 local raw = redis.call('HGETALL', KEYS[1])
@@ -17,11 +17,11 @@ local claims = tonumber(h.claims)
 if h.state == 'active' and tonumber(h.lease_until) > now then
 	return {'in_use'}
 end
-if now >= tonumber(h.expires) and (claims == 0 or h.direction == 'upload') then
+if now >= tonumber(h.expires_at) and (claims == 0 or h.direction == 'upload') then
 	return {'expired'}
 end
 if claims >= tonumber(ARGV[5]) or
-	tonumber(h.sent) >= 2 * tonumber(h.size) + tonumber(ARGV[7]) then
+	tonumber(h.bytes_sent) >= 2 * tonumber(h.size) + tonumber(ARGV[7]) then
 	return {'spent'}
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)

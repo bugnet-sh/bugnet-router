@@ -1,12 +1,13 @@
 // Package transfer resolves, stages and records the file transfers the edges serve.
 //
-// A transfer is a Valkey hash, xfer:<sha256 hex of its bnx_ token>, that lives for the start
-// window plus the longest a transfer may run. The window bounds when a transfer may start, and
-// xfer:open:<placement> holds each unexpired token by its window's end, so a placement holds at
-// most a fixed number. Claim turns an issued record active under a fresh lease in one script,
-// which also counts the placement's active transfers in xfer:active:<placement>, the claims of
-// one URL and the bytes it moved. A lease lapses unless renewed, and a lapsed record is issued
-// again. Release hands a failed attempt back, and Done makes the URL used for good.
+// A transfer is a Valkey hash, xfer:<sha256 hex of its bnx_ token>, with the fields DP 8.3.1
+// names, that lives for the start window plus the longest a transfer may run. The window bounds
+// when a transfer may start, and xfer:open:<placement> holds each unexpired token by its
+// window's end, so a placement holds at most a fixed number. Claim turns an issued record active
+// under a fresh lease in one script, which also counts the placement's active transfers in
+// xfer:active:<placement>, the claims of one URL and the bytes it moved. A lease lapses unless
+// renewed, and a lapsed record is issued again. Release hands a failed attempt back, and Done
+// makes the URL used for good.
 //
 // Resolve turns the path a caller gave into the sandbox path a transfer uses, and says whether
 // it must be staged through the exec user's home because the provider's file API, which runs as
@@ -141,7 +142,7 @@ if st[1] ~= 'active' or st[2] ~= ARGV[1] then
 end
 local leaseUntil = tonumber(ARGV[2]) + tonumber(ARGV[3])
 redis.call('HSET', KEYS[1], 'lease_until', leaseUntil)
-redis.call('HINCRBY', KEYS[1], 'sent', ARGV[4])
+redis.call('HINCRBY', KEYS[1], 'bytes_sent', ARGV[4])
 redis.call('ZADD', KEYS[2], leaseUntil, ARGV[5])
 if redis.call('PEXPIRETIME', KEYS[2]) < leaseUntil then
 	redis.call('PEXPIREAT', KEYS[2], leaseUntil)
@@ -156,7 +157,7 @@ if st[1] ~= 'active' or st[2] ~= ARGV[1] then
 	return 0
 end
 redis.call('HSET', KEYS[1], 'state', ARGV[2], 'lease', '', 'lease_until', 0)
-redis.call('HINCRBY', KEYS[1], 'sent', ARGV[3])
+redis.call('HINCRBY', KEYS[1], 'bytes_sent', ARGV[3])
 redis.call('ZREM', KEYS[2], ARGV[4])
 return 1
 `)
@@ -206,7 +207,7 @@ func (s *Store) Claim(
 	ctx context.Context, tokenSHA []byte, edgeID string, now time.Time,
 ) (Record, string, error) {
 	id := ID(tokenSHA)
-	placement, err := s.c.Do(ctx, s.c.B().Hget().Key(s.recordKey(id)).Field("placement").
+	placement, err := s.c.Do(ctx, s.c.B().Hget().Key(s.recordKey(id)).Field("placement_id").
 		Build()).ToString()
 	if valkey.IsValkeyNil(err) {
 		return Record{}, "", ErrUnknown
@@ -289,19 +290,19 @@ var directions = map[routerv1.TransferDirection]string{
 
 func fields(r Record) []string {
 	return []string{
-		"placement", r.Placement.String(), "direction", directions[r.Direction], "path", r.Path,
-		"size", strconv.FormatInt(r.Size, 10), "mode", strconv.FormatUint(uint64(r.Mode), 8),
-		"sha256", hex.EncodeToString(r.SHA256), "etag", r.ETag,
-		"modified", strconv.FormatInt(nanos(r.ModifiedAt), 10), "expires", ms(r.ExpiresAt),
-		"state", string(r.State), "lease", "", "lease_until", "0",
-		"claims", strconv.Itoa(r.Claims), "sent", strconv.FormatInt(r.BytesSent, 10),
-		"staged", r.StagedPath, "edge", "",
+		"placement_id", r.Placement.String(), "direction", directions[r.Direction],
+		"path", r.Path, "size", strconv.FormatInt(r.Size, 10),
+		"mode", strconv.FormatUint(uint64(r.Mode), 8), "sha256", hex.EncodeToString(r.SHA256),
+		"etag", r.ETag, "modified_at", strconv.FormatInt(nanos(r.ModifiedAt), 10),
+		"expires_at", ms(r.ExpiresAt), "state", string(r.State), "lease", "", "lease_until", "0",
+		"claims", strconv.Itoa(r.Claims), "bytes_sent", strconv.FormatInt(r.BytesSent, 10),
+		"staged_path", r.StagedPath, "edge", "",
 	}
 }
 
 func parse(id string, m map[string]string) (Record, error) {
 	r := Record{ID: id, Path: m["path"], ETag: m["etag"], State: State(m["state"]),
-		StagedPath: m["staged"]}
+		StagedPath: m["staged_path"]}
 	var errs []error
 	num := func(key string) int64 {
 		n, err := strconv.ParseInt(m[key], 10, 64)
@@ -309,7 +310,7 @@ func parse(id string, m map[string]string) (Record, error) {
 		return n
 	}
 	var err error
-	r.Placement, err = uuid.Parse(m["placement"])
+	r.Placement, err = uuid.Parse(m["placement_id"])
 	errs = append(errs, err)
 	for d, name := range directions {
 		if name == m["direction"] {
@@ -325,12 +326,12 @@ func parse(id string, m map[string]string) (Record, error) {
 	if len(r.SHA256) == 0 {
 		r.SHA256 = nil
 	}
-	if n := num("modified"); n != 0 {
+	if n := num("modified_at"); n != 0 {
 		r.ModifiedAt = time.Unix(0, n).UTC()
 	}
-	r.ExpiresAt = time.UnixMilli(num("expires")).UTC()
+	r.ExpiresAt = time.UnixMilli(num("expires_at")).UTC()
 	r.Claims = int(num("claims"))
-	r.BytesSent = num("sent")
+	r.BytesSent = num("bytes_sent")
 	if err := errors.Join(errs...); err != nil || r.Direction == 0 {
 		return Record{}, fmt.Errorf("transfer: record %s does not parse: %w", Short(id), err)
 	}
