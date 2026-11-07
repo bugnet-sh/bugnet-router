@@ -152,7 +152,10 @@ func buildKoyeb(cfg config.Config, token string) (*koyeb.Provider, error) {
 		return nil, errors.New("koyeb needs KOYEB_API_TOKEN")
 	}
 	p, err := koyeb.New(koyebOptions(cfg, token))
-	if err != nil {
+	switch {
+	case errors.Is(err, koyeb.ErrTransferSizes):
+		return nil, fmt.Errorf("transfers.koyeb_part or transfers.koyeb_buffer_total: %w", err)
+	case err != nil:
 		return nil, fmt.Errorf("koyeb.instance_types: %w", err)
 	}
 	return p, nil

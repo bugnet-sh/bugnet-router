@@ -186,6 +186,9 @@ type knownService struct {
 	summary    provider.Summary
 }
 
+// ErrTransferSizes marks a part or buffer size New refuses
+var ErrTransferSizes = errors.New("koyeb: transfer sizes")
+
 // New checks the options and makes no call to Koyeb
 func New(opts Options) (*Provider, error) {
 	if opts.APIToken == "" {
@@ -199,13 +202,13 @@ func New(opts Options) (*Provider, error) {
 	total := cmp.Or(opts.BufferTotal, defaultBufferTotal)
 	switch {
 	case part < 0 || total < 0:
-		return nil, errors.New("koyeb: part and buffer sizes must not be negative")
+		return nil, fmt.Errorf("%w: part and buffer sizes must not be negative", ErrTransferSizes)
 	case part > maxPartBytes:
-		return nil, fmt.Errorf("koyeb: a part of %d bytes is over Koyeb's %d per request", part,
-			int64(maxPartBytes))
+		return nil, fmt.Errorf("%w: a part of %d bytes is over Koyeb's %d per request",
+			ErrTransferSizes, part, int64(maxPartBytes))
 	case part > total:
-		return nil, fmt.Errorf("koyeb: a part of %d bytes does not fit a buffer total of %d",
-			part, total)
+		return nil, fmt.Errorf("%w: a part of %d bytes does not fit a buffer total of %d",
+			ErrTransferSizes, part, total)
 	}
 	log := opts.Log
 	if log == nil {
