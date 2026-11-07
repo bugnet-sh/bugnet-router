@@ -615,11 +615,12 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   again at the end and only then sends its last bytes with `verified`. `WriteTransfer` hashes and
   counts the bytes and commits only on a clean close with exactly the declared size and a matching
   SHA-256, so a cut or wrong upload leaves the old file. A stream ends after
-  `transfers.idle_timeout` without a byte, at `transfers.max_duration`, at the placement's
-  deadline, and at once when the placement ends or spends its edge budget, whichever replica
-  served it, from one reader of the edge events per process. Every 10 s a stream also reads its
-  placement and the edge spent mark again, so an event lost on the way still ends it. An
-  extension moves its end.
+  `transfers.idle_timeout` without a byte from the edge. Time the provider spends reading,
+  writing, committing or staging never counts as idle. A stream also ends at
+  `transfers.max_duration`, at the placement's deadline, and at once when the placement ends or
+  spends its edge budget, whichever replica served it, from one reader of the edge events per
+  process. Every 10 s a stream also reads its placement and the edge spent mark again, so an
+  event lost on the way still ends it. An extension moves its end.
 - **Logs** name a transfer by the first 8 hex characters of its token's SHA-256, never its path.
 
 ### Orders for Payments

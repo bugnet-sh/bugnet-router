@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -685,6 +687,114 @@ func TestTransferStreamEndsIdleAndAtMaxDuration(t *testing.T) {
 	err = cutWithin(t, 2500*time.Millisecond, e.upstream(t, h, "/root/old", 1000, "ab"), true)
 	wantCode(t, err, connect.CodeDeadlineExceeded)
 	eq(t, e.content(t, h, "/root/old"), "old")
+}
+
+// slowFiles is the local provider whose file reads, writes and commits each take pause
+type slowFiles struct {
+	*local.Provider
+	pause  time.Duration
+	fail   bool          // Commit fails after its pause
+	aborts *atomic.Int32 // the writers' Abort calls
+}
+
+func (s *slowFiles) OpenWriter(
+	ctx context.Context, ref provider.Ref, p string, spec provider.WriteSpec,
+) (provider.FileWriter, error) {
+	w, err := s.Provider.OpenWriter(ctx, ref, p, spec)
+	if err != nil {
+		return nil, err
+	}
+	return slowWriter{FileWriter: w, s: s}, nil
+}
+
+func (s *slowFiles) OpenReader(
+	ctx context.Context, ref provider.Ref, p string, offset int64,
+) (provider.FileReader, error) {
+	r, err := s.Provider.OpenReader(ctx, ref, p, offset)
+	if err != nil {
+		return nil, err
+	}
+	return slowReader{FileReader: r, pause: s.pause}, nil
+}
+
+type slowReader struct {
+	provider.FileReader
+	pause time.Duration
+}
+
+func (r slowReader) Read(p []byte) (int, error) {
+	time.Sleep(r.pause)
+	return r.FileReader.Read(p)
+}
+
+type slowWriter struct {
+	provider.FileWriter
+	s *slowFiles
+}
+
+func (w slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(w.s.pause)
+	return w.FileWriter.Write(p)
+}
+
+func (w slowWriter) Commit(ctx context.Context, sum []byte) (provider.FileEntry, error) {
+	time.Sleep(w.s.pause)
+	if w.s.fail {
+		return provider.FileEntry{}, &provider.Error{Code: provider.CodeInternal,
+			Err: errors.New("injected commit failure")}
+	}
+	return w.FileWriter.Commit(ctx, sum)
+}
+
+func (w slowWriter) Abort() error {
+	w.s.aborts.Add(1)
+	return w.FileWriter.Abort()
+}
+
+// slowEnv lists s in place of the local provider
+func slowEnv(t *testing.T, s *slowFiles, x config.Transfers) *env {
+	s.aborts = new(atomic.Int32)
+	wrap := func(l *local.Provider, _ string) provider.Provider {
+		s.Provider = l
+		return s
+	}
+	return newEnv(t, options{transfers: x, wrap: wrap})
+}
+
+func TestProviderWorkIsNeverIdle(t *testing.T) {
+	api.SetTransferCheck(t, 20*time.Millisecond)
+	e := slowEnv(t, &slowFiles{pause: 700 * time.Millisecond},
+		config.Transfers{IdleTimeout: 300 * time.Millisecond})
+	h, _ := e.readyPlacement(t)
+	stream := e.upstream(t, h, "/root/f", 4, "ab")
+	if err := stream.Send(&routerv1.WriteTransferRequest{Data: []byte("cd")}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stream.CloseAndReceive()
+	if err != nil {
+		t.Fatalf("an upload whose provider took past the idle timeout: %v", err)
+	}
+	eq(t, resp.Msg.GetSize(), uint64(4))
+	eq(t, e.content(t, h, "/root/f"), "abcd")
+	msgs, err := e.read(timeout(t), t, e.open(t, e.mintOK(t, download(h, "/root/f")), fromSandbox),
+		0, 0)
+	if err != nil {
+		t.Fatalf("a download whose provider took past the idle timeout: %v", err)
+	}
+	eq(t, string(joined(msgs)), "abcd")
+}
+
+func TestAFailedCommitAbortsItsWriter(t *testing.T) {
+	slow := &slowFiles{fail: true}
+	e := slowEnv(t, slow, config.Transfers{})
+	h, _ := e.readyPlacement(t)
+	if _, err := e.upstream(t, h, "/root/f", 2, "ab").CloseAndReceive(); err == nil {
+		t.Fatal("an upload whose commit failed succeeded")
+	}
+	eq(t, slow.aborts.Load(), int32(1))
+	if _, err := os.Stat(e.host(t, h, "/root/f")); err == nil {
+		t.Fatal("an upload whose commit failed left its file")
+	}
 }
 
 func TestStopAndBudgetCutATransferStream(t *testing.T) {

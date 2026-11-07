@@ -424,7 +424,7 @@ type stream struct {
 	deadline atomic.Int64 // the placement's deadline in Unix nanoseconds
 	last     atomic.Int64 // when a byte last moved, in Unix nanoseconds
 	moved    atomic.Int64 // bytes moved and not yet counted in the record
-	busy     atomic.Bool  // staging runs, which moves no byte of the stream
+	busy     atomic.Bool  // provider work runs, which moves no byte of the stream
 	cause    atomic.Pointer[error]
 	watched  chan struct{}
 }
@@ -573,8 +573,8 @@ func (st *stream) progress(n int) {
 	st.last.Store(time.Now().UnixNano())
 }
 
-// staging marks a staging step, during which the idle timeout waits
-func (st *stream) staging(run func() error) error {
+// working runs provider work, during which the idle timeout waits for the provider
+func (st *stream) working(run func() error) error {
 	st.busy.Store(true)
 	defer func() {
 		st.last.Store(time.Now().UnixNano())
@@ -648,7 +648,7 @@ func (st *stream) read(
 	ref, from := *st.p.ProviderRef, st.rec.Path
 	if st.rec.StagedPath != "" {
 		caps := st.s.d.Registry.Capabilities(st.prov)
-		err := st.staging(func() error {
+		err := st.working(func() error {
 			copied, err := transfer.StageOut(st.ctx, st.prov, ref, caps, target(st.rec),
 				st.rec.StagedPath)
 			if err == nil && copied.Size != st.rec.Size {
@@ -674,7 +674,10 @@ func (st *stream) read(
 	var held []byte
 	for i, left := 0, length; left > 0; i++ {
 		buf := bufs[i%2][:min(xferChunk, left)]
-		if _, err := io.ReadFull(r, buf); err != nil {
+		if err := st.working(func() error {
+			_, err := io.ReadFull(r, buf)
+			return err
+		}); err != nil {
 			return err
 		}
 		if held != nil {
@@ -698,7 +701,7 @@ func (st *stream) read(
 
 // restatOriginal compares the original path with the ETag the URL pinned
 func (st *stream) restatOriginal() error {
-	return st.staging(func() error {
+	return st.working(func() error {
 		entry, err := transfer.Stat(st.ctx, st.prov, *st.p.ProviderRef, target(st.rec))
 		if err == nil && etag(entry) != st.rec.ETag {
 			err = transfer.ErrFileChanged
@@ -772,12 +775,15 @@ func (st *stream) write(
 	if err := st.ctx.Err(); err != nil {
 		return nil, err
 	}
-	committed = true
-	if _, err := w.Commit(st.ctx, sum); err != nil {
+	if err := st.working(func() error {
+		_, err := w.Commit(st.ctx, sum)
+		return err
+	}); err != nil {
 		return nil, err
 	}
+	committed = true
 	if rec.StagedPath != "" {
-		err := st.staging(func() error {
+		err := st.working(func() error {
 			_, err := transfer.Place(st.ctx, st.prov, ref, rec.StagedPath, target(rec), rec.Mode)
 			return err
 		})
@@ -805,7 +811,10 @@ func (u *upstream) put(data []byte) error {
 		return nil
 	}
 	u.h.Write(data)
-	if _, err := u.w.Write(data); err != nil {
+	if err := u.st.working(func() error {
+		_, err := u.w.Write(data)
+		return err
+	}); err != nil {
 		return err
 	}
 	u.n += int64(len(data))
