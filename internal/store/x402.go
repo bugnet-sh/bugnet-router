@@ -81,7 +81,7 @@ func (s *Store) PutX402Service(ctx context.Context, row X402Service) error {
 	return nil
 }
 
-// DisableX402Service sets disabled and updated_at now(), keeping the counters
+// DisableX402Service sets disabled, clears the failure reason, moves updated_at, keeps counters
 func (s *Store) DisableX402Service(ctx context.Context, placement uuid.UUID, id string) error {
 	tag, err := s.q.Exec(ctx, `
 		update x402_services set state = $3, failure_reason = null, updated_at = now()

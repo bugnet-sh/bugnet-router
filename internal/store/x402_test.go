@@ -227,7 +227,9 @@ func TestDisableKeepsCounters(t *testing.T) {
 	p := newPlacement(t, s, "o-x402-disable")
 	a := indexedService(p.ID, "api.example.com", "/v1/")
 	b := indexedService(p.ID, "api.example.com", "/v2/")
-	for _, row := range []store.X402Service{a, b} {
+	other := newPlacement(t, s, "o-x402-disable-other")
+	c := indexedService(other.ID, "api.example.com", "/v3/")
+	for _, row := range []store.X402Service{a, b, c} {
 		if err := s.PutX402Service(ctx, row); err != nil {
 			t.Fatal(err)
 		}
@@ -252,6 +254,9 @@ func TestDisableKeepsCounters(t *testing.T) {
 			rows[1].ServiceID)
 	}
 	for _, r := range rows {
+		if r.PlacementID != p.ID || (r.ServiceID != a.ServiceID && r.ServiceID != b.ServiceID) {
+			t.Fatalf("services of %s hold %s of %s", p.ID, r.ServiceID, r.PlacementID)
+		}
 		if r.ServiceID != a.ServiceID {
 			if r.State != store.X402Applying {
 				t.Fatalf("the other service is %q, want applying", r.State)
@@ -269,15 +274,19 @@ func TestDisableKeepsCounters(t *testing.T) {
 			t.Fatalf("updated_at %v, want after %v", r.UpdatedAt, past)
 		}
 	}
-	other := newPlacement(t, s, "o-x402-disable-other")
-	for name, c := range map[string]struct {
+	if got := oneService(t, s, other.ID); got.ServiceID != c.ServiceID ||
+		got.State != store.X402Applying {
+		t.Fatalf("other placement's service %s is %q, want %s applying", got.ServiceID,
+			got.State, c.ServiceID)
+	}
+	for name, tc := range map[string]struct {
 		placement uuid.UUID
 		id        string
 	}{
 		"unknown id":      {p.ID, x402.ServiceID("POST", "api.example.com", "/v1/")},
 		"other placement": {other.ID, b.ServiceID},
 	} {
-		if err := s.DisableX402Service(ctx, c.placement, c.id); !errors.Is(err,
+		if err := s.DisableX402Service(ctx, tc.placement, tc.id); !errors.Is(err,
 			store.ErrNotFound) {
 			t.Errorf("%s: %v, want ErrNotFound", name, err)
 		}
