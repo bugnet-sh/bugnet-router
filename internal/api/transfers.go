@@ -586,10 +586,12 @@ func (st *stream) finish(ok bool) {
 		end = st.s.xfers.Done
 	}
 	log := st.s.d.Log.With("transfer", transfer.Short(st.rec.ID), "placement", st.p.ID)
-	if err := end(ctx, st.rec, st.lease, st.moved.Swap(0)); err != nil {
+	err := end(ctx, st.rec, st.lease, st.moved.Swap(0))
+	if err != nil {
 		log.Warn("api: end a transfer claim", "done", ok, "err", err)
 	}
-	if st.rec.StagedPath != "" {
+	// Staging is per URL, so a claim taken over leaves it to the new holder and the hourly sweep
+	if st.rec.StagedPath != "" && !errors.Is(err, transfer.ErrInUse) {
 		if err := transfer.Unstage(ctx, st.prov, *st.p.ProviderRef, st.rec.StagedPath); err != nil {
 			log.Warn("api: remove a staged transfer", "err", err)
 		}

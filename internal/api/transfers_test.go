@@ -902,3 +902,48 @@ func TestAStreamThatLostItsLeaseIsCut(t *testing.T) {
 	}
 	eq(t, e.field(t, taken.GetTransferId(), "lease"), taken.GetLease())
 }
+
+// waitParts waits until the host directory dir holds n temporary upload files
+func waitParts(t *testing.T, dir string, n int) {
+	t.Helper()
+	for start := time.Now(); time.Since(start) < 5*time.Second; time.Sleep(20 * time.Millisecond) {
+		entries, _ := os.ReadDir(dir)
+		parts := 0
+		for _, en := range entries {
+			if strings.HasSuffix(en.Name(), ".part") {
+				parts++
+			}
+		}
+		if parts == n {
+			return
+		}
+	}
+	t.Fatalf("%s never held %d upload files", dir, n)
+}
+
+func TestALostStreamLeavesTheNewClaimsStaging(t *testing.T) {
+	e, fake := stagedEnv(t)
+	h := e.stagedPlacement(t, fake)
+	m := e.mintOK(t, upload(h, "/opt/x", 4))
+	first := e.open(t, m, toSandbox)
+	old := e.begin(t, first, "ab")
+	staged := e.host(t, h, "/home/boxd/.bugnet/xfer/"+first.GetTransferId())
+	waitParts(t, staged, 1)
+	key := e.prefix + "xfer:" + first.GetTransferId()
+	if err := e.vk.Do(t.Context(), e.vk.B().Hset().Key(key).FieldValue().
+		FieldValue("lease_until", "0").Build()).Error(); err != nil {
+		t.Fatal(err)
+	}
+	next := e.begin(t, e.open(t, m, toSandbox), "da")
+	waitParts(t, staged, 2)
+	_ = old.Send(&routerv1.WriteTransferRequest{Data: []byte("xyz")})
+	_, err := old.CloseAndReceive()
+	mustCode(t, err, connect.CodeInvalidArgument, "SIZE_MISMATCH")
+	if err := next.Send(&routerv1.WriteTransferRequest{Data: []byte("ta")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := next.CloseAndReceive(); err != nil {
+		t.Fatalf("the claim that took the lapsed lease: %v", err)
+	}
+	eq(t, e.content(t, h, "/opt/x"), "data")
+}
