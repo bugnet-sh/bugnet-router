@@ -635,7 +635,7 @@ func (st *stream) read(
 		err := st.staging(func() error {
 			copied, err := transfer.StageOut(st.ctx, st.prov, ref, caps, target(st.rec),
 				st.rec.StagedPath)
-			if err == nil && etag(copied) != st.rec.ETag {
+			if err == nil && copied.Size != st.rec.Size {
 				err = transfer.ErrFileChanged
 			}
 			return err
@@ -650,7 +650,8 @@ func (st *stream) read(
 		return err
 	}
 	defer func() { _ = r.Close() }()
-	if st.rec.StagedPath == "" && etag(r.Info()) != st.rec.ETag {
+	// A reader's own stat may differ in precision, so the time is checked by Stat at either end
+	if r.Info().Size != st.rec.Size {
 		return transfer.ErrFileChanged
 	}
 	bufs := [2][]byte{make([]byte, xferChunk), make([]byte, xferChunk)}

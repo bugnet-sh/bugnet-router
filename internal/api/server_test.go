@@ -110,8 +110,7 @@ var small = provider.Size{
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// faulty fails reads and writes of /fault/<code> with that provider error code and can hold
-// readiness, and reads of /fault-connect/<code> with one wrapping a backend's Connect error
+// faulty fails /fault/<code> reads and writes and /fault-connect/<code> reads, and holds readiness
 type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
@@ -1779,6 +1778,15 @@ func (e *env) sandboxOps(t *testing.T) map[string]func(h string) error {
 		"ListFiles": func(h string) error {
 			_, err := e.client.ListFiles(ctx, connect.NewRequest(
 				&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
+			return err
+		},
+		"CreateTransfer": func(h string) error {
+			size := uint64(1)
+			_, err := e.client.CreateTransfer(ctx, connect.NewRequest(
+				&routerv1.CreateTransferRequest{
+					Handle: h, Direction: routerv1.TransferDirection_TRANSFER_DIRECTION_UPLOAD,
+					Path: "/root/ops-up.txt", SizeBytes: &size,
+				}))
 			return err
 		},
 	}
