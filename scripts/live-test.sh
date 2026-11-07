@@ -9,9 +9,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 timeout=20m
+duration='^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'
 if [ "${1:-}" = "--timeout" ]; then
-	if [ -z "${2:-}" ]; then
-		echo "live-test: --timeout needs a duration such as 90m" >&2
+	if [[ ! ${2:-} =~ $duration ]]; then
+		echo "live-test: --timeout needs a Go duration such as 90m or 1h30m" >&2
 		exit 2
 	fi
 	timeout=$2
