@@ -79,8 +79,13 @@ go test ./test/e2e/... -v
 ```
 
 `test/live` holds the live rows, which skip unless `scripts/live-test.sh` names providers. Its
-own tests run without any provider: the fronted mode's refusals, and the whole stack started on
-the local provider, which builds `bugnet-edge` from `../bugnet-edges`.
+own tests run without any provider and check the fronted mode's refusals. The test that builds
+and starts the whole stack on the local provider runs only with `BUGNET_TEST_STACK=1`, since it
+builds five binaries, `bugnet-edge` among them from `../bugnet-edges`:
+
+```sh
+BUGNET_TEST_STACK=1 go test ./test/live/ -run TestStackStartsOnTheLocalProvider -v
+```
 
 `make test`, `make lint` and `make build` wrap the usual commands.
 

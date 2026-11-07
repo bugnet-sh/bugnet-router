@@ -218,6 +218,15 @@ var built struct {
 	err  error
 }
 
+// TestMain removes the binaries a stack built once every test ran
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if built.dir != "" {
+		_ = os.RemoveAll(built.dir)
+	}
+	os.Exit(code)
+}
+
 // binaries builds the router's binaries, bugnet-edge and bugnet-run once per test binary
 func binaries(t *testing.T) string {
 	t.Helper()
@@ -766,6 +775,9 @@ func TestStackFrontedRefusals(t *testing.T) {
 }
 
 func TestStackStartsOnTheLocalProvider(t *testing.T) {
+	if os.Getenv("BUGNET_TEST_STACK") != "1" {
+		t.Skip("set BUGNET_TEST_STACK=1 to build and start the whole stack")
+	}
 	f, err := loadFront(filepath.Join(repo(t), "config", "dev-front.toml"))
 	if err != nil {
 		t.Fatal(err)
