@@ -600,9 +600,9 @@ Each answer changes a value in `site.toml`, never a script.
 Running it again changes nothing. It:
 
 1. checks its bundle, and that admin SSH listens on `admin_ssh_port`, before it changes anything;
-2. installs `haproxy` and `ufw`, and refuses when another process holds port 443;
+2. installs `haproxy` and `ufw`, and refuses when another process holds port 443 or 2200;
 3. installs the maps and `haproxy.cfg`, runs `haproxy -c` and puts the old files back when that
-   fails, then reloads HAProxy, which keeps open connections;
+   fails, then reloads HAProxy, which keeps open connections, and waits until it holds both ports;
 4. makes the `tunnel` user and its sshd block, checked with `sshd -t` (`deploy/vps/tunnel.md`);
 5. installs `bugnet-certs` in `/opt/bugnet/certs/<sha256 prefix>/` with `current` pointing at it,
    its two settings files, its unit and its timer, which runs it twice a day. It makes
