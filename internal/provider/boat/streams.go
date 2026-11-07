@@ -113,7 +113,7 @@ func (p *Provider) StatFile(
 // statInfo reads GET /files/info into an entry that is not yet known to be regular
 func (p *Provider) statInfo(ctx context.Context, id, name string) (provider.FileEntry, error) {
 	params := &api.GetFileInfoParams{Path: name}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.GetFileInfo(ctx, id, params)
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func (p *Provider) kind(ctx context.Context, ref provider.Ref, name string) (str
 // signedURL asks for a URL the sandbox serves for one path, which must never reach a log
 func (p *Provider) signedURL(ctx context.Context, id, name string, upload bool) (string, error) {
 	req := api.FileUrlRequest{Path: name, TtlSeconds: new(streamTTLSeconds)}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		if upload {
 			return p.api.CreateUploadUrl(ctx, id, req)
 		}
@@ -236,6 +236,10 @@ func fromOffset(resp *http.Response, offset, size int64) error {
 		}
 		return nil
 	case http.StatusOK:
+		if resp.ContentLength != size {
+			return internal(fmt.Errorf("boat sent %d bytes of a file of %d", resp.ContentLength,
+				size))
+		}
 		// Boat's signed URLs need not take Range, so the offset is skipped here
 		_, err := io.CopyN(io.Discard, resp.Body, offset)
 		if errors.Is(err, io.EOF) {
@@ -358,14 +362,14 @@ func (u *upload) Finish(ctx context.Context, _ []byte) (provider.FileEntry, erro
 		return provider.FileEntry{}, u.err
 	}
 	perm := api.FilePermissionsRequest{Path: u.temp, Mode: fmt.Sprintf("%03o", u.mode)}
-	_, err := u.p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	_, err := u.p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return u.p.api.SetFilePermissions(ctx, u.id, perm)
 	})
 	if err != nil {
 		return provider.FileEntry{}, err
 	}
 	move := api.FileMoveRequest{Source: u.temp, Destination: u.target, Overwrite: new(true)}
-	_, err = u.p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	_, err = u.p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return u.p.api.MoveFile(ctx, u.id, move)
 	})
 	if err != nil {
@@ -389,7 +393,7 @@ func (u *upload) Discard(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	params := &api.DeleteFileParams{Path: u.temp}
-	_, err := u.p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	_, err := u.p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return u.p.api.DeleteFile(ctx, u.id, params)
 	})
 	if err == nil || isCode(err, provider.CodeNotFound) {

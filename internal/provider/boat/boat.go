@@ -585,6 +585,22 @@ func canonical(code string) string {
 	return code
 }
 
+// answer is one error envelope of Boat's API as the adapter read it
+type answer struct {
+	status  int
+	code    string
+	message string
+	request string
+}
+
+func (a *answer) Error() string {
+	msg := a.message
+	if a.request != "" {
+		msg += " (request " + a.request + ")"
+	}
+	return fmt.Sprintf("boat answered %d %s: %s", a.status, cmp.Or(a.code, "error"), msg)
+}
+
 // apiError classifies an error envelope by its code, then its status
 func apiError(status int, h http.Header, raw []byte, eff effect) error {
 	var top map[string]any
@@ -592,15 +608,11 @@ func apiError(status int, h http.Header, raw []byte, eff effect) error {
 	inner, _ := top["error"].(map[string]any)
 	details, _ := inner["details"].(map[string]any)
 	code := canonical(cmp.Or(text(top, "code"), text(inner, "code")))
-	msg := cmp.Or(text(top, "message"), text(inner, "message"), strings.TrimSpace(string(raw)),
-		http.StatusText(status))
-	if id := text(top, "requestId"); id != "" {
-		msg += " (request " + id + ")"
-	}
-	e := &provider.Error{
-		Code: provider.CodeInternal,
-		Err:  fmt.Errorf("boat answered %d %s: %s", status, cmp.Or(code, "error"), msg),
-	}
+	e := &provider.Error{Code: provider.CodeInternal, Err: &answer{
+		status: status, code: code, request: text(top, "requestId"),
+		message: cmp.Or(text(top, "message"), text(inner, "message"),
+			strings.TrimSpace(string(raw)), http.StatusText(status)),
+	}}
 	client := status >= 400 && status < 500
 	switch {
 	case code == "no_ready_machine" || code == "out_of_capacity":

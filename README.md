@@ -613,7 +613,7 @@ so a full disk there fails as another error.
 | E2B | One ranged `GET /files` | `POST /files` to the temp file, then `chmod` and `Move` |
 | boxd | `FsRead` with the length, its byte count checked | `FsWrite` in 1 MiB chunks to the temp file, then `FsRename` |
 | Koyeb | Ranged `GET /files`, reissued with `If-Range` when cut, 3 empty tries in a row fail | Parts of `transfers.koyeb_part` in memory, one `PUT /files` or an upload session completed on `Commit` |
-| Boat | A ranged `GET` of a signed URL, bytes skipped on a 200 | A `PUT` of the temp file to a signed URL, then `permissions` and `move` |
+| Boat | A ranged `GET` of a signed URL, bytes skipped on a 200 of the stat's length | A `PUT` of the temp file to a signed URL, then `permissions` and `move` |
 
 Transfer clients ask for `identity` encoding over HTTP/1.1, so lengths stay exact. boxd streams
 use a second gRPC connection, so a long stream never shares TCP with `Exec`. Each Koyeb part is
@@ -623,4 +623,6 @@ that doubles each time. All part buffers of one process stay under
 final symlink, so `StatFile` reads the directory's listing instead. Boat's file API reaches only
 `/home/user`, `/tmp` and the paths under them, so any other path is refused before a call.
 `StatFile` describes the two directories themselves, which a writer refuses. Boat's file info has
-no type, so `StatFile` asks the shell whether a path is a regular file.
+no type, so `StatFile` asks the shell whether a path is a regular file. Boat answers a file call
+on a missing path with a 400 `sandbox_direct_failed` whose message starts
+`No such file or directory`, which the adapter reads as `not_found`.

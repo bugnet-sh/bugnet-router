@@ -169,6 +169,10 @@ type fakeBoat struct {
 	shortDownload bool
 	// holdUploads keeps every upload from reading its body until it is closed
 	holdUploads chan struct{}
+	// wholeUploads writes a signed PUT's path only once its whole body arrived, as live Boat did
+	wholeUploads bool
+	// downloadEncoding is the Content-Encoding every signed download claims
+	downloadEncoding string
 	// expired answers every signed URL as one past its expiry, under mu
 	expired bool
 	// shiftRange moves the start of every ranged download this many bytes past the one asked for
@@ -1037,10 +1041,17 @@ func (f *fakeBoat) resolve(w http.ResponseWriter, name string) (string, bool) {
 	return "", false
 }
 
+// fileError answers a failed file call, a missing path as Boat's sandbox agent does
 func (f *fakeBoat) fileError(w http.ResponseWriter, err error) {
+	var pe *fs.PathError
+	var le *os.LinkError
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		f.fail(w, http.StatusNotFound, "not_found", "No such file or directory", nil, nil)
+	case errors.Is(err, fs.ErrNotExist) && errors.As(err, &pe):
+		f.fail(w, http.StatusBadRequest, "sandbox_direct_failed",
+			"No such file or directory: "+pe.Path, nil, nil)
+	case errors.Is(err, fs.ErrNotExist) && errors.As(err, &le):
+		f.fail(w, http.StatusBadRequest, "sandbox_direct_failed",
+			"No such file or directory: "+le.Old, nil, nil)
 	case errors.Is(err, syscall.EISDIR), errors.Is(err, syscall.ENOTDIR):
 		f.fail(w, http.StatusBadRequest, "invalid_path", err.Error(), nil, nil)
 	default:
@@ -1394,11 +1405,11 @@ func (f *fakeBoat) signed(
 	return grant, true
 }
 
-// upload streams the body into the granted path at once and keeps a cut upload, the worst case
+// upload streams the body into the granted path at once and keeps a cut upload, unless whole
 func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.uploads = append(f.uploads, r.Header.Clone())
-	hold := f.holdUploads
+	hold, whole := f.holdUploads, f.wholeUploads
 	f.mu.Unlock()
 	grant, ok := f.signed(w, r, http.MethodPut)
 	if !ok {
@@ -1407,6 +1418,18 @@ func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
 	f.track(grant.path)
 	if err := os.MkdirAll(filepath.Dir(grant.path), 0o755); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if whole {
+		data, err := io.ReadAll(r.Body)
+		if err != nil || int64(len(data)) != r.ContentLength {
+			return
+		}
+		if err := os.WriteFile(grant.path, data, 0o644); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "size": len(data)})
 		return
 	}
 	file, err := os.OpenFile(grant.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -1429,7 +1452,7 @@ func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
 func (f *fakeBoat) download(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.downloads = append(f.downloads, r.Header.Clone())
-	ignore, short, shift := f.ignoreRange, f.shortDownload, f.shiftRange
+	ignore, short, shift, enc := f.ignoreRange, f.shortDownload, f.shiftRange, f.downloadEncoding
 	f.mu.Unlock()
 	grant, ok := f.signed(w, r, http.MethodGet)
 	if !ok {
@@ -1454,6 +1477,9 @@ func (f *fakeBoat) download(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Range", "bytes="+strconv.FormatInt(start+shift, 10)+"-"+to)
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	if enc != "" {
+		w.Header().Set("Content-Encoding", enc)
+	}
 	if short {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 		_, _ = io.CopyN(w, file, info.Size()/2)

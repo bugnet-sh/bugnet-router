@@ -26,12 +26,33 @@ const (
 	routeUploadURL   = "POST /api/v1/sandboxes/{id}/files/upload-url"
 	routePermissions = "POST /api/v1/sandboxes/{id}/files/permissions"
 	routeMove        = "POST /api/v1/sandboxes/{id}/files/move"
+	routeList        = "GET /api/v1/sandboxes/{id}/files/list"
+	routeFolder      = "POST /api/v1/sandboxes/{id}/files/folder"
+	routeDeleteFile  = "DELETE /api/v1/sandboxes/{id}/files"
 )
 
+// missingAnswer is how Boat's sandbox answered a file call on a path that does not exist
+var missingAnswer = fault{
+	status: http.StatusBadRequest, code: "sandbox_direct_failed",
+	message: "No such file or directory: /home/user/bugnet-streams/missing", times: 1,
+}
+
 func TestBoatStreamsContract(t *testing.T) {
-	f := newFake(t)
-	p := f.provider(t, fakeKey)
-	contract.Streams(t, p, readySandbox(t, f), fakeDir(t))
+	for _, c := range []struct {
+		name  string
+		whole bool
+	}{
+		{"CutUploadsKept", false},
+		{"WholeUploadsOnly", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			f.wholeUploads = c.whole
+			p := f.provider(t, fakeKey)
+			contract.Streams(t, p, readySandbox(t, f), fakeDir(t))
+		})
+	}
 }
 
 // streamUp streams data into name through OpenWriter and commits it
@@ -439,4 +460,168 @@ func TestBoatStreamsAskForIdentity(t *testing.T) {
 	if _, err := os.Stat(name); errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("the target is gone")
 	}
+}
+
+// fileOp is one adapter call on the file f inside dir, the sandbox's only file at the start
+type fileOp func(t *testing.T, p *Provider, ref provider.Ref, dir string) error
+
+// commitThree writes three bytes over f through OpenWriter and commits them
+func commitThree(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+	w, err := p.OpenWriter(t.Context(), ref, dir+"/f", provider.WriteSpec{Size: 3, Mode: 0o644})
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("xyz")); err != nil {
+		return err
+	}
+	_, err = w.Commit(t.Context(), nil)
+	return err
+}
+
+func TestBoatMissingPathOnEveryFileRoute(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		route string
+		op    fileOp
+	}{
+		{"Stat", routeInfo, func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+			_, err := p.StatFile(t.Context(), ref, dir+"/f")
+			return err
+		}},
+		{"Read", routeRead, func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+			_, _, err := p.ReadFile(t.Context(), ref, dir+"/f", 0, 3)
+			return err
+		}},
+		{"List", routeList, func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+			_, err := listAll(t.Context(), p, ref, dir, 1)
+			return err
+		}},
+		{"Write", routeWrite, func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+			return p.WriteFile(t.Context(), ref, dir+"/f", []byte("xyz"), 0o644)
+		}},
+		{"Folder", routeFolder,
+			func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+				return p.WriteFile(t.Context(), ref, dir+"/sub/f", []byte("xyz"), 0o644)
+			}},
+		{"DownloadURL", routeDownloadURL,
+			func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+				r, err := p.OpenReader(t.Context(), ref, dir+"/f", 0)
+				if err == nil {
+					_ = r.Close()
+				}
+				return err
+			}},
+		{"UploadURL", routeUploadURL, commitThree},
+		{"Permissions", routePermissions, commitThree},
+		{"Move", routeMove, commitThree},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			ref := readySandbox(t, f)
+			dir := fakeDir(t)
+			if err := os.WriteFile(dir+"/f", []byte("abc"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.inject(c.route, missingAnswer)
+			err := c.op(t, p, ref, dir)
+			e, ok := provider.AsError(err)
+			if !ok || e.Code != provider.CodeNotFound || e.CanFailOver {
+				t.Fatalf("a missing path answered on %s gave %v, want not_found", c.route, err)
+			}
+			eq(t, f.callCount(c.route), 1)
+			got, _ := os.ReadFile(dir + "/f")
+			eq(t, string(got), "abc")
+		})
+	}
+}
+
+func TestBoatAbortOfATempNeverMadeIsNil(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		prepare func(f *fakeBoat)
+		data    string
+	}{
+		{"Refused", (*fakeBoat).expireGrants, ""},
+		{"Unfinished", func(f *fakeBoat) { f.wholeUploads = true }, "01234"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			c.prepare(f)
+			p := f.provider(t, fakeKey)
+			ref := readySandbox(t, f)
+			dir := fakeDir(t)
+			name := dir + "/f"
+			if err := os.WriteFile(name, []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			w, err := p.OpenWriter(t.Context(), ref, name,
+				provider.WriteSpec{Size: 10, Mode: 0o644})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.data != "" {
+				if _, err := w.Write([]byte(c.data)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitFor(t, func() bool { return f.uploadCount() == 1 })
+			eq(t, w.Abort(), nil)
+			eq(t, f.callCount(routeDeleteFile), 1)
+			got, _ := os.ReadFile(name)
+			eq(t, string(got), "old")
+			left, _ := os.ReadDir(dir)
+			eq(t, len(left), 1)
+		})
+	}
+}
+
+func TestBoatReaderRefusesAnEncoding(t *testing.T) {
+	f := newFake(t)
+	f.downloadEncoding = "gzip"
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	name := fakeDir(t) + "/f"
+	if err := os.WriteFile(name, bytes.Repeat([]byte("x"), 64<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err == nil {
+		_ = r.Close()
+		t.Fatal("a download in gzip encoding opened")
+	}
+	eq(t, isCode(err, provider.CodeInternal), true)
+	eq(t, len(f.downloadHeaders()), 1)
+}
+
+func TestBoatReaderChecksTheLengthOfA200(t *testing.T) {
+	f := newFake(t)
+	f.ignoreRange = true
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	name := fakeDir(t) + "/f"
+	if err := os.WriteFile(name, bytes.Repeat([]byte("x"), 64<<10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// the whole file Boat sends is longer than the one its info described
+	f.growAfterInfo(name, []byte("more"))
+	r, err := p.OpenReader(t.Context(), ref, name, 10)
+	if err == nil {
+		got, _ := io.ReadAll(r)
+		_ = r.Close()
+		t.Fatalf("a 200 of another length than the stat's opened and read %d bytes", len(got))
+	}
+	eq(t, isCode(err, provider.CodeInternal), true)
+	eq(t, len(f.downloadHeaders()), 1)
+}
+
+func TestBoatSignedURLAnswersReadAMissingPath(t *testing.T) {
+	missing := []byte(`{"ok":false,"status":400,"code":"sandbox_direct_failed",` +
+		`"message":"No such file or directory: /home/user/x"}`)
+	err := signedError(http.StatusBadRequest, http.Header{}, missing)
+	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeNotFound || e.CanFailOver {
+		t.Errorf("a signed URL's missing path answer gave %v, want not_found", err)
+	}
+	err = signedError(http.StatusForbidden, http.Header{}, []byte("invalid or expired URL"))
+	eq(t, isCode(err, provider.CodeInvalid), true)
 }

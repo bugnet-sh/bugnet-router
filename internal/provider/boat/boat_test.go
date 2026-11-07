@@ -322,6 +322,42 @@ func TestBoatErrorMapping(t *testing.T) {
 			ft:   fault{status: 400, code: "file_not_found", message: "No such file"},
 			code: provider.CodeNotFound,
 		},
+		{
+			name: "missing path answered by the sandbox", route: routeInfo, op: readFile,
+			ft: fault{status: 400, code: "sandbox_direct_failed",
+				message: "No such file or directory: /home/user/x"},
+			code: provider.CodeNotFound,
+		},
+		{
+			name: "missing path with the boat code", route: routeInfo, op: readFile,
+			ft: fault{status: 400, code: "boat_direct_failed",
+				message: "No such file or directory: /home/user/x"},
+			code: provider.CodeNotFound,
+		},
+		{
+			name: "another sandbox file failure", route: routeInfo, op: readFile,
+			ft: fault{status: 400, code: "sandbox_direct_failed",
+				message: "Permission denied: /home/user/x"},
+			code: provider.CodeInvalid,
+		},
+		{
+			name: "missing path under another code", route: routeInfo, op: readFile,
+			ft: fault{status: 400, code: "invalid_path",
+				message: "No such file or directory: /home/user/x"},
+			code: provider.CodeInvalid,
+		},
+		{
+			name: "missing path past a bad gateway", route: routeInfo, op: readFile,
+			ft: fault{status: 502, code: "sandbox_direct_failed",
+				message: "No such file or directory: /home/user/x"},
+			code: provider.CodeInternal,
+		},
+		{
+			name: "missing path on command start", route: routeCommand, op: execTrue,
+			ft: fault{status: 400, code: "sandbox_direct_failed",
+				message: "No such file or directory: /home/user/x"},
+			code: provider.CodeInvalid,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -104,7 +104,7 @@ type uploadReply struct {
 
 func (p *Provider) info(ctx context.Context, id, name string) (fileInfo, error) {
 	params := &api.GetFileInfoParams{Path: name}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.GetFileInfo(ctx, id, params)
 	})
 	if err != nil {
@@ -119,7 +119,7 @@ func (p *Provider) info(ctx context.Context, id, name string) (fileInfo, error) 
 
 func (p *Provider) readWhole(ctx context.Context, id, name string) ([]byte, error) {
 	params := &api.ReadFileParams{Path: name, Encoding: new(api.ReadFileParamsEncodingBase64)}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.ReadFile(ctx, id, params)
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func (p *Provider) WriteFile(
 	}
 	if dir := path.Dir(name); !standing[dir] {
 		folder := api.FileFolderRequest{Path: dir}
-		_, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+		_, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 			return p.api.CreateFolder(ctx, id, folder)
 		})
 		if err != nil {
@@ -198,7 +198,7 @@ func (p *Provider) WriteFile(
 		return invalid(err)
 	}
 	if len(body) <= fileCap {
-		_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+		_, err = p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 			return p.api.WriteFileWithBody(ctx, id, "application/json", bytes.NewReader(body))
 		})
 	} else {
@@ -208,7 +208,7 @@ func (p *Provider) WriteFile(
 		return err
 	}
 	perm := api.FilePermissionsRequest{Path: name, Mode: fmt.Sprintf("%03o", mode.Perm())}
-	_, err = p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	_, err = p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.SetFilePermissions(ctx, id, perm)
 	})
 	return err
@@ -217,7 +217,7 @@ func (p *Provider) WriteFile(
 // upload PUTs data to a URL the sandbox serves itself, which has no size cap and takes no key
 func (p *Provider) upload(ctx context.Context, id, name string, data []byte) error {
 	req := api.FileUrlRequest{Path: name, TtlSeconds: new(uploadTTLSeconds)}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.CreateUploadUrl(ctx, id, req)
 	})
 	if err != nil {
@@ -244,9 +244,31 @@ func (p *Provider) upload(ctx context.Context, id, name string, data []byte) err
 	return nil
 }
 
+// missingPrefix opens the message Boat's sandbox gives for a path that does not exist
+const missingPrefix = "No such file or directory"
+
+// fileCall sends one file call, the sandbox's answer for a missing path read as not_found
+func (p *Provider) fileCall(
+	ctx context.Context, call func(context.Context) (*http.Response, error),
+) ([]byte, error) {
+	raw, err := p.send(ctx, noEffect, call)
+	return raw, fileError(err)
+}
+
+// fileError reads a 400 sandbox_direct_failed for a path that does not exist as not_found
+func fileError(err error) error {
+	var a *answer
+	e, ok := provider.AsError(err)
+	if ok && errors.As(err, &a) && a.status == http.StatusBadRequest &&
+		a.code == "sandbox_direct_failed" && strings.HasPrefix(a.message, missingPrefix) {
+		e.Code, e.CanFailOver = provider.CodeNotFound, false
+	}
+	return err
+}
+
 // signedError classifies a signed URL's error answer, a refusal blaming the URL, never the key
 func signedError(status int, h http.Header, raw []byte) error {
-	err := apiError(status, h, raw, noEffect)
+	err := fileError(apiError(status, h, raw, noEffect))
 	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeAuth {
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
 	}
@@ -308,7 +330,7 @@ func (p *Provider) list(
 	ctx context.Context, id, dir string, into *provider.Listing,
 ) ([]provider.FileEntry, error) {
 	params := &api.ListFilesParams{Path: new(dir)}
-	raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+	raw, err := p.fileCall(ctx, func(ctx context.Context) (*http.Response, error) {
 		return p.api.ListFiles(ctx, id, params)
 	})
 	if err != nil {
