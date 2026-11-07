@@ -789,6 +789,17 @@ func ranWith(fake *transfertest.Sandbox, argv ...string) bool {
 	return false
 }
 
+// stats counts the bugnet-run stat calls run under sudo
+func stats(fake *transfertest.Sandbox) int {
+	n := 0
+	for _, r := range fake.Ran() {
+		if len(r) > 3 && r[2] == transfer.RunnerPath && r[3] == "stat" {
+			n++
+		}
+	}
+	return n
+}
+
 func TestStagedUploadIsPlaced(t *testing.T) {
 	e, fake := stagedEnv(t)
 	h := e.stagedPlacement(t, fake)
@@ -823,13 +834,7 @@ func TestStagedDownloadUsesStageOut(t *testing.T) {
 	staged := "/home/boxd/.bugnet/xfer/" + o.GetTransferId()
 	eq(t, ranWith(fake, transfer.RunnerPath, "stage-out", "--from", "/opt/x", "--to",
 		staged+"/x", "--owner", "boxd"), true)
-	stats := 0
-	for _, r := range fake.Ran() {
-		if len(r) > 3 && r[2] == transfer.RunnerPath && r[3] == "stat" {
-			stats++
-		}
-	}
-	eq(t, stats >= 3, true)
+	eq(t, stats(fake) >= 3, true)
 	if _, err := os.Stat(e.host(t, h, staged)); !os.IsNotExist(err) {
 		t.Fatalf("the staged copy outlived the download: %v", err)
 	}
@@ -968,4 +973,25 @@ func TestARangeShortOfTheEndLeavesTheURLOpen(t *testing.T) {
 	eq(t, string(joined(msgs)), "6789")
 	_, err = e.openWith(t, tokenOf(t, tail), fromSandbox, false)
 	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+}
+
+func TestOpenTransferChecksTheClaimBeforeTheFile(t *testing.T) {
+	e, fake := stagedEnv(t)
+	h := e.stagedPlacement(t, fake)
+	e.put(t, h, "/opt/x", "secret")
+	used := e.mintOK(t, download(h, "/opt/x"))
+	if _, err := e.read(timeout(t), t, e.open(t, used, fromSandbox), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	held := e.mintOK(t, download(h, "/opt/x"))
+	e.open(t, held, fromSandbox)
+	e.put(t, h, "/opt/x", "changed")
+	before := stats(fake)
+	_, err := e.openWith(t, tokenOf(t, used), fromSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+	_, err = e.openWith(t, tokenOf(t, held), fromSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "IN_USE")
+	_, err = e.openWith(t, tokenOf(t, used), fromSandbox, true)
+	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+	eq(t, stats(fake), before)
 }

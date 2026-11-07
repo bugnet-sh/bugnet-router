@@ -78,6 +78,8 @@ type Record struct {
 	State     State
 	Claims    int
 	BytesSent int64
+	// LeaseUntil is when an active claim lapses unless renewed
+	LeaseUntil time.Time
 	// StagedPath is where the exec user reads or writes the file, empty when not staged
 	StagedPath string
 }
@@ -247,6 +249,22 @@ func (s *Store) Claim(
 	return r, lease, err
 }
 
+// Check answers the refusal a claim of r would meet now, leaving the placement's cap to Claim
+func (s *Store) Check(r Record, now time.Time) error {
+	switch {
+	case r.State == Done:
+		return ErrUsed
+	case r.State == Active && r.LeaseUntil.After(now):
+		return ErrInUse
+	case !now.Before(r.ExpiresAt) &&
+		(r.Claims == 0 || r.Direction == routerv1.TransferDirection_TRANSFER_DIRECTION_UPLOAD):
+		return ErrExpired
+	case r.Claims >= s.l.MaxClaims || r.BytesSent >= 2*r.Size+ByteSlack:
+		return ErrClaimsSpent
+	}
+	return nil
+}
+
 // Renew extends the lease and counts sent more bytes, ErrInUse once the lease is lost
 func (s *Store) Renew(
 	ctx context.Context, r Record, lease string, sent int64, now time.Time,
@@ -340,6 +358,9 @@ func parse(id string, m map[string]string) (Record, error) {
 	r.ExpiresAt = time.UnixMilli(num("expires_at")).UTC()
 	r.Claims = int(num("claims"))
 	r.BytesSent = num("bytes_sent")
+	if n := num("lease_until"); n != 0 {
+		r.LeaseUntil = time.UnixMilli(n).UTC()
+	}
 	if err := errors.Join(errs...); err != nil || r.Direction == 0 {
 		return Record{}, fmt.Errorf("transfer: record %s does not parse: %w", Short(id), err)
 	}

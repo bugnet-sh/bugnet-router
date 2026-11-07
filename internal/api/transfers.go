@@ -307,20 +307,24 @@ func (e *EdgeServer) OpenTransfer(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	check := s.xfers.Check
+	if m.GetProbe() {
+		check = probe
+	}
+	// A request that cannot claim answers before the provider stats the file again
+	if err := check(rec, time.Now()); err != nil {
+		return nil, s.status(err)
+	}
 	if rec.Direction == download {
 		if err := s.restat(ctx, p, prov, rec); err != nil {
 			return nil, s.fileStatus(err)
 		}
 	}
-	lease := ""
-	now := time.Now()
-	if m.GetProbe() {
-		err = probe(rec, now)
-	} else {
-		rec, lease, err = s.xfers.Claim(ctx, sum[:], m.GetEdgeId(), now)
-	}
-	if err != nil {
-		return nil, s.status(err)
+	lease, now := "", time.Now()
+	if !m.GetProbe() {
+		if rec, lease, err = s.xfers.Claim(ctx, sum[:], m.GetEdgeId(), now); err != nil {
+			return nil, s.status(err)
+		}
 	}
 	s.d.Log.Info("api: transfer opened", "transfer", transfer.Short(rec.ID), "placement", p.ID,
 		"probe", m.GetProbe(), "claims", rec.Claims)

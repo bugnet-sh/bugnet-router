@@ -259,3 +259,29 @@ func TestAResumeNearTheRecordsEndKeepsItsRecord(t *testing.T) {
 		t.Fatalf("a renewal past the record's first end: %v", err)
 	}
 }
+
+func TestCheckAnswersAsAClaimWould(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	r := record(uuid.New(), 0, now)
+	put(t, s, r, now)
+	got, err := s.Get(t.Context(), r.ID)
+	eq(t, err, nil)
+	eq(t, s.Check(got, now), nil)
+	is(t, s.Check(got, now.Add(10*time.Minute)), transfer.ErrExpired)
+	claimed, lease, err := claim(t, s, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Get(t.Context(), r.ID)
+	eq(t, got.LeaseUntil.Equal(now.Add(transfer.LeaseLength).Truncate(time.Millisecond)), true)
+	is(t, s.Check(got, now.Add(time.Second)), transfer.ErrInUse)
+	eq(t, s.Check(got, now.Add(transfer.LeaseLength+time.Second)), nil)
+	if err := s.Release(t.Context(), claimed, lease, 2*10+transfer.ByteSlack); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Get(t.Context(), r.ID)
+	is(t, s.Check(got, now), transfer.ErrClaimsSpent)
+	got.State = transfer.Done
+	is(t, s.Check(got, now), transfer.ErrUsed)
+}
