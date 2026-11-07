@@ -621,9 +621,9 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   `transfers.idle_timeout` ends the stream as stalled, which frees the URL and its active slot at
   once for a resume or a retry. A stream also ends at `transfers.max_duration`, at the
   placement's deadline, and at once when the placement ends or spends its edge budget, whichever
-  replica served it, from one reader of the edge events per process. Every 10 s a stream also
-  reads its placement and the edge spent mark again, so an event lost on the way still ends it.
-  An extension moves its end.
+  replica served it, from one reader of the edge events per process. A stream reads its placement
+  and the edge spent mark again once it watches the events and every 10 s after. So an event sent
+  before it watched, or lost on the way, still ends it. An extension moves its end.
 - **Logs** name a transfer by the first 8 hex characters of its token's SHA-256, never its path.
 
 ### Orders for Payments

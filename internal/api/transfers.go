@@ -460,8 +460,11 @@ func (s *Server) openStream(
 	st.w, _ = ctx.Value(writerKey{}).(http.ResponseWriter)
 	st.deadline.Store(p.Deadline.UnixNano())
 	st.last.Store(time.Now().UnixNano())
+	beforeWatch()
 	events, unhub := s.hub.watch(p.ID.String())
 	wake, unwake := s.notes.watch(saga.Channel(s.d.Prefix, p.ID))
+	// An end or a spent budget whose event went out before these watches still cuts the stream
+	st.reread()
 	go func() {
 		defer close(st.watched)
 		defer unhub()
@@ -470,6 +473,9 @@ func (s *Server) openStream(
 	}()
 	return st, nil
 }
+
+// beforeWatch runs between a stream reading its placement and watching its events, for tests
+var beforeWatch = func() {}
 
 // watch cuts the stream on its placement's end, a spent budget, idleness or the hard stop
 func (st *stream) watch(events <-chan *routerv1.EdgeEvent, wake <-chan struct{}) {

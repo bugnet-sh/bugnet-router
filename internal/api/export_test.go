@@ -3,6 +3,8 @@ package api
 import (
 	"testing"
 	"time"
+
+	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 )
 
 // SetBeforeReport runs f between each report reading its budgets and counting its bytes
@@ -24,4 +26,16 @@ func SetTransferCheck(t testing.TB, d time.Duration) {
 	old := xferCheck
 	xferCheck = d
 	t.Cleanup(func() { xferCheck = old })
+}
+
+// SetBeforeWatch runs f between each transfer stream reading its placement and watching its events
+func SetBeforeWatch(t testing.TB, f func()) {
+	old := beforeWatch
+	beforeWatch = f
+	t.Cleanup(func() { beforeWatch = old })
+}
+
+// WatchTransferEvents returns the edge events the transfer hub hands the streams of placement
+func WatchTransferEvents(s *Server, placement string) (<-chan *routerv1.EdgeEvent, func()) {
+	return s.hub.watch(placement)
 }

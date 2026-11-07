@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -646,7 +647,14 @@ func (e *env) upstream(
 	t *testing.T, h, p string, size uint64, first string,
 ) *connect.ClientStreamForClient[routerv1.WriteTransferRequest, routerv1.WriteTransferResponse] {
 	t.Helper()
-	o := e.open(t, e.mintOK(t, upload(h, p, size)), toSandbox)
+	return e.upstreamOf(t, e.open(t, e.mintOK(t, upload(h, p, size)), toSandbox), first)
+}
+
+// upstreamOf starts the stream of a claimed upload with its first bytes, leaving it open
+func (e *env) upstreamOf(
+	t *testing.T, o *routerv1.OpenTransferResponse, first string,
+) *connect.ClientStreamForClient[routerv1.WriteTransferRequest, routerv1.WriteTransferResponse] {
+	t.Helper()
 	stream := e.edge(t).WriteTransfer(timeout(t))
 	if err := stream.Send(&routerv1.WriteTransferRequest{
 		TransferId: o.GetTransferId(), Lease: o.GetLease(), Data: []byte(first),
@@ -905,6 +913,72 @@ func TestStopAndBudgetCutATransferStream(t *testing.T) {
 		}
 	}
 	wantCode(t, reading.Err(), connect.CodeFailedPrecondition)
+}
+
+// awaitEvent waits until the transfer hub hands events one that match accepts
+func awaitEvent(
+	t *testing.T, events <-chan *routerv1.EdgeEvent, match func(*routerv1.EdgeEvent) bool,
+) {
+	t.Helper()
+	for limit := time.After(5 * time.Second); ; {
+		select {
+		case ev := <-events:
+			if match(ev) {
+				return
+			}
+		case <-limit:
+			t.Fatal("the transfer hub never handed out the event")
+		}
+	}
+}
+
+func TestABudgetSpentBetweenClaimAndStreamCutsIt(t *testing.T) {
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	o := e.open(t, e.mintOK(t, upload(h, "/root/new", 100)), toSandbox)
+	events, unwatch := api.WatchTransferEvents(e.api, p.GetPlacementId())
+	defer unwatch()
+	e.reportEdge(t, usage(p.GetPlacementId(), 0, 2<<30))
+	// The hub handed out BudgetSpent before the stream watches, so only the spent mark is left
+	awaitEvent(t, events, func(ev *routerv1.EdgeEvent) bool { return ev.GetBudgetSpent() != nil })
+	err := cutWithin(t, time.Second, e.upstreamOf(t, o, "ab"), true)
+	mustCode(t, err, connect.CodeResourceExhausted, "BUDGET_SPENT")
+	if _, err := os.Stat(e.host(t, h, "/root/new")); err == nil {
+		t.Fatal("a cut upload committed")
+	}
+}
+
+func TestAStopBeforeAStreamWatchesCutsIt(t *testing.T) {
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	o := e.open(t, e.mintOK(t, upload(h, "/root/new", 100)), toSandbox)
+	events, unwatch := api.WatchTransferEvents(e.api, p.GetPlacementId())
+	defer unwatch()
+	reached, resume := make(chan struct{}, 1), make(chan struct{})
+	var resumed sync.Once
+	release := func() { resumed.Do(func() { close(resume) }) }
+	t.Cleanup(release)
+	api.SetBeforeWatch(t, func() {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+		<-resume
+	})
+	stream := e.upstreamOf(t, o, "ab")
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upload stream never read its placement")
+	}
+	// The stream read its placement as ready and watches only once the hub handed out the end
+	e.stop(t, h)
+	awaitEvent(t, events, func(ev *routerv1.EdgeEvent) bool {
+		return ev.GetPlacementEnded() != nil
+	})
+	release()
+	err := cutWithin(t, time.Second, stream, true)
+	mustCode(t, err, connect.CodeFailedPrecondition, "NOT_READY")
 }
 
 func TestASpentBudgetWhoseEventWasLostCutsTheStream(t *testing.T) {
