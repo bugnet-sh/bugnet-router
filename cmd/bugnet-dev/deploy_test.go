@@ -374,8 +374,9 @@ func TestDeployMapsCommand(t *testing.T) {
 			t.Errorf("%q exited %d with %q, want 2 and the usage", args, code, stderr)
 		}
 	}
+	empty := writeTOML(t, "site.toml", "ipv4 = \"\"\n")
 	_, stderr, code = runCLI(t, env(nil), "deploy", "maps", "--names", repoNames,
-		"--site", "../../deploy/vps/site.toml", "--out", t.TempDir())
+		"--site", empty, "--out", t.TempDir())
 	if code != 1 || !strings.Contains(stderr, "ipv4") {
 		t.Errorf("an empty ipv4 exited %d with %q, want 1 naming ipv4", code, stderr)
 	}
