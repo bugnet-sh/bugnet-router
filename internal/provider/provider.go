@@ -145,6 +145,14 @@ type FileWriter interface {
 	Abort() error
 }
 
+// Pather is a provider that resolves sandbox paths itself and whose file API reaches every path
+type Pather interface {
+	// Home is the exec user's home directory as a sandbox path
+	Home(ref Ref) string
+	// RealPath resolves an absolute sandbox path as realpath -m does inside the sandbox
+	RealPath(ctx context.Context, ref Ref, path string) (string, error)
+}
+
 // StartCoster is a provider that charges a fee per sandbox start beside its hourly price
 type StartCoster interface {
 	// StartCostMicros is what the next start of size costs, false when it would be refused
