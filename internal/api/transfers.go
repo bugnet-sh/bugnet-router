@@ -39,8 +39,10 @@ const (
 	xferStepTimeout = time.Minute
 	// cutGrace is how long a cut download may still send its error before its writes fail
 	cutGrace = 500 * time.Millisecond
-	upload   = routerv1.TransferDirection_TRANSFER_DIRECTION_UPLOAD
-	download = routerv1.TransferDirection_TRANSFER_DIRECTION_DOWNLOAD
+	// stallFactor times the idle timeout bounds one provider call, whose body may stop moving
+	stallFactor = 5
+	upload      = routerv1.TransferDirection_TRANSFER_DIRECTION_UPLOAD
+	download    = routerv1.TransferDirection_TRANSFER_DIRECTION_DOWNLOAD
 )
 
 var (
@@ -55,6 +57,7 @@ var (
 var (
 	errWrongWay  = errors.New("api: the transfer goes the other way")
 	errIdle      = errors.New("api: the transfer moved no byte for its idle timeout")
+	errStalled   = errors.New("api: one provider call of the transfer ran past its bound")
 	errHardStop  = errors.New("api: the transfer reached its hard stop")
 	errFinished  = errors.New("api: the transfer stream finished")
 	errFirstPart = errors.New("api: an upload's first message names its transfer and lease")
@@ -424,7 +427,7 @@ type stream struct {
 	deadline atomic.Int64 // the placement's deadline in Unix nanoseconds
 	last     atomic.Int64 // when a byte last moved, in Unix nanoseconds
 	moved    atomic.Int64 // bytes moved and not yet counted in the record
-	busy     atomic.Bool  // provider work runs, which moves no byte of the stream
+	since    atomic.Int64 // when the running provider call began in Unix nanoseconds, else 0
 	cause    atomic.Pointer[error]
 	watched  chan struct{}
 }
@@ -490,13 +493,26 @@ func (st *stream) watch(events <-chan *routerv1.EdgeEvent, wake <-chan struct{})
 			st.renew()
 			st.reread()
 		case now := <-check.C:
-			switch idle := now.Sub(time.Unix(0, st.last.Load())); {
-			case idle >= st.s.x.IdleTimeout && !st.busy.Load():
-				st.cut(errIdle)
-			case !now.Before(st.hardStop()):
-				st.cut(errHardStop)
-			}
+			st.check(now)
 		}
+	}
+}
+
+// check cuts a stream idle on the edge, stuck in one provider call, or past its hard stop
+func (st *stream) check(now time.Time) {
+	if st.cause.Load() != nil {
+		return
+	}
+	idle := st.s.x.IdleTimeout
+	switch since := st.since.Load(); {
+	case since != 0 && now.Sub(time.Unix(0, since)) >= stallFactor*idle:
+		st.s.d.Log.Warn("api: a provider call stalled a transfer",
+			"transfer", transfer.Short(st.rec.ID), "placement", st.p.ID)
+		st.cut(errStalled)
+	case since == 0 && now.Sub(time.Unix(0, st.last.Load())) >= idle:
+		st.cut(errIdle)
+	case !now.Before(st.hardStop()):
+		st.cut(errHardStop)
 	}
 }
 
@@ -573,12 +589,12 @@ func (st *stream) progress(n int) {
 	st.last.Store(time.Now().UnixNano())
 }
 
-// working runs provider work, during which the idle timeout waits for the provider
+// working runs one provider call, which counts against the stall bound instead of idle time
 func (st *stream) working(run func() error) error {
-	st.busy.Store(true)
+	st.since.Store(time.Now().UnixNano())
 	defer func() {
 		st.last.Store(time.Now().UnixNano())
-		st.busy.Store(false)
+		st.since.Store(0)
 	}()
 	return run()
 }

@@ -125,6 +125,7 @@ var codes = []struct {
 	{errWrongWay, connect.CodeInvalidArgument, ""},
 	{errFirstPart, connect.CodeInvalidArgument, ""},
 	{errIdle, connect.CodeDeadlineExceeded, ""},
+	{errStalled, connect.CodeDeadlineExceeded, ""},
 	{errHardStop, connect.CodeDeadlineExceeded, ""},
 	{store.ErrUnknownHandle, connect.CodeNotFound, reasonHandleUnknown},
 	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},

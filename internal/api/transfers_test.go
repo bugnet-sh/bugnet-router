@@ -702,8 +702,19 @@ func TestTransferStreamEndsIdleAndAtMaxDuration(t *testing.T) {
 type slowFiles struct {
 	*local.Provider
 	pause  time.Duration
+	stall  bool          // reads and writes block until their stream's context ends
 	fail   bool          // Commit fails after its pause
 	aborts *atomic.Int32 // the writers' Abort calls
+}
+
+// wait takes pause, or blocks until ctx ends as a provider body that stops moving does
+func (s *slowFiles) wait(ctx context.Context) error {
+	if s.stall {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	time.Sleep(s.pause)
+	return nil
 }
 
 func (s *slowFiles) OpenWriter(
@@ -713,7 +724,7 @@ func (s *slowFiles) OpenWriter(
 	if err != nil {
 		return nil, err
 	}
-	return slowWriter{FileWriter: w, s: s}, nil
+	return slowWriter{FileWriter: w, s: s, ctx: ctx}, nil
 }
 
 func (s *slowFiles) OpenReader(
@@ -723,26 +734,32 @@ func (s *slowFiles) OpenReader(
 	if err != nil {
 		return nil, err
 	}
-	return slowReader{FileReader: r, pause: s.pause}, nil
+	return slowReader{FileReader: r, s: s, ctx: ctx}, nil
 }
 
 type slowReader struct {
 	provider.FileReader
-	pause time.Duration
+	s   *slowFiles
+	ctx context.Context
 }
 
 func (r slowReader) Read(p []byte) (int, error) {
-	time.Sleep(r.pause)
+	if err := r.s.wait(r.ctx); err != nil {
+		return 0, err
+	}
 	return r.FileReader.Read(p)
 }
 
 type slowWriter struct {
 	provider.FileWriter
-	s *slowFiles
+	s   *slowFiles
+	ctx context.Context
 }
 
 func (w slowWriter) Write(p []byte) (int, error) {
-	time.Sleep(w.s.pause)
+	if err := w.s.wait(w.ctx); err != nil {
+		return 0, err
+	}
 	return w.FileWriter.Write(p)
 }
 
@@ -791,6 +808,45 @@ func TestProviderWorkIsNeverIdle(t *testing.T) {
 		t.Fatalf("a download whose provider took past the idle timeout: %v", err)
 	}
 	eq(t, string(joined(msgs)), "abcd")
+}
+
+// endedWithin fails unless the transfer call that began at start took at most d
+func endedWithin(t *testing.T, what string, start time.Time, d time.Duration) {
+	t.Helper()
+	if took := time.Since(start); took > d {
+		t.Fatalf("%s ran %v, want it cut within %v", what, took, d)
+	}
+}
+
+func TestAStalledProviderCallIsCut(t *testing.T) {
+	api.SetTransferCheck(t, 20*time.Millisecond)
+	// One provider call may take 5 x the idle timeout, 1 s here, far short of the hard stop
+	e := slowEnv(t, &slowFiles{stall: true}, config.Transfers{
+		IdleTimeout: 200 * time.Millisecond, MaxDuration: 6 * time.Second,
+	})
+	h, _ := e.readyPlacement(t)
+	e.put(t, h, "/root/old", "old")
+	up := e.mintOK(t, upload(h, "/root/old", 4))
+	start := time.Now()
+	_, err := e.write(timeout(t), t, e.open(t, up, toSandbox), "ab", "cd")
+	endedWithin(t, "an upload whose provider write stalled", start, 2500*time.Millisecond)
+	wantCode(t, err, connect.CodeDeadlineExceeded)
+	eq(t, e.content(t, h, "/root/old"), "old")
+	if _, err := e.openWith(t, tokenOf(t, up), toSandbox, false); err != nil {
+		t.Fatalf("claim again an upload cut on a stalled provider: %v", err)
+	}
+
+	other, _ := e.readyPlacement(t)
+	e.put(t, other, "/root/f", "abcd")
+	down := e.mintOK(t, download(other, "/root/f"))
+	start = time.Now()
+	msgs, err := e.read(timeout(t), t, e.open(t, down, fromSandbox), 0, 0)
+	endedWithin(t, "a download whose provider read stalled", start, 2500*time.Millisecond)
+	wantCode(t, err, connect.CodeDeadlineExceeded)
+	eq(t, len(msgs), 0)
+	if _, err := e.openWith(t, tokenOf(t, down), fromSandbox, false); err != nil {
+		t.Fatalf("resume a download cut on a stalled provider: %v", err)
+	}
 }
 
 func TestAFailedCommitAbortsItsWriter(t *testing.T) {
