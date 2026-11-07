@@ -1,0 +1,30 @@
+# The live stack's fronted mode (DP 15.6): the dev names the VPS fronts, the fixed ports where
+# the tunnel's ends land on the Mac, and the VPS's addresses. No secrets. test/live reads it when
+# scripts/live-test.sh runs with --front vps.
+
+[names]
+preview_domain = "preview.dev.bugnet.sh"
+transfer_host = "transfer.dev.bugnet.sh"
+hooks_host = "hooks.dev.bugnet.sh"
+secrets_host = "secrets.dev.bugnet.sh"
+egress_host = "egress.dev.bugnet.sh"
+ssh_host = "ssh.dev.bugnet.sh"
+ssh_port = 2200               # what users dial, HAProxy's dev SSH port on the VPS
+
+[ports]                       # each on 127.0.0.1, taken by the tunnel from the VPS
+edge = 8443
+secrets = 8445
+egress = 9443
+ssh = 2223
+
+[vps]
+egress_ips = []               # the VPS's IPv4 and IPv6, the dev router's secrets.egress_ips
+
+[acme]
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+email = ""
+state_dir = "~/.local/state/bugnet-dev/acme"           # one cache per service, kept between runs
+wildcard_dir = "~/.local/state/bugnet-dev/preview-dev"  # make dev-certs in bugnet-edges copies it
+
+[edge]
+abuse_contact = "abuse@bugnet.sh"   # the edge's previews.abuse_contact
