@@ -319,6 +319,24 @@ func TestFileWriterCancelIsAbort(t *testing.T) {
 	eq(t, string(g.written), "01234")
 }
 
+func TestFileWriterOnAnEndedContextDiscardsOnce(t *testing.T) {
+	g := &target{}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w := provider.NewFileWriter(ctx, provider.WriteSpec{Size: 1, Mode: 0o644}, g)
+	eq(t, w.Abort(), nil)
+	if _, err := w.Write([]byte("x")); err == nil {
+		t.Fatal("a writer on an ended context took bytes")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for _, discards := g.counts(); discards != 1; _, discards = g.counts() {
+		if time.Now().After(deadline) {
+			t.Fatal("the writer did not discard once")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestWriteSpecCheck(t *testing.T) {
 	for _, c := range []struct {
 		spec provider.WriteSpec

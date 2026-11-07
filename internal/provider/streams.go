@@ -145,7 +145,8 @@ type fileWriter struct {
 // NewFileWriter holds target to the FileWriter contract, an end of ctx aborting it
 func NewFileWriter(ctx context.Context, spec WriteSpec, target WriteTarget) FileWriter {
 	w := &fileWriter{ctx: ctx, spec: spec, target: target}
-	w.stop = context.AfterFunc(ctx, func() { _ = w.Abort() })
+	// The callback never reads w.stop, which a context already ended may run before it is set
+	w.stop = context.AfterFunc(ctx, func() { _ = w.end() })
 	return w
 }
 
@@ -207,6 +208,11 @@ func (w *fileWriter) Commit(ctx context.Context, sum []byte) (FileEntry, error) 
 
 func (w *fileWriter) Abort() error {
 	w.stop()
+	return w.end()
+}
+
+// end discards what was written unless the writer already committed or ended
+func (w *fileWriter) end() error {
 	if !w.state.CompareAndSwap(writerOpen, writerDone) {
 		return nil
 	}
