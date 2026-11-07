@@ -644,7 +644,8 @@ for another stack.
 On SIGTERM the old one stops accepting, ends long polls and watch streams, and hands its jobs to
 peers at once, then keeps serving its open transfer streams for up to `transfers.max_duration`
 before it cuts what is left and exits. A download cut then resumes, and an upload restarts and uses
-one of its claims.
+one of its claims. Its systemd unit sets `TimeoutStopSec` above `transfers.max_duration`, such as
+`31min`, since systemd otherwise kills it 90 s after SIGTERM.
 
 Valkey holds the job streams, leases and shared counters, and nothing in it may be evicted. Run it
 with `maxmemory` set and `maxmemory-policy noeviction`, so a full Valkey refuses writes, which
