@@ -369,6 +369,155 @@ func TestKoyebReaderSeesAChangedFile(t *testing.T) {
 	}
 }
 
+// readerFile writes data to a new file and gives the adapter that reads it
+func readerFile(
+	t *testing.T, key string, data []byte,
+) (*fakeKoyeb, *Provider, provider.Ref, string) {
+	t.Helper()
+	f := newFake(t)
+	p := streamProvider(t, f, 1<<20, 4<<20)
+	ref := ready(t, p, key)
+	name := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(name, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return f, p, ref, name
+}
+
+// readRest reads the first MiB, lets change alter the file, then reads the rest
+func readRest(t *testing.T, p *Provider, ref provider.Ref, name string, change func()) error {
+	t.Helper()
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := io.ReadFull(r, make([]byte, 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	change()
+	_, err = io.Copy(io.Discard, r)
+	return err
+}
+
+func TestKoyebReaderWithoutETagSeesAChangedSize(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-no-etag", bytes.Repeat([]byte("x"), 2<<20))
+	f.failFiles("GET /files", fileFault{cut: 1 << 20, noETag: true, times: 1})
+	f.failFiles("GET /files", fileFault{cut: noCut, noETag: true})
+	err := readRest(t, p, ref, name, func() {
+		if err := os.WriteFile(name, bytes.Repeat([]byte("y"), 3<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err == nil {
+		t.Fatal("a read went on across a file that grew while no ETag guarded it")
+	}
+	for _, h := range f.downloadHeaders() {
+		eq(t, h.Get("If-Range"), "")
+	}
+	eq(t, len(f.downloadHeaders()), 2)
+}
+
+func TestKoyebReaderRefusesAnotherStart(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-shift", bytes.Repeat([]byte("x"), 2<<20))
+	f.failFiles("GET /files", fileFault{cut: 1 << 20, times: 1})
+	f.failFiles("GET /files", fileFault{cut: noCut, shift: 10})
+	if err := readRest(t, p, ref, name, func() {}); err == nil {
+		t.Fatal("a read went on from a reissued answer that starts past the offset")
+	}
+	eq(t, len(f.downloadHeaders()), 2)
+}
+
+func TestKoyebReaderSeesATruncatedFile(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-416", bytes.Repeat([]byte("x"), 2<<20))
+	f.failFiles("GET /files", fileFault{cut: 1 << 20, noETag: true, times: 1})
+	f.failFiles("GET /files", fileFault{cut: noCut, noETag: true})
+	err := readRest(t, p, ref, name, func() {
+		if err := os.Truncate(name, 10); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// a 416 means the file changed, never an executor failure worth another provider
+	e, ok := provider.AsError(err)
+	if !ok || e.Code != provider.CodeInternal || e.CanFailOver {
+		t.Fatalf("a reissue past the end of a truncated file gave %v, want a changed file", err)
+	}
+	eq(t, len(f.downloadHeaders()), 2)
+}
+
+func TestKoyebReaderSkipsTheOffsetOn200(t *testing.T) {
+	data := make([]byte, 300<<10)
+	_, _ = rand.Read(data)
+	f, p, ref, name := readerFile(t, "key-200", data)
+	f.failFiles("GET /files", fileFault{cut: noCut, ignoreRange: true, times: 1})
+	r, err := p.OpenReader(t.Context(), ref, name, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil || !bytes.Equal(got, data[1000:]) {
+		t.Fatalf("a 200 to a read from 1000 gave %d bytes, %v, want the rest from 1000", len(got),
+			err)
+	}
+	eq(t, len(f.downloadHeaders()), 1)
+}
+
+func TestKoyebReaderRetriesFailedGets(t *testing.T) {
+	data := make([]byte, 300<<10)
+	_, _ = rand.Read(data)
+	t.Run("TwoFailuresRecover", func(t *testing.T) {
+		f, p, ref, name := readerFile(t, "key-503", data)
+		f.failFiles("GET /files", fileFault{
+			status: http.StatusServiceUnavailable, body: `{"error":"upstream"}`, times: 2,
+		})
+		r, err := p.OpenReader(t.Context(), ref, name, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(r)
+		_ = r.Close()
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("a read after two 503s gave %d bytes, %v, want the whole file", len(got), err)
+		}
+		eq(t, len(f.downloadHeaders()), 3)
+	})
+	t.Run("ThreeFailuresFail", func(t *testing.T) {
+		f, p, ref, name := readerFile(t, "key-503-3", data)
+		f.failFiles("GET /files", fileFault{
+			status: http.StatusServiceUnavailable, body: `{"error":"upstream"}`, times: 3,
+		})
+		r, err := p.OpenReader(t.Context(), ref, name, 0)
+		if err == nil {
+			_ = r.Close()
+			t.Fatal("a read whose first three GETs failed opened")
+		}
+		eq(t, isCode(err, provider.CodeInternal), true)
+		eq(t, len(f.downloadHeaders()), 3)
+	})
+	t.Run("RefusalIsNotRetried", func(t *testing.T) {
+		f, p, ref, name := readerFile(t, "key-403", data)
+		f.failFiles("GET /files", fileFault{
+			status: http.StatusForbidden, body: `{"error":"permission denied"}`, times: 1,
+		})
+		_, err := p.OpenReader(t.Context(), ref, name, 0)
+		eq(t, isCode(err, provider.CodeInvalid), true)
+		eq(t, len(f.downloadHeaders()), 1)
+	})
+}
+
+func TestKoyebReaderRefusesAnEncoding(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-gzip", bytes.Repeat([]byte("x"), 64<<10))
+	f.failFiles("GET /files", fileFault{cut: noCut, encoding: "gzip", times: 1})
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err == nil {
+		_ = r.Close()
+		t.Fatal("a download in gzip encoding opened")
+	}
+	eq(t, isCode(err, provider.CodeInternal), true)
+	eq(t, len(f.downloadHeaders()), 1)
+}
+
 func TestKoyebStreamsAskForIdentity(t *testing.T) {
 	f := newFake(t)
 	p := streamProvider(t, f, 1<<20, 4<<20)
@@ -445,6 +594,82 @@ func TestKoyebStatDoesNotFollowWhereStatWould(t *testing.T) {
 	}) {
 		t.Error("StatFile asked GET /files/stat, which follows a final symlink")
 	}
+}
+
+func TestKoyebStatOfAHugeListingAsksStat(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-huge-list", []byte("abc"))
+	f.failFiles("GET /files/list", fileFault{pad: maxListBytes + 1<<20, times: 1})
+	entry, err := p.StatFile(t.Context(), ref, name)
+	if err != nil || !entry.Regular || entry.Size != 3 || entry.Path != name {
+		t.Fatalf("StatFile in a listing past 16 MiB gave %+v, %v", entry, err)
+	}
+	eq(t, routeCount(f, http.MethodGet, "/files/stat"), 1)
+}
+
+func TestKoyebWriterRefusedBeforeTheBody(t *testing.T) {
+	spec := provider.WriteSpec{Size: 2 * 64 << 10, Mode: 0o644}
+	for _, c := range []struct {
+		name, route string
+		ft          fileFault
+		want        provider.Code
+	}{
+		{"MakeDirNoSpace", "POST /make_dir", fileFault{status: http.StatusOK,
+			body: `{"success":false,"error":"mkdir /root/d: no space left on device"}`},
+			provider.CodeNoSpace},
+		{"MakeDirRefused", "POST /make_dir", fileFault{status: http.StatusOK,
+			body: `{"success":false,"error":"mkdir /root/d: permission denied"}`},
+			provider.CodeInvalid},
+		{"SessionRefused", "POST /files/uploads", fileFault{status: http.StatusForbidden,
+			body: `{"error":"permission denied"}`}, provider.CodeInvalid},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := streamProvider(t, f, 64<<10, 1<<20)
+			ref := ready(t, p, "key-refused")
+			f.failFiles(c.route, c.ft)
+			_, err := p.OpenWriter(t.Context(), ref, filepath.Join(t.TempDir(), "d", "f"), spec)
+			if !isCode(err, c.want) {
+				t.Fatalf("OpenWriter gave %v, want %s", err, c.want)
+			}
+			eq(t, routeCount(f, http.MethodPut, "/files"), 0)
+			eq(t, f.openSessions(), 0)
+		})
+	}
+}
+
+func TestKoyebOnePartWithoutADigestSendsItsOwn(t *testing.T) {
+	f := newFake(t)
+	p := streamProvider(t, f, 1<<20, 4<<20)
+	ref := ready(t, p, "key-own-digest")
+	name := filepath.Join(t.TempDir(), "f")
+	data := []byte("0123456789")
+	w, err := p.OpenWriter(t.Context(), ref, name, provider.WriteSpec{Size: 10, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Commit(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	eq(t, f.lastUpload().Header.Get("X-Content-SHA256"), hex.EncodeToString(sum[:]))
+}
+
+func TestKoyebCompleteOfAnotherSizeFails(t *testing.T) {
+	f := newFake(t)
+	p := streamProvider(t, f, 64<<10, 1<<20)
+	ref := ready(t, p, "key-complete-size")
+	f.failFiles("POST /files/uploads/{id}/complete", fileFault{
+		status: http.StatusOK, body: `{"size":1}`,
+	})
+	_, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), make([]byte, 2*64<<10),
+		64<<10)
+	if !isCode(err, provider.CodeInternal) {
+		t.Fatalf("a complete that counted 1 byte of 128 KiB gave %v, want internal", err)
+	}
+	eq(t, routeCount(f, http.MethodGet, "/files/stat"), 0)
 }
 
 func TestKoyebOptionsForStreams(t *testing.T) {

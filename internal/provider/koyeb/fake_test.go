@@ -106,12 +106,26 @@ func (p *fakeProc) since(i int) ([]logEntry, bool, <-chan struct{}) {
 	return slices.Clone(p.entries[i:]), p.done, p.changed
 }
 
-// fileFault answers matching executor file calls with status and body, or cuts a download short
+// noCut leaves a download whole under a fault that changes only how it is answered
+const noCut = -1
+
+// fileFault answers matching executor file calls with status and body, or reshapes a download
 type fileFault struct {
 	status int
 	body   string
+	header map[string]string
 	// cut ends a download's body after so many bytes, its status and length already sent
-	cut   int64
+	cut int64
+	// noETag leaves out the ETag, as an executor without a strong validator would
+	noETag bool
+	// ignoreRange answers a ranged download whole with 200
+	ignoreRange bool
+	// shift moves the start of a ranged download this many bytes past the one asked for
+	shift int64
+	// encoding is the Content-Encoding a download claims
+	encoding string
+	// pad puts one entry of about so many bytes before a listing's own
+	pad   int64
 	times int
 }
 
@@ -1093,6 +1107,9 @@ func failed(w http.ResponseWriter, ft *fileFault) bool {
 	if ft == nil || ft.status == 0 {
 		return false
 	}
+	for k, v := range ft.header {
+		w.Header().Set(k, v)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(ft.status)
 	_, _ = io.WriteString(w, ft.body)
@@ -1153,11 +1170,30 @@ func (f *fakeKoyeb) download(w http.ResponseWriter, r *http.Request) {
 	if info.Size() == 0 {
 		return
 	}
-	w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
-	if ft != nil && ft.cut >= 0 && ft.status == 0 {
+	if ft == nil || !ft.noETag {
+		w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
+	}
+	if ft != nil {
+		reshape(w, r, ft)
+	}
+	if ft != nil && ft.cut >= 0 {
 		w = &cutWriter{ResponseWriter: w, left: ft.cut}
 	}
 	http.ServeContent(w, r, "", info.ModTime(), file)
+}
+
+// reshape changes a download's request and headers the way ft asks
+func reshape(w http.ResponseWriter, r *http.Request, ft *fileFault) {
+	if ft.ignoreRange {
+		r.Header.Del("Range")
+	}
+	if ft.encoding != "" {
+		w.Header().Set("Content-Encoding", ft.encoding)
+	}
+	from, to, ok := strings.Cut(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-")
+	if start, err := strconv.ParseInt(from, 10, 64); ft.shift != 0 && ok && err == nil {
+		r.Header.Set("Range", "bytes="+strconv.FormatInt(start+ft.shift, 10)+"-"+to)
+	}
 }
 
 // upload writes like the executor, atomically with the given mode and parents when asked
@@ -1225,6 +1261,10 @@ func (f *fakeKoyeb) lastUpload() *http.Request {
 
 // list answers NDJSON entries relative to the directory, one level unless recursive is 1
 func (f *fakeKoyeb) list(w http.ResponseWriter, r *http.Request) {
+	ft := f.fileFault("GET /files/list")
+	if failed(w, ft) {
+		return
+	}
 	q := r.URL.Query()
 	root := filepath.Clean(q.Get("path"))
 	info, err := os.Stat(root)
@@ -1240,6 +1280,9 @@ func (f *fakeKoyeb) list(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	enc := json.NewEncoder(w)
+	if ft != nil && ft.pad > 0 {
+		_ = enc.Encode(map[string]any{"path": strings.Repeat("p", int(ft.pad)), "type": "file"})
+	}
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || p == root {
 			return err
@@ -1291,6 +1334,9 @@ func (f *fakeKoyeb) stat(w http.ResponseWriter, r *http.Request) {
 
 // makeDir answers like the executor's legacy route, 200 with success false on a failure
 func (f *fakeKoyeb) makeDir(w http.ResponseWriter, r *http.Request) {
+	if failed(w, f.fileFault("POST /make_dir")) {
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
 	}
@@ -1429,6 +1475,9 @@ func covered(ranges [][2]int64, size int64) bool {
 }
 
 func (f *fakeKoyeb) completeUpload(w http.ResponseWriter, id string) {
+	if failed(w, f.fileFault("POST /files/uploads/{id}/complete")) {
+		return
+	}
 	u := f.uploadSession(id)
 	if u == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown upload session"})
