@@ -617,7 +617,9 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   SHA-256, so a cut or wrong upload leaves the old file. A stream ends after
   `transfers.idle_timeout` without a byte, at `transfers.max_duration`, at the placement's
   deadline, and at once when the placement ends or spends its edge budget, whichever replica
-  served it, from one reader of the edge events per process. An extension moves its end.
+  served it, from one reader of the edge events per process. Every 10 s a stream also reads its
+  placement and the edge spent mark again, so an event lost on the way still ends it. An
+  extension moves its end.
 - **Logs** name a transfer by the first 8 hex characters of its token's SHA-256, never its path.
 
 ### Orders for Payments

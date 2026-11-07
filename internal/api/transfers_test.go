@@ -732,6 +732,23 @@ func TestStopAndBudgetCutATransferStream(t *testing.T) {
 	wantCode(t, reading.Err(), connect.CodeFailedPrecondition)
 }
 
+func TestASpentBudgetWhoseEventWasLostCutsTheStream(t *testing.T) {
+	api.SetTransferLease(t, 900*time.Millisecond, 150*time.Millisecond)
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	stream := e.upstream(t, h, "/root/new", 100, "ab")
+	// The mark a crossing leaves, with no BudgetSpent on the stream for the hub to read
+	spent := e.vk.B().Set().Key(e.prefix + "edge:spent:" + p.GetPlacementId()).Value("1").Build()
+	if err := e.vk.Do(t.Context(), spent).Error(); err != nil {
+		t.Fatal(err)
+	}
+	err := cutWithin(t, time.Second, stream, true)
+	mustCode(t, err, connect.CodeResourceExhausted, "BUDGET_SPENT")
+	if _, err := os.Stat(e.host(t, h, "/root/new")); err == nil {
+		t.Fatal("a cut upload committed")
+	}
+}
+
 func TestShutdownDrainsTransferStreams(t *testing.T) {
 	e := newEnv(t, options{})
 	h, _ := e.readyPlacement(t)

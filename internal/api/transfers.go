@@ -518,7 +518,7 @@ func (st *stream) event(ev *routerv1.EdgeEvent) {
 	}
 }
 
-// reread cuts a stream whose placement left ready and follows a moved deadline
+// reread cuts a stream whose placement left ready or spent its edge budget, and follows its deadline
 func (st *stream) reread() {
 	p, err := st.s.d.Store.PlacementByID(st.ctx, st.p.ID)
 	switch {
@@ -526,8 +526,12 @@ func (st *stream) reread() {
 		return
 	case p.State != store.PlacementReady || p.Deadline == nil:
 		st.cut(errNotReady)
-	default:
-		st.deadline.Store(p.Deadline.UnixNano())
+		return
+	}
+	st.deadline.Store(p.Deadline.UnixNano())
+	// A BudgetSpent the hub never read, lost in its resubscribe gap or by a publish, ends here
+	if spent, err := st.s.meter.Spent(st.ctx, budget.Edge, st.p.ID); err == nil && spent {
+		st.cut(errBudgetSpent)
 	}
 }
 
