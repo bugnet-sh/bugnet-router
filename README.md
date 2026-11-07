@@ -594,6 +594,79 @@ Each answer changes a value in `site.toml`, never a script.
 - `dns_env` is `["CF_DNS_API_TOKEN"]` by default, Cloudflare's variable. Another `dns_provider`
   needs its own list. The values go in `/etc/bugnet/certs.env` on the VPS and nowhere else.
 
+### The dev front
+
+`deploy/vps/front.sh` sets up the dev front, as root on the VPS. Every VPS live test waits on it.
+Running it again changes nothing. It:
+
+1. checks its bundle, and that admin SSH listens on `admin_ssh_port`, before it changes anything;
+2. installs `haproxy` and `ufw`, and refuses when another process holds port 443;
+3. installs the maps and `haproxy.cfg`, runs `haproxy -c` and puts the old files back when that
+   fails, then reloads HAProxy, which keeps open connections;
+4. makes the `tunnel` user and its sshd block, checked with `sshd -t` (`deploy/vps/tunnel.md`);
+5. installs `bugnet-certs` in `/opt/bugnet/certs/<sha256 prefix>/` with `current` pointing at it,
+   its two settings files, its unit and its timer, which runs it twice a day. It makes
+   `/etc/bugnet/certs.env` empty, root's and 0600 when it is missing, and never reads it;
+6. resets ufw to allow TCP 80, 443, 2200 and `admin_ssh_port` only, denying UDP 443 too. A
+   ufw that already holds exactly those rules is left alone, since a reset lifts it briefly.
+
+The dev wildcard's directory is `bugnet-certs:<reader> 2750`. `<reader>` is the primary group of
+the admin user who ran `sudo`, or `BUGNET_CERTS_READER` when set. The setgid bit gives each new
+pair that group, so `make dev-certs` in bugnet-edges can copy it as that user.
+
+The steps, from bugnet-router on the Mac. `<admin>` is the VPS's admin user, `<vps>` its IPv4,
+`<port>` its admin SSH port (2222, or 22 under DP question 1 b), and `<arch>` `amd64` when
+`uname -m` on the VPS says `x86_64`, `arm64` when it says `aarch64`.
+
+```sh
+[ -e ~/.ssh/bugnet_tunnel ] || ssh-keygen -t ed25519 -N "" -C mac -f ~/.ssh/bugnet_tunnel
+out=$(mktemp -d)/bugnet-front
+go run ./cmd/bugnet-dev deploy maps --front --names deploy/vps/names.toml \
+  --site deploy/vps/site.toml --out "$out"
+cp -R deploy/vps/front.sh deploy/vps/systemd "$out"/
+cp ~/.ssh/bugnet_tunnel.pub "$out"/tunnel.pub
+(cd ../bugnet-edges && CGO_ENABLED=0 GOOS=linux GOARCH=<arch> \
+  go build -o "$out"/bugnet-certs ./cmd/bugnet-certs)
+scp -P <port> -r "$out" <admin>@<vps>:
+ssh -t -p <port> <admin>@<vps> sudo bugnet-front/front.sh bugnet-front/bugnet-certs
+```
+
+Then on the VPS, once the DNS token is in `/etc/bugnet/certs.env`, one run against Let's Encrypt
+staging. It exits 0 with a pair in `/var/lib/bugnet-certs/staging/preview-dev/`:
+
+```sh
+sudo systemd-run --wait --pipe --quiet --collect \
+  -p User=bugnet-certs -p Group=bugnet-certs -p EnvironmentFile=/etc/bugnet/certs.env \
+  -p StateDirectory=bugnet-certs -p StateDirectoryMode=0755 \
+  /opt/bugnet/certs/current/bugnet-certs -config /etc/bugnet/certs-staging.toml
+```
+
+Once it passes, the real run. It exits 0 with the pair in `/var/lib/bugnet-certs/preview-dev/`,
+and a second run logs `certificate not due`:
+
+```sh
+sudo systemctl start bugnet-certs.service; sudo journalctl -u bugnet-certs.service -n 20
+```
+
+Last, `make dev-certs VPS=<admin>@<vps> VPS_SSH_PORT=<port>` in bugnet-edges, and autossh as
+`deploy/vps/tunnel.md` says.
+
+`deploy/vps/test/vm-test.sh front` runs `front.sh` in a throwaway Ubuntu 24.04 VM on the Mac
+with `limactl` (`brew install lima`). It needs no VPS, provider or DNS token. It checks that:
+
+- a bundle with `frontend ssh`, or with admin SSH where nothing listens, is refused untouched;
+- a second run changes nothing;
+- `haproxy -c` passes and HAProxy listens on 443 over both families and on 2200, never on 22;
+- `tunnel` has no shell, and may listen on the four tunnel ports and nowhere else, with no `-L`,
+  `-W` or command, while other users keep their sshd settings;
+- ufw allows TCP 80, 443, 2200 and the admin port alone, and drops UDP 443;
+- the unit, its user and `certs.toml` work, since a run without the token stops at `dns_env`, and
+  the staging command hands back that exit status;
+- a file `bugnet-certs` writes in the dev wildcard's directory takes the reader's group, and the
+  admin user can read it.
+
+`KEEP_VM=1` keeps the VM for a look afterwards. The first run downloads Ubuntu's cloud image.
+
 ## Events
 
 `router-worker` posts each outbox event to `events_url` as JSON `{id, type, created_at,
