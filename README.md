@@ -604,7 +604,8 @@ file had when it opened and fails if the file ends sooner. No write makes new by
 the target changes only on `Commit`, after exactly the declared size, and an abort or the end of
 the writer's context leaves it as it was. `StatFile` never follows a final symlink, and only a
 regular file reads as `Regular`. `contract.Streams` checks every adapter the same way. A full
-disk reads as `no_space` everywhere.
+disk reads as `no_space` on `local`, E2B, boxd and Koyeb. Boat's API names no full-disk answer,
+so a full disk there fails as another error.
 
 | Adapter | Reads | Writes |
 |---|---|---|
