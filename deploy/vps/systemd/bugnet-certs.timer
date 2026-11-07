@@ -1,0 +1,11 @@
+# Runs bugnet-certs twice a day (DP 15.3)
+[Unit]
+Description=Bugnet preview wildcard certificates, twice a day
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

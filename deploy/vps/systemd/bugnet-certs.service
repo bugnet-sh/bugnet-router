@@ -1,0 +1,29 @@
+# bugnet-certs renews the preview wildcards by DNS-01, exiting 1 when one needs a person (DP 15.3)
+[Unit]
+Description=Bugnet preview wildcard certificates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bugnet-certs
+Group=bugnet-certs
+ExecStart=/opt/bugnet/certs/current/bugnet-certs -config /etc/bugnet/certs.toml
+EnvironmentFile=/etc/bugnet/certs.env
+StateDirectory=bugnet-certs
+StateDirectoryMode=0755
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
+# lego bounds each DNS wait itself, this bounds a run that hangs anyway
+TimeoutStartSec=20min
