@@ -73,6 +73,9 @@ equal "sshd gives tunnel remote forwarding only" \
 		sort | tr '\n' '|')" \
 	"allowtcpforwarding remote|forcecommand /usr/sbin/nologin|permitlisten$(printf \
 		' 127.0.0.1:%s' "${ports[@]}")|permitopen none|permittty no|"
+equal "sshd drops a dead tunnel session within about 45 s" \
+	"$(grep -E '^clientalive(interval|countmax) ' <<<"$t" | sort | tr '\n' '|')" \
+	"clientalivecountmax 3|clientaliveinterval 15|"
 equal "the tunnel block leaves other users alone" \
 	"$(grep -E '^(allowtcpforwarding|x11forwarding|permittty) ' <<<"$r" | sort | tr '\n' '|')" \
 	"allowtcpforwarding yes|permittty yes|x11forwarding yes|"

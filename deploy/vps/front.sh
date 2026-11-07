@@ -171,6 +171,8 @@ Match User tunnel
     X11Forwarding no
     PermitTTY no
     PermitTunnel no
+    ClientAliveInterval 15
+    ClientAliveCountMax 3
     PasswordAuthentication no
     KbdInteractiveAuthentication no
     AuthenticationMethods publickey

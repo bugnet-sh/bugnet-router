@@ -49,7 +49,7 @@ The private half never leaves the Mac. It opens nothing but these four listeners
 
 - `/etc/ssh/sshd_config.d/bugnet-tunnel.conf` holds the `Match User tunnel` block. It allows
   remote forwarding only, to the same four listeners, and nothing else: no local forwarding, no
-  `-W`, no terminal, no agent, no X11, no command.
+  `-W`, no terminal, no agent, no X11, no command. It ends a session whose Mac stops answering.
 - The four ports are read from the dev backends of `haproxy.cfg`, so the tunnel may listen only
   where HAProxy dials.
 - `front.sh` checks the block with `sshd -t` before it reloads sshd, and keeps the old settings
@@ -74,8 +74,10 @@ autossh -M 0 -N -p <admin_ssh_port> -i ~/.ssh/bugnet_tunnel \
 - The first connection asks whether to trust the VPS's host key. Compare its fingerprint with
   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, run on the VPS over the admin SSH.
 - `ExitOnForwardFailure=yes` makes ssh exit when a port is still held, for example by a session
-  the VPS has not dropped yet. autossh then starts it again. A dead session is dropped within
-  45 s (`ServerAliveInterval` times `ServerAliveCountMax`).
+  the VPS has not dropped yet. autossh then starts it again.
+- A dead session ends on both sides in about 45 s, 15 s times 3 missed replies. On the Mac,
+  `ServerAliveInterval` and `ServerAliveCountMax` end ssh. On the VPS, the tunnel block's
+  `ClientAliveInterval 15` and `ClientAliveCountMax 3` end the session and free the four ports.
 - Ctrl-C stops it.
 
 ## Checking it
