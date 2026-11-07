@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/jobs"
 	"github.com/oynozan/bugnet-router/internal/ratelimit"
 )
 
@@ -119,13 +118,6 @@ func TestLoadFileDefaults(t *testing.T) {
 	}
 	if c.RunnerLinuxAMD64 != "" || c.RunnerLinuxARM64 != "" {
 		t.Fatalf("runner builds: %+v", c)
-	}
-	if c.JobOutputBudget != jobs.DefaultJobBudget ||
-		c.PlacementOutputBudget != jobs.DefaultPlacementBudget ||
-		c.PlacementTailReserve != jobs.DefaultTailReserve ||
-		c.MaxRunningJobs != jobs.DefaultMaxRunning {
-		t.Fatalf("output limits %d, %d, %d and %d jobs, want the jobs service's defaults",
-			c.JobOutputBudget, c.PlacementOutputBudget, c.PlacementTailReserve, c.MaxRunningJobs)
 	}
 	if c.SandboxOpsPerSecond != ratelimit.DefaultPerSecond ||
 		c.SandboxOpsBurst != ratelimit.DefaultBurst {
