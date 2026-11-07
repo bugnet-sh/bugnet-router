@@ -187,6 +187,24 @@ func TestCheckSpecRefusals(t *testing.T) {
 	eq(t, reason(t, CheckSpec(s, 1000, hostRules())), "PRICE_REFUSED")
 }
 
+func TestPrefixAloneMustPassThePathRules(t *testing.T) {
+	for _, p := range []string{
+		"/v1//", "/a//", "search/", "/a/../b/", "/./", "/%2e/", "/%2E%2e/", "/a;b/", "/a b/",
+		"/a\\b/", "/a%2/", "/a%25/", "/é/", "/a\tb/",
+	} {
+		s := good()
+		s.Prefix, s.Indexed, s.PaidPath = p, true, ""
+		if got := reason(t, CheckSpec(s, maxPrice, hostRules())); got != "PREFIX_REFUSED" {
+			t.Errorf("indexed prefix %q: got %q, want PREFIX_REFUSED", p, got)
+		}
+	}
+	s := good()
+	s.Prefix, s.PaidPath = "/a//", "/a/"
+	eq(t, PathOK(s.PaidPath), true)
+	eq(t, strings.HasPrefix(s.PaidPath+"/", s.Prefix), true)
+	eq(t, reason(t, CheckSpec(s, maxPrice, hostRules())), "PREFIX_REFUSED")
+}
+
 func TestCheckSpecAnswersTheFirstFailingCheck(t *testing.T) {
 	bad := Spec{
 		Host: "x.workers.dev", Prefix: "/", Method: "PUT", MaxPriceMicros: 0, PayTo: "x",
