@@ -352,6 +352,11 @@ func (k Keys) Placeholder(keyID string, placement uuid.UUID, name string) (strin
 	return placeholderPrefix + strings.ToLower(b32.EncodeToString(sum)), nil
 }
 
+// NewTransferToken returns a fresh bnx_ token of 32 random bytes, for a call without a key
+func NewTransferToken() string {
+	return transferPrefix + url64.EncodeToString(random(keyBytes))
+}
+
 // NewTunnelToken returns a fresh bnt_ token of 32 random bytes
 func NewTunnelToken() string {
 	return tunnelPrefix + url64.EncodeToString(random(keyBytes))

@@ -98,6 +98,9 @@ func TestDerivedShapes(t *testing.T) {
 	tunnel := NewTunnelToken()
 	eq(t, regexp.MustCompile(`^bnt_[A-Za-z0-9_-]{43}$`).MatchString(tunnel), true)
 	eq(t, tunnel != NewTunnelToken(), true)
+	unkeyed := NewTransferToken()
+	eq(t, regexp.MustCompile(`^bnx_[A-Za-z0-9_-]{43}$`).MatchString(unkeyed), true)
+	eq(t, unkeyed != NewTransferToken(), true)
 	eq(t, strings.HasPrefix(k.GrantID(p1, "SHA256:abc"), "g1."), true)
 }
 
