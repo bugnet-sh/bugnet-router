@@ -621,7 +621,9 @@ func (e *EdgeServer) ReadTransfer(
 	if err != nil {
 		err = st.status(err)
 	}
-	st.finish(err == nil)
+	// A range that stops short of the end leaves the URL for the rest, as a failed attempt does
+	st.finish(err == nil &&
+		(m.GetLength() == 0 || m.GetOffset()+m.GetLength() == uint64(st.rec.Size)))
 	return err
 }
 

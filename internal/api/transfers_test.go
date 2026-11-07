@@ -947,3 +947,25 @@ func TestALostStreamLeavesTheNewClaimsStaging(t *testing.T) {
 	}
 	eq(t, e.content(t, h, "/opt/x"), "data")
 }
+
+func TestARangeShortOfTheEndLeavesTheURLOpen(t *testing.T) {
+	e := newEnv(t, options{opsBurst: 40})
+	h, _ := e.readyPlacement(t)
+	e.put(t, h, "/root/d", "0123456789")
+	m := e.mintOK(t, download(h, "/root/d"))
+	msgs, err := e.read(timeout(t), t, e.open(t, m, fromSandbox), 0, 4)
+	eq(t, err, nil)
+	eq(t, string(joined(msgs)), "0123")
+	msgs, err = e.read(timeout(t), t, e.open(t, m, fromSandbox), 4, 0)
+	eq(t, err, nil)
+	eq(t, string(joined(msgs)), "456789")
+	_, err = e.openWith(t, tokenOf(t, m), fromSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+
+	tail := e.mintOK(t, download(h, "/root/d"))
+	msgs, err = e.read(timeout(t), t, e.open(t, tail, fromSandbox), 6, 4)
+	eq(t, err, nil)
+	eq(t, string(joined(msgs)), "6789")
+	_, err = e.openWith(t, tokenOf(t, tail), fromSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+}

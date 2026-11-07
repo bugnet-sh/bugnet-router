@@ -603,6 +603,7 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   (`xfer:active:<placement>`). `OpenTransfer` claims a URL in one script under a 30 s lease,
   checking its `transfers.max_claims` claims and its byte budget of twice its size plus 64 MiB.
   A failed stream hands it back, a lapsed lease frees it, and a completed one makes it used. A
+  read of a range that stops short of the file's end hands it back too, so the rest can follow. A
   download that started may resume after its window, an upload only within it. `OpenTransfer`
   with `probe` describes the file without claiming, and refuses a placement that spent its edge
   budget with `BUDGET_SPENT`.
