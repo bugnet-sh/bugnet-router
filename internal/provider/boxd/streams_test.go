@@ -326,6 +326,69 @@ func TestBoxdReaderThatEndsEarlyFails(t *testing.T) {
 	}
 }
 
+func TestBoxdReaderWithoutTheEofChunk(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	name := filepath.Join(t.TempDir(), "f")
+	data := make([]byte, 200<<10)
+	_, _ = rand.Read(data)
+	streamUp(t, p, ref, name, data)
+	f.noEOFChunk.Store(true)
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	got, err := io.ReadAll(r)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("a stream that ended without its eof chunk after every byte gave %d bytes, %v",
+			len(got), err)
+	}
+}
+
+func TestBoxdReaderOfAHostThatSentMore(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		extra int
+	}{
+		// 200 KiB and 56 KiB fill four 64 KiB chunks, so the eof chunk comes next
+		{"BeforeTheEofChunk", 56 << 10},
+		{"InAnotherChunk", 100 << 10},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			ref := readyMachine(t, f)
+			name := filepath.Join(t.TempDir(), "f")
+			data := make([]byte, 200<<10)
+			_, _ = rand.Read(data)
+			streamUp(t, p, ref, name, data)
+			f.ignoreLength = true
+			f.beforeRead(func(name string) {
+				file, err := os.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0)
+				if err == nil {
+					_, err = file.Write(bytes.Repeat([]byte("y"), c.extra))
+					err = errors.Join(err, file.Close())
+				}
+				if err != nil {
+					t.Error(err)
+				}
+			})
+			r, err := p.OpenReader(t.Context(), ref, name, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = r.Close() }()
+			got, err := io.ReadAll(r)
+			if err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("a host that sent %d bytes past the stat gave %d bytes, %v, want the "+
+					"%d the stat saw", c.extra, len(got), err, len(data))
+			}
+		})
+	}
+}
+
 func TestBoxdFifoIsNotRegular(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)

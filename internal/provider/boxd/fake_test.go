@@ -99,6 +99,8 @@ type fakeBoxd struct {
 	badBytesRead atomic.Bool
 	// shortRead ends FsRead halfway with an honest eof chunk, as a file cut while it is read
 	shortRead atomic.Bool
+	// noEOFChunk ends FsRead after its data without the chunk that counts the bytes
+	noEOFChunk atomic.Bool
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
@@ -799,6 +801,9 @@ func (f *fakeBoxd) FsRead(
 		if err != nil {
 			return fsErr(stream.SetTrailer, err)
 		}
+	}
+	if f.noEOFChunk.Load() {
+		return nil
 	}
 	last := &boxdpb.FsReadChunk{Eof: true, BytesRead: sent}
 	if f.badBytesRead.Load() {
