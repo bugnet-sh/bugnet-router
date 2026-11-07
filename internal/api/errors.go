@@ -18,6 +18,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/saga"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/streams"
+	"github.com/oynozan/bugnet-router/internal/transfer"
 )
 
 const (
@@ -37,6 +38,31 @@ const (
 	reasonPackageUnknown = "PACKAGE_UNKNOWN"
 	// reasonNotStartPackage marks an extension package given where a start package is needed
 	reasonNotStartPackage = "NOT_START_PACKAGE"
+	// reasonFileNotFound marks a sandbox path that names no file
+	reasonFileNotFound = "FILE_NOT_FOUND"
+	// reasonNoSpace marks a write refused because the sandbox's disk is full
+	reasonNoSpace = "NO_SPACE"
+	// reasonFeatureUnavailable marks a call this router has no settings for
+	reasonFeatureUnavailable = "FEATURE_UNAVAILABLE"
+)
+
+// Transfer reasons, named as DP 11.3 names them
+const (
+	reasonPathRefused      = "PATH_REFUSED"
+	reasonSizeRequired     = "SIZE_REQUIRED"
+	reasonSizeMismatch     = "SIZE_MISMATCH"
+	reasonIsDirectory      = "IS_DIRECTORY"
+	reasonNotRegular       = "NOT_REGULAR"
+	reasonTokenUnknown     = "TOKEN_UNKNOWN"
+	reasonTokenUsed        = "TOKEN_USED"
+	reasonTokenExpired     = "TOKEN_EXPIRED"
+	reasonInUse            = "IN_USE"
+	reasonFileChanged      = "FILE_CHANGED"
+	reasonOverCap          = "OVER_CAP"
+	reasonRange            = "RANGE"
+	reasonBudgetSpent      = "BUDGET_SPENT"
+	reasonTooManyTransfers = "TOO_MANY_TRANSFERS"
+	reasonChecksumMismatch = "CHECKSUM_MISMATCH"
 )
 
 // Codes a start package's unavailable_reason takes, never error text
@@ -49,6 +75,14 @@ const (
 var (
 	errNotReady     = errors.New("api: placement is not ready")
 	errShuttingDown = errors.New("api: server is shutting down")
+	// Transfer refusals that transfer's own errors do not cover
+	errSizeRequired = errors.New("api: an upload needs size_bytes, 0 included")
+	errSizeMismatch = errors.New("api: the upload's bytes differ from its declared size")
+	errOverCap      = errors.New("api: the file is over the transfer cap")
+	errRange        = errors.New("api: the range lies outside the file")
+	errBudgetSpent  = errors.New("api: the placement spent its traffic budget")
+	errChecksum     = errors.New("api: the upload's SHA-256 differs from the one given")
+	errNoHost       = errors.New("api: this router serves no transfer host")
 )
 
 // codes maps service errors to status codes and ErrorInfo reasons, the first match winning
@@ -71,6 +105,23 @@ var codes = []struct {
 	{errNotReady, connect.CodeFailedPrecondition, reasonNotReady},
 	{placement.ErrNoCandidate, connect.CodeResourceExhausted, ""},
 	{jobs.ErrTooManyJobs, connect.CodeResourceExhausted, ""},
+	{transfer.ErrPathRefused, connect.CodeInvalidArgument, reasonPathRefused},
+	{transfer.ErrIsDirectory, connect.CodeInvalidArgument, reasonIsDirectory},
+	{transfer.ErrNotRegular, connect.CodeInvalidArgument, reasonNotRegular},
+	{errSizeRequired, connect.CodeInvalidArgument, reasonSizeRequired},
+	{errSizeMismatch, connect.CodeInvalidArgument, reasonSizeMismatch},
+	{transfer.ErrUnknown, connect.CodeNotFound, reasonTokenUnknown},
+	{transfer.ErrUsed, connect.CodeFailedPrecondition, reasonTokenUsed},
+	{transfer.ErrClaimsSpent, connect.CodeFailedPrecondition, reasonTokenUsed},
+	{transfer.ErrExpired, connect.CodeFailedPrecondition, reasonTokenExpired},
+	{transfer.ErrInUse, connect.CodeFailedPrecondition, reasonInUse},
+	{transfer.ErrFileChanged, connect.CodeFailedPrecondition, reasonFileChanged},
+	{errNoHost, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errOverCap, connect.CodeOutOfRange, reasonOverCap},
+	{errRange, connect.CodeOutOfRange, reasonRange},
+	{errBudgetSpent, connect.CodeResourceExhausted, reasonBudgetSpent},
+	{transfer.ErrTooMany, connect.CodeResourceExhausted, reasonTooManyTransfers},
+	{errChecksum, connect.CodeDataLoss, reasonChecksumMismatch},
 	{store.ErrUnknownHandle, connect.CodeNotFound, reasonHandleUnknown},
 	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},
 	{store.ErrNotFound, connect.CodeNotFound, ""},
@@ -166,7 +217,10 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 			code, msg = connect.CodeInvalidArgument, "sandbox provider refused the request"
 		case e.Code == provider.CodeNotFound && fileOp:
 			return withInfo(connect.NewError(connect.CodeNotFound,
-				errors.New("no such file or directory")), "FILE_NOT_FOUND")
+				errors.New("no such file or directory")), reasonFileNotFound)
+		case e.Code == provider.CodeNoSpace:
+			return withInfo(connect.NewError(connect.CodeResourceExhausted,
+				errors.New("the sandbox's disk is full")), reasonNoSpace)
 		}
 		return withInfo(connect.NewError(code, errors.New(msg)), string(e.Code))
 	}

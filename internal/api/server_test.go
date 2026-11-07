@@ -109,8 +109,8 @@ var small = provider.Size{
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// faulty fails reads of /fault/<code> with that provider error code and can hold readiness, and
-// reads of /fault-connect/<code> with one wrapping a backend's Connect error as E2B's do
+// faulty fails reads and writes of /fault/<code> with that provider error code and can hold
+// readiness, and reads of /fault-connect/<code> with one wrapping a backend's Connect error
 type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
@@ -151,6 +151,17 @@ func (f faulty) ReadFile(
 		}
 	}
 	return f.Provider.ReadFile(ctx, ref, path, offset, length)
+}
+
+func (f faulty) WriteFile(
+	ctx context.Context, ref provider.Ref, path string, data []byte, mode fs.FileMode,
+) error {
+	if code, ok := strings.CutPrefix(path, "/fault/"); ok {
+		return &provider.Error{
+			Code: provider.Code(code), Err: errors.New("injected by provider local for sbx-1"),
+		}
+	}
+	return f.Provider.WriteFile(ctx, ref, path, data, mode)
 }
 
 type options struct {
@@ -1656,6 +1667,15 @@ func TestErrorCodes(t *testing.T) {
 				continue
 			}
 			wantInfo(t, err, code)
+		}
+	})
+	t.Run("full disk is resource exhausted", func(t *testing.T) {
+		_, err := e.client.WriteFile(ctx, connect.NewRequest(&routerv1.WriteFileRequest{
+			Handle: h, Path: "/fault/no_space", Data: []byte("x"),
+		}))
+		mustCode(t, err, connect.CodeResourceExhausted, "NO_SPACE")
+		if strings.Contains(err.Error(), "injected") {
+			t.Errorf("no_space error %q carries the provider's text", err.Error())
 		}
 	})
 	t.Run("missing file is not found with its own reason", func(t *testing.T) {
