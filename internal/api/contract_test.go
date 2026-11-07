@@ -64,6 +64,19 @@ func unbuilt(
 				&routerv1.FetchSourceRequest{Handle: h}))
 			return err
 		},
+		"CheckX402": func() error {
+			_, err := c.CheckX402(ctx, connect.NewRequest(&routerv1.CheckX402Request{}))
+			return err
+		},
+		"EnableX402": func() error {
+			_, err := c.EnableX402(ctx, connect.NewRequest(
+				&routerv1.EnableX402Request{Handle: h}))
+			return err
+		},
+		"ListX402": func() error {
+			_, err := c.ListX402(ctx, connect.NewRequest(&routerv1.ListX402Request{Handle: h}))
+			return err
+		},
 	}
 }
 

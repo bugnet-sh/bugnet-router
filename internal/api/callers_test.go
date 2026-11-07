@@ -131,6 +131,61 @@ func TestEachTokenOpensOnlyItsService(t *testing.T) {
 	}
 }
 
+// x402Call names one Egress or Payments x402 RPC and the caller whose token opens it
+type x402Call struct {
+	rpc, owner string
+	call       func(ctx context.Context, c *http.Client, url string) error
+}
+
+var x402Calls = []x402Call{
+	{"AppendX402Events", "Egress", func(ctx context.Context, c *http.Client, url string) error {
+		_, err := routerv1connect.NewEgressServiceClient(c, url).AppendX402Events(ctx,
+			connect.NewRequest(&routerv1.AppendX402EventsRequest{PlacementId: "none"}))
+		return err
+	}},
+	{"LookupPlacement", "Payments", func(ctx context.Context, c *http.Client, url string) error {
+		_, err := routerv1connect.NewPaymentsServiceClient(c, url).LookupPlacement(ctx,
+			connect.NewRequest(&routerv1.LookupPlacementRequest{
+				Key: &routerv1.LookupPlacementRequest_StartOrderId{StartOrderId: "none"},
+			}))
+		return err
+	}},
+	{"AppendAllowanceEvent", "Payments", func(
+		ctx context.Context, c *http.Client, url string,
+	) error {
+		_, err := routerv1connect.NewPaymentsServiceClient(c, url).AppendAllowanceEvent(ctx,
+			connect.NewRequest(&routerv1.AppendAllowanceEventRequest{OrderId: "none"}))
+		return err
+	}},
+	{"AppendX402Resolved", "Payments", func(
+		ctx context.Context, c *http.Client, url string,
+	) error {
+		_, err := routerv1connect.NewPaymentsServiceClient(c, url).AppendX402Resolved(ctx,
+			connect.NewRequest(&routerv1.AppendX402ResolvedRequest{StartOrderId: "none"}))
+		return err
+	}},
+}
+
+func TestNewEgressAndPaymentsRPCsNeedTheirTokens(t *testing.T) {
+	e := newEnv(t, options{})
+	tokens := map[string]string{
+		"Internal": internalToken, "Edge": edgeToken, "Secrets": secretsToken, "SSH": sshToken,
+		"Egress": egressToken, "Operator": operatorToken, "Payments": paymentsToken, "empty": "",
+	}
+	for _, c := range x402Calls {
+		for name, tok := range tokens {
+			want := connect.CodeUnauthenticated
+			if name == c.owner {
+				want = connect.CodeUnimplemented
+			}
+			err := c.call(t.Context(), e.httpClient(t, tok), e.url)
+			if connect.CodeOf(err) != want {
+				t.Errorf("%s with the %s token gave %v, want %v", c.rpc, name, err, want)
+			}
+		}
+	}
+}
+
 func TestAnEmptyTokenAdmitsNothing(t *testing.T) {
 	e := newEnv(t, options{})
 	mux := http.NewServeMux()
