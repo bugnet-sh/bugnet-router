@@ -248,7 +248,7 @@ func fromOffset(resp *http.Response, offset, size int64) error {
 		return nil
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
-	return apiError(resp.StatusCode, resp.Header, raw, noEffect)
+	return signedError(resp.StatusCode, resp.Header, raw)
 }
 
 // contentRange reads a Content-Range such as bytes 5-9/10, a total of * as -1
@@ -335,7 +335,7 @@ func (u *upload) send(req *http.Request, pr *io.PipeReader) {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 		_ = resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			err = apiError(resp.StatusCode, resp.Header, raw, noEffect)
+			err = signedError(resp.StatusCode, resp.Header, raw)
 		}
 	}
 	u.err = err

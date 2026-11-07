@@ -302,6 +302,44 @@ func TestBoatStreamErrorsHideTheSignedURL(t *testing.T) {
 	eq(t, string(got), "abc")
 }
 
+func TestBoatRefusedSignedURLIsNotAuth(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readySandbox(t, f)
+	dir := fakeDir(t)
+	name := dir + "/f"
+	if err := os.WriteFile(name, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.expireGrants()
+	var errs []error
+	if r, err := p.OpenReader(t.Context(), ref, name, 0); err == nil {
+		_ = r.Close()
+		t.Fatal("a read from an expired signed URL opened")
+	} else {
+		errs = append(errs, err)
+	}
+	w, err := p.OpenWriter(t.Context(), ref, name, provider.WriteSpec{Size: 1, Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("x")); err == nil {
+		_, err = w.Commit(t.Context(), nil)
+	}
+	errs = append(errs, err)
+	// past Boat's 5 MiB JSON body once encoded, so WriteFile takes a signed URL too
+	errs = append(errs, p.WriteFile(t.Context(), ref, dir+"/big", make([]byte, 4<<20), 0o644))
+	for _, err := range errs {
+		e, ok := provider.AsError(err)
+		if !ok || e.Code != provider.CodeInvalid || e.CanFailOver {
+			t.Errorf("a signed URL refused with 403 gave %v, want invalid without fail-over", err)
+		}
+	}
+	got, _ := os.ReadFile(name)
+	eq(t, string(got), "abc")
+	eq(t, f.uploadCount(), 2)
+}
+
 func TestBoatStreamsAskForIdentity(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)

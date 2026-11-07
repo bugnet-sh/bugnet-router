@@ -239,9 +239,18 @@ func (p *Provider) upload(ctx context.Context, id, name string, data []byte) err
 	defer func() { _ = resp.Body.Close() }()
 	reply, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return apiError(resp.StatusCode, resp.Header, reply, noEffect)
+		return signedError(resp.StatusCode, resp.Header, reply)
 	}
 	return nil
+}
+
+// signedError classifies a signed URL's error answer, a refusal blaming the URL, never the key
+func signedError(status int, h http.Header, raw []byte) error {
+	err := apiError(status, h, raw, noEffect)
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeAuth {
+		e.Code, e.CanFailOver = provider.CodeInvalid, false
+	}
+	return err
 }
 
 // redact drops the signed URL from a transport error, since it grants writes until it expires

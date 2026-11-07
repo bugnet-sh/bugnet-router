@@ -169,6 +169,8 @@ type fakeBoat struct {
 	shortDownload bool
 	// holdUploads keeps every upload from reading its body until it is closed
 	holdUploads chan struct{}
+	// expired answers every signed URL as one past its expiry, under mu
+	expired bool
 
 	mu sync.Mutex
 	// limits is the GET /limits reply, limitsStatus its status when not 200
@@ -1368,9 +1370,9 @@ func (f *fakeBoat) signed(
 	f.mu.Lock()
 	grant, ok := f.grants[r.PathValue("token")]
 	s := f.sandboxes[grant.sandbox]
+	expired := f.expired || time.Now().After(grant.expires)
 	f.mu.Unlock()
-	if !ok || grant.method != method || time.Now().After(grant.expires) || s == nil ||
-		s.deleted {
+	if !ok || grant.method != method || expired || s == nil || s.deleted {
 		http.Error(w, "invalid or expired URL", http.StatusForbidden)
 		return uploadGrant{}, false
 	}
@@ -1505,6 +1507,13 @@ func (f *fakeBoat) deleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "type": "file.deleted", "path": name})
+}
+
+// expireGrants makes every signed URL answer as one past its expiry
+func (f *fakeBoat) expireGrants() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expired = true
 }
 
 // grantTTLs lists the ttlSeconds of every signed URL asked for, oldest first
