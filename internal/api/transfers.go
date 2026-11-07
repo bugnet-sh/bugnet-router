@@ -518,7 +518,7 @@ func (st *stream) event(ev *routerv1.EdgeEvent) {
 	}
 }
 
-// reread cuts a stream whose placement left ready or spent its edge budget, and follows its deadline
+// reread cuts a stream whose placement left ready or spent its edge budget, and follows a deadline
 func (st *stream) reread() {
 	p, err := st.s.d.Store.PlacementByID(st.ctx, st.p.ID)
 	switch {
