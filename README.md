@@ -598,7 +598,8 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   window passed. Without a key the token is random. Each token's SHA-256 goes into
   `transfer_index` in Postgres with its placement, for abuse reports.
 - **Records.** Each URL is a Valkey hash, `xfer:<sha256 hex>`, alive for `transfers.url_ttl`
-  plus `transfers.max_duration`. A placement holds at most `transfers.max_tokens_per_placement`
+  plus `transfers.max_duration`, and at least until its last lease ends, so a late resume keeps
+  its record. A placement holds at most `transfers.max_tokens_per_placement`
   unexpired URLs (`xfer:open:<placement>`) and `transfers.max_active_per_placement` active ones
   (`xfer:active:<placement>`). `OpenTransfer` claims a URL in one script under a 30 s lease,
   checking its `transfers.max_claims` claims and its byte budget of twice its size plus 64 MiB.
