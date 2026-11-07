@@ -209,8 +209,9 @@ func TestKoyebPartRetriesWait(t *testing.T) {
 			status: http.StatusTooManyRequests, body: `{"error":"slow down"}`,
 			header: map[string]string{"Retry-After": "1"}, times: 1,
 		})
+		name := filepath.Join(t.TempDir(), "f")
 		start := time.Now()
-		if _, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), data, len(data)); err != nil {
+		if _, err := streamUp(t, p, ref, name, data, len(data)); err != nil {
 			t.Fatal(err)
 		}
 		if took := time.Since(start); took < time.Second {
@@ -226,8 +227,9 @@ func TestKoyebPartRetriesWait(t *testing.T) {
 		f.failFiles("PUT /files/uploads/{id}", fileFault{
 			status: http.StatusServiceUnavailable, body: `{"error":"upstream"}`, times: 2,
 		})
+		name := filepath.Join(t.TempDir(), "f")
 		start := time.Now()
-		if _, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), data, len(data)); err != nil {
+		if _, err := streamUp(t, p, ref, name, data, len(data)); err != nil {
 			t.Fatal(err)
 		}
 		// the two retries wait 50 ms and then 100 ms
