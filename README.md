@@ -10,9 +10,9 @@ Valkey carries output streams and job leases, and River runs durable jobs. Both 
 settings from a TOML file and their secrets from the environment.
 
 `router-api` serves `SandboxRouterService` from `bugnet-proto`, and one more Connect service for
-each other caller (see [Caller services](#caller-services)). Its previews, transfers, SSH keys,
-secrets and `FetchSource` RPCs, and every other RPC not built yet, answer `Unimplemented` until the
-router builds them.
+each other caller (see [Caller services](#caller-services)). Its previews, SSH keys, secrets and
+`FetchSource` RPCs, and every other RPC not built yet, answer `Unimplemented` until the router
+builds them. Transfers are built (see [Transfers](#transfers)).
 
 A `Placement`'s `ended_at` is when it became terminated or failed, and never moves after that. It
 is unset before. A placement that fails at once, with no provider for its order, ends at its
@@ -43,8 +43,11 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
+| `internal/budget`, `internal/edgeevents` | Edge and egress budgets in Valkey, and the edge event stream |
+| `internal/transfer` | Transfer records and claims in Valkey, path resolution and staging through `bugnet-run` |
 | `test/e2e` | End-to-end tests over the built binaries |
-| `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with |
+| `test/live` | The live stack and the data-plane live rows `scripts/live-test.sh` runs |
+| `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with, `dev-front.toml` for the live stack behind the VPS |
 | `scripts` | `dev-up.sh` for a local stack and `live-test.sh` for the live provider tests |
 | `deploy/e2b` | E2B template definitions, one template per size |
 | `deploy/vps` | The VPS front: public names, site settings, the HAProxy template, the dev front |
@@ -55,7 +58,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 - Postgres 18 on `localhost:5432`, the current user a superuser
 - Valkey 9 on `localhost:6379`, at its default `maxmemory-policy noeviction`
 - `bugnet-run` and `bugnet-proto` checked out next to this repository, `go.mod` points at them
-  with `replace` until they are published
+  with `replace` until they are published, and `bugnet-edges` beside them for `test/live`
 
 ## Tests
 
@@ -75,25 +78,69 @@ a minute because one waits for a one-minute package to expire. To run only them:
 go test ./test/e2e/... -v
 ```
 
+`test/live` holds the live rows, which skip unless `scripts/live-test.sh` names providers. Its
+own tests run without any provider: the fronted mode's refusals, and the whole stack started on
+the local provider, which builds `bugnet-edge` from `../bugnet-edges`.
+
 `make test`, `make lint` and `make build` wrap the usual commands.
 
 ## Live provider tests
 
-Each adapter has live tests that run the provider contract against the real service. They skip
-without the provider's key. Paste the key into `.env` (see `.env.example`), then run:
+Live tests call the real providers with the keys in `.env` (see `.env.example`), take every
+other setting from `config/dev.toml`, create real sandboxes and remove them again, which costs a
+little on the provider's account. `scripts/live-test.sh` runs them, one suite at a time:
 
 ```sh
 scripts/live-test.sh e2b
 scripts/live-test.sh boxd koyeb boat
+scripts/live-test.sh --suite dataplane --run 'LiveDataplane/T1' e2b
+scripts/live-test.sh --suite dataplane --front vps e2b boxd
+scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 ```
 
-The script fails with the variable's name when a key is empty, and otherwise runs
-`go test -run Live` for each provider named, with every other setting from `config/dev.toml`
-(E2B uses its `[[e2b.templates]]`, Koyeb its `transfers.koyeb_part`). Each provider gets 20
-minutes unless a first argument such as `--timeout 90m` says otherwise. The tests create real
-sandboxes and remove them again, which costs a little on the provider's account. The boxd run
-also starts `python3 -m http.server 8000` in a machine and checks that its public default proxy
-does not serve it.
+| Suite | Runs | Providers | Keys checked |
+|---|---|---|---|
+| `adapters`, the default | Each provider's adapter live tests, `go test -run Live` | At least one | Each named provider's, from `.env` |
+| `dataplane` | `TestLiveDataplane` in `test/live` | At least one | Each named provider's, from `.env` |
+| `control` | `TestLiveControl` in `test/live` | Zero or more | Each named provider's, from `.env` |
+| `leak` | `TestLiveLeak` in `test/live` | At least one | Each named provider's, from `.env` |
+| `bench` | `bugnet-dev bench` against `--router URL` | Zero or more | None. It sources no `.env` and needs `BUGNET_OPERATOR_TOKEN` set |
+
+The script fails with the variable's name when a key is empty. `--run REGEX` replaces the suite's
+test pattern, and `--timeout DURATION` its time limit: 20 minutes for each provider's adapter
+tests, 90 minutes for the `test/live` suites. A row that needs another key checks it itself and
+fails at once naming the variable, never its value. Every suite but `bench` ends with
+`bugnet-dev owned` for each provider named, and fails while one still holds a sandbox under
+Bugnet's labels (`bugnet`, `bugnet-live` or `bugnet-contract`).
+
+The `test/live` suites start a stack on this Mac for each provider in turn: `router-api`,
+`router-worker` and `bugnet-edge`, built from the workspace, on a fresh database and Valkey
+prefix, with fresh secrets from `bugnet-dev keys` and the router's settings from
+`config/dev.toml` on that provider alone. Each row is a subtest named by its id and provider, such
+as `TestLiveDataplane/T1/e2b`. Rows that need the VPS fail at once in the local mode, naming
+`--front vps`.
+
+| | `--front local`, the default | `--front vps`, behind the dev front |
+|---|---|---|
+| Ports | Free loopback ports | Edge 8443, secrets route 8445, egress 9443, SSH 2223, from `config/dev-front.toml` |
+| Names | The dev names, reached with `curl --resolve` through a loopback front that adds HAProxy's PROXY v2 header | The dev names through the VPS |
+| TLS | ACME off, a fresh self-signed pair | Let's Encrypt for the exact names over the tunnel, the wildcard `make dev-certs` copied |
+| `secrets.egress_ips` | `127.0.0.1` | `vps.egress_ips` in `config/dev-front.toml` |
+
+The fronted mode keeps its ACME caches in `~/.local/state/bugnet-dev/acme/<service>/`, so
+repeated runs reuse their certificates and stay inside Let's Encrypt's limits. It refuses to start
+when one of its four ports is taken, when the wildcard pair in
+`~/.local/state/bugnet-dev/preview-dev/` is missing or expired, or when
+`https://transfer.dev.bugnet.sh/` does not answer with the certificate this stack's edge holds,
+and it says which. The live stack needs the Linux build of `bugnet-run` from
+`make -C ../bugnet-run build`.
+
+`bugnet-dev owned PROVIDER` prints the count and ids on its own, reading the provider's key from
+the environment, so `set -a; . ./.env; set +a` first.
+
+The adapter tests of each provider run the contract against the real service, and skip without
+the provider's key. The boxd run also starts `python3 -m http.server 8000` in a machine and checks
+that its public default proxy does not serve it.
 
 Every provider's run streams files of 0 B to 101 MiB up and back, compares their SHA-256 with
 `sha256sum` in the sandbox, checks a device or FIFO never reads as a regular file and logs the
@@ -142,6 +189,8 @@ bin/bugnet-dev exec --handle sbx_... -- sh -c 'echo hello; sleep 1; echo done'
 bin/bugnet-dev extensions --handle sbx_...
 bin/bugnet-dev check-extend --handle sbx_... --package dev-small-10m-more
 bin/bugnet-dev extend --handle sbx_... --package dev-small-10m-more
+bin/bugnet-dev transfer --handle sbx_... --upload data.csv --path ~/data.csv
+bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -155,6 +204,9 @@ prints the `bugnet-dev watch` command that resumes from the last cursor, with th
 placement, with its minutes, its price and whether `extend` would take it now or the reason it
 would not. `check-extend` prints the placement, then as `deadline_after` and `price_micros` the
 deadline `extend` would give it and the package's price, with no order and no change.
+`transfer` mints a transfer URL and prints it with its window, size, cap and the `curl` command
+that uses it: an upload of a local file to `--path`, `~/<file name>` when none is given, with an
+optional `--sha256`, or a download of a sandbox path.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -394,17 +446,17 @@ stream reports no OOM kill, since the job row does not keep it.
 
 ## Operation limit
 
-Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile` and `ListFiles` calls spend one
-token from a bucket that every `router-api` replica shares, `ops:<placement id>` under
-`valkey.prefix`. It holds `limits.sandbox_ops_burst` tokens and gains
+Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer` and
+`OpenTransfer` calls spend one token from a bucket that every `router-api` replica shares,
+`ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst` tokens and gains
 `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10 by default, and
 expires once it is full again. A call that finds it empty answers `ResourceExhausted` with reason
-`RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls
-spend nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec`
-or file call on a placement that is not ready. A request only the provider refuses has spent its
-token. When Valkey cannot answer within 500 ms, the call goes through and the router logs a
-warning. `StopPlacement` spends nothing, and stops that race on one placement in one process wait
-for the destroy already in flight instead of calling the provider again.
+`RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls spend
+nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec` or file
+call on a placement that is not ready. A request only the provider refuses has spent its token. When
+Valkey cannot answer within 500 ms, the call goes through and the router logs a warning.
+`StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
+destroy already in flight instead of calling the provider again.
 
 ## Error reasons
 
@@ -416,7 +468,24 @@ holds a handle or a job ID.
 | --- | --- | --- |
 | `NotFound` | `HANDLE_UNKNOWN` | A call taking a handle gets a malformed one or one never issued |
 | `NotFound` | `JOB_UNKNOWN` | `WatchJob` or `CancelJob` names a job the handle's placement lacks |
-| `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile` or `ListFiles` names a path that does not exist |
+| `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile`, `ListFiles` or a download names a path that does not exist |
+| `NotFound` | `TOKEN_UNKNOWN` | `OpenTransfer` gets a token with no record |
+| `InvalidArgument` | `PATH_REFUSED` | A transfer path that is empty, relative other than `~` or `~/rest`, or holds NUL or a newline |
+| `InvalidArgument` | `IS_DIRECTORY` | A download of a directory, or an upload onto one or onto a path ending in `/` |
+| `InvalidArgument` | `NOT_REGULAR` | A download of a FIFO, device or socket |
+| `InvalidArgument` | `SIZE_REQUIRED` | An upload without `size_bytes` |
+| `InvalidArgument` | `SIZE_MISMATCH` | An upload stream that ends short of its size or runs past it |
+| `FailedPrecondition` | `TOKEN_USED` | A transfer URL completed once, or spent its 5 claims or its bytes |
+| `FailedPrecondition` | `TOKEN_EXPIRED` | A transfer URL past its start window, also for a keyed `CreateTransfer` |
+| `FailedPrecondition` | `IN_USE` | Another stream holds the transfer |
+| `FailedPrecondition` | `FILE_CHANGED` | The file's size or modification time moved since its URL was made |
+| `FailedPrecondition` | `FEATURE_UNAVAILABLE` | `CreateTransfer` on a router without `names.transfer_host` |
+| `OutOfRange` | `OVER_CAP` | A file over the transfer cap |
+| `OutOfRange` | `RANGE` | A read outside the file |
+| `ResourceExhausted` | `TOO_MANY_TRANSFERS` | A 17th unexpired transfer URL, or a 3rd active transfer, of one placement |
+| `ResourceExhausted` | `BUDGET_SPENT` | The placement spent its edge budget |
+| `ResourceExhausted` | `NO_SPACE` | The sandbox's disk is full |
+| `DataLoss` | `CHECKSUM_MISMATCH` | An upload's SHA-256 differs from the one its URL was made with |
 | `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
@@ -439,8 +508,8 @@ the gateway.
 
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
-| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands and files |
-| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents` |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files and `CreateTransfer` |
+| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
@@ -466,9 +535,12 @@ the edge budget, the pace to keep: the full figure while only the reporting proc
 placement's bytes in the last 10 s, half while `bugnet-edge` and `bugnet-ssh` both did. A
 placement that is not ready, or an id that is unknown or malformed, gets no entry. The first report
 that reaches a budget writes `BudgetSpent`, once across every replica. An extension clears the
-spent marks, so a later crossing writes it again. Every key expires an hour after the deadline.
-An extension moves the used counters to an hour after the new deadline, even for a placement that
-reports nothing, and no report moves an expiry earlier.
+spent marks, so a later crossing writes it again, and a report that read the budget before an
+extension committed and crossed the old figure reads the placement again and takes its spent mark
+back. The used counters and spent marks expire an hour after the deadline, and
+`edge:seen:<placement>`, which records which process carried bytes for the pace, 30 s after the
+last report that carried bytes. An extension moves the used counters to an hour after the new
+deadline, even for a placement that reports nothing, and no report moves an expiry earlier.
 
 `CheckEdgeLeases` and `CheckEgressLeases` answer each named placement that is still ready with its
 deadline and bytes left, and the egress check its `secrets_version`. Ended placements are absent.
@@ -486,14 +558,57 @@ after the commit that causes an event, retrying a failed append 3 times before l
 | `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
 | `BudgetSpent` | A report first reaches a placement's edge or egress budget |
 
-`WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Over Connect
-and gRPC each sends its response headers at once, so the caller's open returns before the first
-event. Over gRPC-Web the headers wait for the first event, since gRPC-Web puts an error that comes
-before any event in the headers. Each then sends every event after the cursor, from now when the
-cursor is empty, each with the stream id to resume from. A cursor the stream does not hold,
-because the stream was trimmed past it or lost with Valkey's data, gets one `Resync` first, after
-which the caller re-checks every lease it holds. A cursor that is not a stream id answers
-`InvalidArgument`.
+`WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Over Connect and
+gRPC each sends its response headers as soon as it has fixed where it starts, so the caller's open
+returns before the first event and no event published after the open is missed. Over gRPC-Web the
+headers wait for the first event, since gRPC-Web puts an error that comes before any event in the
+headers. Each then sends every event after the cursor, from now when the cursor is empty, each with
+the stream id to resume from. A cursor the stream does not hold, because the stream was trimmed past
+it or lost with Valkey's data, gets one `Resync` first, after which the caller re-checks every lease
+it holds. A cursor that is not a stream id answers `InvalidArgument`.
+
+### Transfers
+
+`CreateTransfer` mints a one-use URL, `https://<names.transfer_host>/<bnx_ token>`, for one file
+going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves it with
+`OpenTransfer`, `ReadTransfer` and `WriteTransfer` (DP 8.3).
+
+- **Paths.** `~` and `~/rest` mean the exec user's home: `/root` for root, `/home/<user>`
+  otherwise, and the local provider's own `/root`. Any other relative path, an empty one, or one
+  with NUL or a newline answers `PATH_REFUSED`. `realpath -m` then resolves the path in the
+  sandbox, under `sudo -n` where the exec user is not root, so links behave the same everywhere.
+- **Staging.** Where the exec user is not root (boxd, Boat), a path outside its home and `/tmp`,
+  or one inside them that it cannot read (download) or write in place (upload), goes through
+  `<home>/.bugnet/xfer/<transfer id>/`. A download is copied there with
+  `sudo -n bugnet-run stage-out`, an upload is moved into place with `sudo -n bugnet-run place`,
+  and the directory is removed afterwards. Staging directories and temporary files older than an
+  hour are removed at the next `CreateTransfer` into the placement.
+- **Checks.** An upload needs `size_bytes`, 0 included, and is refused over the cap or onto a
+  directory or a path ending in `/`. A download is refused for a directory, anything but a regular
+  file, or a file over the cap, and its ETag pins its size and modification time. With
+  `want_sha256` the answer carries the file's SHA-256, from `sha256sum` in the sandbox. The cap is
+  the package's `edge.transfer_max_bytes`, else `transfers.max_bytes`.
+- **Tokens.** A call with an `idempotency_key` derives its token from the placement and the key,
+  so a retry answers the same URL, `TOKEN_USED` once it completed and `TOKEN_EXPIRED` once its
+  window passed. Without a key the token is random. Each token's SHA-256 goes into
+  `transfer_index` in Postgres with its placement, for abuse reports.
+- **Records.** Each URL is a Valkey hash, `xfer:<sha256 hex>`, alive for `transfers.url_ttl`
+  plus `transfers.max_duration`. A placement holds at most `transfers.max_tokens_per_placement`
+  unexpired URLs (`xfer:open:<placement>`) and `transfers.max_active_per_placement` active ones
+  (`xfer:active:<placement>`). `OpenTransfer` claims a URL in one script under a 30 s lease,
+  checking its `transfers.max_claims` claims and its byte budget of twice its size plus 64 MiB.
+  A failed stream hands it back, a lapsed lease frees it, and a completed one makes it used. A
+  download that started may resume after its window, an upload only within it. `OpenTransfer`
+  with `probe` describes the file without claiming, and refuses a placement that spent its edge
+  budget with `BUDGET_SPENT`.
+- **Streams.** `ReadTransfer` reads from an offset in messages of at most 256 KiB, checks the file
+  again at the end and only then sends its last bytes with `verified`. `WriteTransfer` hashes and
+  counts the bytes and commits only on a clean close with exactly the declared size and a matching
+  SHA-256, so a cut or wrong upload leaves the old file. A stream ends after
+  `transfers.idle_timeout` without a byte, at `transfers.max_duration`, at the placement's
+  deadline, and at once when the placement ends or spends its edge budget, whichever replica
+  served it, from one reader of the edge events per process. An extension moves its end.
+- **Logs** name a transfer by the first 8 hex characters of its token's SHA-256, never its path.
 
 ### Orders for Payments
 
@@ -506,6 +621,12 @@ router records an extension only once it applied it. An empty `order_id` answers
 `InvalidArgument`. `CheckPayer` answers `Unimplemented` until the wallet checks land.
 
 ## Deployment
+
+`router-api` binds `api.listen_addr` with `SO_REUSEPORT`, so a new process starts beside the old
+one. On SIGTERM the old one stops accepting, ends long polls and watch streams, and hands its jobs
+to peers at once, then keeps serving its open transfer streams for up to `transfers.max_duration`
+before it cuts what is left and exits. A download cut then resumes, and an upload restarts and uses
+one of its claims.
 
 Valkey holds the job streams, leases and shared counters, and nothing in it may be evicted. Run it
 with `maxmemory` set and `maxmemory-policy noeviction`, so a full Valkey refuses writes, which
