@@ -228,6 +228,80 @@ func TestBoatFifoIsNotRegular(t *testing.T) {
 	eq(t, isCode(err, provider.CodeNotFound), true)
 }
 
+func TestBoatTypeCheckSeesTheEntryNow(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		swap func(name string) error
+		ok   func(provider.FileEntry, error) bool
+	}{
+		{"Link", func(name string) error {
+			return errors.Join(os.Remove(name), os.Symlink("other", name))
+		}, func(e provider.FileEntry, err error) bool {
+			return err == nil && e.Mode&fs.ModeSymlink != 0 && !e.Regular && !e.IsDir
+		}},
+		{"Dir", func(name string) error {
+			return errors.Join(os.Remove(name), os.Mkdir(name, 0o755))
+		}, func(e provider.FileEntry, err error) bool {
+			return err == nil && e.IsDir && e.Mode.IsDir() && !e.Regular
+		}},
+		{"Missing", os.Remove, func(_ provider.FileEntry, err error) bool {
+			return isCode(err, provider.CodeNotFound)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := f.provider(t, fakeKey)
+			ref := readySandbox(t, f)
+			name := fakeDir(t) + "/f"
+			if err := os.WriteFile(name, []byte("abc"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// the info still describes the file, so only the shell's answer shows the change
+			f.swapAfterInfo(name, func() {
+				if err := c.swap(name); err != nil {
+					t.Error(err)
+				}
+			})
+			entry, err := p.StatFile(t.Context(), ref, name)
+			if !c.ok(entry, err) {
+				t.Fatalf("StatFile of a file that became a %s gave %+v, %v", c.name, entry, err)
+			}
+		})
+	}
+}
+
+func TestBoatReaderRefusesAnotherRange(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		shift int64
+		grow  []byte
+	}{
+		{"Start", 5, nil},
+		{"Total", 0, []byte("more")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			f.shiftRange = c.shift
+			p := f.provider(t, fakeKey)
+			ref := readySandbox(t, f)
+			name := fakeDir(t) + "/f"
+			if err := os.WriteFile(name, bytes.Repeat([]byte("x"), 64<<10), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if c.grow != nil {
+				f.growAfterInfo(name, c.grow)
+			}
+			r, err := p.OpenReader(t.Context(), ref, name, 0)
+			if err == nil {
+				_ = r.Close()
+				t.Fatal("a read whose 206 does not match the stat opened")
+			}
+			eq(t, isCode(err, provider.CodeInternal), true)
+			eq(t, len(f.downloadHeaders()), 1)
+		})
+	}
+}
+
 func TestBoatWriteBlocksUnderBackPressure(t *testing.T) {
 	f := newFake(t)
 	f.holdUploads = make(chan struct{})

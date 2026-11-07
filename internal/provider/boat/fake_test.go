@@ -171,6 +171,8 @@ type fakeBoat struct {
 	holdUploads chan struct{}
 	// expired answers every signed URL as one past its expiry, under mu
 	expired bool
+	// shiftRange moves the start of every ranged download this many bytes past the one asked for
+	shiftRange int64
 
 	mu sync.Mutex
 	// limits is the GET /limits reply, limitsStatus its status when not 200
@@ -179,6 +181,7 @@ type fakeBoat struct {
 	limitsCalls  int
 	streams      int
 	grow         map[string][]byte
+	swaps        map[string]func()
 	sandboxes    map[string]*fakeSandbox
 	order        []string
 	keys         map[string]keyRecord
@@ -211,7 +214,7 @@ func newFake(t *testing.T) *fakeBoat {
 	f := &fakeBoat{
 		t: t, tmp: tmp, sandboxes: map[string]*fakeSandbox{}, keys: map[string]keyRecord{},
 		faults: map[string]*fault{}, calls: map[string]int{}, bodies: map[string][]int{},
-		grants: map[string]uploadGrant{}, grow: map[string][]byte{},
+		grants: map[string]uploadGrant{}, grow: map[string][]byte{}, swaps: map[string]func(){},
 	}
 	mux := http.NewServeMux()
 	const sb = "/api/v1/sandboxes/{id}"
@@ -1212,6 +1215,13 @@ func (f *fakeBoat) listFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// swapAfterInfo runs swap once the next info of name is taken, its answer still the old entry
+func (f *fakeBoat) swapAfterInfo(name string, swap func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.swaps[name] = swap
+}
+
 // growAfterInfo appends extra to a file once its next info is taken, as a writer in the sandbox
 func (f *fakeBoat) growAfterInfo(name string, extra []byte) {
 	f.mu.Lock()
@@ -1232,7 +1242,12 @@ func (f *fakeBoat) fileInfo(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	extra, grows := f.grow[name]
 	delete(f.grow, name)
+	swap := f.swaps[name]
+	delete(f.swaps, name)
 	f.mu.Unlock()
+	if swap != nil {
+		swap()
+	}
 	if grows {
 		file, err := os.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0)
 		if err == nil {
@@ -1414,7 +1429,7 @@ func (f *fakeBoat) upload(w http.ResponseWriter, r *http.Request) {
 func (f *fakeBoat) download(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.downloads = append(f.downloads, r.Header.Clone())
-	ignore, short := f.ignoreRange, f.shortDownload
+	ignore, short, shift := f.ignoreRange, f.shortDownload, f.shiftRange
 	f.mu.Unlock()
 	grant, ok := f.signed(w, r, http.MethodGet)
 	if !ok {
@@ -1433,6 +1448,10 @@ func (f *fakeBoat) download(w http.ResponseWriter, r *http.Request) {
 	}
 	if ignore {
 		r.Header.Del("Range")
+	}
+	from, to, ok := strings.Cut(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-")
+	if start, err := strconv.ParseInt(from, 10, 64); shift != 0 && ok && err == nil {
+		r.Header.Set("Range", "bytes="+strconv.FormatInt(start+shift, 10)+"-"+to)
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if short {
