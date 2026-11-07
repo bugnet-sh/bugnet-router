@@ -28,6 +28,9 @@ ssh_host = "ssh.dev.bugnet.sh"
 ssh_port = 2200               # port 22 cannot be split by name, so dev SSH has its own
 egress_host = "egress.dev.bugnet.sh"
 
+[x402]
+enabled = false               # the kill switch, off here until the x402 switch-on
+
 [local]
 enabled = true                # runs commands on this machine, never give it untrusted code
 root = "bin/local"

@@ -85,6 +85,7 @@ type Config struct {
 	Secrets       Secrets
 	Fetch         Fetch
 	Hooks         Hooks
+	X402          X402
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -289,6 +290,7 @@ type file struct {
 	Secrets             secretFile `toml:"secrets"`
 	Fetch               fetchFile  `toml:"fetch"`
 	Hooks               Hooks      `toml:"hooks"`
+	X402                x402File   `toml:"x402"`
 }
 
 type apiFile struct {
@@ -437,6 +439,12 @@ func defaults() file {
 			MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: "15s",
 		},
 		Fetch: fetchFile{MaxBytes: "2GiB", EgressAddr: "127.0.0.1:9443"},
+		X402: x402File{
+			MaxServices: 5, MaxPriceMicros: maxX402PriceMicros, UnpaidRequestsPerHost: 300,
+			UnpaidBytesPerHost: "50MiB",
+			// A clone, since go-toml decodes a list into the slice it finds
+			SharedHostingSuffixes: slices.Clone(sharedHostingSuffixes),
+		},
 	}
 }
 
@@ -613,6 +621,9 @@ func (f file) config() (Config, error) {
 	}
 	c.Providers = providers
 	if err := f.dataPlane(&c); err != nil {
+		return Config{}, err
+	}
+	if c.X402, err = f.X402.read(d.X402); err != nil {
 		return Config{}, err
 	}
 	for _, p := range []*string{

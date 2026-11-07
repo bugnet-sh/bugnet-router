@@ -380,6 +380,30 @@ those short forms as IPv4 addresses.
 
 Money is integer micro-USD and times are UTC.
 
+### x402
+
+`[x402]` holds the settings of the x402 host kind, through which code in a sandbox pays x402 APIs
+from an allowance Payments holds. The features that read them land one by one, and until then
+the settings only load and check.
+
+| Key | Default | Takes |
+| --- | --- | --- |
+| `enabled` | `false` | The kill switch. `false` refuses `EnableX402` and `CheckX402` and tells egress never to pay |
+| `max_services` | `5` | x402 services per placement, 1 to 32 |
+| `max_price_micros` | `500000` | The most one paid call may cost, 1 to 500000 micro-USD |
+| `unpaid_requests_per_host` | `300` | Requests Bugnet did not pay, per placement and host, 1 to 4294967295 |
+| `unpaid_bytes_per_host` | `"50MiB"` | Bytes both ways of those requests, per placement and host, a byte size |
+| `shared_hosting_suffixes` | 16 names | The gateway's list of shared-hosting suffixes |
+| `allowed_shared_hosts` | `[]` | Hosts under a shared-hosting suffix that may still be enabled |
+| `blocked_hosts` | `[]` | Hosts refused at enable and dropped from `ResolveTunnel` |
+
+`enabled` stays `false` in `config/example.toml` and `config/dev.toml` until the x402
+switch-on. The three lists take lowercase host names, each once, and an error names the entry's
+position, never its text. `shared_hosting_suffixes` holds the same 16 names as bugnet-proto's
+`vectors/x402/shared-hosting-suffixes.json`. A host under one of them is refused unless it is in
+`allowed_shared_hosts`, which the deploy writes from the reviewed hosts of the gateway's
+`index.json`, never by hand. `blocked_hosts` is the operator's list.
+
 ## Prices and availability
 
 `Estimate` lists every start package by price, each with `available` where a provider could host

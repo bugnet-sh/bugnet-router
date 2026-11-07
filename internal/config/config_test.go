@@ -186,6 +186,8 @@ apply_wait = ""
 [fetch]
 max_bytes = ""
 egress_addr = ""
+[x402]
+unpaid_bytes_per_host = ""
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -1159,4 +1161,218 @@ func TestProviderKeyEnv(t *testing.T) {
 	}
 	_, ok := ProviderKeyEnv("local")
 	eq(t, ok, false)
+}
+
+/* x402 */
+
+// x402Suffixes is XS 6.16's default shared_hosting_suffixes, in its order
+var x402Suffixes = []string{
+	"workers.dev", "onrender.com", "vercel.app", "netlify.app", "pages.dev", "herokuapp.com",
+	"fly.dev", "up.railway.app", "replit.app", "ngrok-free.app", "ngrok.io", "trycloudflare.com",
+	"github.io", "glitch.me", "deno.dev", "web.app",
+}
+
+func TestX402Defaults(t *testing.T) {
+	c, err := LoadFile(writeFile(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.X402, X402{
+		MaxServices: 5, MaxPriceMicros: 500000, UnpaidRequestsPerHost: 300,
+		UnpaidBytesPerHost: 52428800, SharedHostingSuffixes: x402Suffixes,
+	})
+	eq(t, c.X402.Enabled, false)
+	eq(t, len(c.X402.SharedHostingSuffixes), 16)
+}
+
+func TestX402Settings(t *testing.T) {
+	c, err := LoadFile(writeFile(t, `[x402]
+enabled = true
+max_services = 32
+max_price_micros = 1
+unpaid_requests_per_host = 4294967295
+unpaid_bytes_per_host = "1024GiB"
+shared_hosting_suffixes = ["workers.dev", "ts.net"]
+allowed_shared_hosts = ["api.workers.dev"]
+blocked_hosts = ["bad.example.com", "worse.example.com"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.X402, X402{
+		Enabled: true, MaxServices: 32, MaxPriceMicros: 1, UnpaidRequestsPerHost: 4294967295,
+		UnpaidBytesPerHost: 1 << 40, SharedHostingSuffixes: []string{"workers.dev", "ts.net"},
+		AllowedSharedHosts: []string{"api.workers.dev"},
+		BlockedHosts:       []string{"bad.example.com", "worse.example.com"},
+	})
+	low, err := LoadFile(writeFile(t, `[x402]
+max_services = 1
+max_price_micros = 500000
+unpaid_requests_per_host = 1
+unpaid_bytes_per_host = "1"
+shared_hosting_suffixes = []
+allowed_shared_hosts = []
+blocked_hosts = []
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, low.X402, X402{
+		MaxServices: 1, MaxPriceMicros: 500000, UnpaidRequestsPerHost: 1, UnpaidBytesPerHost: 1,
+	})
+}
+
+func TestX402SuffixListReplacesTheDefault(t *testing.T) {
+	for range 2 {
+		c, err := LoadFile(writeFile(t, "[x402]\nshared_hosting_suffixes = [\"ts.net\"]\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, c.X402.SharedHostingSuffixes, []string{"ts.net"})
+	}
+	c, err := LoadFile(writeFile(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.X402.SharedHostingSuffixes, x402Suffixes)
+}
+
+func TestX402Bounds(t *testing.T) {
+	const size = "x402.unpaid_bytes_per_host must be 1 byte to 1 TiB"
+	cases := []struct{ key, value, want string }{
+		{"max_services", "0", "x402.max_services must be 1 to 32"},
+		{"max_services", "33", "x402.max_services must be 1 to 32"},
+		{"max_services", "-1", "x402.max_services must be 1 to 32"},
+		{"max_price_micros", "0", "x402.max_price_micros must be 1 to 500000"},
+		{"max_price_micros", "500001", "x402.max_price_micros must be 1 to 500000"},
+		{"max_price_micros", "-500000", "x402.max_price_micros must be 1 to 500000"},
+		{"unpaid_requests_per_host", "0", "x402.unpaid_requests_per_host must be 1 to 4294967295"},
+		{"unpaid_requests_per_host", "-300",
+			"x402.unpaid_requests_per_host must be 1 to 4294967295"},
+		{"unpaid_requests_per_host", "4294967296",
+			"x402.unpaid_requests_per_host must be 1 to 4294967295"},
+		{"unpaid_bytes_per_host", `"0B"`, size},
+		{"unpaid_bytes_per_host", `"0"`, size},
+		{"unpaid_bytes_per_host", `"0MiB"`, size},
+		{"unpaid_bytes_per_host", `"-50MiB"`, size},
+		{"unpaid_bytes_per_host", `"50MB"`, size},
+		{"unpaid_bytes_per_host", `"1025GiB"`, size},
+	}
+	for _, c := range cases {
+		msg := problem(t, "[x402]\n"+c.key+" = "+c.value+"\n")
+		if !strings.HasPrefix(msg, c.want) {
+			t.Errorf("x402.%s = %s gave %q, want %q", c.key, c.value, msg, c.want)
+		}
+	}
+}
+
+func TestX402ValueKinds(t *testing.T) {
+	cases := []struct{ toml, want string }{
+		{`enabled = "true"`, "line 4: x402.enabled must be true or false"},
+		{`max_services = "5"`, "line 4: x402.max_services must be a whole number"},
+		{"max_price_micros = 0.5", "line 4: x402.max_price_micros must be a whole number"},
+		{"unpaid_requests_per_host = 3e2",
+			"line 4: x402.unpaid_requests_per_host must be a whole number"},
+		{"unpaid_bytes_per_host = 52428800",
+			"line 4: x402.unpaid_bytes_per_host must be a string"},
+		{`blocked_hosts = "a.example.com"`,
+			"line 4: x402.blocked_hosts must be an array of strings"},
+		{"allowed_shared_hosts = [1]",
+			"line 4: x402.allowed_shared_hosts must be an array of strings"},
+		{`shared_hosting_suffixes = [["workers.dev"]]`,
+			"line 4: x402.shared_hosting_suffixes must be an array of strings"},
+	}
+	for _, c := range cases {
+		if msg := problem(t, "[x402]\n"+c.toml+"\n"); msg != c.want {
+			t.Errorf("%s gave %q, want %q", c.toml, msg, c.want)
+		}
+	}
+}
+
+func TestX402HostListsRefuseBadNames(t *testing.T) {
+	bad := []string{
+		"Foo.dev", "1.2.3.4", "127.1", "::1", "a.example.", "*.x.com", "x.com:443",
+		"https://x.com", "a_b.example.com", "",
+	}
+	lists := []string{"shared_hosting_suffixes", "allowed_shared_hosts", "blocked_hosts"}
+	for _, key := range lists {
+		for _, name := range bad {
+			msg := problem(t, "[x402]\n"+key+` = ["ok.example.com", "`+name+`"]`+"\n")
+			want := "x402." + key + " entry 2 must be a lowercase host name"
+			if !strings.HasPrefix(msg, want) {
+				t.Errorf("%s with %q gave %q, want %q", key, name, msg, want)
+			}
+			if name != "" && strings.Contains(msg, name) {
+				t.Errorf("%s with %q: error quotes the entry: %s", key, name, msg)
+			}
+		}
+		msg := problem(t, "[x402]\n"+key+
+			` = ["a.example.com", "b.example.com", "a.example.com"]`+"\n")
+		eq(t, msg, "x402."+key+" entry 3 repeats entry 1")
+	}
+}
+
+func TestX402UnknownKeyRefused(t *testing.T) {
+	cases := []struct{ name, toml, want string }{
+		{"misspelt key", "[x402]\nmax_service = 5", "line 4: x402.max_service is not a setting"},
+		{"key in capitals", "[x402]\nEnabled = true",
+			"line 4: x402.Enabled is not a setting, did you mean x402.enabled"},
+		{"table in capitals", "[X402]\nenabled = true",
+			"line 3: X402 is not a setting, did you mean x402"},
+		{"dropped seller key", "[x402]\nself_hosted_sellers = []",
+			"line 4: x402.self_hosted_sellers is not a setting"},
+		{"an egress key", "[x402]\npayments_url = \"https://127.0.0.1:8449\"",
+			"line 4: x402.payments_url is not a setting"},
+		{"table set twice", "[x402]\nenabled = false\n[x402]", "line 5: x402 is set twice"},
+	}
+	for _, c := range cases {
+		if msg := problem(t, c.toml); msg != c.want {
+			t.Errorf("%s: %q, want %q", c.name, msg, c.want)
+		}
+	}
+}
+
+func TestExampleTomlHoldsX402Defaults(t *testing.T) {
+	empty, err := LoadFile(writeFile(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, loadExample(t).X402, empty.X402)
+	doc, err := outline([]byte(committed(t, "example.toml")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written []string
+	for _, s := range doc {
+		if len(s.path) == 2 && s.path[0] == "x402" {
+			written = append(written, s.path[1])
+		}
+	}
+	var keys []string
+	schema := reflect.TypeFor[x402File]()
+	for i := range schema.NumField() {
+		keys = append(keys, schema.Field(i).Tag.Get("toml"))
+	}
+	slices.Sort(written)
+	slices.Sort(keys)
+	eq(t, written, keys)
+}
+
+func TestCommittedFilesKeepX402Off(t *testing.T) {
+	for _, name := range []string{"example.toml", "dev.toml"} {
+		doc, err := outline([]byte(committed(t, name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(doc, func(s setting) bool {
+			return slices.Equal(s.path, []string{"x402", "enabled"})
+		}) {
+			t.Errorf("config/%s does not write x402.enabled", name)
+		}
+		c, err := LoadFile(filepath.Join("..", "..", "config", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, c.X402.Enabled, false)
+	}
 }
