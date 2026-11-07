@@ -101,14 +101,17 @@ func kind(ev *routerv1.EdgeEvent) string {
 	return "none"
 }
 
-// Watch sends each entry after cursor, a Resync first when cursor is older than the stream
+// Watch calls opened at a fixed start, then sends each entry after cursor, a Resync first if lost
 func (b *Bus) Watch(
-	ctx context.Context, cursor string,
+	ctx context.Context, cursor string, opened func(),
 	send func(cursor string, ev *routerv1.EdgeEvent) error,
 ) error {
 	from, resync, err := b.start(ctx, cursor)
 	if err != nil {
 		return err
+	}
+	if opened != nil {
+		opened()
 	}
 	if resync {
 		if err := send(from, resyncEvent()); err != nil {

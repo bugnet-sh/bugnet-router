@@ -55,7 +55,7 @@ func watch(t *testing.T, b *edgeevents.Bus, cursor string, n int, during func())
 	started := make(chan struct{})
 	go func() {
 		close(started)
-		done <- b.Watch(ctx, cursor, func(c string, ev *routerv1.EdgeEvent) error {
+		done <- b.Watch(ctx, cursor, nil, func(c string, ev *routerv1.EdgeEvent) error {
 			mu.Lock()
 			defer mu.Unlock()
 			out = append(out, got{c, ev})
@@ -121,6 +121,29 @@ func TestWatchFromNowSendsOnlyLaterEvents(t *testing.T) {
 	eq(t, []string{evs[0].cursor, evs[1].cursor}, all[1:])
 }
 
+func TestWatchFromNowSendsWhatComesRightAfterItOpened(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	b := edgeevents.New(vk, prefix, discard)
+	for _, existing := range []bool{false, true} {
+		if existing {
+			b.Publish(t.Context(), ended("before"))
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		var sent []string
+		err := b.Watch(ctx, "", func() { b.Publish(ctx, ended("right after")) },
+			func(_ string, ev *routerv1.EdgeEvent) error {
+				sent = append(sent, ev.GetPlacementEnded().GetPlacementId())
+				cancel()
+				return nil
+			})
+		cancel()
+		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(sent, []string{"right after"}) {
+			t.Fatalf("with an older entry %v: sent %q and %v, want the event published as the "+
+				"stream opened", existing, sent, err)
+		}
+	}
+}
+
 func TestWatchResumesAfterTheCursor(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	b := edgeevents.New(vk, prefix, discard)
@@ -175,7 +198,7 @@ func TestWatchRefusesAMalformedCursor(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	b := edgeevents.New(vk, prefix, discard)
 	for _, c := range []string{"x", "1-", "-1", "1-2-3", "0x1-0", " 1-0", "1"} {
-		err := b.Watch(t.Context(), c, func(string, *routerv1.EdgeEvent) error { return nil })
+		err := b.Watch(t.Context(), c, nil, func(string, *routerv1.EdgeEvent) error { return nil })
 		if !errors.Is(err, edgeevents.ErrBadCursor) {
 			t.Errorf("cursor %q gave %v, want ErrBadCursor", c, err)
 		}
@@ -187,7 +210,7 @@ func TestWatchStopsWhenSendFails(t *testing.T) {
 	b := edgeevents.New(vk, prefix, discard)
 	b.Publish(t.Context(), ended("a"))
 	gone := errors.New("client went away")
-	err := b.Watch(t.Context(), "0-0", func(string, *routerv1.EdgeEvent) error { return gone })
+	err := b.Watch(t.Context(), "0-0", nil, func(string, *routerv1.EdgeEvent) error { return gone })
 	if !errors.Is(err, gone) {
 		t.Fatalf("watch gave %v, want the send error", err)
 	}

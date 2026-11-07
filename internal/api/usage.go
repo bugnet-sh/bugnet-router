@@ -178,13 +178,15 @@ func (s *Server) watch(
 	send func(string, *routerv1.EdgeEvent) error,
 ) error {
 	// gRPC-Web carries an error before the first message in the headers, so they must wait
-	if peer.Protocol != connect.ProtocolGRPCWeb {
-		sendHeaders(ctx)
+	opened := func() { sendHeaders(ctx) }
+	if peer.Protocol == connect.ProtocolGRPCWeb {
+		opened = nil
 	}
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(s.ctx, cancel)()
-	err := s.events.Watch(wctx, cursor, send)
+	// The headers go once the start is fixed, so nothing published after the open is missed
+	err := s.events.Watch(wctx, cursor, opened, send)
 	switch {
 	case err == nil:
 		return nil
