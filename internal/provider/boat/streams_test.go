@@ -512,6 +512,10 @@ func TestBoatMissingPathOnEveryFileRoute(t *testing.T) {
 				return err
 			}},
 		{"UploadURL", routeUploadURL, commitThree},
+		{"WriteUploadURL", routeUploadURL,
+			func(t *testing.T, p *Provider, ref provider.Ref, dir string) error {
+				return p.WriteFile(t.Context(), ref, dir+"/f", make([]byte, fileCap), 0o644)
+			}},
 		{"Permissions", routePermissions, commitThree},
 		{"Move", routeMove, commitThree},
 	} {
