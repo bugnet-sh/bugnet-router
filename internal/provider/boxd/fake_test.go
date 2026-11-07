@@ -93,6 +93,8 @@ type fakeBoxd struct {
 	onCreated func()
 	// noSpace refuses every FsWrite with boxd's no_space reason
 	noSpace atomic.Bool
+	// noSpaceAfter ends every FsWrite with boxd's no_space reason once it wrote this many bytes
+	noSpaceAfter atomic.Int64
 	// badBytesRead counts one byte too many on FsRead's eof chunk
 	badBytesRead atomic.Bool
 	// shortRead ends FsRead halfway with an honest eof chunk, as a file cut while it is read
@@ -118,6 +120,8 @@ type fakeBoxd struct {
 	peers        map[string][]string
 	cleanupPaths []string
 	running      atomic.Int64
+	// readHook runs with the path at the start of every FsRead, before boxd looks at it
+	readHook func(name string)
 }
 
 func newFake(t *testing.T) *fakeBoxd {
@@ -745,7 +749,11 @@ func (f *fakeBoxd) FsRead(
 	name := string(req.GetPath())
 	f.mu.Lock()
 	f.lengths = append(f.lengths, req.GetLength())
+	hook := f.readHook
 	f.mu.Unlock()
+	if hook != nil {
+		hook(name)
+	}
 	entry, err := lstatEntry(name)
 	if err != nil {
 		return fsErr(stream.SetTrailer, err)
@@ -800,6 +808,13 @@ func (f *fakeBoxd) FsRead(
 		last.Entry = first.Entry
 	}
 	return stream.Send(last)
+}
+
+// beforeRead sets the hook every later FsRead runs before it looks at its path
+func (f *fakeBoxd) beforeRead(hook func(name string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readHook = hook
 }
 
 // readLengths lists the length every FsRead asked for, oldest first
@@ -864,6 +879,10 @@ func (f *fakeBoxd) FsWrite(
 	chunks := []int{len(first.GetData())}
 	written, err := file.Write(first.GetData())
 	for err == nil {
+		if full := f.noSpaceAfter.Load(); full > 0 && int64(written) >= full {
+			return fsFail(stream.SetTrailer, codes.ResourceExhausted, "no_space",
+				"write: no space left on device")
+		}
 		var c *boxdpb.FsWriteChunk
 		if c, err = stream.Recv(); err != nil {
 			break

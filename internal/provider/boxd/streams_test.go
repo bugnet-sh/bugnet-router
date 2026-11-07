@@ -13,6 +13,10 @@ import (
 	"syscall"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/contract"
 )
@@ -161,6 +165,77 @@ func TestBoxdNoSpace(t *testing.T) {
 	if !isCode(err, provider.CodeNoSpace) {
 		t.Fatalf("WriteFile boxd refused with no_space gave %v, want no_space", err)
 	}
+}
+
+func TestBoxdNoSpaceMidUploadFailsTheWrite(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	dir := t.TempDir()
+	name := filepath.Join(dir, "f")
+	if err := os.WriteFile(name, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.noSpaceAfter.Store(2 << 20)
+	// More than gRPC's 16 MiB windows hold, so a Send meets the stream boxd already ended
+	data := make([]byte, 24<<20)
+	w, err := p.OpenWriter(t.Context(), ref, name,
+		provider.WriteSpec{Size: int64(len(data)), Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := w.Write(data)
+	if !isCode(err, provider.CodeNoSpace) || n >= len(data) {
+		t.Fatalf("a Write boxd ended after 2 MiB sent %d bytes and gave %v, want no_space", n, err)
+	}
+	eq(t, w.Abort(), nil)
+	got, _ := os.ReadFile(name)
+	eq(t, string(got), "old")
+	entries, _ := os.ReadDir(dir)
+	eq(t, len(entries), 1)
+}
+
+func TestBoxdFileErrorReasons(t *testing.T) {
+	for _, c := range []struct {
+		code   codes.Code
+		reason string
+		want   provider.Code
+	}{
+		{codes.ResourceExhausted, "no_space", provider.CodeNoSpace},
+		{codes.PermissionDenied, "permission_denied", provider.CodeInvalid},
+		{codes.PermissionDenied, "read_only", provider.CodeInvalid},
+		{codes.NotFound, "not_found", provider.CodeNotFound},
+		{codes.PermissionDenied, "", provider.CodeAuth},
+	} {
+		err := fsError(t.Context(), status.Error(c.code, "boxd said no"),
+			metadata.Pairs(reasonTrailer, c.reason))
+		if !isCode(err, c.want) {
+			t.Errorf("%v with reason %q gave %v, want %s", c.code, c.reason, err, c.want)
+		}
+	}
+}
+
+func TestBoxdReaderRefusesAFileSwappedForALink(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := readyMachine(t, f)
+	dir := t.TempDir()
+	name := filepath.Join(dir, "f")
+	streamUp(t, p, ref, name, []byte("abc"))
+	if err := os.WriteFile(filepath.Join(dir, "other"), []byte("xyz"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.beforeRead(func(name string) {
+		_ = os.Remove(name)
+		_ = os.Symlink("other", name)
+	})
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err == nil {
+		got, _ := io.ReadAll(r)
+		_ = r.Close()
+		t.Fatalf("a file swapped for a link after its stat read %q", got)
+	}
+	eq(t, isCode(err, provider.CodeInvalid), true)
 }
 
 func TestBoxdFilePermissionIsNotAuth(t *testing.T) {
