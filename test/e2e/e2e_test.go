@@ -47,6 +47,7 @@ const (
 	smallPrice = 50000
 	morePkg    = "e2e-small-10m-more"
 	shortPkg   = "e2e-small-1m"
+	shortMore  = "e2e-small-1m-more"
 )
 
 const catalogJSON = `{"packages": [
@@ -55,7 +56,9 @@ const catalogJSON = `{"packages": [
 	{"id": "e2e-small-10m-more", "resources": {"vcpu": 1, "memory_mib": 512, "disk_gib": 1},
 		"minutes": 10, "price_micros": 45000, "extension_of": "e2e-small-10m"},
 	{"id": "e2e-small-1m", "resources": {"vcpu": 1, "memory_mib": 512, "disk_gib": 1},
-		"minutes": 1, "price_micros": 10000}
+		"minutes": 1, "price_micros": 10000},
+	{"id": "e2e-small-1m-more", "resources": {"vcpu": 1, "memory_mib": 512, "disk_gib": 1},
+		"minutes": 1, "price_micros": 9000, "extension_of": "e2e-small-1m"}
 ]}`
 
 const (
@@ -506,6 +509,9 @@ listen_addr = %q
 [valkey]
 addr = %q
 prefix = %q
+
+[names]
+transfer_host = "transfer.e2e.example"
 
 [local]
 enabled = true
