@@ -42,6 +42,7 @@ import (
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/dpkeys"
 	"github.com/oynozan/bugnet-router/internal/edgeevents"
 	"github.com/oynozan/bugnet-router/internal/handle"
 	"github.com/oynozan/bugnet-router/internal/jobs"
@@ -182,6 +183,8 @@ type options struct {
 	// wrap replaces the faulty local provider in the registry, given the local provider's root
 	wrap      func(l *local.Provider, root string) provider.Provider
 	transfers config.Transfers // the transfer settings, each zero field at its default
+	// noTransferHost and noKeys leave the API server without a transfer host or root keys
+	noTransferHost, noKeys bool
 }
 
 type env struct {
@@ -292,11 +295,18 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.apiEngine != nil {
 		apiEngine = opts.apiEngine
 	}
+	host, apiKeys := transferHost, keys
+	if opts.noTransferHost {
+		host = ""
+	}
+	if opts.noKeys {
+		apiKeys = dpkeys.Keys{}
+	}
 	srv := api.New(api.Deps{
 		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
-		Budget: budgetDefaults, Keys: keys, Transfers: opts.transfers, TransferHost: transferHost,
+		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 	})
 	t.Cleanup(srv.Close)
 

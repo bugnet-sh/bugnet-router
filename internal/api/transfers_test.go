@@ -245,6 +245,21 @@ var tinyCatalog = strings.TrimSuffix(catalogJSON, "\n]}") + `,
 		"minutes": 10, "price_micros": 50000, "edge": {"transfer_max_bytes": "1KiB"}}
 ]}`
 
+func TestCreateTransferWithoutAHostOrKeyIsUnavailable(t *testing.T) {
+	for name, opts := range map[string]options{
+		"no transfer host": {noTransferHost: true}, "no root key": {noKeys: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, opts)
+			h, _ := e.readyPlacement(t)
+			_, err := e.mint(t, upload(h, "/root/f", 1))
+			mustCode(t, err, connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE")
+			eq(t, len(e.xferKeys(t)), 0)
+			eq(t, e.indexRows(t), 0)
+		})
+	}
+}
+
 func TestCreateTransferRules(t *testing.T) {
 	e := newEnv(t, options{catalog: tinyCatalog})
 	h, _ := e.readyPlacement(t)
@@ -994,4 +1009,34 @@ func TestOpenTransferChecksTheClaimBeforeTheFile(t *testing.T) {
 	_, err = e.openWith(t, tokenOf(t, used), fromSandbox, true)
 	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
 	eq(t, stats(fake), before)
+}
+
+func TestCreateTransferSweepsLeftovers(t *testing.T) {
+	e, fake := stagedEnv(t)
+	h := e.stagedPlacement(t, fake)
+	old := time.Now().Add(-2 * time.Hour)
+	for _, p := range []string{
+		"/home/boxd/.bugnet/xfer/old/f", "/home/boxd/.bugnet/xfer/new/f",
+		"/home/boxd/out/.a.bugnet-0011aabb.part", "/home/boxd/out/.b.bugnet-2233ccdd.part",
+	} {
+		e.put(t, h, p, "x")
+	}
+	for _, p := range []string{
+		"/home/boxd/.bugnet/xfer/old", "/home/boxd/out/.a.bugnet-0011aabb.part",
+	} {
+		if err := os.Chtimes(e.host(t, h, p), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.mintOK(t, upload(h, "~/out/next", 1))
+	for p, kept := range map[string]bool{
+		"/home/boxd/.bugnet/xfer/old":            false,
+		"/home/boxd/.bugnet/xfer/new/f":          true,
+		"/home/boxd/out/.a.bugnet-0011aabb.part": false,
+		"/home/boxd/out/.b.bugnet-2233ccdd.part": true,
+	} {
+		if _, err := os.Stat(e.host(t, h, p)); (err == nil) != kept {
+			t.Errorf("%s: %v, want kept %v", p, err, kept)
+		}
+	}
 }
