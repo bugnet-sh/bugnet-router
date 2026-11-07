@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1058,6 +1059,28 @@ func listAll(
 	l := provider.NewListing(10000)
 	err := p.ListFiles(ctx, ref, dir, depth, l)
 	return l.Entries, err
+}
+
+func TestE2BListingMarksRegularFiles(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	ref := f.add(nil)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := listAll(t.Context(), p, ref, dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regular := map[string]bool{}
+	for _, e := range entries {
+		regular[filepath.Base(e.Path)] = e.Regular
+	}
+	eq(t, regular, map[string]bool{"file": true, "fifo": false})
 }
 
 func TestE2BListFilesStopsAtTheLimit(t *testing.T) {

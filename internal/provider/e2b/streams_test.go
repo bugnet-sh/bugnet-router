@@ -3,6 +3,8 @@ package e2b
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"io/fs"
@@ -65,9 +67,8 @@ func TestE2BStreamsAskForIdentity(t *testing.T) {
 	var methods []string
 	for _, c := range calls {
 		methods = append(methods, c.method)
-		if c.encoding != "identity" || c.protoMajor != 1 {
-			t.Errorf("%s /files asked for encoding %q over HTTP/%d, want identity over HTTP/1",
-				c.method, c.encoding, c.protoMajor)
+		if c.encoding != "identity" {
+			t.Errorf("%s /files asked for encoding %q, want identity", c.method, c.encoding)
 		}
 	}
 	eq(t, methods, []string{http.MethodPost, http.MethodGet})
@@ -78,6 +79,41 @@ func TestE2BStreamsAskForIdentity(t *testing.T) {
 	eq(t, [3]bool{tr.Protocols.HTTP1(), tr.Protocols.HTTP2(), tr.Protocols.UnencryptedHTTP2()},
 		[3]bool{true, false, false})
 	eq(t, p.streams.CheckRedirect != nil, true)
+}
+
+func TestE2BStreamsStayOnHTTP1WhenH2IsOffered(t *testing.T) {
+	var seen []int
+	var mu sync.Mutex
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter,
+		r *http.Request,
+	) {
+		mu.Lock()
+		seen = append(seen, r.ProtoMajor)
+		mu.Unlock()
+		_, _ = io.WriteString(w, "ok")
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	h2, err := srv.Client().Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h2.Body.Close()
+
+	c := newStreamClient()
+	tr := c.Transport.(proxyTransport).base.(*http.Transport)
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	tr.TLSClientConfig = &tls.Config{RootCAs: roots}
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	eq(t, seen, []int{2, 1})
 }
 
 func TestE2BNoSpace(t *testing.T) {

@@ -760,7 +760,7 @@ func (h fakeFilesystem) ListDir(
 			fmt.Errorf("path %s is not a directory", root))
 	}
 	resp := &filesystempb.ListDirResponse{}
-	err = filepath.WalkDir(root, func(name string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(name string, _ fs.DirEntry, err error) error {
 		if err != nil || name == root {
 			return err
 		}
@@ -768,19 +768,11 @@ func (h fakeFilesystem) ListDir(
 		if strings.Count(rel, string(filepath.Separator))+1 > depth {
 			return fs.SkipDir
 		}
-		info, err := d.Info()
+		e, err := fakeEntry(name)
 		if err != nil {
 			return err
 		}
-		t := filesystempb.FileType_FILE_TYPE_FILE
-		if info.IsDir() {
-			t = filesystempb.FileType_FILE_TYPE_DIRECTORY
-		}
-		resp.Entries = append(resp.Entries, &filesystempb.EntryInfo{
-			Name: info.Name(), Type: t, Path: name, Size: info.Size(),
-			Mode: uint32(info.Mode().Perm()), Permissions: info.Mode().String(),
-			ModifiedTime: timestamppb.New(info.ModTime()),
-		})
+		resp.Entries = append(resp.Entries, e)
 		return nil
 	})
 	if err != nil {
