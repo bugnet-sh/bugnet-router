@@ -392,7 +392,7 @@ the settings only load and check.
 | `max_services` | `5` | x402 services per placement, 1 to 32 |
 | `max_price_micros` | `500000` | The most one paid call may cost, 1 to 500000 micro-USD |
 | `unpaid_requests_per_host` | `300` | Requests Bugnet did not pay, per placement and host, 1 to 4294967295 |
-| `unpaid_bytes_per_host` | `"50MiB"` | Bytes both ways of those requests, per placement and host, a byte size |
+| `unpaid_bytes_per_host` | `"50MiB"` | Bytes both ways of those requests, per placement and host, a byte size, 1 byte to 1 TiB |
 | `shared_hosting_suffixes` | 16 names | The gateway's list of shared-hosting suffixes |
 | `allowed_shared_hosts` | `[]` | Hosts under a shared-hosting suffix that may still be enabled |
 | `blocked_hosts` | `[]` | Hosts refused at enable and dropped from `ResolveTunnel` |
