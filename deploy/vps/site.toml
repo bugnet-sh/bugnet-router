@@ -4,8 +4,8 @@
 
 ipv4 = ""                    # the VPS's address, from the founder, required by deploy maps
 ipv6 = ""                    # empty without IPv6
-admin_ssh_port = 2222        # DP question 1, option (a); 22 under option (b)
-ssh_gateway_ip = ""          # empty binds every address (a); the second IPv4 under (b)
-egress_ip = ""               # empty shares the address (X8); DP question 11's own address
+admin_ssh_port = 2222        # DP question 1, option (a), and 22 under option (b)
+ssh_gateway_ip = ""          # empty binds every address (a), the second IPv4 under (b)
+egress_ip = ""               # empty shares the address (X8), or DP question 11's own address
 dns_provider = "cloudflare"  # DP question 2, any lego DNS provider
 dns_env = ["CF_DNS_API_TOKEN"]   # the variables dns_provider reads from /etc/bugnet/certs.env
