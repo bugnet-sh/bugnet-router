@@ -323,7 +323,16 @@ func TestDownloadMintAnswersTheFile(t *testing.T) {
 	eq(t, len(m.GetSha256()), 0)
 	req := download(h, "/root/d")
 	req.WantSha256 = true
-	eq(t, e.mintOK(t, req).GetSha256(), digest("0123456789"))
+	summed := e.mintOK(t, req)
+	eq(t, summed.GetSha256(), digest("0123456789"))
+	// The edge sends a download's digest from mint as X-Bugnet-Sha256
+	eq(t, e.open(t, summed, fromSandbox).GetSha256(), digest("0123456789"))
+	o, err := e.openWith(t, tokenOf(t, m), fromSandbox, true)
+	eq(t, err, nil)
+	eq(t, len(o.GetSha256()), 0)
+	up := upload(h, "/root/u", 2)
+	up.Sha256 = digest("ab")
+	eq(t, len(e.open(t, e.mintOK(t, up), toSandbox).GetSha256()), 0)
 }
 
 func TestTransferTokenIsIdempotent(t *testing.T) {

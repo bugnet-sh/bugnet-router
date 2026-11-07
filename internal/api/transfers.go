@@ -335,7 +335,7 @@ func (e *EdgeServer) OpenTransfer(
 		ExpiresAt: timestamppb.New(*p.Deadline), Budget: s.edgeBudget(p, left),
 	}
 	if rec.Direction == download {
-		out.ModifiedAt = timestamppb.New(rec.ModifiedAt)
+		out.ModifiedAt, out.Sha256 = timestamppb.New(rec.ModifiedAt), rec.SHA256
 	}
 	return connect.NewResponse(out), nil
 }

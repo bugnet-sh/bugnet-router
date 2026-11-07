@@ -594,7 +594,8 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
 - **Checks.** An upload needs `size_bytes`, 0 included, and is refused over the cap or onto a
   directory or a path ending in `/`. A download is refused for a directory, anything but a regular
   file, or a file over the cap, and its ETag pins its size and modification time. With
-  `want_sha256` the answer carries the file's SHA-256, from `sha256sum` in the sandbox. The cap is
+  `want_sha256` the answer carries the file's SHA-256, from `sha256sum` in the sandbox, and
+  `OpenTransfer` hands the same digest to the edge for its `X-Bugnet-Sha256` header. The cap is
   the package's `edge.transfer_max_bytes`, else `transfers.max_bytes`.
 - **Tokens.** A call with an `idempotency_key` derives its token from the placement and the key,
   so a retry answers the same URL, `TOKEN_USED` once it completed and `TOKEN_EXPIRED` once its
