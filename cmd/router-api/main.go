@@ -3,9 +3,11 @@
 //
 // router-api -config FILE serves with the settings in FILE and the secrets in the environment.
 // Serving builds every service from them, runs the jobs scanner that takes over commands from
-// replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted HTTP/2. On
-// SIGTERM or SIGINT it stops accepting requests, ends long polls and streams, hands its jobs to
-// peers, waits a bounded time for placements still being placed, and exits.
+// replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted HTTP/2 on a
+// listener bound with SO_REUSEPORT, so a new process binds beside it. On SIGTERM or SIGINT it
+// stops accepting requests, ends long polls and watch streams and hands its jobs to peers at
+// once. It lets its transfer streams finish for up to transfers.max_duration, cuts what is left,
+// waits a bounded time for placements still being placed, and exits.
 package main
 
 import (
@@ -15,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"golang.org/x/sys/unix"
 
 	"github.com/oynozan/bugnet-router/internal/api"
 	"github.com/oynozan/bugnet-router/internal/catalog"
@@ -174,6 +178,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,
 		Budget:              cfg.EdgeBudget,
+		Keys:                cfg.DataPlaneKeys,
+		Transfers:           cfg.Transfers,
+		TransferHost:        cfg.Names.TransferHost,
 	})
 	defer srv.Close()
 
@@ -183,14 +190,17 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	hs := &http.Server{
-		Addr:              cfg.ListenAddr,
 		Handler:           mux,
 		Protocols:         &protocols,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
-	hs.RegisterOnShutdown(srv.Close)
+	hs.RegisterOnShutdown(srv.Drain)
+	ln, err := listen(cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
+	}
 	failed := make(chan error, 1)
-	go func() { failed <- hs.ListenAndServe() }()
+	go func() { failed <- hs.Serve(ln) }()
 	log.Info("serving", "addr", cfg.ListenAddr, "replica", cfg.ReplicaID,
 		"providers", cfg.Providers)
 
@@ -201,9 +211,21 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	case err := <-failed:
 		serveErr = fmt.Errorf("serve: %w", err)
 	}
-	shutdown(log, hs, js, sg)
+	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
 	scanner.Wait()
 	return serveErr
+}
+
+// listen binds addr over TCP with SO_REUSEPORT, so the next version binds beside this one
+func listen(addr string) (net.Listener, error) {
+	lc := net.ListenConfig{Control: func(_, _ string, rc syscall.RawConn) error {
+		var serr error
+		err := rc.Control(func(fd uintptr) {
+			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+		})
+		return errors.Join(err, serr)
+	}}
+	return lc.Listen(context.Background(), "tcp", addr)
 }
 
 // tokens are the callers' bearer tokens from the environment
@@ -232,18 +254,35 @@ func jobDeps(
 	}
 }
 
-// shutdown drains HTTP, hands running jobs to peers and waits a bounded time for placing
-func shutdown(log *slog.Logger, hs *http.Server, js *jobs.Service, sg *saga.Saga) {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := hs.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Warn("http shutdown", "err", err)
+// closer ends every stream of the API server
+type closer interface{ Close() }
+
+// handoff hands running jobs to peers
+type handoff interface{ Shutdown(ctx context.Context) }
+
+// placing waits for placements still being placed
+type placing interface{ Wait() }
+
+// shutdown hands jobs over while transfer streams drain for up to drain, then waits on placing
+func shutdown(
+	log *slog.Logger, hs *http.Server, srv closer, js handoff, sg placing, drain time.Duration,
+) {
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		ctx, cancel := context.WithTimeout(context.Background(), drain)
+		defer cancel()
+		if err := hs.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warn("transfer streams still open at the drain's end, cutting them", "err", err)
+		}
+		srv.Close()
 		_ = hs.Close()
-	}
+	}()
 
 	jctx, jcancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer jcancel()
 	js.Shutdown(jctx)
+	<-served
 
 	placed := make(chan struct{})
 	go func() {
