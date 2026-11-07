@@ -142,16 +142,30 @@ func TestTokensComeFromTheSettings(t *testing.T) {
 }
 
 func TestListenSharesThePort(t *testing.T) {
-	a, err := listen("127.0.0.1:0")
+	a, err := listen("127.0.0.1:0", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = a.Close() }()
-	b, err := listen(a.Addr().String())
+	b, err := listen(a.Addr().String(), true)
 	if err != nil {
 		t.Fatalf("a second listener on the same port: %v", err)
 	}
 	_ = b.Close()
+}
+
+func TestListenWithoutReusePortKeepsThePort(t *testing.T) {
+	a, err := listen("127.0.0.1:0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.Close() }()
+	for _, reuse := range []bool{false, true} {
+		if b, err := listen(a.Addr().String(), reuse); err == nil {
+			_ = b.Close()
+			t.Fatalf("a second listener with reuse_port %v bound a port taken without it", reuse)
+		}
+	}
 }
 
 type closeFunc func()
@@ -169,7 +183,7 @@ func (placed) Wait() {}
 // transferServer serves /transfer, which answers once release closes or the request ends
 func transferServer(t *testing.T, release <-chan struct{}) (*http.Server, string, <-chan struct{}) {
 	t.Helper()
-	ln, err := listen("127.0.0.1:0")
+	ln, err := listen("127.0.0.1:0", false)
 	if err != nil {
 		t.Fatal(err)
 	}

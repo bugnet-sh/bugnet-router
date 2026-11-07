@@ -13,6 +13,7 @@ events_url = ""               # signed events stay pending in the outbox when em
 
 [api]
 listen_addr = ":8080"         # router-api serves the Connect API here
+reuse_port = false            # SO_REUSEPORT, so a new router-api binds beside a draining one
 
 [worker]
 listen_addr = ":8081"         # /healthz, /readyz and /monitor

@@ -632,8 +632,10 @@ router records an extension only once it applied it. An empty `order_id` answers
 
 ## Deployment
 
-`router-api` binds `api.listen_addr` with `SO_REUSEPORT`, so a new process starts beside the old
-one. On SIGTERM the old one stops accepting, ends long polls and watch streams, and hands its jobs
+With `api.reuse_port = true`, `router-api` binds `api.listen_addr` with `SO_REUSEPORT`, so a new
+process starts beside the old one. Production turns it on. It is off by default, so a second
+`router-api` on a shared machine fails with address in use instead of taking connections meant
+for another stack. On SIGTERM the old one stops accepting, ends long polls and watch streams, and hands its jobs
 to peers at once, then keeps serving its open transfer streams for up to `transfers.max_duration`
 before it cuts what is left and exits. A download cut then resumes, and an upload restarts and uses
 one of its claims.

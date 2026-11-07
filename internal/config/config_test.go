@@ -91,6 +91,9 @@ func TestLoadFileDefaults(t *testing.T) {
 	if c.WorkerListenAddr != ":8081" {
 		t.Fatalf("worker listen addr %q, want :8081", c.WorkerListenAddr)
 	}
+	if c.APIReusePort {
+		t.Fatal("api.reuse_port is on by default")
+	}
 	if c.DeploymentID != "main" {
 		t.Fatalf("deployment id %q, want main", c.DeploymentID)
 	}
@@ -208,6 +211,7 @@ events_url = "https://events.example"
 
 [api]
 listen_addr = ":9"
+reuse_port = true
 
 [worker]
 listen_addr = ":10"
@@ -278,8 +282,8 @@ cpu8 = "large"
 		c.DeploymentID != "staging-2" || c.ReplicaID != "r1" {
 		t.Fatalf("placement settings: %+v", c)
 	}
-	if c.ListenAddr != ":9" || c.WorkerListenAddr != ":10" || c.ValkeyAddr != "v:1" ||
-		c.ValkeyPrefix != "t:" {
+	if c.ListenAddr != ":9" || !c.APIReusePort || c.WorkerListenAddr != ":10" ||
+		c.ValkeyAddr != "v:1" || c.ValkeyPrefix != "t:" {
 		t.Fatalf("addresses: %+v", c)
 	}
 	if c.RunnerLinuxAMD64 != "/r/amd" || c.RunnerLinuxARM64 != "/r/arm" {
@@ -1013,7 +1017,7 @@ func TestCommittedFilesLoad(t *testing.T) {
 		t.Fatalf("config/dev.toml as dev-up.sh writes it: %v", err)
 	}
 	if !slices.Equal(dev.Providers, []string{"local"}) || !dev.LocalEnabled ||
-		dev.ValkeyPrefix != "bn:dev:" || dev.ListenAddr != "127.0.0.1:8080" ||
+		dev.ValkeyPrefix != "bn:dev:" || dev.ListenAddr != "127.0.0.1:8080" || dev.APIReusePort ||
 		dev.WorkerListenAddr != "127.0.0.1:8081" || dev.DeploymentID != "dev" {
 		t.Fatalf("config/dev.toml: %+v", dev)
 	}

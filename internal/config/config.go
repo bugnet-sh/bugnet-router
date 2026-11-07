@@ -33,10 +33,12 @@ import (
 
 // Config holds every router setting
 type Config struct {
-	DatabaseURL         string
-	ValkeyAddr          string
-	ValkeyPrefix        string
-	ListenAddr          string
+	DatabaseURL  string
+	ValkeyAddr   string
+	ValkeyPrefix string
+	ListenAddr   string
+	// APIReusePort binds router-api with SO_REUSEPORT, so a new version binds beside a draining one
+	APIReusePort        bool
 	WorkerListenAddr    string
 	InternalToken       string
 	HandleKey           []byte
@@ -291,6 +293,7 @@ type file struct {
 
 type apiFile struct {
 	ListenAddr string `toml:"listen_addr"`
+	ReusePort  bool   `toml:"reuse_port"`
 }
 
 type workerFile struct {
@@ -521,6 +524,7 @@ func (f file) config() (Config, error) {
 		ReplicaID:         cmp.Or(f.ReplicaID, defaultReplicaID()),
 		EventsURL:         f.EventsURL,
 		ListenAddr:        cmp.Or(f.API.ListenAddr, d.API.ListenAddr),
+		APIReusePort:      f.API.ReusePort,
 		WorkerListenAddr:  cmp.Or(f.Worker.ListenAddr, d.Worker.ListenAddr),
 		ValkeyAddr:        cmp.Or(f.Valkey.Addr, d.Valkey.Addr),
 		ValkeyPrefix:      cmp.Or(f.Valkey.Prefix, d.Valkey.Prefix),

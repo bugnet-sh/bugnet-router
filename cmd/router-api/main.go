@@ -195,7 +195,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	hs.RegisterOnShutdown(srv.Drain)
-	ln, err := listen(cfg.ListenAddr)
+	ln, err := listen(cfg.ListenAddr, cfg.APIReusePort)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
 	}
@@ -216,15 +216,18 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	return serveErr
 }
 
-// listen binds addr over TCP with SO_REUSEPORT, so the next version binds beside this one
-func listen(addr string) (net.Listener, error) {
-	lc := net.ListenConfig{Control: func(_, _ string, rc syscall.RawConn) error {
-		var serr error
-		err := rc.Control(func(fd uintptr) {
-			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-		})
-		return errors.Join(err, serr)
-	}}
+// listen binds addr over TCP, with SO_REUSEPORT when reusePort is set so a new version binds too
+func listen(addr string, reusePort bool) (net.Listener, error) {
+	var lc net.ListenConfig
+	if reusePort {
+		lc.Control = func(_, _ string, rc syscall.RawConn) error {
+			var serr error
+			err := rc.Control(func(fd uintptr) {
+				serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			})
+			return errors.Join(err, serr)
+		}
+	}
 	return lc.Listen(context.Background(), "tcp", addr)
 }
 

@@ -9,6 +9,7 @@ deployment_id = "dev"         # its sweep never destroys main's sandboxes on a s
 
 [api]
 listen_addr = "127.0.0.1:8080"
+reuse_port = false
 
 [worker]
 listen_addr = "127.0.0.1:8081"
