@@ -214,16 +214,21 @@ func (b *rangeBody) attempt() error {
 		if b.stalls > 0 && !sleep(b.ctx, b.p.retryWait) {
 			return b.ctx.Err()
 		}
-		again, err := b.get()
+		status, again, err := b.get()
 		if err == nil {
 			return nil
 		}
 		if !again || b.ctx.Err() != nil {
 			return err
 		}
-		if b.stalls++; b.stalls >= readStalls {
-			return stalled(b.name, err)
+		if b.stalls++; b.stalls < readStalls {
+			continue
 		}
+		err = stalled(b.name, err)
+		if lostHost(status) {
+			err = b.p.executorDown(b.ctx, b.ref, err)
+		}
+		return err
 	}
 }
 
@@ -232,11 +237,11 @@ func stalled(name string, err error) error {
 		"koyeb read of %s moved no bytes %d times in a row: %w", name, readStalls, err)}
 }
 
-// get sends one ranged GET from pos and reports whether a failure is worth another try
-func (b *rangeBody) get() (bool, error) {
+// get sends one ranged GET from pos, giving its status, 0 without one, and whether to try again
+func (b *rangeBody) get() (int, bool, error) {
 	req, err := b.t.request(b.ctx, http.MethodGet, "/files", url.Values{"path": {b.name}}, nil)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Range", "bytes="+strconv.FormatInt(b.pos, 10)+"-"+
@@ -246,36 +251,37 @@ func (b *rangeBody) get() (bool, error) {
 	}
 	resp, err := b.p.streams.Do(req)
 	if err != nil {
-		return true, internal(fmt.Errorf("koyeb download: %w", err))
+		return 0, true, internal(fmt.Errorf("koyeb download: %w", err))
 	}
+	status := resp.StatusCode
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
 		drainClose(resp)
-		return false, internal(fmt.Errorf("koyeb sent a file in %s encoding", enc))
+		return status, false, internal(fmt.Errorf("koyeb sent a file in %s encoding", enc))
 	}
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusPartialContent:
 		start, total, ok := contentRange(resp.Header.Get("Content-Range"))
 		if !ok || start != b.pos || total != b.size {
 			drainClose(resp)
-			return false, b.changed()
+			return status, false, b.changed()
 		}
 	case http.StatusOK:
 		// A whole file after If-Range means it changed, before any validator Koyeb skipped Range
 		if b.etag != "" || resp.ContentLength != b.size {
 			drainClose(resp)
-			return false, b.changed()
+			return status, false, b.changed()
 		}
 		if _, err := io.CopyN(io.Discard, resp.Body, b.pos); err != nil {
 			_ = resp.Body.Close()
-			return true, internal(fmt.Errorf("koyeb download: %w", err))
+			return status, true, internal(fmt.Errorf("koyeb download: %w", err))
 		}
 	case http.StatusRequestedRangeNotSatisfiable:
 		drainClose(resp)
-		return false, b.changed()
+		return status, false, b.changed()
 	default:
 		err := executorError(resp)
 		drainClose(resp)
-		return retryStatus(resp.StatusCode) && !isCode(err, provider.CodeNoSpace), err
+		return status, retryStatus(status) && !isCode(err, provider.CodeNoSpace), err
 	}
 	if etag := resp.Header.Get("ETag"); b.etag == "" && strings.HasPrefix(etag, `"`) {
 		b.etag = etag
@@ -283,7 +289,7 @@ func (b *rangeBody) get() (bool, error) {
 	b.mu.Lock()
 	b.resp, b.moved = resp, false
 	b.mu.Unlock()
-	return false, nil
+	return status, false, nil
 }
 
 func (b *rangeBody) changed() error {
@@ -365,6 +371,11 @@ func (b *rangeBody) Close() error {
 func retryStatus(code int) bool {
 	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests ||
 		code >= http.StatusInternalServerError
+}
+
+// lostHost reports a failure a gone sandbox's executor gives, no answer at all or a 502 and up
+func lostHost(status int) bool {
+	return status == 0 || status >= http.StatusBadGateway
 }
 
 /* Writes */
@@ -574,7 +585,7 @@ func (u *partUpload) put(
 			again = retryStatus(status) && !isCode(err, provider.CodeNoSpace)
 		}
 		if !again || attempt == partRetries || ctx.Err() != nil {
-			if status >= http.StatusBadGateway {
+			if lostHost(status) && ctx.Err() == nil {
 				err = u.p.executorDown(ctx, u.ref, err)
 			}
 			return nil, err

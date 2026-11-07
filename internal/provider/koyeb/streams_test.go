@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"io/fs"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -727,4 +729,126 @@ func TestKoyebOptionsForStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, p.partBytes, int64(8<<20))
+}
+
+func TestKoyebPartWaitCapsRetryAfter(t *testing.T) {
+	p := &Provider{retryWait: time.Second}
+	for _, c := range []struct {
+		retryAfter string
+		attempt    int
+		want       time.Duration
+	}{
+		{"5", 0, 5 * time.Second},
+		{"30", 2, 30 * time.Second},
+		{"31", 0, 30 * time.Second},
+		{"86400", 1, 30 * time.Second},
+		{"", 2, 4 * time.Second},
+		{"-1", 0, time.Second},
+		{"Fri, 07 Nov 2026 12:00:00 GMT", 1, 2 * time.Second},
+	} {
+		h := http.Header{}
+		if c.retryAfter != "" {
+			h.Set("Retry-After", c.retryAfter)
+		}
+		if got := p.partWait(c.attempt, h); got != c.want {
+			t.Errorf("Retry-After %q on attempt %d waits %v, want %v", c.retryAfter, c.attempt,
+				got, c.want)
+		}
+	}
+}
+
+// countedHost counts file stream requests and fails each as a lost connection when base is nil
+type countedHost struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (c *countedHost) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	if c.base == nil {
+		return nil, errors.New("connection reset by peer")
+	}
+	return c.base.RoundTrip(r)
+}
+
+// countStreams counts the adapter's file stream requests from now on, failing each when dead
+func countStreams(p *Provider, dead bool) *countedHost {
+	c := &countedHost{}
+	if !dead {
+		c.base = p.streams.Transport
+	}
+	p.streams = &http.Client{Transport: c, CheckRedirect: p.streams.CheckRedirect}
+	return c
+}
+
+func destroyWhen(t *testing.T, p *Provider, ref provider.Ref, gone bool) {
+	t.Helper()
+	if !gone {
+		return
+	}
+	if err := p.Destroy(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKoyebLostExecutorOfAGoneSandboxIsNotFound(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		gone bool
+		code provider.Code
+	}{
+		{"Gone", true, provider.CodeNotFound},
+		{"Live", false, provider.CodeInternal},
+	} {
+		t.Run("Part"+c.name, func(t *testing.T) {
+			f := newFake(t)
+			p := streamProvider(t, f, 64<<10, 1<<20)
+			ref := ready(t, p, "key-lost-part")
+			w, err := p.OpenWriter(t.Context(), ref, filepath.Join(t.TempDir(), "f"),
+				provider.WriteSpec{Size: 10, Mode: 0o644})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write([]byte("0123456789")); err != nil {
+				t.Fatal(err)
+			}
+			destroyWhen(t, p, ref, c.gone)
+			host := countStreams(p, true)
+			_, err = w.Commit(t.Context(), nil)
+			if !isCode(err, c.code) {
+				t.Fatalf("a part PUT that never reached the host gave %v, want %s", err, c.code)
+			}
+			eq(t, host.calls.Load(), int32(partRetries+1))
+		})
+		t.Run("Read"+c.name, func(t *testing.T) {
+			f, p, ref, name := readerFile(t, "key-lost-read", bytes.Repeat([]byte("x"), 2<<20))
+			f.failFiles("GET /files", fileFault{cut: 1 << 20, times: 1})
+			var host *countedHost
+			err := readRest(t, p, ref, name, func() {
+				destroyWhen(t, p, ref, c.gone)
+				host = countStreams(p, true)
+			})
+			if !isCode(err, c.code) {
+				t.Fatalf("a reissued GET that never reached the host gave %v, want %s", err,
+					c.code)
+			}
+			eq(t, host.calls.Load(), int32(readStalls))
+		})
+	}
+	t.Run("ReadBadGatewayGone", func(t *testing.T) {
+		f, p, ref, name := readerFile(t, "key-lost-502", bytes.Repeat([]byte("x"), 2<<20))
+		f.failFiles("GET /files", fileFault{cut: 1 << 20, times: 1})
+		var host *countedHost
+		err := readRest(t, p, ref, name, func() {
+			f.mu.Lock()
+			f.goneStatus = http.StatusBadGateway
+			f.mu.Unlock()
+			destroyWhen(t, p, ref, true)
+			host = countStreams(p, false)
+		})
+		if !isCode(err, provider.CodeNotFound) {
+			t.Fatalf("a reissued GET of a gone sandbox answered 502 gave %v, want not_found", err)
+		}
+		eq(t, host.calls.Load(), int32(readStalls))
+	})
 }

@@ -619,10 +619,11 @@ Transfer clients ask for `identity` encoding over HTTP/1.1, so lengths stay exac
 use a second gRPC connection, so a long stream never shares TCP with `Exec`. Each Koyeb part is
 sent again up to 3 times, after the answer's `Retry-After` (at most 30 s) or else a pause of 1 s
 that doubles each time. All part buffers of one process stay under
-`transfers.koyeb_buffer_total`, a writer waiting for room. Koyeb's `GET /files/stat` follows a
-final symlink, so `StatFile` reads the directory's listing instead. Boat's file API reaches only
-`/home/user`, `/tmp` and the paths under them, so any other path is refused before a call.
-`StatFile` describes the two directories themselves, which a writer refuses. Boat's file info has
-no type, so `StatFile` asks the shell whether a path is a regular file. Boat answers a file call
-on a missing path with a 400 `sandbox_direct_failed` whose message starts
-`No such file or directory`, which the adapter reads as `not_found`.
+`transfers.koyeb_buffer_total`, a writer waiting for room. A Koyeb part or read that gives up
+after a lost connection or a 502 and up reads as `not_found` once Koyeb shows the sandbox gone.
+Koyeb's `GET /files/stat` follows a final symlink, so `StatFile` reads the directory's listing
+instead. Boat's file API reaches only `/home/user`, `/tmp` and the paths under them, so any other
+path is refused before a call. `StatFile` describes the two directories themselves, which a
+writer refuses. Boat's file info has no type, so `StatFile` asks the shell whether a path is a
+regular file. Boat answers a file call on a missing path with a 400 `sandbox_direct_failed`
+whose message starts `No such file or directory`, which the adapter reads as `not_found`.
