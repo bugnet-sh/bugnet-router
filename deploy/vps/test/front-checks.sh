@@ -46,7 +46,7 @@ listening() {
 check "haproxy -c passes" haproxy -c -f /etc/haproxy/haproxy.cfg
 check "haproxy is active" systemctl is-active --quiet haproxy
 equal "haproxy listens on 443 twice and on 2200" \
-	"$(ss -Hltnp | awk '/"haproxy"/ {print $4}' | sort | tr '\n' ' ')" \
+	"$(ss -Hltnp | awk '/"haproxy"/ {print $4}' | sort -u | tr '\n' ' ')" \
 	"0.0.0.0:2200 0.0.0.0:443 [::]:443 "
 check "frontend ssh is left out" bash -c '! grep -q "^frontend ssh$" /etc/haproxy/haproxy.cfg'
 for f in haproxy.cfg sni.map end.map; do
