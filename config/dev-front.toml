@@ -18,7 +18,7 @@ egress = 9443
 ssh = 2223
 
 [vps]
-egress_ips = []               # the VPS's IPv4 and IPv6, the dev router's secrets.egress_ips
+egress_ips = ["62.72.21.74", "2a02:4780:c:ab47::1"]  # the test VPS, the dev router's secrets.egress_ips
 
 [acme]
 directory = "https://acme-v02.api.letsencrypt.org/directory"
