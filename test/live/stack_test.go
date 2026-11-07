@@ -8,7 +8,7 @@
 // The vps mode listens on the fixed ports the VPS's tunnel lands on (config/dev-front.toml), gets
 // the exact names from Let's Encrypt over the tunnel with its caches kept in
 // ~/.local/state/bugnet-dev/acme, serves the wildcard make dev-certs copied, and checks that
-// https://<transfer host>/ reaches it before any row runs. Provider settings come from
+// HTTPS to the transfer host reaches it before any row runs. Provider settings come from
 // config/dev.toml and provider keys from the environment.
 package live
 

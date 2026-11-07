@@ -1,11 +1,11 @@
 // Package transfertest serves local sandboxes as a provider whose exec user is not root.
 //
 // Sandbox gives each sandbox of a local provider a home at /home/<user> and a file API that, as
-// on boxd and Boat, reaches only the home and /tmp and nothing marked root's. It runs the
-// commands the transfer package sends through Exec itself: realpath, the access test, sha256sum
-// and bugnet-run's stat, stage-out and place, the last three only under sudo. Every other command
-// runs on the host with its absolute arguments mapped into the sandbox. Each command is recorded,
-// so a test can tell what was staged.
+// on boxd and Boat, reaches only the home and /tmp and nothing marked root's. It runs realpath,
+// the access test, sha256sum and bugnet-run's stat, stage-out and place itself when the transfer
+// package sends them through Exec, the last three only under sudo. Every other command runs on
+// the host with its absolute arguments mapped into the sandbox. Each command is recorded, so a
+// test can tell what was staged.
 package transfertest
 
 import (
