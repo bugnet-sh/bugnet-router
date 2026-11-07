@@ -671,6 +671,16 @@ var providerKeyVars = []struct{ name, env string }{
 	{"boat", "BOAT_API_KEY"},
 }
 
+// ProviderKeyEnv names the environment variable holding a provider's API key, false for none
+func ProviderKeyEnv(name string) (string, bool) {
+	for _, pk := range providerKeyVars {
+		if pk.name == name {
+			return pk.env, true
+		}
+	}
+	return "", false
+}
+
 // Load reads the settings file at path and the secrets through getenv, as a server needs them
 func Load(path string, getenv func(string) (string, bool)) (Config, error) {
 	c, err := LoadFile(path)

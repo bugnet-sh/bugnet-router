@@ -1143,3 +1143,16 @@ func TestProviderErrorsNeverQuoteAnUnknownName(t *testing.T) {
 		t.Errorf("a repeated known provider gave %v, want it named", err)
 	}
 }
+
+func TestProviderKeyEnv(t *testing.T) {
+	for name, want := range map[string]string{
+		"boxd": "BOXD_API_KEY", "e2b": "E2B_API_KEY", "koyeb": "KOYEB_API_TOKEN",
+		"boat": "BOAT_API_KEY",
+	} {
+		got, ok := ProviderKeyEnv(name)
+		eq(t, got, want)
+		eq(t, ok, true)
+	}
+	_, ok := ProviderKeyEnv("local")
+	eq(t, ok, false)
+}
