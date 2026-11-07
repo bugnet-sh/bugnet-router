@@ -50,6 +50,10 @@ type Placement struct {
 	// SecretsVersion moves on every change to the placement's secrets
 	SecretsVersion int64
 	GateReadyAt    *time.Time
+	// AppliedHosts are the hosts the last apply_secrets run wrote into the sandbox
+	AppliedHosts []string
+	// NeedsSecrets says the order asked for secrets, so x402 may be enabled while placing
+	NeedsSecrets bool
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -61,6 +65,8 @@ type NewPlacement struct {
 	FailureReason string // creates the placement already failed and refundable
 	// KeyID names the data-plane root the placement's derived values come from
 	KeyID string
+	// NeedsSecrets records that the order's requirements asked for secrets
+	NeedsSecrets bool
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -86,7 +92,8 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	coalesce(failure_reason, ''), refundable, coalesce(saga_owner, ''), saga_heartbeat,
 	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at,
 	coalesce(key_id, ''), coalesce(ssh_alias, ''), coalesce(source_label, ''), edge_budget_bytes,
-	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at`
+	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at,
+	applied_hosts, needs_secrets`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -96,7 +103,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
 		&p.TerminationReason, &p.TerminatingAt, &p.KeyID, &p.SSHAlias, &p.SourceLabel,
 		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
-		&p.GateReadyAt)
+		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -229,10 +236,10 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 		// now() is the transaction's start, so a placement created failed ends at its created_at
 		_, err = tx.Exec(ctx, `
 			insert into placements (id, handle_sha256, order_id, package_id, state,
-				failure_reason, refundable, terminated_at, key_id)
-			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8)`,
+				failure_reason, refundable, terminated_at, key_id, needs_secrets)
+			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9)`,
 			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
-			failed, nullIfEmpty(p.KeyID))
+			failed, nullIfEmpty(p.KeyID), p.NeedsSecrets)
 		if err != nil {
 			return fmt.Errorf("insert placement: %w", err)
 		}

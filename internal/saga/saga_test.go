@@ -858,6 +858,40 @@ func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	}
 }
 
+func TestCreateStoresNeedsSecrets(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnvWith(t, func(d *saga.Deps) {
+		reg, err := provider.NewRegistry([]provider.Provider{a},
+			provider.Features{Secrets: []string{"a"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Registry, d.Engine = reg, placement.New(reg, d.Tracker)
+	}, a)
+	for _, c := range []struct {
+		order string
+		req   placement.Requirements
+		want  bool
+		state string
+	}{
+		{"order-secrets", placement.Requirements{Secrets: true}, true, store.PlacementReady},
+		{"order-none", placement.Requirements{}, false, store.PlacementReady},
+		{"order-secrets-gpu", placement.Requirements{Secrets: true, GPU: true}, true,
+			store.PlacementFailed},
+	} {
+		p, _, err := e.saga.Create(t.Context(), e.startToken(t, c.order), c.req)
+		if err != nil && !errors.Is(err, placement.ErrNoCandidate) {
+			t.Fatalf("%s: %v", c.order, err)
+		}
+		e.saga.Wait()
+		got := e.reload(t, p.ID)
+		if p.NeedsSecrets != c.want || got.NeedsSecrets != c.want || got.State != c.state {
+			t.Errorf("%s: needs secrets %v, stored %v in %s, want %v in %s", c.order,
+				p.NeedsSecrets, got.NeedsSecrets, got.State, c.want, c.state)
+		}
+	}
+}
+
 func TestPlacingHeartbeats(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a", ReadyDelay: time.Second})
 	e := newEnvWith(t, func(d *saga.Deps) { d.HeartbeatInterval = 50 * time.Millisecond }, a)

@@ -1506,6 +1506,40 @@ func TestNewPlacementRecordsKeyID(t *testing.T) {
 	}
 }
 
+func TestNewPlacementRecordsNeedsSecrets(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+		OrderID: "o-needs", HandleSHA256: []byte("o-needs-handle"), PackageID: "pkg",
+		NeedsSecrets: true,
+	})
+	if err != nil || !p.NeedsSecrets {
+		t.Fatalf("needs secrets %v (%v), want true", p.NeedsSecrets, err)
+	}
+	failed, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+		OrderID: "o-needs-failed", HandleSHA256: []byte("o-needs-failed-handle"),
+		PackageID: "pkg", FailureReason: "no_candidate", NeedsSecrets: true,
+	})
+	if err != nil || !failed.NeedsSecrets {
+		t.Fatalf("failed placement needs secrets %v (%v), want true", failed.NeedsSecrets, err)
+	}
+	plain := newPlacement(t, s, "o-needs-not")
+	if plain.NeedsSecrets || len(plain.AppliedHosts) != 0 {
+		t.Fatalf("a plain placement reads needs secrets %v and applied hosts %v",
+			plain.NeedsSecrets, plain.AppliedHosts)
+	}
+	_, err = pool.Exec(ctx, `update placements set applied_hosts = $2 where id = $1`, plain.ID,
+		[]string{"api.example.com", "api.github.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PlacementByID(ctx, plain.ID)
+	want := []string{"api.example.com", "api.github.com"}
+	if err != nil || !reflect.DeepEqual(got.AppliedHosts, want) {
+		t.Fatalf("applied hosts %v (%v), want %v", got.AppliedHosts, err, want)
+	}
+}
+
 func TestAddPlacementBudgets(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

@@ -199,6 +199,7 @@ func (s *Saga) Create(
 	h, sha := handle.Derive(s.d.HandleKey, c.OrderID)
 	np := store.NewPlacement{
 		HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
+		NeedsSecrets: req.Secrets,
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
