@@ -4,10 +4,10 @@
 // router-api -config FILE serves with the settings in FILE and the secrets in the environment.
 // Serving builds every service from them, runs the jobs scanner that takes over commands from
 // replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted HTTP/2 on a
-// listener bound with SO_REUSEPORT, so a new process binds beside it. On SIGTERM or SIGINT it
-// stops accepting requests, ends long polls and watch streams and hands its jobs to peers at
-// once. It lets its transfer streams finish for up to transfers.max_duration, cuts what is left,
-// waits a bounded time for placements still being placed, and exits.
+// listener bound with SO_REUSEPORT when api.reuse_port is set, so a new process binds beside it.
+// On SIGTERM or SIGINT it stops accepting requests, ends long polls and watch streams and hands
+// its jobs to peers at once. It lets its transfer streams finish for up to transfers.max_duration,
+// cuts what is left, waits a bounded time for placements still being placed, and exits.
 package main
 
 import (
