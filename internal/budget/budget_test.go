@@ -193,7 +193,7 @@ func TestExtensionClearsSpentAndCountsOnFromWhatWasUsed(t *testing.T) {
 	eq(t, spent, []uuid.UUID{p})
 	m.report(budget.Egress, budget.ByEdge, l, 2<<20)
 	l.Budget = 2 << 20
-	if err := m.ClearSpent(t.Context(), p); err != nil {
+	if err := m.Grow(t.Context(), p, 2<<20, 2<<20, l.Deadline); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []budget.Kind{budget.Edge, budget.Egress} {
@@ -208,28 +208,32 @@ func TestExtensionClearsSpentAndCountsOnFromWhatWasUsed(t *testing.T) {
 	eq(t, spent, []uuid.UUID{p})
 }
 
-func TestUncrossTakesBackOnlyACrossingUnderTheGrownBudget(t *testing.T) {
+func TestAReportComparesAgainstTheBudgetAnExtensionWrote(t *testing.T) {
 	m := newMeter(t)
 	p := uuid.New()
-	l := limit(p, 1<<20)
-	spentNow := func() bool {
-		t.Helper()
-		spent, err := m.Spent(t.Context(), budget.Edge, p)
-		eq(t, err, nil)
-		return spent
+	stale := limit(p, 1<<20)
+	if err := m.Grow(t.Context(), p, 2<<20, 2<<20, stale.Deadline); err != nil {
+		t.Fatal(err)
 	}
-	eq(t, spentNow(), false)
-	_, spent := m.report(budget.Edge, budget.ByEdge, l, 3<<20/2)
-	eq(t, spent, []uuid.UUID{p})
-	eq(t, spentNow(), true)
-	back, err := m.Uncross(t.Context(), budget.Edge, p, 3<<20/2)
-	eq(t, err == nil && !back, true)
-	eq(t, spentNow(), true)
-	back, err = m.Uncross(t.Context(), budget.Edge, p, 2<<20)
-	eq(t, err == nil && back, true)
-	eq(t, spentNow(), false)
-	back, err = m.Uncross(t.Context(), budget.Edge, p, 2<<20)
-	eq(t, err == nil && !back, true)
+	if err := m.Grow(t.Context(), p, 1<<20, 1<<20, stale.Deadline); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []budget.Kind{budget.Edge, budget.Egress} {
+		key := string(kind) + ":budget:" + p.String()
+		got, err := m.vk.Do(t.Context(), m.vk.B().Get().Key(m.prefix+key).Build()).ToString()
+		eq(t, err == nil && got == strconv.Itoa(2<<20), true)
+		if ttl := m.pttl(key); ttl < 69*time.Minute || ttl > 70*time.Minute+time.Second {
+			t.Fatalf("%s expires in %v, want the deadline plus 1h", key, ttl)
+		}
+		a, spent := m.report(kind, budget.ByEdge, stale, 3<<20/2)
+		eq(t, len(spent), 0)
+		eq(t, a[p].Remaining, uint64(1<<19))
+		gone, err := m.Spent(t.Context(), kind, p)
+		eq(t, err == nil && !gone, true)
+		a, spent = m.report(kind, budget.ByEdge, stale, 1<<19)
+		eq(t, spent, []uuid.UUID{p})
+		eq(t, a[p].Remaining, uint64(0))
+	}
 }
 
 func TestSeenLastsThirtySecondsPastTheLastReportWithBytes(t *testing.T) {

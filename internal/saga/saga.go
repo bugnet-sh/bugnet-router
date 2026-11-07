@@ -765,16 +765,17 @@ func (s *Saga) addBudgets(
 	return edge, egress, ts.AddPlacementBudgets(ctx, id, edge, egress)
 }
 
-// deadlineMoved clears the spent guards and moves the counters' expiry, then tells the edges
+// deadlineMoved records the grown budgets, moves the counters' expiry and tells the edges
 func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), publishTimeout)
 	defer cancel()
-	if err := s.meter.ClearSpent(ctx, p.ID); err != nil {
-		// The bytes left never read the guards, so only a second BudgetSpent is lost
-		s.d.Log.Warn("clear spent guards after an extension", "placement", p.ID, "err", err)
-	}
 	if p.Deadline == nil {
 		return
+	}
+	err := s.meter.Grow(ctx, p.ID, p.EdgeBudgetBytes, p.EgressBudgetBytes, *p.Deadline)
+	if err != nil {
+		// Reports then compare against the budgets they read, and the spent guards stand
+		s.d.Log.Warn("record the grown budgets after an extension", "placement", p.ID, "err", err)
 	}
 	if err := s.meter.MoveDeadline(ctx, p.ID, *p.Deadline); err != nil {
 		// The placement's next report with bytes moves them too

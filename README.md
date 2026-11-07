@@ -539,10 +539,13 @@ The pace is the start package's. The edges report the bytes they carry every few
 the edge budget, the pace to keep: the full figure while only the reporting process carried the
 placement's bytes in the last 10 s, half while `bugnet-edge` and `bugnet-ssh` both did. A
 placement that is not ready, or an id that is unknown or malformed, gets no entry. The first report
-that reaches a budget writes `BudgetSpent`, once across every replica. An extension clears the
-spent marks, so a later crossing writes it again, and a report that read the budget before an
-extension committed and crossed the old figure reads the placement again and takes its spent mark
-back. The used counters and spent marks expire an hour after the deadline, and
+that reaches a budget writes `BudgetSpent`, once across every replica. An extension writes its
+grown budgets to `edge:budget:<placement>` and `egress:budget:<placement>` and clears the spent
+marks in one step, so a later crossing writes it again. A report compares against the larger of
+that figure and the budget it read, so a report that read the budget before an extension never
+spends the grown one. A report counted between an extension's commit and that step crossed before
+the extension, and the step clears its mark. The used counters, budget figures and spent marks
+expire an hour after the deadline, and
 `edge:seen:<placement>`, which records which process carried bytes for the pace, 30 s after the
 last report that carried bytes. An extension moves the used counters to an hour after the new
 deadline, even for a placement that reports nothing, and no report moves an expiry earlier.

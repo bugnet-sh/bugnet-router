@@ -3,15 +3,16 @@
 // The edges report deltas every few seconds. Report adds them to edge:used:<placement> or
 // egress:used:<placement> and answers what is left of each placement's budget, and for the edge
 // kind the pace each way. The first report that reaches a budget wins a SET NX on the
-// placement's spent key, so exactly one router replica writes BudgetSpent. An extension grows
-// the budget and clears the spent keys, so a later crossing writes it again.
+// placement's spent key, so exactly one router replica writes BudgetSpent. An extension writes
+// its grown budgets to <kind>:budget:<placement> and clears the spent keys in one step, so a
+// later crossing writes it again. A report compares against the larger of that figure and the
+// budget it read, so a report that read the budget before an extension never spends the grown one.
 //
 // The pace halves while both carriers carried the placement's bytes in the last 10 s, which
 // edge:seen:<placement> records by Valkey's clock and keeps for 30 s after the last report that
-// carried bytes. The used counters and spent keys expire an hour after the placement's deadline.
-// MoveDeadline carries the used counters to a new deadline, and an expiry only ever moves later,
-// so a report still holding the old deadline cannot shorten it. A report that crossed a budget an
-// extension had already grown takes its spent key back through Uncross.
+// carried bytes. The used counters, budget figures and spent keys expire an hour after the
+// placement's deadline. MoveDeadline carries the used counters to a new deadline, and an expiry
+// only ever moves later, so a report still holding the old deadline cannot shorten it.
 package budget
 
 import (
@@ -73,31 +74,32 @@ const (
 	maxDelta = 1 << 40
 )
 
-// reportScript adds one placement's delta and answers its sum, its spent claim and both carriers
+// reportScript adds one placement's delta and answers its sum, spent claim, carriers and budget
 var reportScript = valkey.NewLuaScript(`
 local used = redis.call('INCRBY', KEYS[1], ARGV[1])
 if redis.call('PEXPIRETIME', KEYS[1]) < tonumber(ARGV[3]) then
 	redis.call('PEXPIREAT', KEYS[1], ARGV[3])
 end
+local budget = math.max(tonumber(ARGV[2]), tonumber(redis.call('GET', KEYS[3]) or '0'))
 local crossed = 0
-if used >= tonumber(ARGV[2]) and redis.call('SET', KEYS[2], '1', 'NX', 'PXAT', ARGV[3]) then
+if used >= budget and redis.call('SET', KEYS[2], '1', 'NX', 'PXAT', ARGV[3]) then
 	crossed = 1
 end
 local both = 0
-if KEYS[3] then
+if KEYS[4] then
 	local t = redis.call('TIME')
 	local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 	if tonumber(ARGV[1]) > 0 then
-		redis.call('HSET', KEYS[3], ARGV[4], now)
-		redis.call('PEXPIRE', KEYS[3], 30000)
+		redis.call('HSET', KEYS[4], ARGV[4], now)
+		redis.call('PEXPIRE', KEYS[4], 30000)
 	end
-	local seen = redis.call('HMGET', KEYS[3], ARGV[4], ARGV[5])
+	local seen = redis.call('HMGET', KEYS[4], ARGV[4], ARGV[5])
 	local mine, other = tonumber(seen[1]), tonumber(seen[2])
 	if mine and other and now - mine < 10000 and now - other < 10000 then
 		both = 1
 	end
 end
-return {used, crossed, both}
+return {used, crossed, both, budget}
 `)
 
 // keepScript moves the expiry of each key in KEYS that exists to ARGV[1] unless it lies later
@@ -110,12 +112,17 @@ end
 return 0
 `)
 
-// uncrossScript deletes the spent key KEYS[2] while the sum KEYS[1] is under the budget ARGV[1]
-var uncrossScript = valkey.NewLuaScript(`
-local used = tonumber(redis.call('GET', KEYS[1]) or '0')
-if used < tonumber(ARGV[1]) then
-	return redis.call('DEL', KEYS[2])
+// growScript raises the budget figures KEYS[1] and KEYS[2] and deletes the spent keys after them
+var growScript = valkey.NewLuaScript(`
+for i = 1, 2 do
+	if tonumber(ARGV[i]) > tonumber(redis.call('GET', KEYS[i]) or '-1') then
+		redis.call('SET', KEYS[i], ARGV[i], 'KEEPTTL')
+	end
+	if redis.call('PEXPIRETIME', KEYS[i]) < tonumber(ARGV[3]) then
+		redis.call('PEXPIREAT', KEYS[i], ARGV[3])
+	end
 end
+redis.call('DEL', KEYS[3], KEYS[4])
 return 0
 `)
 
@@ -160,7 +167,7 @@ func (m *Meter) Report(
 	execs := make([]valkey.LuaExec, len(order))
 	for i, p := range order {
 		l := limits[p]
-		keys := []string{m.key(kind, "used", p), m.key(kind, "spent", p)}
+		keys := []string{m.key(kind, "used", p), m.key(kind, "spent", p), m.key(kind, "budget", p)}
 		if kind == Edge {
 			keys = append(keys, m.key(kind, "seen", p))
 		}
@@ -174,7 +181,7 @@ func (m *Meter) Report(
 	for i, res := range reportScript.ExecMulti(ctx, m.c, execs...) {
 		p := order[i]
 		out, err := res.AsIntSlice()
-		if err == nil && len(out) != 3 {
+		if err == nil && len(out) != 4 {
 			err = fmt.Errorf("the script answered %d values", len(out))
 		}
 		if err != nil {
@@ -184,7 +191,7 @@ func (m *Meter) Report(
 		if out[2] == 1 {
 			pace /= 2
 		}
-		answers[p] = Answer{Remaining: left(limits[p].Budget, out[0]), Pace: pace}
+		answers[p] = Answer{Remaining: left(out[3], out[0]), Pace: pace}
 		if out[1] == 1 {
 			spent = append(spent, p)
 		}
@@ -253,25 +260,20 @@ func (m *Meter) Spent(ctx context.Context, kind Kind, placement uuid.UUID) (bool
 	return n == 1, nil
 }
 
-// Uncross deletes the spent key of kind while the sum is under budget, reporting whether it did
-func (m *Meter) Uncross(
-	ctx context.Context, kind Kind, placement uuid.UUID, budget int64,
-) (bool, error) {
-	keys := []string{m.key(kind, "used", placement), m.key(kind, "spent", placement)}
-	n, err := uncrossScript.Exec(ctx, m.c, keys, []string{strconv.FormatInt(budget, 10)}).
-		AsInt64()
-	if err != nil {
-		return false, fmt.Errorf("budget: take back the %s spent key of %s: %w", kind,
-			placement, err)
+// Grow records an extension's budgets for the reports and clears both spent keys in one step
+func (m *Meter) Grow(
+	ctx context.Context, placement uuid.UUID, edge, egress int64, deadline time.Time,
+) error {
+	keys := []string{
+		m.key(Edge, "budget", placement), m.key(Egress, "budget", placement),
+		m.key(Edge, "spent", placement), m.key(Egress, "spent", placement),
 	}
-	return n == 1, nil
-}
-
-// ClearSpent deletes both spent keys, so a later crossing writes BudgetSpent again
-func (m *Meter) ClearSpent(ctx context.Context, placement uuid.UUID) error {
-	cmd := m.c.B().Del().Key(m.key(Edge, "spent", placement), m.key(Egress, "spent", placement))
-	if err := m.c.Do(ctx, cmd.Build()).Error(); err != nil {
-		return fmt.Errorf("budget: clear spent of %s: %w", placement, err)
+	args := []string{
+		strconv.FormatInt(edge, 10), strconv.FormatInt(egress, 10),
+		strconv.FormatInt(deadline.Add(keyLife).UnixMilli(), 10),
+	}
+	if err := growScript.Exec(ctx, m.c, keys, args).Error(); err != nil {
+		return fmt.Errorf("budget: grow the budgets of %s: %w", placement, err)
 	}
 	return nil
 }
