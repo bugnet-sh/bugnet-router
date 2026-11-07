@@ -68,7 +68,7 @@ idle_timeout = "60s"                   # and 5 x it bounds one provider call of 
 max_active_per_placement = 2
 max_tokens_per_placement = 16
 max_claims = 5                         # and 2 x size + 64 MiB of bytes per URL
-koyeb_part = "8MiB"                    # buffered and retried parts, at most 100MiB
+koyeb_part = "8MiB"                    # parts of at most 100MiB, each sent within 5 x idle_timeout
 koyeb_buffer_total = "256MiB"          # all Koyeb part buffers of one router-api process
 
 [ssh]
