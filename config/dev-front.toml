@@ -1,6 +1,6 @@
-# The live stack's fronted mode (DP 15.6): the dev names the VPS fronts, the fixed ports where
-# the tunnel's ends land on the Mac, and the VPS's addresses. No secrets. test/live reads it when
-# scripts/live-test.sh runs with --front vps.
+# The live stack's fronted mode (DP 15.6). It holds the dev names the VPS fronts, the fixed ports
+# where the tunnel's ends land on the Mac, and the VPS's addresses. No secrets. test/live reads it
+# when scripts/live-test.sh runs with --front vps.
 
 [names]
 preview_domain = "preview.dev.bugnet.sh"
@@ -27,4 +27,4 @@ state_dir = "~/.local/state/bugnet-dev/acme"           # one cache per service, 
 wildcard_dir = "~/.local/state/bugnet-dev/preview-dev"  # make dev-certs in bugnet-edges copies it
 
 [edge]
-abuse_contact = "abuse@bugnet.sh"   # the edge's previews.abuse_contact
+abuse_contact = "abuse@bugnet.org"  # the edge's previews.abuse_contact

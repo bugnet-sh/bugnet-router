@@ -830,6 +830,7 @@ func TestDevFrontSettings(t *testing.T) {
 		[4]int{8443, 8445, 9443, 2223})
 	eq(t, f.Names.TransferHost, "transfer.dev.bugnet.sh")
 	eq(t, f.Names.SSHPort, 2200)
+	eq(t, f.Edge.AbuseContact, "abuse@bugnet.org")
 	home, _ := os.UserHomeDir()
 	eq(t, f.ACME.StateDir, filepath.Join(home, ".local", "state", "bugnet-dev", "acme"))
 	eq(t, f.ACME.WildcardDir, filepath.Join(home, ".local", "state", "bugnet-dev", "preview-dev"))
