@@ -96,10 +96,16 @@ install_packages() {
 	fi
 }
 
+haproxy_listens() {
+	[[ $(ss -Hltnp "sport = :$1") == *'"haproxy"'* ]]
+}
+
 install_haproxy() {
-	local f backup others
-	others=$(ss -Hltnp 'sport = :443' | grep -v '"haproxy"' || true)
-	[[ -z $others ]] || die "another process holds port 443, stop it first: $others"
+	local f p backup others
+	for p in 443 2200; do
+		others=$(ss -Hltnp "sport = :$p" | grep -v '"haproxy"' || true)
+		[[ -z $others ]] || die "another process holds port $p, stop it first: $others"
+	done
 
 	backup=$(mktemp -d)
 	for f in haproxy.cfg sni.map end.map; do
@@ -129,13 +135,13 @@ install_haproxy() {
 		systemctl restart haproxy
 	fi
 	for _ in $(seq 50); do
-		if [[ $(ss -Hltnp 'sport = :443') == *'"haproxy"'* ]]; then
+		if haproxy_listens 443 && haproxy_listens 2200; then
 			say "haproxy serves 443 and 2200"
 			return
 		fi
 		sleep 0.2
 	done
-	die "haproxy does not listen on 443 after the reload; see journalctl -u haproxy"
+	die "haproxy does not listen on both 443 and 2200 after the reload; see journalctl -u haproxy"
 }
 
 install_tunnel_user() {
