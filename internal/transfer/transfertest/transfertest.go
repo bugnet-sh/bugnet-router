@@ -163,7 +163,9 @@ func (s *Sandbox) Exec(
 	case len(argv) == 6 && argv[0] == "sh" && (argv[4] == "r" || argv[4] == "w"):
 		return done("", s.access(ref, argv[4], argv[5])), nil
 	case len(argv) == 3 && argv[0] == "sha256sum":
-		return s.digest(ref, argv[2], root), nil
+		return s.digest(ref, argv[2], argv[2], root), nil
+	case len(argv) == 5 && argv[0] == "sh" && strings.HasPrefix(argv[2], "sha256sum <"):
+		return s.digest(ref, argv[4], "-", root), nil
 	case len(argv) > 1 && argv[0] == transfer.RunnerPath:
 		return s.runner(ref, argv[1], argv[2:], root), nil
 	}
@@ -198,7 +200,8 @@ func boolCode(fail bool) int {
 	return 0
 }
 
-func (s *Sandbox) digest(ref provider.Ref, p string, root bool) provider.ExecStream {
+// digest prints p's sum as GNU sha256sum does, marking and escaping a name with \ or a newline
+func (s *Sandbox) digest(ref provider.Ref, p, name string, root bool) provider.ExecStream {
 	if !root && !s.reachable(p) {
 		return done("", 1)
 	}
@@ -207,7 +210,12 @@ func (s *Sandbox) digest(ref provider.Ref, p string, root bool) provider.ExecStr
 		return done("", 1)
 	}
 	sum := sha256.Sum256(b)
-	return done(hex.EncodeToString(sum[:])+"  "+p+"\n", 0)
+	line := hex.EncodeToString(sum[:]) + "  " + name
+	if strings.ContainsAny(name, "\\\n") {
+		line = `\` + hex.EncodeToString(sum[:]) + "  " +
+			strings.NewReplacer(`\`, `\\`, "\n", `\n`).Replace(name)
+	}
+	return done(line+"\n", 0)
 }
 
 /* bugnet-run */

@@ -83,14 +83,19 @@ func TestDigest(t *testing.T) {
 	want := sha256.Sum256([]byte("abc"))
 	for _, user := range []string{"", "boxd"} {
 		s := newSandbox(t, user)
-		s.write(t, "/opt/f", "abc")
-		got, err := resolve(t, s, download, "/opt/f")
-		if err != nil {
-			t.Fatal(err)
+		// A staged and an unstaged name with a backslash, which sha256sum would escape
+		for _, p := range []string{"/opt/f", `/opt/a\b`, `/tmp/c\d`} {
+			s.write(t, p, "abc")
+			got, err := resolve(t, s, download, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum, err := transfer.Digest(t.Context(), s.prov, s.ref, s.caps(), got)
+			if err != nil {
+				t.Fatalf("digest of %s as %q: %v", p, user, err)
+			}
+			eq(t, sum, want[:])
 		}
-		sum, err := transfer.Digest(t.Context(), s.prov, s.ref, s.caps(), got)
-		eq(t, err, nil)
-		eq(t, sum, want[:])
 	}
 	s := newSandbox(t, "boxd")
 	s.write(t, "/opt/f", "abc")
@@ -99,7 +104,8 @@ func TestDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran := s.fake.Ran()
-	eq(t, ran[len(ran)-1], []string{"sudo", "-n", "sha256sum", "--", "/opt/f"})
+	eq(t, ran[len(ran)-1],
+		[]string{"sudo", "-n", "sh", "-c", transfer.DigestScript, "sh", "/opt/f"})
 }
 
 func TestLeftoversOlderThanAnHourRemoved(t *testing.T) {

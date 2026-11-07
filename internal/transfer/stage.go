@@ -123,6 +123,9 @@ func Sweep(ctx context.Context, prov provider.Provider, ref provider.Ref, t Targ
 	return err
 }
 
+// digestScript reads the file on stdin, since sha256sum escapes a name holding \ or a newline
+const digestScript = `sha256sum < "$1"`
+
 // Digest is the target's SHA-256, by sha256sum in the sandbox or read through a Pather's file API
 func Digest(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, caps provider.Capabilities,
@@ -140,7 +143,8 @@ func Digest(
 		}
 		return h.Sum(nil), nil
 	}
-	out, code, err := run(ctx, prov, ref, t.Staged && nonRoot(caps), "sha256sum", "--", t.Path)
+	out, code, err := run(ctx, prov, ref, t.Staged && nonRoot(caps), "sh", "-c", digestScript,
+		"sh", t.Path)
 	if err != nil {
 		return nil, err
 	}
