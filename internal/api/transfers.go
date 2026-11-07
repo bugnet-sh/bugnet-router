@@ -35,8 +35,6 @@ import (
 const (
 	// xferChunk is the largest data message of a transfer stream (DP 8.3.3)
 	xferChunk = 256 << 10
-	// renewEvery is how often a stream renews its lease and reads its placement again
-	renewEvery = 10 * time.Second
 	// xferStepTimeout bounds the record and staging work that ends a stream
 	xferStepTimeout = time.Minute
 	// cutGrace is how long a cut download may still send its error before its writes fail
@@ -45,8 +43,14 @@ const (
 	download = routerv1.TransferDirection_TRANSFER_DIRECTION_DOWNLOAD
 )
 
-// xferCheck is how often a stream checks its idle time and hard stop
-var xferCheck = time.Second
+var (
+	// xferCheck is how often a stream checks its idle time and hard stop
+	xferCheck = time.Second
+	// renewEvery is how often a stream renews its lease and reads its placement again
+	renewEvery = 10 * time.Second
+	// xferLease is how long a claim holds a transfer without a renewal
+	xferLease = transfer.LeaseLength
+)
 
 var (
 	errWrongWay  = errors.New("api: the transfer goes the other way")

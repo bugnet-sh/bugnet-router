@@ -142,7 +142,7 @@ func New(deps Deps) *Server {
 		hub:    newHub(events, deps.Log),
 		xfers: transfer.NewStore(deps.Valkey, deps.Prefix, transfer.Limits{
 			MaxTokens: x.MaxTokensPerPlacement, MaxActive: x.MaxActivePerPlacement,
-			MaxClaims: x.MaxClaims, TTL: x.URLTTL + x.MaxDuration,
+			MaxClaims: x.MaxClaims, TTL: x.URLTTL + x.MaxDuration, Lease: xferLease,
 		}),
 		x:      x,
 		ctx:    ctx,

@@ -837,3 +837,68 @@ func TestStagedDownloadUsesStageOut(t *testing.T) {
 		t.Fatal("the download differs from the file")
 	}
 }
+
+/* Leases */
+
+// field reads one field of the transfer record of id
+func (e *env) field(t *testing.T, id, name string) string {
+	t.Helper()
+	got, err := e.vk.Do(t.Context(), e.vk.B().Hget().Key(e.prefix+"xfer:"+id).Field(name).
+		Build()).ToString()
+	if err != nil {
+		t.Fatalf("read %s of the transfer: %v", name, err)
+	}
+	return got
+}
+
+// begin opens o's upload and sends its first bytes, leaving the stream open
+func (e *env) begin(
+	t *testing.T, o *routerv1.OpenTransferResponse, first string,
+) *connect.ClientStreamForClient[routerv1.WriteTransferRequest, routerv1.WriteTransferResponse] {
+	t.Helper()
+	stream := e.edge(t).WriteTransfer(timeout(t))
+	if err := stream.Send(&routerv1.WriteTransferRequest{
+		TransferId: o.GetTransferId(), Lease: o.GetLease(), Data: []byte(first),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return stream
+}
+
+func TestAStreamRenewsItsLease(t *testing.T) {
+	api.SetTransferLease(t, 900*time.Millisecond, 150*time.Millisecond)
+	e := newEnv(t, options{})
+	h, _ := e.readyPlacement(t)
+	m := e.mintOK(t, upload(h, "/root/f", 3))
+	o := e.open(t, m, toSandbox)
+	stream := e.begin(t, o, "a")
+	time.Sleep(1300 * time.Millisecond)
+	_, err := e.openWith(t, tokenOf(t, m), toSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "IN_USE")
+	eq(t, e.field(t, o.GetTransferId(), "bytes_sent"), "1")
+	if err := stream.Send(&routerv1.WriteTransferRequest{Data: []byte("bc")}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := stream.CloseAndReceive()
+	if err != nil {
+		t.Fatalf("an upload that outlived its first lease: %v", err)
+	}
+	eq(t, resp.Msg.GetSize(), uint64(3))
+	eq(t, e.content(t, h, "/root/f"), "abc")
+}
+
+func TestAStreamThatLostItsLeaseIsCut(t *testing.T) {
+	api.SetTransferLease(t, 200*time.Millisecond, 1500*time.Millisecond)
+	e := newEnv(t, options{})
+	h, _ := e.readyPlacement(t)
+	m := e.mintOK(t, upload(h, "/root/f", 100))
+	stream := e.begin(t, e.open(t, m, toSandbox), "ab")
+	time.Sleep(300 * time.Millisecond)
+	taken := e.open(t, m, toSandbox)
+	err := cutWithin(t, 2*time.Second, stream, true)
+	mustCode(t, err, connect.CodeFailedPrecondition, "IN_USE")
+	if _, err := os.Stat(e.host(t, h, "/root/f")); err == nil {
+		t.Fatal("a stream that lost its lease committed")
+	}
+	eq(t, e.field(t, taken.GetTransferId(), "lease"), taken.GetLease())
+}
