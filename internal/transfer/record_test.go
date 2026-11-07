@@ -1,0 +1,181 @@
+package transfer_test
+
+import (
+	"crypto/sha256"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/oynozan/bugnet-router/internal/transfer"
+)
+
+var limits = transfer.Limits{MaxTokens: 16, MaxActive: 2, MaxClaims: 5, TTL: 40 * time.Minute}
+
+func newStore(t *testing.T) *transfer.Store {
+	t.Helper()
+	vk, prefix := testenv.Valkey(t)
+	return transfer.NewStore(vk, prefix, limits)
+}
+
+func token(n int) []byte {
+	sum := sha256.Sum256([]byte("bnx_" + strconv.Itoa(n)))
+	return sum[:]
+}
+
+func record(p uuid.UUID, n int, now time.Time) transfer.Record {
+	return transfer.Record{
+		ID: transfer.ID(token(n)), Placement: p, Direction: upload, Path: "/root/f", Size: 10,
+		Mode: 0o640, SHA256: make([]byte, 32), ExpiresAt: now.Add(10 * time.Minute),
+		StagedPath: "/home/boxd/.bugnet/xfer/x/f",
+	}
+}
+
+func put(t *testing.T, s *transfer.Store, r transfer.Record, now time.Time) {
+	t.Helper()
+	if _, created, err := s.Put(t.Context(), r, now); err != nil || !created {
+		t.Fatalf("put %s: %v, created %v", r.ID, err, created)
+	}
+}
+
+func claim(
+	t *testing.T, s *transfer.Store, n int, now time.Time,
+) (transfer.Record, string, error) {
+	t.Helper()
+	return s.Claim(t.Context(), token(n), "edge-1", now)
+}
+
+func TestPutKeepsTheFirstRecordAndCapsOpenTokens(t *testing.T) {
+	s := newStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+	p := uuid.New()
+	r := record(p, 0, now)
+	put(t, s, r, now)
+	again := r
+	again.Path = "/root/other"
+	got, created, err := s.Put(t.Context(), again, now)
+	eq(t, err, nil)
+	eq(t, created, false)
+	eq(t, got.Path, "/root/f")
+	r.State = transfer.Issued
+	r.ExpiresAt = r.ExpiresAt.UTC()
+	eq(t, got, r)
+
+	for n := 1; n < 16; n++ {
+		put(t, s, record(p, n, now), now)
+	}
+	_, _, err = s.Put(t.Context(), record(p, 16, now), now)
+	is(t, err, transfer.ErrTooMany)
+	put(t, s, record(uuid.New(), 16, now), now)
+	later := now.Add(11 * time.Minute)
+	put(t, s, record(p, 17, later), later)
+}
+
+func TestClaimStates(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	p := uuid.New()
+	_, _, err := claim(t, s, 0, now)
+	is(t, err, transfer.ErrUnknown)
+	put(t, s, record(p, 0, now), now)
+	r, lease, err := claim(t, s, 0, now)
+	if err != nil || lease == "" || r.State != transfer.Active || r.Claims != 1 {
+		t.Fatalf("first claim: %+v, %q, %v", r, lease, err)
+	}
+	_, _, err = claim(t, s, 0, now.Add(time.Second))
+	is(t, err, transfer.ErrInUse)
+	if err := s.Done(t.Context(), r, lease, 10); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = claim(t, s, 0, now.Add(time.Second))
+	is(t, err, transfer.ErrUsed)
+
+	put(t, s, record(p, 1, now), now)
+	_, _, err = claim(t, s, 1, now.Add(10*time.Minute))
+	is(t, err, transfer.ErrExpired)
+}
+
+func TestSixthClaimIsSpent(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	put(t, s, record(uuid.New(), 0, now), now)
+	for i := range 5 {
+		r, lease, err := claim(t, s, 0, now)
+		if err != nil {
+			t.Fatalf("claim %d: %v", i+1, err)
+		}
+		if err := s.Release(t.Context(), r, lease, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, err := claim(t, s, 0, now)
+	is(t, err, transfer.ErrClaimsSpent)
+}
+
+func TestByteBudgetSpendsTheURL(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	put(t, s, record(uuid.New(), 0, now), now)
+	r, lease, err := claim(t, s, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Release(t.Context(), r, lease, 2*10+transfer.ByteSlack); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = claim(t, s, 0, now)
+	is(t, err, transfer.ErrClaimsSpent)
+}
+
+func TestTwoActiveTransfersPerPlacement(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	p := uuid.New()
+	for n := range 3 {
+		put(t, s, record(p, n, now), now)
+	}
+	_, _, err := claim(t, s, 0, now)
+	eq(t, err, nil)
+	r1, lease1, err := claim(t, s, 1, now)
+	eq(t, err, nil)
+	_, _, err = claim(t, s, 2, now)
+	is(t, err, transfer.ErrTooMany)
+	if err := s.Release(t.Context(), r1, lease1, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = claim(t, s, 2, now)
+	eq(t, err, nil)
+}
+
+func TestLeaseLapseReturnsToIssued(t *testing.T) {
+	s := newStore(t)
+	now := time.Now()
+	p := uuid.New()
+	put(t, s, record(p, 0, now), now)
+	put(t, s, record(p, 1, now), now)
+	put(t, s, record(p, 2, now), now)
+	r, lease, err := claim(t, s, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = claim(t, s, 1, now)
+	eq(t, err, nil)
+	renewed, err := s.Renew(t.Context(), r, lease, 4, now.Add(20*time.Second))
+	eq(t, err, nil)
+	eq(t, renewed.BytesSent, int64(4))
+	_, _, err = claim(t, s, 0, now.Add(49*time.Second))
+	is(t, err, transfer.ErrInUse)
+
+	lapsed := now.Add(51 * time.Second)
+	again, lease2, err := claim(t, s, 0, lapsed)
+	if err != nil || again.Claims != 2 || lease2 == lease {
+		t.Fatalf("claim after the lease lapsed: %+v, %v", again, err)
+	}
+	_, _, err = claim(t, s, 2, lapsed)
+	eq(t, err, nil)
+	_, err = s.Renew(t.Context(), r, lease, 1, lapsed)
+	is(t, err, transfer.ErrInUse)
+	is(t, s.Done(t.Context(), r, lease, 1), transfer.ErrInUse)
+}
