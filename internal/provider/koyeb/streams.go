@@ -29,8 +29,10 @@ const (
 	// partRetries is how often a buffered part is sent again after a failure worth a retry
 	partRetries = 3
 	// readStalls is how many reads in a row may move no bytes before a download fails
-	readStalls         = 3
-	defaultReissueWait = time.Second
+	readStalls       = 3
+	defaultRetryWait = time.Second
+	// maxPartWait caps the Retry-After a part's next attempt honours
+	maxPartWait = 30 * time.Second
 	// streamHeaderTimeout bounds the executor's answer once a request went out whole
 	streamHeaderTimeout = 2 * time.Minute
 )
@@ -209,7 +211,7 @@ type rangeBody struct {
 // attempt issues GETs from pos until one answers, each failure counting as a stall
 func (b *rangeBody) attempt() error {
 	for {
-		if b.stalls > 0 && !sleep(b.ctx, b.p.reissueWait) {
+		if b.stalls > 0 && !sleep(b.ctx, b.p.retryWait) {
 			return b.ctx.Err()
 		}
 		again, err := b.get()
@@ -559,14 +561,14 @@ func (u *partUpload) put(
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil
 		}
-		again, status := true, 0
+		again, status, header := true, 0, http.Header(nil)
 		if err != nil {
 			err = &provider.Error{
 				Code: provider.CodeInternal, CanFailOver: true,
 				Err: fmt.Errorf("koyeb upload: %w", err),
 			}
 		} else {
-			status = resp.StatusCode
+			status, header = resp.StatusCode, resp.Header
 			err = executorError(resp)
 			drainClose(resp)
 			again = retryStatus(status) && !isCode(err, provider.CodeNoSpace)
@@ -577,7 +579,18 @@ func (u *partUpload) put(
 			}
 			return nil, err
 		}
+		if !sleep(ctx, u.p.partWait(attempt, header)) {
+			return nil, ctx.Err()
+		}
 	}
+}
+
+// partWait is the pause before a part's next attempt, Retry-After when given, else doubling
+func (p *Provider) partWait(attempt int, h http.Header) time.Duration {
+	if s, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil && s >= 0 {
+		return min(time.Duration(s)*time.Second, maxPartWait)
+	}
+	return p.retryWait << attempt
 }
 
 // Finish sends a one-part file with the router's digest, or the last part and then complete

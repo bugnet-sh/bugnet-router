@@ -616,7 +616,8 @@ disk reads as `no_space` everywhere.
 
 Transfer clients ask for `identity` encoding over HTTP/1.1, so lengths stay exact. boxd streams
 use a second gRPC connection, so a long stream never shares TCP with `Exec`. Each Koyeb part is
-sent again up to 3 times, and all part buffers of one process stay under
+sent again up to 3 times, after the answer's `Retry-After` (at most 30 s) or else a pause of 1 s
+that doubles each time. All part buffers of one process stay under
 `transfers.koyeb_buffer_total`, a writer waiting for room. Koyeb's `GET /files/stat` follows a
 final symlink, so `StatFile` reads the directory's listing instead. Boat's file API reaches only
 `/home/user` and `/tmp`, so any other path is refused before a call, and its file info has no

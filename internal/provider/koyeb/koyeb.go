@@ -174,10 +174,10 @@ type Provider struct {
 	streams   *http.Client
 	partBytes int64
 	buffers   *semaphore.Weighted
-	// reissueWait spaces out reads that follow one that moved no bytes
-	reissueWait time.Duration
-	mu          sync.Mutex
-	known       map[string]knownService // by service id, labels never change after create
+	// retryWait spaces out reissued reads and is the first pause between attempts of a part
+	retryWait time.Duration
+	mu        sync.Mutex
+	known     map[string]knownService // by service id, labels never change after create
 }
 
 // knownService is what ListOwned read from one deployment of a service
@@ -226,7 +226,7 @@ func New(opts Options) (*Provider, error) {
 		streams:      newStreamClient(),
 		partBytes:    part,
 		buffers:      semaphore.NewWeighted(total),
-		reissueWait:  defaultReissueWait,
+		retryWait:    defaultRetryWait,
 		known:        map[string]knownService{},
 	}, nil
 }

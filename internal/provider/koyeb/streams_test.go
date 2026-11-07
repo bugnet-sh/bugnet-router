@@ -33,7 +33,7 @@ func streamProvider(t *testing.T, f *fakeKoyeb, part, total int64) *Provider {
 	}
 	f.trust(p)
 	p.pollInterval = 10 * time.Millisecond
-	p.reissueWait = time.Millisecond
+	p.retryWait = time.Millisecond
 	p.exitDir = filepath.Join(t.TempDir(), "exec")
 	return p
 }
@@ -196,6 +196,44 @@ func TestKoyebPartRetries(t *testing.T) {
 		_, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), data[:10], 10)
 		eq(t, isCode(err, provider.CodeInvalid), true)
 		eq(t, routeCount(f, http.MethodPut, "/files"), 1)
+	})
+}
+
+func TestKoyebPartRetriesWait(t *testing.T) {
+	data := make([]byte, 2*64<<10)
+	t.Run("RetryAfter", func(t *testing.T) {
+		f := newFake(t)
+		p := streamProvider(t, f, 64<<10, 1<<20)
+		ref := ready(t, p, "key-retry-after")
+		f.failFiles("PUT /files/uploads/{id}", fileFault{
+			status: http.StatusTooManyRequests, body: `{"error":"slow down"}`,
+			header: map[string]string{"Retry-After": "1"}, times: 1,
+		})
+		start := time.Now()
+		if _, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), data, len(data)); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(start); took < time.Second {
+			t.Fatalf("an upload whose part drew Retry-After 1 took %v, want at least 1s", took)
+		}
+		eq(t, routeCount(f, http.MethodPut, "/files/uploads/"), 3)
+	})
+	t.Run("Backoff", func(t *testing.T) {
+		f := newFake(t)
+		p := streamProvider(t, f, 64<<10, 1<<20)
+		p.retryWait = 50 * time.Millisecond
+		ref := ready(t, p, "key-backoff")
+		f.failFiles("PUT /files/uploads/{id}", fileFault{
+			status: http.StatusServiceUnavailable, body: `{"error":"upstream"}`, times: 2,
+		})
+		start := time.Now()
+		if _, err := streamUp(t, p, ref, filepath.Join(t.TempDir(), "f"), data, len(data)); err != nil {
+			t.Fatal(err)
+		}
+		// the two retries wait 50 ms and then 100 ms
+		if took := time.Since(start); took < 150*time.Millisecond {
+			t.Fatalf("an upload whose part failed twice took %v, want at least 150ms", took)
+		}
 	})
 }
 
