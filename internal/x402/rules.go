@@ -57,9 +57,14 @@ func CheckSpec(s Spec, maxPriceMicros int64, hosts hostrules.Rules) error {
 	return nil
 }
 
-// prefixOK is ^/.+/$ within maxPrefixLen and XS 6.7's path rules
+// prefixOK is ^/.+/$ within maxPrefixLen and the rules of servicePathOK
 func prefixOK(p string) bool {
-	return len(p) >= 3 && len(p) <= maxPrefixLen && strings.HasSuffix(p, "/") && PathOK(p)
+	return len(p) >= 3 && len(p) <= maxPrefixLen && strings.HasSuffix(p, "/") && servicePathOK(p)
+}
+
+// servicePathOK is XS 6.7's path rules without ? or #, since egress matches only the path
+func servicePathOK(p string) bool {
+	return PathOK(p) && !strings.ContainsAny(p, "?#")
 }
 
 // paidPathOK says whether a paid path is set only when unindexed, valid and under its prefix
@@ -67,7 +72,7 @@ func paidPathOK(s Spec) bool {
 	if s.Indexed {
 		return s.PaidPath == ""
 	}
-	return s.PaidPath != "" && len(s.PaidPath) <= maxPaidPathLen && PathOK(s.PaidPath) &&
+	return s.PaidPath != "" && len(s.PaidPath) <= maxPaidPathLen && servicePathOK(s.PaidPath) &&
 		strings.HasPrefix(s.PaidPath+"/", s.Prefix)
 }
 
