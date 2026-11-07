@@ -47,6 +47,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with |
 | `scripts` | `dev-up.sh` for a local stack and `live-test.sh` for the live provider tests |
 | `deploy/e2b` | E2B template definitions, one template per size |
+| `deploy/vps` | The VPS front: public names, site settings, the HAProxy template, the dev front |
 
 ## Prerequisites
 
@@ -531,6 +532,67 @@ while Valkey answers, `/monitor` reports `valkey memory is unknown`. When an ACL
 unchecked`, since that also leaves the start-up policy check blind, so leave `INFO` allowed. When it answers without a field, as a managed Valkey may, `/monitor` checks the
 fields it got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only
 that Postgres and Valkey answer.
+
+## The VPS front
+
+The founder's VPS is the public front (DP 15). HAProxy splits TCP 443 by SNI and never decrypts.
+Until the production deploy, the VPS fronts the Mac through a reverse SSH tunnel for live tests
+(DP 15.6). `deploy/vps` holds its files.
+
+| Path | What it holds |
+| --- | --- |
+| `names.toml` | Every public name on 443, `exact` or `suffix`, its backend, production and dev |
+| `site.toml` | The VPS's addresses and the founder's answers, decoded strictly |
+| `haproxy.cfg.tmpl` | DP 15.2's config, its bind lines and optional frontends from `site.toml` |
+
+### Maps and settings
+
+```sh
+go run ./cmd/bugnet-dev deploy maps --names deploy/vps/names.toml --site deploy/vps/site.toml \
+  --out DIR [--front]
+```
+
+It writes six files into `DIR`:
+
+| File | Goes to | Holds |
+| --- | --- | --- |
+| `sni.map` | `/etc/haproxy/` | Each `exact` name and its backend, production first |
+| `end.map` | `/etc/haproxy/` | Each `suffix`, with a leading dot, and its backend |
+| `haproxy.cfg` | `/etc/haproxy/` | DP 15.2's config |
+| `certs.toml` | `/etc/bugnet/` | `bugnet-certs` settings, each suffix's wildcard, its DNS host |
+| `certs-staging.toml` | `/etc/bugnet/` | The same against Let's Encrypt staging |
+| `deploy.env` | Read by `front.sh` | The admin SSH port and the wildcard directories |
+
+- A new public name is one line in `names.toml`. A suffix line names its certificate directory
+  under `/var/lib/bugnet-certs/` with `cert`.
+- A staging pair goes under `/var/lib/bugnet-certs/staging/`, never into a live directory. A
+  staging certificate that is not yet due would keep the real one from being issued.
+- `--front` writes the dev front's files. `haproxy.cfg` has no `frontend ssh`, since port 22
+  waits for the production deploy. The `bugnet-certs` files hold the dev wildcard only, with
+  `cert_metrics = []`, since no edge runs on the VPS then.
+- It refuses, naming the key or the line: an unknown key in either file, a name that is not a
+  lowercase host name, an unknown kind or backend, a name listed twice as one kind, a suffix
+  without `cert`, an address of the wrong family, an admin SSH port of 80, 443 or 2200, and an
+  empty `ipv4`.
+
+### The founder's answers
+
+Each answer changes a value in `site.toml`, never a script.
+
+| Question | Answer | `site.toml` | HAProxy |
+| --- | --- | --- | --- |
+| DP 1 | (a) admin SSH on 2222 | `admin_ssh_port = 2222` | `frontend ssh` binds `:22`, `:::22` |
+| DP 1 | (b) a second IPv4 | `admin_ssh_port = 22`, `ssh_gateway_ip` | It binds 22 there only |
+| DP 2 | (a) or (b) | `dns_provider`, `dns_env` | No change |
+| DP 11 | The proxy shares the IP | `egress_ip = ""` | Unknown names go to `egress` |
+| DP 11 | The proxy's own IPv4 | `egress_ip` | `frontend egress_ip` sends all to `egress` |
+
+- Under DP 1 (b), admin sshd must listen on `ipv4` alone, not on every address, or HAProxy cannot
+  bind 22 on the second one. The dev front needs no `ssh_gateway_ip`, since it binds no 22.
+- With `egress_ip`, `frontend tls` binds `ipv4:443` instead of `:443`. The two frontends split
+  its 14,000 connections evenly, so the sum stays under the global 20,000.
+- `dns_env` is `["CF_DNS_API_TOKEN"]` by default, Cloudflare's variable. Another `dns_provider`
+  needs its own list. The values go in `/etc/bugnet/certs.env` on the VPS and nowhere else.
 
 ## Events
 

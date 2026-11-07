@@ -1,0 +1,3 @@
+# /etc/haproxy/end.map, suffixes
+.preview.bugnet.sh          edge
+.preview.dev.bugnet.sh      edge_dev

@@ -1,0 +1,7 @@
+# DP question 1 (b), a second IPv4 for SSH, and question 11 with the proxy on its own IPv4
+ipv4 = "203.0.113.7"
+admin_ssh_port = 22
+ssh_gateway_ip = "203.0.113.8"
+egress_ip = "203.0.113.9"
+dns_provider = "route53"
+dns_env = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_HOSTED_ZONE_ID"]

@@ -1,0 +1,8 @@
+# DP question 1 (a), admin SSH on 2222, and the egress proxy on the shared address
+ipv4 = "203.0.113.7"
+ipv6 = "2001:db8::7"
+admin_ssh_port = 2222
+ssh_gateway_ip = ""
+egress_ip = ""
+dns_provider = "cloudflare"
+dns_env = ["CF_DNS_API_TOKEN"]

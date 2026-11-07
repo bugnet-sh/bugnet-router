@@ -1,10 +1,11 @@
 // Command bugnet-dev drives a Sandbox Router from the terminal during development.
 //
-// keys, pubkey and token work offline. Every other command calls the API at api.listen_addr of
-// the settings file over unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and
-// extend sign their own order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the
-// settings file's packages_file. Only commands that need a setting read the file. exec and watch
-// write a job's output to stdout and stderr as it arrives and exit with the job's code.
+// keys, pubkey, token and deploy work offline. Every other command calls the API at
+// api.listen_addr of the settings file over unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the
+// bearer. create and extend sign their own order token when BUGNET_ORDER_PRIVATE_KEY is set,
+// priced from the settings file's packages_file. Only commands that need a setting read the file.
+// exec and watch write a job's output to stdout and stderr as it arrives and exit with the job's
+// code. deploy maps renders the VPS's HAProxy and bugnet-certs files from deploy/vps.
 package main
 
 import (
@@ -56,6 +57,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   exec --handle H [--cwd D] [--env K=V]... -- ARGV
                                          run a command and stream its output
   watch --handle H --job J [--cursor C]  stream a job's output after a cursor
+  deploy maps --names FILE --site FILE --out DIR [--front]
+                                         write the VPS's HAProxy maps and config, bugnet-certs'
+                                         settings and deploy.env, --front for the dev front
 
 Settings
   --config FILE             router settings file, default config/dev.toml, read only by commands
@@ -109,7 +113,7 @@ func run(
 	commands := map[string]func([]string) error{
 		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
 		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
-		"stop": c.stop, "exec": c.exec, "watch": c.watch,
+		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

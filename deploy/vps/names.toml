@@ -1,0 +1,29 @@
+# Every public name the VPS answers on TCP 443, and the HAProxy backend it goes to (DP 15.2).
+# bugnet-dev deploy maps writes sni.map, end.map and haproxy.cfg from this file and site.toml.
+# A new public name gets a line here before its DNS record exists (DP 17).
+#
+# kind "exact" is that one name. kind "suffix" is every name under it, never the name itself.
+# A suffix is a preview wildcard that bugnet-certs keeps by DNS-01, and cert names its directory
+# under /var/lib/bugnet-certs. Each map lists the production set first, then the dev set.
+# backend is one of edge, secrets, egress, mcp, website, edge_dev, secrets_dev and egress_dev.
+
+production = [
+  { name = "preview.bugnet.sh",  kind = "exact",  backend = "edge" },
+  { name = "transfer.bugnet.sh", kind = "exact",  backend = "edge" },
+  { name = "hooks.bugnet.sh",    kind = "exact",  backend = "edge" },
+  { name = "secrets.bugnet.sh",  kind = "exact",  backend = "secrets" },
+  { name = "mcp.bugnet.sh",      kind = "exact",  backend = "mcp" },
+  { name = "bugnet.sh",          kind = "exact",  backend = "website" },
+  { name = "www.bugnet.sh",      kind = "exact",  backend = "website" },
+  { name = "egress.bugnet.sh",   kind = "exact",  backend = "egress" },
+  { name = "preview.bugnet.sh",  kind = "suffix", backend = "edge", cert = "preview" },
+]
+
+dev = [
+  { name = "preview.dev.bugnet.sh",  kind = "exact",  backend = "edge_dev" },
+  { name = "transfer.dev.bugnet.sh", kind = "exact",  backend = "edge_dev" },
+  { name = "hooks.dev.bugnet.sh",    kind = "exact",  backend = "edge_dev" },
+  { name = "secrets.dev.bugnet.sh",  kind = "exact",  backend = "secrets_dev" },
+  { name = "egress.dev.bugnet.sh",   kind = "exact",  backend = "egress_dev" },
+  { name = "preview.dev.bugnet.sh",  kind = "suffix", backend = "edge_dev", cert = "preview-dev" },
+]
