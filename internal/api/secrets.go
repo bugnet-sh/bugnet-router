@@ -54,7 +54,7 @@ var (
 	errLinkUsed        = errors.New("api: that request id's link was used")
 	errLinkExpired     = errors.New("api: that request id's link expired")
 	errPutGrant        = errors.New("api: the put grant is expired, forged or for no placement")
-	// errLinkGone means a link was used or expired after it was read, inside the write
+	// errLinkGone means a link was used, expired or locked after it was read, inside the write
 	errLinkGone = errors.New("api: the link was used meanwhile")
 )
 
@@ -100,6 +100,8 @@ func (s *Server) CreateSecretLink(
 		return nil, s.status(errLinkUsed)
 	case link.Expired:
 		return nil, s.status(errLinkExpired)
+	case link.FailedAttempts >= maxLinkFailures:
+		return nil, s.status(errLinkLocked)
 	}
 	return connect.NewResponse(&routerv1.CreateSecretLinkResponse{
 		Url: secrets.LinkURL(s.d.SecretsHost, token), PairingCode: link.PairingCode,
@@ -120,6 +122,11 @@ func (s *Server) newLink(
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.d.Store.Tx(tx)
 		if _, err := s.lockReady(ctx, ts, p.ID); err != nil {
+			return err
+		}
+		// A call with the same request id may have stored the link while this one waited
+		link, err = ts.SecretLinkByToken(ctx, sum)
+		if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
 		if err := s.spend(ctx, p); err != nil {
@@ -280,7 +287,7 @@ type secretWrite struct {
 	spec   *routerv1.SecretSpec
 	value  *routerv1.SealedValue
 	source string
-	// key is the idempotency key, or link:<link id> for a link's submit
+	// key is the idempotency key, or linkKeyPrefix and the link id for a link's submit
 	key string
 	// spend takes an operation token and a put token, as both put paths do
 	spend bool
@@ -342,11 +349,11 @@ func (s *Server) storeSecret(
 			row = prev
 			return nil
 		}
-		if err := s.claim(ctx, ts, cur, w); err != nil {
-			return err
-		}
 		most := cmp.Or(s.d.Secrets.MaxPerPlacement, defaultMaxSecrets)
 		if err := secrets.Fit(w.spec, heldOf(held), most); err != nil {
+			return err
+		}
+		if err := s.claim(ctx, ts, cur, w); err != nil {
 			return err
 		}
 		state := store.SecretApplying
@@ -384,7 +391,7 @@ func (s *Server) claim(
 	ctx context.Context, ts *store.Store, p store.Placement, w secretWrite,
 ) error {
 	if w.link != nil {
-		ok, err := ts.ConsumeSecretLink(ctx, w.link.TokenSHA256, w.submission)
+		ok, err := ts.ConsumeSecretLink(ctx, w.link.TokenSHA256, w.submission, maxLinkFailures)
 		if err == nil && !ok {
 			err = errLinkGone
 		}

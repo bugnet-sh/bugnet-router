@@ -271,11 +271,14 @@ func TestSecretLinkLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ok, err := s.ConsumeSecretLink(ctx, sum[:], "sub-1")
+	if ok, _ := s.ConsumeSecretLink(ctx, sum[:], "sub-0", 2); ok {
+		t.Fatal("a link at its failure limit was consumed")
+	}
+	ok, err := s.ConsumeSecretLink(ctx, sum[:], "sub-1", 3)
 	if err != nil || !ok {
 		t.Fatalf("consume %v %v", ok, err)
 	}
-	if ok, _ := s.ConsumeSecretLink(ctx, sum[:], "sub-2"); ok {
+	if ok, _ := s.ConsumeSecretLink(ctx, sum[:], "sub-2", 3); ok {
 		t.Fatal("a used link was consumed again")
 	}
 	got, err = s.SecretLinkByToken(ctx, sum[:])
@@ -289,7 +292,7 @@ func TestSecretLinkLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if ok, _ := s.ConsumeSecretLink(ctx, old[:], "sub"); ok {
+	if ok, _ := s.ConsumeSecretLink(ctx, old[:], "sub", 3); ok {
 		t.Fatal("an expired link was consumed")
 	}
 	if got, _ := s.SecretLinkByToken(ctx, old[:]); !got.Expired {

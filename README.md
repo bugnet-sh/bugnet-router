@@ -742,19 +742,22 @@ X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP
   same set x402 hosts use, from `internal/hostrules`, without `allowed_shared_hosts` and
   `blocked_hosts`.
 - **Links.** `CreateSecretLink` derives its `bnsl_` token from the request id, so a repeat answers
-  the same link, and a used or expired one answers `TOKEN_USED` or `TOKEN_EXPIRED`. It keeps a
-  suggested host only when it is in the preset of the suggested name. A link lives
+  the same link, and a used, expired or locked one answers `TOKEN_USED`, `TOKEN_EXPIRED` or
+  `LINK_LOCKED`. It keeps a suggested host only when it is in the preset of the suggested name.
+  Two calls with one new request id store and spend for one link. A link lives
   `secrets.link_ttl`, at most `secrets.links_per_hour` an hour per placement (`rl:links:<id>`).
   `GetSecretLink` never uses it, `SubmitSecretLink` uses it in the write's transaction, a repeat
-  of the same `submission_id` answers again, and 5 refused values lock it.
+  of the same `submission_id` answers again, and 5 refused values lock it, a lock that the
+  write's transaction checks again.
 - **Puts.** `PutSecret` (with the handle) and `PutBridgeSecret` (with a `bnsp_` grant from
   `CreateSecretPutGrant`, valid `secrets.put_grant_ttl`) share one implementation, keyed by the
   idempotency key, at most `secrets.puts_per_hour` an hour per placement together
   (`rl:puts:<id>`). A `fetch_only` secret is `ACTIVE` at once.
 - **The row lock.** Each write takes the placement's row lock in the one transaction that checks
-  its counts, stores its row and inserts its `apply_secrets` job, and commits before it waits up
-  to `secrets.apply_wait` for the secret to leave `APPLYING`. `DeleteSecret` removes the row,
-  moves `secrets_version` and inserts the job, and a name the placement lacks changes nothing.
+  its counts before it spends any limit, stores its row and inserts its `apply_secrets` job, and
+  commits before it waits up to `secrets.apply_wait` for the secret to leave `APPLYING`.
+  `DeleteSecret` removes the row, moves `secrets_version` and inserts the job, and a name the
+  placement lacks changes nothing.
 - **`apply_secrets`.** A River job on the `dataplane` queue, 90 s, never unique. It runs under
   `pg_try_advisory_xact_lock` of `bugnet:apply:<placement>` and snoozes 2 s while another run holds
   it. With the lock, it applies the whole current set: it mints a `bnt_` tunnel token when the

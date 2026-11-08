@@ -292,13 +292,14 @@ func (s *Store) SecretLinkByToken(ctx context.Context, sha []byte) (SecretLink, 
 		` from secret_links where token_sha256 = $1`, sha))
 }
 
-// ConsumeSecretLink uses a live, unused link for submission, false when it is used or expired
+// ConsumeSecretLink uses a live link for submission, false when used, expired or at maxFailures
 func (s *Store) ConsumeSecretLink(
-	ctx context.Context, sha []byte, submission string,
+	ctx context.Context, sha []byte, submission string, maxFailures int,
 ) (bool, error) {
 	tag, err := s.q.Exec(ctx, `
 		update secret_links set used_at = now(), submission_id = $2
-		where token_sha256 = $1 and used_at is null and expires_at > now()`, sha, submission)
+		where token_sha256 = $1 and used_at is null and expires_at > now()
+			and failed_attempts < $3`, sha, submission, maxFailures)
 	if err != nil {
 		return false, fmt.Errorf("consume secret link: %w", err)
 	}

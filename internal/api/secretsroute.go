@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -86,7 +87,9 @@ func (r *SecretsRouteServer) SubmitSecretLink(
 			l.SubmissionID == m.GetSubmissionId() {
 			return s.submitted(ctx, l)
 		}
-		err = errLinkUnknown
+		if err == nil {
+			err = cmp.Or(liveLink(l), errLinkUnknown)
+		}
 	}
 	if err != nil {
 		return nil, s.status(err)

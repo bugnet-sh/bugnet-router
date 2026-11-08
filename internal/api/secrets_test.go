@@ -693,7 +693,95 @@ func TestFiveFailuresLockALink(t *testing.T) {
 	mustCode(t, err, connect.CodeFailedPrecondition, "LINK_LOCKED")
 	_, err = e.getLink(t, tok)
 	mustCode(t, err, connect.CodeFailedPrecondition, "LINK_LOCKED")
+	// G1, the request id of a locked link never answers the dead link
+	_, err = e.createLink(t, h, "req-1", "HF_TOKEN")
+	mustCode(t, err, connect.CodeFailedPrecondition, "LINK_LOCKED")
 	eq(t, e.applyJobs(t, p.GetPlacementId()), 0)
+}
+
+// lockRow holds the placement's row lock until the returned func commits it
+func (e *env) lockRow(t *testing.T, p *routerv1.Placement) func() {
+	t.Helper()
+	tx, err := e.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	id := uuid.MustParse(p.GetPlacementId())
+	if _, err := e.store.Tx(tx).PlacementForUpdate(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		t.Helper()
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestALinkLockedDuringASubmitRefusesIt(t *testing.T) {
+	e := newEnv(t, options{secrets: true})
+	h, p := e.readyPlacement(t)
+	tok := e.mustLink(t, h, "req-1")
+	release := e.lockRow(t, p)
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.submit(t, tok, "sub-1", hf())
+		done <- err
+	}()
+	// The submit read the link as live and now waits on the row lock
+	time.Sleep(300 * time.Millisecond)
+	sum := sha256.Sum256([]byte(tok))
+	if _, err := e.pool.Exec(t.Context(), `update secret_links set failed_attempts = 5
+		where token_sha256 = $1`, sum[:]); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	mustCode(t, <-done, connect.CodeFailedPrecondition, "LINK_LOCKED")
+	eq(t, e.applyJobs(t, p.GetPlacementId()), 0)
+}
+
+func TestARefusedPutSpendsNothing(t *testing.T) {
+	e := newEnv(t, options{secrets: true, opsBurst: 100, secretSettings: func(c *config.Secrets) {
+		c.MaxPerPlacement, c.PutsPerHour = 2, 3
+	}})
+	h, _ := e.readyPlacement(t)
+	spec := func(name string) *routerv1.SecretSpec {
+		return &routerv1.SecretSpec{Name: name, Hosts: []string{"huggingface.co"}}
+	}
+	e.mustPutSecret(t, h, spec("S0"))
+	e.mustPutSecret(t, h, spec("S1"))
+	for range 3 {
+		_, err := e.putSecret(t, h, spec("S2"), "")
+		mustCode(t, err, connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
+	}
+	e.mustPutSecret(t, h, spec("S0"))
+	_, err := e.putSecret(t, h, spec("S1"), "")
+	mustCode(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
+}
+
+func TestSameRequestIDAtOnceSpendsOneLink(t *testing.T) {
+	e := newEnv(t, options{secrets: true, opsBurst: 100,
+		secretSettings: func(c *config.Secrets) { c.LinksPerHour = 2 }})
+	h, p := e.readyPlacement(t)
+	release := e.lockRow(t, p)
+	urls := make(chan string, 2)
+	for range 2 {
+		go func() {
+			r, err := e.createLink(t, h, "req-1", "HF_TOKEN")
+			if err != nil {
+				t.Error(err)
+			}
+			urls <- r.GetUrl()
+		}()
+	}
+	// Both calls found no link and now wait on the row lock
+	time.Sleep(300 * time.Millisecond)
+	release()
+	eq(t, <-urls, <-urls)
+	e.mustLink(t, h, "req-2")
+	_, err := e.createLink(t, h, "req-3", "")
+	mustCode(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
 }
 
 func TestPutGrantOnlyForItsPlacement(t *testing.T) {
