@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -17,8 +18,11 @@ type RefSealer interface {
 	OpenRef(placement uuid.UUID, sealed string) (string, error)
 }
 
-// CredentialFields are the Ref.Meta fields that hold a provider credential
-var CredentialFields = []string{"envd_token", "traffic_token", "secret", "_token"}
+// credentialFields are the Ref.Meta fields that hold a provider credential
+var credentialFields = []string{"envd_token", "traffic_token", "secret", "_token"}
+
+// CredentialFields returns the Ref.Meta fields that hold a provider credential
+func CredentialFields() []string { return slices.Clone(credentialFields) }
 
 // sealedPrefix starts every sealed field, so a field without it was written before sealing
 const sealedPrefix = "v1."
@@ -29,7 +33,7 @@ var errNoSealer = errors.New("store: provider credentials need a ref sealer")
 func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, error) {
 	out := ref
 	out.Meta = maps.Clone(ref.Meta)
-	for _, field := range CredentialFields {
+	for _, field := range credentialFields {
 		v, ok := out.Meta[field]
 		if !ok {
 			continue
@@ -44,7 +48,7 @@ func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, er
 
 // openRef opens the sealed credential fields of p's ref in place and drops any it cannot open
 func (s *Store) openRef(p *Placement) {
-	for _, field := range CredentialFields {
+	for _, field := range credentialFields {
 		v, ok := p.ProviderRef.Meta[field]
 		if !ok || !strings.HasPrefix(v, sealedPrefix) {
 			continue

@@ -46,7 +46,7 @@ var alwaysLand = map[string]bool{KindPlacement: true, KindPayment: true, KindAll
 
 // maxChars cuts each stored string to SP 6.2's length, 200 characters for any other
 var maxChars = map[string]int{
-	"path": 200, "name": 100, "host": 63, "tool": 48, "outcome": 32, "tx": 100, "asset": 64,
+	"path": 200, "name": 100, "host": 253, "tool": 48, "outcome": 32, "tx": 100, "asset": 64,
 	"network": 64,
 }
 
@@ -307,7 +307,7 @@ func KnownRedactor(p store.Placement, keys dpkeys.Keys) *Redactor {
 		}
 	}
 	if p.ProviderRef != nil {
-		for _, field := range store.CredentialFields {
+		for _, field := range store.CredentialFields() {
 			if v := p.ProviderRef.Meta[field]; v != "" {
 				known = append(known, v)
 			}

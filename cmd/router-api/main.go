@@ -153,11 +153,13 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	}
 
 	// The live view's own client, so a crowd of page viewers never starves tool calls
-	liveVK, err := liveClient(cfg)
-	if err != nil {
-		return fmt.Errorf("connect to valkey for the live view: %w", err)
+	var liveVK valkey.Client
+	if cfg.Sessions.Live.Enabled {
+		if liveVK, err = liveClient(cfg); err != nil {
+			return fmt.Errorf("connect to valkey for the live view: %w", err)
+		}
+		defer liveVK.Close()
 	}
-	defer liveVK.Close()
 
 	st := openStore(pool, cfg, log)
 	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)

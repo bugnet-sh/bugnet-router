@@ -21,7 +21,7 @@ func jobStream(t *testing.T, frames ...frame.Frame) (*streams.Bus, string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd := vk.B().Xadd().Key(prefix + "job:" + id + ":s").Id("*").FieldValue().
+		cmd := vk.B().Xadd().Key(prefix+"job:"+id+":s").Id("*").FieldValue().
 			FieldValue("f", string(raw)).Build()
 		if err := vk.Do(t.Context(), cmd).Error(); err != nil {
 			t.Fatal(err)
