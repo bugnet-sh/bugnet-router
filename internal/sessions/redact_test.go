@@ -90,7 +90,7 @@ func TestRedactStreamHoldsAtMost16KiB(t *testing.T) {
 	// A full carry of one run with no break goes, and so does the rest of its line
 	eq(t, len(st.Write([]byte("yy"))), 0)
 	eq(t, len(st.buf) < carryMax, true)
-	eq(t, joined(st.Write([]byte("y\nshown\n"))), "shown\n")
+	eq(t, joined(st.Write([]byte("y\nshown here\n"))), "shown here\n")
 	eq(t, st.Dropped(), int64(carryMax+3))
 	// A full carry shows what comes before its last run, which it holds
 	st = NewRedactor().Stream(Stderr)
@@ -361,6 +361,14 @@ func TestStreamGapInsideAKeyShowsNoBody(t *testing.T) {
 	got += joined(st.Resume())
 	got += joined(st.Write([]byte(end + "after\n")))
 	eq(t, got, "[redacted private key]\nafter\n")
+}
+
+func TestStreamFullCarryCutInsideAKeyMarkerShowsNoBody(t *testing.T) {
+	key := "-----BEGIN PRIVATE KEY-----\n" + strings.Repeat("QJ", 32) + "\nQJQJ==\n" +
+		"-----END PRIVATE KEY-----\nafter text\n"
+	const k = 5
+	hidden(t, write(NewRedactor(), strings.Repeat("x", carryMax-k), key[:k], key[k:]),
+		"\nafter text\n")
 }
 
 func TestStreamGapInsideAnIndentedKeyShowsNoBody(t *testing.T) {

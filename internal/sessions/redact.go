@@ -374,11 +374,12 @@ func (st *Stream) Write(data []byte) []Frame {
 			if len(st.buf) < carryMax {
 				return out
 			}
-			// A full carry of one run, a token's body maybe, goes with the rest of its line
+			// A full carry of one run, a token's body maybe, goes with the rest of its line, and
+			// as a gap it may have cut a key block's BEGIN
 			n = runeFloor(st.buf, carryMax)
 			st.dropped += int64(n)
 			st.buf = slices.Delete(st.buf, 0, n)
-			st.rejoining, st.wholeLine = true, true
+			st.rejoining, st.wholeLine, st.maybeKey = true, true, true
 			continue
 		}
 		text := string(st.buf[:n])
