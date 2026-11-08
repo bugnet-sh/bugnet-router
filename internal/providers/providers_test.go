@@ -415,17 +415,28 @@ providers = ["e2b"]
 		t.Fatalf("secrets on e2b %v and boat %v, want e2b alone",
 			reg.Capabilities(e2b).Secrets, reg.Capabilities(boat).Secrets)
 	}
-	for _, c := range []struct{ toml, want string }{
-		{"[previews]\nproviders = [\"boat\"]", "boat is listed for previews"},
-		{"[ssh]\nproviders = [\"e2b\"]", "e2b is listed for ssh but has no gate route"},
-		{"[ssh]\nproviders = [\"boat\"]\n[boat]\nssh_path = \"native\"",
-			"boat is listed for ssh on its native path"},
-	} {
-		cfg := load(t, "providers = [\"e2b\", \"boat\"]\n"+c.toml+"\n"+e2bTemplates,
-			map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
-		_, err := providers.Build(cfg, nil)
-		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%q gave %v, want an error with %q", c.toml, err, c.want)
+	cfg = load(t, `providers = ["e2b", "boat"]
+[previews]
+providers = ["e2b", "boat"]
+[ssh]
+providers = ["e2b", "boat"]
+`+e2bTemplates, map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
+	reg, err = providers.Build(cfg, nil)
+	if err != nil {
+		t.Fatalf("previews and ssh on two gated adapters gave %v", err)
+	}
+	for _, name := range []string{"e2b", "boat"} {
+		p, _ := reg.Get(name)
+		if c := reg.Capabilities(p); !c.Preview || !c.SSH {
+			t.Errorf("%s got preview %v and ssh %v, want both", name, c.Preview, c.SSH)
 		}
+	}
+	cfg = load(t, "providers = [\"e2b\", \"boat\"]\n[ssh]\nproviders = [\"boat\"]\n"+
+		"[boat]\nssh_path = \"native\"\n"+e2bTemplates,
+		map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
+	_, err = providers.Build(cfg, nil)
+	if want := "boat is listed for ssh on its native path"; err == nil ||
+		!strings.Contains(err.Error(), want) {
+		t.Errorf("boat's native path gave %v, want an error with %q", err, want)
 	}
 }

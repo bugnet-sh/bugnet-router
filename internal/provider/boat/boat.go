@@ -11,8 +11,9 @@
 // hidden temp file that Commit moves over the target, and ask the shell for a file's type, which
 // Boat's file info lacks. StartCostMicros prices the next start from GET /limits, read at most
 // every 10 s, or when the key cannot read it from the starts every replica counts in Valkey, and
-// this process's own count while Valkey cannot answer. The client in ./api is generated from the
-// vendored OpenAPI document.
+// this process's own count while Valkey cannot answer. PrepareGate hosts the gate port and keeps
+// the hosted URL's host and token apart, so the URL itself is never stored or logged. The client
+// in ./api is generated from the vendored OpenAPI document.
 package boat
 
 import (

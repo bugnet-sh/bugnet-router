@@ -204,9 +204,14 @@ type fakeBoat struct {
 	downloads    []http.Header
 	moves        [][2]string
 	nextPID      int
-	requests     atomic.Int64
-	cleanup      []string
-	cmds         []*exec.Cmd
+	// hosts holds the token of each hosted port by sandbox and port
+	hosts  map[string]string
+	hosted []string
+	// hostURL replaces every hosted URL when set, an empty one leaving the url field out
+	hostURL  *string
+	requests atomic.Int64
+	cleanup  []string
+	cmds     []*exec.Cmd
 }
 
 func newFake(t *testing.T) *fakeBoat {
@@ -219,6 +224,7 @@ func newFake(t *testing.T) *fakeBoat {
 		t: t, tmp: tmp, sandboxes: map[string]*fakeSandbox{}, keys: map[string]keyRecord{},
 		faults: map[string]*fault{}, calls: map[string]int{}, bodies: map[string][]int{},
 		grants: map[string]uploadGrant{}, grow: map[string][]byte{}, swaps: map[string]func(){},
+		hosts: map[string]string{},
 	}
 	mux := http.NewServeMux()
 	const sb = "/api/v1/sandboxes/{id}"
@@ -240,6 +246,7 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/files/upload-url":     f.uploadURL,
 		"POST " + sb + "/files/download-url":   f.downloadURL,
 		"POST " + sb + "/files/move":           f.move,
+		"POST " + sb + "/host":                 f.host,
 		"DELETE " + sb + "/files":              f.deleteFile,
 		"GET /api/v1/limits":                   f.readLimits,
 	} {
@@ -428,6 +435,61 @@ func (f *fakeBoat) live(w http.ResponseWriter, r *http.Request) *fakeSandbox {
 		return nil
 	}
 	return s
+}
+
+// host registers a port's route once and answers the same URL and token every later time
+func (f *fakeBoat) host(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	var body struct {
+		Port int `json:"port"`
+	}
+	if json.Unmarshal(raw, &body) != nil || body.Port < 1 || body.Port > 65535 {
+		f.fail(w, http.StatusBadRequest, "invalid_port", "port must be 1 to 65535", nil, nil)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hosted = append(f.hosted, string(bytes.TrimSpace(raw)))
+	s := f.live(w, r)
+	if s == nil {
+		return
+	}
+	key := s.id + "/" + strconv.Itoa(body.Port)
+	if f.hosts[key] == "" {
+		f.hosts[key] = randomText(24)
+	}
+	reply := map[string]any{
+		"ok": true, "type": "port.hosted", "success": true, "port": body.Port,
+		"isProtected": true, "access": "private",
+		"url": "https://" + s.id + "-" + strconv.Itoa(body.Port) + ".on.boat.dev?_token=" +
+			f.hosts[key],
+	}
+	if f.hostURL != nil {
+		reply["url"] = *f.hostURL
+		if *f.hostURL == "" {
+			delete(reply, "url")
+		}
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeBoat) hostToken(id string, port int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hosts[id+"/"+strconv.Itoa(port)]
+}
+
+// hostBodies lists the body of every host call, oldest first
+func (f *fakeBoat) hostBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.hosted)
+}
+
+func (f *fakeBoat) setHostURL(u string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hostURL = &u
 }
 
 // add places a ready sandbox directly, as another create would have
