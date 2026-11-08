@@ -117,3 +117,46 @@ func TestStreamHoldsAPartialCharacter(t *testing.T) {
 	eq(t, joined(st.Write(b[:1])), "")
 	eq(t, joined(st.Write(b[1:])), "é ")
 }
+
+func TestRedactLeadWordsInQuotesAcrossFrames(t *testing.T) {
+	r := NewRedactor()
+	got := joined(write(r, `{"Authorization": "Bearer Zx9`, `Q2mP7kL4tR8vB1nC6"}`+"\n"))
+	eq(t, got, `{"Authorization": "Bearer [redacted credential]"}`+"\n")
+	got = joined(write(r, "curl -H 'Authorization: Bearer Zx9", "Q2mP7kL4tR8vB1nC6'\n"))
+	eq(t, got, "curl -H 'Authorization: [redacted credential]'\n")
+	got = joined(write(r, `curl --header="Authorization: Basic `, "dXNlcjpwYXNzd29yZA==\"\n"))
+	eq(t, got, `curl --header="Authorization: [redacted credential]"`+"\n")
+}
+
+func TestRedactLongLowerCaseSchemeValue(t *testing.T) {
+	r := NewRedactor()
+	eq(t, r.Redact("Bearer abcdefghijklmnopqrstuvwx"), "Bearer [redacted credential]")
+	eq(t, r.Redact("Basic authentication"), "Basic authentication")
+}
+
+func TestStreamResumeDropsTheCutLine(t *testing.T) {
+	st := NewRedactor().Stream(Stdout)
+	eq(t, joined(st.Write([]byte("export T=bnt_"))), "export ")
+	// The token's body comes after a gap, without the prefix that marks it
+	eq(t, joined(st.Resume()), "T=bnt_")
+	eq(t, st.Holding(), true)
+	eq(t, joined(st.Write([]byte(strings.Repeat("Q", 20)))), "")
+	eq(t, joined(st.Write([]byte(strings.Repeat("Q", 10)+" more\nnext line\n"))),
+		"next line\n")
+	eq(t, st.Dropped(), int64(36))
+	eq(t, st.Holding(), false)
+	// A flush keeps the cut line dropped, so its end after the flush is not shown either
+	st.Resume()
+	eq(t, joined(st.Write([]byte("tail"))), "")
+	eq(t, joined(st.Flush()), "")
+	eq(t, joined(st.Write([]byte("more tail\r\nshown\n"))), "shown\n")
+	// A key block's first line is never dropped
+	st.Resume()
+	got := joined(st.Write([]byte("cut -----BEGIN PRIVATE KEY-----\nMIIabc\n" +
+		"-----END PRIVATE KEY-----\nafter\n")))
+	eq(t, got, "[redacted private key]\nafter\n")
+	// A line longer than the carry goes on after its last space
+	st.Resume()
+	eq(t, joined(st.Write([]byte(strings.Repeat("y", carryMax)+" word"))), "")
+	eq(t, joined(st.Write([]byte("s\n"))), "words\n")
+}

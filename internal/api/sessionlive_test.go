@@ -194,6 +194,43 @@ func TestWatchSessionJobEnds(t *testing.T) {
 	mustCode(t, err, connect.CodeNotFound, "SESSION_UNKNOWN")
 }
 
+func TestWatchSessionJobEndsOnRotate(t *testing.T) {
+	api.SetLiveRecheck(t, 100*time.Millisecond)
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	e.startJob(t, h, "echo started; sleep 20")
+	got := make(chan liveWatch, 1)
+	go func() { got <- e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil) }()
+	time.Sleep(500 * time.Millisecond)
+	if _, err := e.client.RotateSessionLink(t.Context(), connect.NewRequest(
+		&routerv1.RotateSessionLinkRequest{Handle: h, SessionUrl: p.GetSessionUrl()},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-got:
+		eq(t, w.end(), "closed")
+		eq(t, strings.Contains(w.text(), "started"), true)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a rotated link's stream did not end within 5 s")
+	}
+}
+
+func TestWatchSessionJobReplayDropsACutToken(t *testing.T) {
+	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
+		l.Replay = 30
+	})})
+	h, p := e.readyPlacement(t)
+	// The token's prefix and body are separate frames, and the replay starts at the body
+	e.exec(t, &routerv1.ExecRequest{Handle: h, Argv: []string{"sh", "-c",
+		"printf 'export T=bnt_'; sleep 0.3; printf '%030d\\n' 7; sleep 0.3; echo done"},
+		Until: &routerv1.Until{Exit: true}, WaitMs: 20000})
+	w := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil)
+	eq(t, w.err, nil)
+	eq(t, w.text(), "done\n")
+	eq(t, w.end(), "exited")
+}
+
 func TestWatchSessionJobLimits(t *testing.T) {
 	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
 		l.MaxReaders = 1
@@ -248,6 +285,8 @@ func TestWatchSessionJobPace(t *testing.T) {
 	}
 }
 
+// The settings are read at start, so turning the live view off takes a restart, whose shutdown
+// ends every open stream
 func TestLiveKillSwitch(t *testing.T) {
 	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
 		l.Enabled = false

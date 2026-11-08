@@ -94,38 +94,137 @@ func ends(f frame.Frame) (out, errBytes int64) {
 
 /* Replay */
 
+// replayLookback bounds the entries before the replay read to place each output's start
+const replayLookback = 4 * recentEntries
+
+// Replay is where a first live connection starts reading a job's stream
+type Replay struct {
+	// Cursor is the entry to read after, empty to read the stream from its start
+	Cursor string
+	// Out and Err are the offsets each output goes on at, as the skip frame names them
+	Out, Err int64
+	// MidOut and MidErr say an output's replay starts inside a line
+	MidOut, MidErr bool
+	// Skip is false when the replay holds the whole output
+	Skip bool
+}
+
 // ReplayStart finds where a first live connection starts so it sees about the newest replay
-// bytes, from the start of the entry that reaches them, answering the cursor to read after and
-// the offsets the skip frame names, skip false when the replay holds the whole output
+// bytes, from the start of the entry that reaches them
 func ReplayStart(ctx context.Context, bus *streams.Bus, jobID string,
-	replay int64) (cursor string, skipOut, skipErr int64, skip bool, err error) {
+	replay int64) (Replay, error) {
+	outs := [2]replayOutput{{at: -1}, {at: -1}}
 	var seen int64
-	end := "+"
+	start, end, back := "", "+", 0
 	for {
 		page, err := bus.Before(ctx, jobID, end, recentEntries)
 		if err != nil {
-			return "", 0, 0, false, err
+			return Replay{}, err
 		}
-		for i, e := range page {
+		for _, e := range page {
 			f := e.Frame
-			if f.Kind != frame.KindStdout && f.Kind != frame.KindStderr {
-				continue
+			if start == "" {
+				replayed(&outs, f)
+				if f.Kind != frame.KindStdout && f.Kind != frame.KindStderr {
+					continue
+				}
+				if seen += int64(len(f.Data)); seen < replay {
+					continue
+				}
+				start = e.ID
+			} else {
+				back++
+				outs[0].before(f, f.Kind == frame.KindStdout, f.Out)
+				outs[1].before(f, f.Kind == frame.KindStderr, f.Err)
 			}
-			seen += int64(len(f.Data))
-			if seen < replay {
-				continue
+			if outs[0].placed() && outs[1].placed() {
+				return replayFrom(start, outs), nil
 			}
-			skipOut, skipErr = startOffsets(page[:i+1])
-			if skipOut == 0 && skipErr == 0 {
-				return "", 0, 0, false, nil
-			}
-			return before(e.ID), skipOut, skipErr, true, nil
 		}
-		if len(page) < recentEntries {
-			return "", 0, 0, false, nil
+		if len(page) < recentEntries || (start != "" && back >= replayLookback) {
+			if start == "" {
+				return Replay{}, nil
+			}
+			return replayFrom(start, outs), nil
 		}
 		end = "(" + page[len(page)-1].ID
 	}
+}
+
+// replayOutput is where one output stands at the replay's first entry
+type replayOutput struct {
+	at      int64 // -1 until known
+	mid     bool  // the replay starts inside a line
+	settled bool  // the text before at was read
+}
+
+// replayed places each output by an entry the replay holds, newest first, so the oldest wins
+func replayed(outs *[2]replayOutput, f frame.Frame) {
+	switch f.Kind {
+	case frame.KindStdout:
+		outs[0].at = f.Offset
+	case frame.KindStderr:
+		outs[1].at = f.Offset
+	case frame.KindHeartbeat, frame.KindExit:
+		outs[0].at, outs[1].at = f.Out, f.Err
+	case frame.KindSkip:
+		// Where the output stood before a skip is read from older entries
+		outs[0].at, outs[1].at = -1, -1
+	}
+}
+
+// before reads an entry older than the replay, newest first, data true for the output's own
+// frame and pos the offset a skip, heartbeat or exit names for it
+func (o *replayOutput) before(f frame.Frame, data bool, pos int64) {
+	if o.settled {
+		return
+	}
+	switch {
+	case data && len(f.Data) > 0:
+		from, to := f.Offset, f.Offset+int64(len(f.Data))
+		if o.at < 0 {
+			o.at = to
+		}
+		switch {
+		case to < o.at:
+			// The stream left out the text just before the replay
+			o.mid, o.settled = true, true
+		case from < o.at:
+			c := f.Data[o.at-1-from]
+			o.mid, o.settled = c != '\n' && c != '\r', true
+		}
+	case f.Kind == frame.KindSkip:
+		if o.at < 0 {
+			o.at = pos
+		}
+		if pos >= o.at {
+			o.mid, o.settled = o.at > 0, true
+		}
+	case f.Kind == frame.KindHeartbeat || f.Kind == frame.KindExit:
+		if o.at < 0 {
+			o.at = pos
+		}
+	}
+}
+
+// placed reports whether the output's start is known, as it is for one that starts at 0
+func (o *replayOutput) placed() bool { return o.settled || o.at == 0 }
+
+// replayFrom answers a replay from start, an output whose text before it was not read being
+// taken as starting inside a line
+func replayFrom(start string, outs [2]replayOutput) Replay {
+	for i := range outs {
+		if !outs[i].placed() {
+			outs[i].at = max(outs[i].at, 0)
+			outs[i].mid = outs[i].at > 0
+		}
+	}
+	r := Replay{Out: outs[0].at, Err: outs[1].at, MidOut: outs[0].mid, MidErr: outs[1].mid}
+	if r.Out == 0 && r.Err == 0 {
+		return Replay{}
+	}
+	r.Cursor, r.Skip = before(start), true
+	return r
 }
 
 // before is the stream entry ID just before id, so a read after it starts at id
@@ -140,22 +239,6 @@ func before(id string) string {
 		return "0"
 	}
 	return strconv.FormatUint(m-1, 10) + "-" + strconv.FormatUint(math.MaxUint64, 10)
-}
-
-// startOffsets reads where the replay starts, from newest-first entries ending at the first one
-// replayed, as the offset of each output's oldest replayed frame
-func startOffsets(page []streams.Entry) (out, errBytes int64) {
-	out, errBytes = -1, -1
-	// Newest first, so the last frame of an output seen here is its oldest replayed one
-	for _, e := range page {
-		switch e.Frame.Kind {
-		case frame.KindStdout:
-			out = e.Frame.Offset
-		case frame.KindStderr:
-			errBytes = e.Frame.Offset
-		}
-	}
-	return max(out, 0), max(errBytes, 0)
 }
 
 /* The copy */

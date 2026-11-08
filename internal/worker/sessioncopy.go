@@ -196,11 +196,12 @@ func copyJob(ctx context.Context, bus *streams.Bus, red *sessions.Redactor, jobI
 		k.Add(outs[frame.KindStdout].Flush()...)
 		k.Add(outs[frame.KindStderr].Flush()...)
 	}
-	// gap counts output the stream left out before offset to
+	// gap counts output the stream left out before offset to, the text after it starting anew
 	gap := func(kind frame.Kind, to int64) {
 		if to > next[kind] {
 			k.Skip(to - next[kind])
 			next[kind] = to
+			k.Add(outs[kind].Resume()...)
 		}
 	}
 	cursor := ""
@@ -234,5 +235,6 @@ func copyJob(ctx context.Context, bus *streams.Bus, red *sessions.Redactor, jobI
 		cursor = page[len(page)-1].ID
 	}
 	flush()
+	k.Skip(outs[frame.KindStdout].Dropped() + outs[frame.KindStderr].Dropped())
 	return k.Frames(), k.Cut(), k.Kept(), nil
 }

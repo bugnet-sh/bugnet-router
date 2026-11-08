@@ -14,6 +14,8 @@ const (
 	carryMax = 16 << 10
 	// minKnown keeps a short known value from redacting ordinary words
 	minKnown = 8
+	// maxOrdinary is the longest Bearer or Basic value that may read as an ordinary word
+	maxOrdinary = 15
 )
 
 // Replacements, each [redacted <kind>]
@@ -87,8 +89,12 @@ func schemeValue(m string) string {
 	return m[:at] + redactedCredential
 }
 
-// ordinaryWord is lower case letters after an optional capital, as in "Basic configuration"
+// ordinaryWord is a short run of lower case letters after an optional capital, as in "Basic
+// configuration"
 func ordinaryWord(s string) bool {
+	if len(s) > maxOrdinary {
+		return false
+	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		lower := c >= 'a' && c <= 'z'
@@ -145,6 +151,9 @@ type Stream struct {
 	buf       []byte
 	inKey     bool // inside a private key block whose end has not come
 	pendingCR bool // the last text ended on a carriage return, so the next frame replaces the line
+	// rejoining drops text up to the next line break, as the output goes on after a gap
+	rejoining bool
+	dropped   int64
 }
 
 // Stream returns a Stream for the output named s, Stdout or Stderr
@@ -154,12 +163,26 @@ func (r *Redactor) Stream(s string) *Stream {
 
 // Holding reports whether output waits for a later frame
 func (st *Stream) Holding() bool {
-	return len(st.buf) > 0 || st.inKey || st.pendingCR
+	return len(st.buf) > 0 || st.inKey || st.pendingCR || st.rejoining
 }
+
+// Resume returns what the output held, then drops its next text up to a line break, since
+// output that goes on after a gap may finish a token whose prefix was left out
+func (st *Stream) Resume() []Frame {
+	out := st.Flush()
+	st.rejoining = true
+	return out
+}
+
+// Dropped counts the bytes Resume dropped
+func (st *Stream) Dropped() int64 { return st.dropped }
 
 // Write takes the next bytes of the output and returns the frames now safe to show
 func (st *Stream) Write(data []byte) []Frame {
 	st.buf = append(st.buf, data...)
+	if st.rejoining && !st.rejoin() {
+		return nil
+	}
 	var out []Frame
 	for {
 		if st.inKey && !st.skipKey() {
@@ -182,12 +205,49 @@ func (st *Stream) Write(data []byte) []Frame {
 func (st *Stream) Flush() []Frame {
 	text := string(st.buf)
 	st.buf = nil
+	if st.rejoining {
+		// The line a gap cut stays dropped, also when its end comes after a flush
+		st.dropped += int64(len(text))
+		text = ""
+	}
 	if st.inKey {
 		text, st.inKey = "", false
 	}
 	out := st.frames(text)
 	st.pendingCR = false
 	return out
+}
+
+// rejoin drops held text through the first line break, reporting false while none has come
+func (st *Stream) rejoin() bool {
+	b := st.buf
+	full := len(b) >= carryMax
+	i := bytes.IndexAny(b, "\n\r")
+	switch {
+	case i >= 0 && b[i] == '\r' && i+1 == len(b) && !full:
+		// A newline may follow, which belongs to the same line break
+		return false
+	case i >= 0 && b[i] == '\r' && i+1 < len(b) && b[i+1] == '\n':
+		i++
+	case i < 0 && !full:
+		return false
+	case i < 0:
+		// A line longer than the carry goes on after its last space instead
+		i = bytes.LastIndexAny(b, " \t")
+	}
+	// A full carry with no space at all goes, and the line it is part of stays dropped
+	n, still := i+1, i < 0
+	if still {
+		n = len(b)
+	}
+	// A private key block's first line is never dropped, so its body is still redacted
+	if j := bytes.Index(b[:n], []byte("-----BEGIN")); j >= 0 {
+		n, still = j, false
+	}
+	st.dropped += int64(n)
+	st.buf = slices.Delete(st.buf, 0, n)
+	st.rejoining = still
+	return !still
 }
 
 // skipKey drops a key block's body up to its end, reporting false while the end has not come
@@ -249,12 +309,21 @@ func cutPoint(b []byte) int {
 		for start > 0 && !isSpace(b[start-1]) {
 			start--
 		}
-		if start == end || !leadWords.Match(b[start:end]) {
+		if start == end || !leadWord(b[start:end]) {
 			break
 		}
 		n = start
 	}
 	return n
+}
+
+// leadWord reports whether a word ends in a lead word, quotes, brackets and flags around it aside,
+// as in {"Authorization": "Bearer or --header="Authorization:
+func leadWord(w []byte) bool {
+	notWord := func(r rune) bool { return r >= utf8.RuneSelf || !isAlnum(byte(r)) }
+	w = bytes.TrimRightFunc(w, notWord)
+	i := bytes.LastIndexFunc(w, func(r rune) bool { return notWord(r) && r != '-' })
+	return leadWords.Match(w[i+1:])
 }
 
 func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }

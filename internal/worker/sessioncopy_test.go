@@ -74,6 +74,12 @@ func (e *env) output(t *testing.T, id string, out []byte) {
 			Data: out[off:end]})
 	}
 	frames = append(frames, frame.Frame{Kind: frame.KindExit, Out: int64(len(out))})
+	e.frames(t, id, frames...)
+}
+
+// frames appends frames to the job's stream
+func (e *env) frames(t *testing.T, id string, frames ...frame.Frame) {
+	t.Helper()
 	for _, f := range frames {
 		raw, _ := json.Marshal(f)
 		cmd := e.vk.B().Xadd().Key(e.stream(id)).Id("*").FieldValue().
@@ -194,6 +200,30 @@ func TestCopyUnlinksTheStreams(t *testing.T) {
 	e.run(t, jobargs.SessionCopy{PlacementID: p.ID})
 	_, again, _ := e.copied(t, p, rec)
 	eq(t, again[1], text[1])
+}
+
+func TestCopyDropsTheLineAGapCut(t *testing.T) {
+	e := newEnv(t, options{})
+	e.start(t)
+	p, rec := e.ended(t, "copy-gap", time.Second)
+	if _, _, err := e.store.CreateJob(t.Context(), store.NewJob{ID: "j_gap",
+		PlacementID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.store.StartSessionJob(t.Context(), p.ID, "j_gap", "make",
+		time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The token's prefix comes before a skip, its body after it
+	body := strings.Repeat("Q", 30) + "\n"
+	e.frames(t, "j_gap",
+		frame.Frame{Kind: frame.KindStdout, Data: []byte("a export T=bnt_")},
+		frame.Frame{Kind: frame.KindSkip, Out: 100},
+		frame.Frame{Kind: frame.KindStdout, Offset: 100, Data: []byte(body + "next\n")},
+		frame.Frame{Kind: frame.KindExit, Out: 136})
+	_, text, cut := e.copied(t, p, rec)
+	eq(t, text[1], "a export T=bnt_next\n")
+	eq(t, cut[1], int64(85+len(body)))
 }
 
 func TestCopyDiskBudget(t *testing.T) {

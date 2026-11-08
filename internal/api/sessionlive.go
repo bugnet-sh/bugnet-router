@@ -115,10 +115,12 @@ type liveStream struct {
 	cursor   string
 	send     func(*routerv1.WatchSessionJobResponse) error
 	out, err *sessions.Stream
-	started  time.Time
-	sent     int64
-	beat     time.Time
-	checked  time.Time
+	// outAt and errAt are how far each output was read, -1 until known
+	outAt, errAt int64
+	started      time.Time
+	sent         int64
+	beat         time.Time
+	checked      time.Time
 }
 
 func (ls *liveStream) end(reason string) error {
@@ -146,15 +148,23 @@ func (ls *liveStream) run(ctx context.Context) error {
 	if err := ls.heartbeat(); err != nil {
 		return err
 	}
+	ls.outAt, ls.errAt = -1, -1
 	if ls.cursor == "" {
-		cursor, out, errBytes, skip, err := sessions.ReplayStart(ctx, lv.bus, ls.job.JobID,
-			lv.cfg.Replay)
+		r, err := sessions.ReplayStart(ctx, lv.bus, ls.job.JobID, lv.cfg.Replay)
 		if err != nil {
 			return err
 		}
-		if skip {
-			ls.cursor = cursor
-			if err := ls.skip(out, errBytes); err != nil {
+		ls.outAt, ls.errAt = r.Out, r.Err
+		// A replay that starts inside a line may start inside a token, so that line is dropped
+		if r.MidOut {
+			ls.out.Resume()
+		}
+		if r.MidErr {
+			ls.err.Resume()
+		}
+		if r.Skip {
+			ls.cursor = r.Cursor
+			if err := ls.skip(r.Out, r.Err); err != nil {
 				return err
 			}
 		}
@@ -226,9 +236,9 @@ func (ls *liveStream) entry(ctx context.Context, e streams.Entry) (string, bool,
 	var texts []sessions.Frame
 	switch f.Kind {
 	case frame.KindStdout:
-		texts = ls.out.Write(f.Data)
+		texts = write(ls.out, &ls.outAt, f)
 	case frame.KindStderr:
-		texts = ls.err.Write(f.Data)
+		texts = write(ls.err, &ls.errAt, f)
 	case frame.KindSkip, frame.KindExit, frame.KindError:
 		texts = append(ls.out.Flush(), ls.err.Flush()...)
 	}
@@ -237,6 +247,14 @@ func (ls *liveStream) entry(ctx context.Context, e streams.Entry) (string, bool,
 		return reason, done, err
 	}
 	if f.Kind == frame.KindSkip {
+		// Text past a skip may finish a token, so each output it moved starts anew
+		if ls.outAt < 0 || f.Out > ls.outAt {
+			ls.out.Resume()
+		}
+		if ls.errAt < 0 || f.Err > ls.errAt {
+			ls.err.Resume()
+		}
+		ls.outAt, ls.errAt = max(ls.outAt, f.Out), max(ls.errAt, f.Err)
 		return "", false, ls.skip(f.Out, f.Err)
 	}
 	if !streams.Terminal(f) {
@@ -257,6 +275,16 @@ func (ls *liveStream) entry(ctx context.Context, e streams.Entry) (string, bool,
 		return reason, true, err
 	}
 	return liveExited, true, nil
+}
+
+// write passes an output's frame through its stream, which starts anew past a gap in the offsets
+func write(st *sessions.Stream, at *int64, f frame.Frame) []sessions.Frame {
+	var texts []sessions.Frame
+	if *at >= 0 && f.Offset > *at {
+		texts = st.Resume()
+	}
+	*at = max(*at, f.Offset+int64(len(f.Data)))
+	return append(texts, st.Write(f.Data)...)
 }
 
 // texts spends the placement's live bytes and the stream's pace on frames and sends them
