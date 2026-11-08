@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"maps"
+	"math"
 	"net/http"
 	"slices"
 
@@ -87,6 +89,55 @@ func (s *Server) report(
 		left[id.String()], pace[id.String()] = a.Remaining, a.Pace
 	}
 	return left, pace, nil
+}
+
+// reportX402 adds unpaid x402 use by placement and host, logging each placement that lost fields
+func (s *Server) reportX402(ctx context.Context, in map[string]*routerv1.X402UnpaidByHost) error {
+	if len(in) == 0 {
+		return nil
+	}
+	ps, err := s.live(ctx, slices.Collect(maps.Keys(in)))
+	if err != nil {
+		return s.status(err)
+	}
+	limits := make(map[uuid.UUID]budget.Limit, len(ps))
+	for _, p := range ps {
+		limits[p.ID] = s.limit(p, budget.Egress)
+	}
+	deltas := make(map[uuid.UUID]map[string]budget.X402Unpaid, len(limits))
+	for raw, byHost := range in {
+		id, err := uuid.Parse(raw)
+		if _, ok := limits[id]; err != nil || !ok {
+			continue
+		}
+		hosts := deltas[id]
+		if hosts == nil {
+			hosts = make(map[string]budget.X402Unpaid, len(byHost.GetHosts()))
+			deltas[id] = hosts
+		}
+		for host, u := range byHost.GetHosts() {
+			sum := hosts[host]
+			sum.Requests += uint64(u.GetRequests())
+			sum.Bytes = addBytes(sum.Bytes, u.GetBytes())
+			hosts[host] = sum
+		}
+	}
+	dropped, err := s.meter.ReportX402Unpaid(ctx, deltas, limits)
+	if err != nil {
+		return s.status(err)
+	}
+	for id, n := range dropped {
+		s.d.Log.Warn("api: x402 unpaid fields dropped", "placement", id, "count", n)
+	}
+	return nil
+}
+
+// addBytes sums without wrapping past the largest uint64
+func addBytes(a, b uint64) uint64 {
+	if a > math.MaxUint64-b {
+		return math.MaxUint64
+	}
+	return a + b
 }
 
 // beforeReport runs between a report reading its budgets and counting its bytes, for tests

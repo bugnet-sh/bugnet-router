@@ -532,6 +532,24 @@ by reason with their last time. A row that is not `disabled` whose host is in `b
 under a shared-hosting suffix and not in `allowed_shared_hosts`, shows as `FAILED` with
 `HOST_BLOCKED`, and the stored row stays as it was. Neither call spends an operation token.
 
+Egress reports each placement's unpaid use of its x402 hosts in `ReportEgressUsage`'s
+`x402_unpaid`: the requests Bugnet did not pay and their bytes since its last report, by host.
+That field may come alone, with an empty `usage`, and it never changes the bytes left that the
+call answers. `router-api` adds the deltas to one Valkey hash per placement under
+`valkey.prefix`.
+
+| Key | Type | Expires | Holds |
+| --- | --- | --- | --- |
+| `egress:x402:<placement>` | Hash | Deadline + 1 h | `<host>:req` and `<host>:bytes`, the unpaid totals of each host |
+
+- One script adds a placement's deltas, so reports from two replicas never lose a count.
+- The hash holds at most 64 fields, two for each of 32 hosts. A report drops a new field past
+  that, and `router-api` logs the placement and the count of fields dropped, never a host.
+- Hosts go in sorted order, so a full hash drops the same hosts every time.
+- One report adds at most 2^40 to a field. A placement that is not ready, an id that is unknown
+  or malformed, a host that is not a valid lowercase name and a host with no use are skipped.
+- The expiry only moves later, and an extension moves it with the used counters.
+
 ## Prices and availability
 
 `Estimate` lists every start package by price, each with `available` where a provider could host
@@ -743,8 +761,9 @@ spends the grown one. A report counted between an extension's commit and that st
 the extension, and the step clears its mark. The used counters, budget figures and spent marks
 expire an hour after the deadline, and
 `edge:seen:<placement>`, which records which process carried bytes for the pace, 30 s after the
-last report that carried bytes. An extension moves the used counters to an hour after the new
-deadline, even for a placement that reports nothing, and no report moves an expiry earlier.
+last report that carried bytes. An extension moves the used counters and the unpaid x402 use
+(`egress:x402:<placement>`, under x402) to an hour after the new deadline, even for a placement
+that reports nothing, and no report moves an expiry earlier.
 
 `CheckEdgeLeases` and `CheckEgressLeases` answer each named placement that is still ready with its
 deadline and bytes left, and the egress check its `secrets_version`. Ended placements are absent.

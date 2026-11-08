@@ -371,3 +371,152 @@ func TestSpentListFollowsTheReportOrder(t *testing.T) {
 	eq(t, err, nil)
 	eq(t, slices.Equal(spent, ps), true)
 }
+
+// unpaid reports one placement's unpaid use by host and answers the fields dropped
+func (m meter) unpaid(l budget.Limit, hosts map[string]budget.X402Unpaid) int {
+	m.t.Helper()
+	dropped, err := m.ReportX402Unpaid(m.t.Context(),
+		map[uuid.UUID]map[string]budget.X402Unpaid{l.Placement: hosts},
+		map[uuid.UUID]budget.Limit{l.Placement: l})
+	if err != nil {
+		m.t.Fatalf("report unpaid: %v", err)
+	}
+	return dropped[l.Placement]
+}
+
+// unpaidUse reads back the placement's unpaid totals
+func (m meter) unpaidUse(p uuid.UUID) map[string]budget.X402Unpaid {
+	m.t.Helper()
+	got, err := m.X402Unpaid(m.t.Context(), p)
+	if err != nil {
+		m.t.Fatalf("read unpaid: %v", err)
+	}
+	return got
+}
+
+func TestX402UnpaidDeltasAdd(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	eq(t, m.unpaidUse(p), map[string]budget.X402Unpaid{})
+	eq(t, m.unpaid(l, map[string]budget.X402Unpaid{"agent402.tools": {3, 1000}}), 0)
+	eq(t, m.unpaid(l, map[string]budget.X402Unpaid{
+		"agent402.tools": {2, 500}, "api.example.com": {0, 7},
+	}), 0)
+	eq(t, m.unpaidUse(p), map[string]budget.X402Unpaid{
+		"agent402.tools": {5, 1500}, "api.example.com": {0, 7},
+	})
+	n, err := m.vk.Do(t.Context(), m.vk.B().Hlen().Key(m.prefix+"egress:x402:"+p.String()).
+		Build()).AsInt64()
+	eq(t, err == nil && n == 4, true)
+}
+
+func TestX402UnpaidAcrossReplicas(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	meters := []*budget.Meter{
+		budget.New(vk, prefix, defaults), budget.New(vk, prefix, defaults),
+	}
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range 50 {
+		m := meters[i%2]
+		wg.Go(func() {
+			<-start
+			_, err := m.ReportX402Unpaid(t.Context(), map[uuid.UUID]map[string]budget.X402Unpaid{
+				p: {"agent402.tools": {1, 10}},
+			}, map[uuid.UUID]budget.Limit{p: l})
+			if err != nil {
+				t.Errorf("report unpaid: %v", err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	got, err := meters[1].X402Unpaid(t.Context(), p)
+	eq(t, err, nil)
+	eq(t, got, map[string]budget.X402Unpaid{"agent402.tools": {50, 500}})
+}
+
+func TestX402UnpaidExpiryNeverEarlier(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	key := "egress:x402:" + p.String()
+	m.unpaid(l, map[string]budget.X402Unpaid{"agent402.tools": {1, 1}})
+	eq(t, m.expiresAt(key), l.Deadline.Add(time.Hour).UnixMilli())
+	older := l
+	older.Deadline = l.Deadline.Add(-5 * time.Minute)
+	m.unpaid(older, map[string]budget.X402Unpaid{"agent402.tools": {1, 1}})
+	eq(t, m.expiresAt(key), l.Deadline.Add(time.Hour).UnixMilli())
+	later := l
+	later.Deadline = l.Deadline.Add(5 * time.Minute)
+	m.unpaid(later, map[string]budget.X402Unpaid{"agent402.tools": {1, 1}})
+	eq(t, m.expiresAt(key), later.Deadline.Add(time.Hour).UnixMilli())
+}
+
+func TestX402UnpaidFieldCap(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	hosts := map[string]budget.X402Unpaid{}
+	for i := range 33 {
+		hosts["h"+strconv.Itoa(100+i)+".example.com"] = budget.X402Unpaid{Requests: 1, Bytes: 1}
+	}
+	eq(t, m.unpaid(l, hosts), 2)
+	n, err := m.vk.Do(t.Context(), m.vk.B().Hlen().Key(m.prefix+"egress:x402:"+p.String()).
+		Build()).AsInt64()
+	eq(t, err == nil && n == 64, true)
+	got := m.unpaidUse(p)
+	eq(t, len(got), 32)
+	// Hosts are added in sorted order, so the last one is the one dropped
+	_, has := got["h132.example.com"]
+	eq(t, has, false)
+	eq(t, m.unpaid(l, map[string]budget.X402Unpaid{
+		"h100.example.com": {1, 1}, "zz.example.com": {1, 1},
+	}), 2)
+	eq(t, m.unpaidUse(p)["h100.example.com"], budget.X402Unpaid{Requests: 2, Bytes: 2})
+}
+
+func TestX402UnpaidSkipsUnknownPlacementsBadHostsAndClampsDeltas(t *testing.T) {
+	m := newMeter(t)
+	known, gone := uuid.New(), uuid.New()
+	l := limit(known, 10<<20)
+	dropped, err := m.ReportX402Unpaid(t.Context(), map[uuid.UUID]map[string]budget.X402Unpaid{
+		known: {
+			"agent402.tools": {math.MaxUint64, math.MaxUint64}, "Bad.Host": {1, 1},
+			"127.0.0.1": {1, 1}, "a:b": {1, 1}, "quiet.example.com": {},
+		},
+		gone: {"agent402.tools": {1, 1}},
+	}, map[uuid.UUID]budget.Limit{known: l})
+	eq(t, err, nil)
+	eq(t, len(dropped), 0)
+	eq(t, m.unpaidUse(known), map[string]budget.X402Unpaid{
+		"agent402.tools": {1 << 40, 1 << 40},
+	})
+	eq(t, m.expiresAt("egress:x402:"+gone.String()), int64(-2))
+}
+
+func TestMoveDeadlineMovesX402Key(t *testing.T) {
+	m := newMeter(t)
+	p := uuid.New()
+	l := limit(p, 10<<20)
+	m.unpaid(l, map[string]budget.X402Unpaid{"agent402.tools": {1, 1}})
+	later := l.Deadline.Add(30 * time.Minute)
+	if err := m.MoveDeadline(t.Context(), p, later); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.expiresAt("egress:x402:"+p.String()), later.Add(time.Hour).UnixMilli())
+	if err := m.MoveDeadline(t.Context(), p, l.Deadline); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.expiresAt("egress:x402:"+p.String()), later.Add(time.Hour).UnixMilli())
+
+	// A placement with no unpaid use gets no hash
+	q := uuid.New()
+	if err := m.MoveDeadline(t.Context(), q, later); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, m.expiresAt("egress:x402:"+q.String()), int64(-2))
+}
