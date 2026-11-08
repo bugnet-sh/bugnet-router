@@ -34,6 +34,9 @@ var (
 	ErrBadReason = errors.New("saga: not a reason a placement ends for")
 	// ErrNotEnded refuses to flag a placement that has not ended yet
 	ErrNotEnded = errors.New("saga: placement has not ended")
+	// ErrAlreadyEnded answers an End other than abuse whose placement had ended before it, so its
+	// wallet action did not run; End for abuse flags such a placement instead
+	ErrAlreadyEnded = errors.New("saga: placement had already ended")
 	// errPayersMoved restarts an end whose placement gained a payer before its row was locked
 	errPayersMoved = errors.New("saga: the placement gained a payer")
 )
@@ -72,7 +75,9 @@ type End struct {
 	Held bool
 }
 
-// End ends a ready or terminating placement for e, a sandbox already gone counting as destroyed
+// End ends a ready or terminating placement for e, a sandbox already gone counting as destroyed.
+// A placement that ended first, even while End ran, gets FlagEnded for abuse and answers
+// ErrAlreadyEnded for any other reason.
 func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, error) {
 	switch e.Reason {
 	case ReasonAbuse, ReasonControlLost, ReasonProviderFailed, ReasonSandboxExited,
@@ -85,9 +90,22 @@ func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, e
 	if err != nil {
 		return store.Placement{}, err
 	}
-	return s.terminate(ctx, p, e.Reason, func(ctx context.Context) (bool, error) {
-		return s.markEnd(ctx, id, e)
-	})
+	ended := p.State == store.PlacementTerminated
+	if !ended {
+		p, err = s.terminate(ctx, p, e.Reason, func(ctx context.Context) (bool, error) {
+			moved, done, err := s.markEnd(ctx, id, e)
+			ended = done
+			return moved, err
+		})
+		if err != nil || !ended {
+			return p, err
+		}
+	}
+	if e.Reason != ReasonAbuse {
+		return p, fmt.Errorf("%w: ended for %s", ErrAlreadyEnded, p.TerminationReason)
+	}
+	p, _, err = s.FlagEnded(ctx, id, e)
+	return p, err
 }
 
 // FlagEnded records abuse on a terminated or failed placement and runs its wallet actions,
@@ -101,7 +119,9 @@ func (s *Saga) FlagEnded(
 	e.Actor = cmp.Or(e.Actor, wallets.ActorRouter)
 	var p store.Placement
 	var blocked []string
-	err := s.underPayers(ctx, id, func(tx pgx.Tx, cur store.Placement, payers []string) error {
+	err := s.underPayers(ctx, id, false, func(tx pgx.Tx, cur store.Placement,
+		payers []string,
+	) error {
 		if cur.State != store.PlacementTerminated && cur.State != store.PlacementFailed {
 			return fmt.Errorf("%w: placement is %s", ErrNotEnded, cur.State)
 		}
@@ -123,8 +143,8 @@ func (s *Saga) FlagEnded(
 	return p, blocked, nil
 }
 
-// flagPayers blocks every payer of an ended placement, a payer already blocked for abuse
-// getting only a note with the new evidence
+// flagPayers blocks every payer of an ended placement, a payer whose block in force already
+// covers an abuse block getting only a note with the new evidence
 func (s *Saga) flagPayers(
 	ctx context.Context, tx pgx.Tx, p store.Placement, payers []string, e End,
 ) ([]string, error) {
@@ -135,7 +155,7 @@ func (s *Saga) flagPayers(
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, err
 		}
-		if err == nil && w.Blocked(s.now()) && w.BlockedReason == wallets.ReasonAbuse {
+		if err == nil && s.covered(w) {
 			err := ts.InsertWalletEvent(ctx, store.WalletEvent{
 				Payer: payer, Kind: store.WalletNote, Reason: ReasonAbuse, PlacementID: p.ID,
 				Provider: p.Provider, Evidence: e.Evidence, Actor: e.Actor, CreatedAt: s.now(),
@@ -156,12 +176,30 @@ func (s *Saga) flagPayers(
 	return out, nil
 }
 
+// covered reports whether the block in force on w is one Block keeps over an abuse block: an
+// abuse block, or one lasting at least as long, so a new block would block nothing new
+func (s *Saga) covered(w store.Wallet) bool {
+	now := s.now()
+	switch {
+	case !w.Blocked(now):
+		return false
+	case w.BlockedReason == wallets.ReasonAbuse || w.BlockedUntil == nil:
+		return true
+	}
+	return s.w.AbuseBlockFor > 0 && !w.BlockedUntil.Before(now.Add(s.w.AbuseBlockFor))
+}
+
 // markEnd runs step 1 of End under the payers' locks, then the placement row's, the order
-// Extend takes them in, and reports whether it moved the placement or replaced its reason
-func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, error) {
-	moved := false
-	err := s.underPayers(ctx, id, func(tx pgx.Tx, cur store.Placement, payers []string) error {
-		moved = false
+// Extend takes them in, and reports whether it moved the placement or replaced its reason, and
+// whether the placement had already terminated
+func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, error) {
+	moved, ended := false, false
+	// Only provider_failed reads the start payer's daily count, so only it waits on "-"
+	startLock := e.Reason == ReasonProviderFailed
+	err := s.underPayers(ctx, id, startLock, func(tx pgx.Tx, cur store.Placement,
+		payers []string,
+	) error {
+		moved, ended = false, cur.State == store.PlacementTerminated
 		switch cur.State {
 		case store.PlacementReady:
 		case store.PlacementTerminating:
@@ -198,7 +236,7 @@ func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, error) {
 		moved = true
 		return nil
 	})
-	return moved, err
+	return moved, ended, err
 }
 
 // endActions decides the end's refund and runs the wallet actions of its reason (CP 6.4),
@@ -275,7 +313,13 @@ func (s *Saga) block(
 	if !s.w.StopLiveOnAbuse {
 		return true, nil
 	}
-	_, err = s.d.River.InsertTx(ctx, tx, jobargs.WalletStopLive{Payer: payer}, nil)
+	// The job carries the block's start, so it ends nothing once this block is lifted
+	w, err := s.d.Store.Tx(tx).Wallet(ctx, payer, s.now())
+	if err != nil {
+		return false, err
+	}
+	args := jobargs.WalletStopLive{Payer: payer, BlockedAt: w.BlockedAt}
+	_, err = s.d.River.InsertTx(ctx, tx, args, nil)
 	if err != nil {
 		return false, fmt.Errorf("insert wallet_stop_live job: %w", err)
 	}
@@ -306,9 +350,10 @@ func (s *Saga) strike(
 }
 
 // underPayers runs fn in a transaction that holds every payer's wallet lock and then the
-// placement row, starting again when the placement gained a payer before its row was locked
+// placement row, starting again when the placement gained a payer before its row was locked.
+// startLock also takes the start payer's lock, "-" for a placement without one.
 func (s *Saga) underPayers(
-	ctx context.Context, id uuid.UUID,
+	ctx context.Context, id uuid.UUID, startLock bool,
 	fn func(tx pgx.Tx, cur store.Placement, payers []string) error,
 ) error {
 	for attempt := 1; ; attempt++ {
@@ -322,9 +367,12 @@ func (s *Saga) underPayers(
 			if err != nil {
 				return err
 			}
-			// The start payer's lock guards the daily refund count, "-" for every placement
-			// without one
-			locks := slices.Concat(payers, []string{seen.Payer})
+			locks := payers
+			if startLock {
+				// The start payer's lock guards the daily refund count, "-" for every
+				// placement without one
+				locks = slices.Concat(payers, []string{seen.Payer})
+			}
 			if err := ts.LockWallets(ctx, locks...); err != nil {
 				return err
 			}

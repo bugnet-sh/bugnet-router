@@ -54,6 +54,9 @@ func TestBlockWalletStopsLivePlacements(t *testing.T) {
 		eq(t, rows.Scan(&raw), nil)
 		var args jobargs.WalletStopLive
 		eq(t, json.Unmarshal(raw, &args), nil)
+		// The job names the block it stops for, so an unblock ends it
+		at := resp.GetWallet().GetBlockedAt().AsTime()
+		eq(t, args.BlockedAt != nil && args.BlockedAt.Equal(at), true)
 		payers = append(payers, args.Payer)
 	}
 	eq(t, rows.Err(), nil)

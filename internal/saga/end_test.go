@@ -488,10 +488,106 @@ func TestEndRefusesWhatItCannotEnd(t *testing.T) {
 	eq(t, errors.Is(err, store.ErrNotFound), true)
 	p, _ := e.placePaid(t, "order-1", payerA)
 	first := e.end(t, p.ID, saga.End{Reason: saga.ReasonSandboxExited})
-	// An end of an ended placement answers it as it is
-	again := e.end(t, p.ID, saga.End{Reason: saga.ReasonAbuse})
+	// An end of an ended placement answers it as it is, saying its wallet action did not run
+	again, err := e.saga.End(t.Context(), p.ID, saga.End{Reason: saga.ReasonControlLost})
+	eq(t, errors.Is(err, saga.ErrAlreadyEnded), true)
 	eq(t, again.TerminationReason, first.TerminationReason)
-	eq(t, e.walletEvents(t, payerA, store.WalletBlock), 0)
+	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 0)
+}
+
+func TestAbuseEndAfterAStopFlagsIt(t *testing.T) {
+	e := endEnv(t, func(w *config.Wallets) { w.StopLiveOnAbuse = true }, nil, nil)
+	ctx := t.Context()
+	p, h := e.placePaid(t, "order-1", payerA)
+	// The owner's stop commits before the abuse end reads the placement
+	if _, err := e.saga.Stop(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	before, raw := e.terminated(t, p.ID)
+	got := e.end(t, p.ID, saga.End{Reason: saga.ReasonAbuse, Actor: wallets.ActorRouter})
+	eq(t, got.TerminationReason, saga.ReasonStop)
+	eq(t, e.blocked(t, payerA).Blocked(time.Now()), true)
+	eq(t, e.walletEvents(t, payerA, store.WalletBlock), 1)
+	eq(t, e.stopLiveJobs(t), []string{payerA})
+	sigs, err := e.store.Signals(ctx, p.ID)
+	eq(t, err, nil)
+	eq(t, len(sigs), 1)
+	eq(t, sigs[0].Action, "flagged")
+	after, rawAfter := e.terminated(t, p.ID)
+	eq(t, after, before)
+	eq(t, rawAfter, raw)
+}
+
+func TestEndWithoutPayerLeavesTheSharedLock(t *testing.T) {
+	e := endEnv(t, nil, nil, nil)
+	ctx := t.Context()
+	p, _ := e.placeReady(t, "order-1")
+	// A create without a payer holds "-" while it records its order
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := e.store.Tx(tx).LockWallets(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan error, 1)
+	go func() {
+		_, err := e.saga.End(ctx, p.ID, saga.End{
+			Reason: saga.ReasonOperator, Actor: "operator:ann",
+		})
+		ended <- err
+	}()
+	select {
+	case err := <-ended:
+		eq(t, err, nil)
+	case <-time.After(10 * time.Second):
+		_ = tx.Rollback(ctx)
+		<-ended
+		t.Fatal("an operator end of a placement without a payer waited on the shared lock")
+	}
+	eq(t, e.reload(t, p.ID).State, store.PlacementTerminated)
+}
+
+func TestFlagEndedLeavesALongerBlock(t *testing.T) {
+	e := endEnv(t, func(w *config.Wallets) {
+		w.EmitEvents, w.StopLiveOnAbuse, w.AbuseBlockFor = true, true, time.Hour
+	}, nil, nil)
+	ctx := t.Context()
+	p, h := e.placePaid(t, "order-1", payerA)
+	e.extendPaid(t, h, "ext-1", payerB, morePkg, morePrice)
+	e.extendPaid(t, h, "ext-2", payerC, shortPkg, shortPrice)
+	if _, err := e.saga.Stop(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	// A blocked until lifted, B for longer than an abuse block, C for less
+	long, short := time.Now().Add(48*time.Hour), time.Now().Add(10*time.Minute)
+	for payer, until := range map[string]*time.Time{payerA: nil, payerB: &long, payerC: &short} {
+		if err := e.store.SetWalletBlock(ctx, payer, time.Now(), until, wallets.ReasonOperator,
+			"operator:ann"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got [][]string
+	for range 2 {
+		_, blocked, err := e.saga.FlagEnded(ctx, p.ID, saga.End{
+			Reason: saga.ReasonAbuse, Actor: wallets.ActorRouter,
+		})
+		eq(t, err, nil)
+		got = append(got, blocked)
+	}
+	eq(t, got, [][]string{{payerC}, nil})
+	for _, payer := range []string{payerA, payerB} {
+		eq(t, e.walletEvents(t, payer, store.WalletBlock), 0)
+		eq(t, e.walletEvents(t, payer, store.WalletNote), 2)
+		eq(t, e.blocked(t, payer).BlockedReason, wallets.ReasonOperator)
+	}
+	// C's shorter block gave way to the abuse block once, and the second flag only noted it
+	eq(t, e.walletEvents(t, payerC, store.WalletBlock), 1)
+	eq(t, e.walletEvents(t, payerC, store.WalletNote), 1)
+	eq(t, e.blocked(t, payerC).BlockedReason, wallets.ReasonAbuse)
+	eq(t, e.stopLiveJobs(t), []string{payerC})
+	eq(t, e.eventCount(t, wallets.EventBlocked), 1)
 }
 
 func TestEndTakesThePayerLocksBeforeTheRow(t *testing.T) {

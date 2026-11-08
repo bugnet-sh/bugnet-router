@@ -75,8 +75,13 @@ func (o *OperatorServer) BlockWallet(
 		if err != nil || !m.GetStopLive() {
 			return err
 		}
+		w, err := s.d.Store.Tx(tx).Wallet(ctx, payer, time.Now())
+		if err != nil {
+			return err
+		}
 		// The job commits with the block, so it sees every placement the block let through
-		_, err = s.d.River.InsertTx(ctx, tx, jobargs.WalletStopLive{Payer: payer}, nil)
+		_, err = s.d.River.InsertTx(ctx, tx,
+			jobargs.WalletStopLive{Payer: payer, BlockedAt: w.BlockedAt}, nil)
 		return err
 	})
 	if err != nil {

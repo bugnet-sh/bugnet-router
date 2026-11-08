@@ -135,6 +135,9 @@ const (
 	heartbeatEvery   = 10 * time.Second
 )
 
+// EndTimeout bounds one End's destroy, which runs on past its caller's context
+const EndTimeout = terminateTimeout
+
 // cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
 var cleanupTimeout = 30 * time.Second
 

@@ -18,7 +18,8 @@ import (
 const (
 	// stopLiveTimeout is CP 13.4's, under River's 3-minute rescue
 	stopLiveTimeout = 150 * time.Second
-	// stopLivePerRun bounds the ends of one run, so five slow destroys still fit its timeout
+	// stopLivePerRun bounds the ends of one run, which also starts none once less than
+	// saga.EndTimeout of its timeout is left, so a slow destroy never outlasts the run
 	stopLivePerRun = 5
 	// stopLiveWait is how long a run that found a placement still placing waits to look again
 	stopLiveWait = 15 * time.Second
@@ -42,8 +43,12 @@ func (sw *walletStopLiveWorker) Work(
 }
 
 // stopLive ends a blocked payer's ready placements with reason wallet_blocked, a few a run, and
-// inserts itself again while more remain or one is still placing
+// inserts itself again while more remain or one is still placing, until the block is lifted
 func (w *Worker) stopLive(ctx context.Context, args jobargs.WalletStopLive) error {
+	blocked, err := w.stillBlocked(ctx, args)
+	if err != nil || !blocked {
+		return err
+	}
 	live, err := w.saga.LivePlacementsOf(ctx, args.Payer)
 	if err != nil {
 		return err
@@ -58,14 +63,16 @@ func (w *Worker) stopLive(ctx context.Context, args jobargs.WalletStopLive) erro
 			placing = true
 			continue
 		}
-		if ended == stopLivePerRun {
+		if ended == stopLivePerRun || !roomForEnd(ctx) {
 			more = true
 			break
 		}
 		_, err := w.saga.End(ctx, p.ID, saga.End{
 			Reason: saga.ReasonWalletBlocked, Actor: wallets.ActorRouter, Evidence: evidence,
 		})
-		if err != nil && !errors.Is(err, saga.ErrNotReady) {
+		// One the owner stopped since the listing is no longer live
+		gone := errors.Is(err, saga.ErrNotReady) || errors.Is(err, saga.ErrAlreadyEnded)
+		if err != nil && !gone {
 			return fmt.Errorf("end placement %s: %w", p.ID, err)
 		}
 		ended++
@@ -82,6 +89,31 @@ func (w *Worker) stopLive(ctx context.Context, args jobargs.WalletStopLive) erro
 	}
 	args.Waits++
 	return w.insertStopLive(ctx, args, w.now().Add(stopLiveWait))
+}
+
+// stillBlocked reports whether the block that queued the job still holds, so a run after an
+// unblock, an expiry or a later block ends nothing
+func (w *Worker) stillBlocked(ctx context.Context, args jobargs.WalletStopLive) (bool, error) {
+	now := w.now()
+	wl, err := w.store.Wallet(ctx, args.Payer, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !wl.Blocked(now) || args.BlockedAt != nil && !wl.BlockedAt.Equal(*args.BlockedAt) {
+		w.log.Info("wallet_stop_live found its block lifted, nothing more is ended")
+		return false, nil
+	}
+	return true, nil
+}
+
+// roomForEnd reports whether the run has time left for one End, whose destroy runs on past a
+// cancelled context for up to saga.EndTimeout
+func roomForEnd(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) >= saga.EndTimeout
 }
 
 func (w *Worker) insertStopLive(

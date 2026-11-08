@@ -2,6 +2,8 @@
 package jobargs
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -74,6 +76,9 @@ func (PrepareSSH) InsertOpts() river.InsertOpts {
 // WalletStopLive asks the worker to end the live placements of a payer just blocked
 type WalletStopLive struct {
 	Payer string `json:"payer"`
+	// BlockedAt is the start of the block that queued the job, which ends nothing once that
+	// block is lifted or replaced; nil matches any block in force
+	BlockedAt *time.Time `json:"blocked_at,omitempty"`
 	// Waits counts the runs that found a placement still placing and waited for it
 	Waits int `json:"waits,omitempty"`
 }

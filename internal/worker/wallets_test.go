@@ -1,6 +1,7 @@
 package worker_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"strings"
@@ -59,6 +60,21 @@ func (e *env) paidPlacement(t *testing.T, payer string, placing bool) store.Plac
 	return e.reload(t, p.ID)
 }
 
+// block blocks payer until lifted, as an operator would, and returns the block's start
+func (e *env) block(t *testing.T, payer string) time.Time {
+	t.Helper()
+	ctx := t.Context()
+	if err := e.store.SetWalletBlock(ctx, payer, time.Now(), nil, wallets.ReasonOperator,
+		"operator:ann"); err != nil {
+		t.Fatal(err)
+	}
+	w, err := e.store.Wallet(ctx, payer, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return *w.BlockedAt
+}
+
 type stopLiveJob struct {
 	args  jobargs.WalletStopLive
 	state rivertype.JobState
@@ -111,6 +127,7 @@ func TestWalletStopLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	untouched := e.paidPlacement(t, payerB, false)
+	e.block(t, payerA)
 
 	// One run ends five and inserts itself again at once
 	eq(t, e.worker.StopLive(ctx, jobargs.WalletStopLive{Payer: payerA}), nil)
@@ -150,6 +167,7 @@ func TestWalletStopLiveRefundsUnderTheSetting(t *testing.T) {
 	w.RefundStoppedLive = true
 	e := newEnv(t, options{wallets: w})
 	p := e.paidPlacement(t, payerA, false)
+	e.block(t, payerA)
 	eq(t, e.worker.StopLive(t.Context(), jobargs.WalletStopLive{Payer: payerA}), nil)
 	got := e.reload(t, p.ID)
 	eq(t, got.Refundable, true)
@@ -162,8 +180,55 @@ func TestWalletStopLiveJobRuns(t *testing.T) {
 	e := newEnv(t, options{wallets: payerWallets()})
 	e.start(t)
 	p := e.paidPlacement(t, payerA, false)
+	e.block(t, payerA)
 	e.run(t, jobargs.WalletStopLive{Payer: payerA})
 	eq(t, e.reload(t, p.ID).TerminationReason, saga.ReasonWalletBlocked)
+}
+
+func TestWalletStopLiveStopsOnceTheBlockIsLifted(t *testing.T) {
+	e := newEnv(t, options{wallets: payerWallets()})
+	ctx := t.Context()
+	for range 7 {
+		e.paidPlacement(t, payerA, false)
+	}
+	at := e.block(t, payerA)
+	args := jobargs.WalletStopLive{Payer: payerA, BlockedAt: &at}
+	eq(t, e.worker.StopLive(ctx, args), nil)
+	eq(t, e.endedFor(t, saga.ReasonWalletBlocked), 5)
+	jobs := e.stopLiveJobs(t)
+	eq(t, len(jobs), 1)
+	eq(t, jobs[0].args.BlockedAt != nil && jobs[0].args.BlockedAt.Equal(at), true)
+
+	// An operator unblocks before the next run, which ends nothing more
+	if err := e.store.ClearWalletBlock(ctx, payerA); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, e.worker.StopLive(ctx, jobs[0].args), nil)
+	eq(t, e.endedFor(t, saga.ReasonWalletBlocked), 5)
+	eq(t, len(e.stopLiveJobs(t)), 1)
+
+	// Nor does a run of that job under a later block
+	time.Sleep(10 * time.Millisecond)
+	e.block(t, payerA)
+	eq(t, e.worker.StopLive(ctx, jobs[0].args), nil)
+	eq(t, e.endedFor(t, saga.ReasonWalletBlocked), 5)
+	eq(t, len(e.stopLiveJobs(t)), 1)
+}
+
+func TestWalletStopLiveLeavesTimeForAnEnd(t *testing.T) {
+	e := newEnv(t, options{wallets: payerWallets()})
+	p := e.paidPlacement(t, payerA, false)
+	e.block(t, payerA)
+	// Less than one end's timeout is left, so the run inserts itself again at once
+	ctx, cancel := context.WithTimeout(t.Context(), saga.EndTimeout/2)
+	defer cancel()
+	eq(t, e.worker.StopLive(ctx, jobargs.WalletStopLive{Payer: payerA}), nil)
+	eq(t, e.reload(t, p.ID).State, store.PlacementReady)
+	jobs := e.stopLiveJobs(t)
+	eq(t, len(jobs), 1)
+	eq(t, jobs[0].state, rivertype.JobStateAvailable)
+	eq(t, e.worker.StopLive(t.Context(), jobs[0].args), nil)
+	eq(t, e.reload(t, p.ID).State, store.PlacementTerminated)
 }
 
 func TestWalletExpiryLiftsTimedBlock(t *testing.T) {
