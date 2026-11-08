@@ -70,3 +70,14 @@ func (PrepareSSH) InsertOpts() river.InsertOpts {
 		}},
 	}
 }
+
+// StatsSnapshot asks the worker to write the public stats feed's snapshot row
+type StatsSnapshot struct{}
+
+// Kind returns the River job kind
+func (StatsSnapshot) Kind() string { return "stats_snapshot" }
+
+// InsertOpts runs it on the default queue once, since the next run starts 30 s later
+func (StatsSnapshot) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
