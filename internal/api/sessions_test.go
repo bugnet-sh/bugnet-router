@@ -591,11 +591,65 @@ func (e *env) allowance(
 	t *testing.T, order, phase string, amount int64, tx string,
 ) error {
 	t.Helper()
+	return e.allowanceEvent(t, order, &routerv1.AllowanceEvent{
+		Phase: phase, AmountMicros: amount, Asset: usdc, Network: solana, Tx: tx,
+	})
+}
+
+func (e *env) allowanceEvent(t *testing.T, order string, ev *routerv1.AllowanceEvent) error {
+	t.Helper()
 	_, err := e.payments(t).AppendAllowanceEvent(t.Context(), connect.NewRequest(
-		&routerv1.AppendAllowanceEventRequest{OrderId: order, Event: &routerv1.AllowanceEvent{
-			Phase: phase, AmountMicros: amount, Asset: usdc, Network: solana, Tx: tx,
-		}}))
+		&routerv1.AppendAllowanceEventRequest{OrderId: order, Event: ev}))
 	return err
+}
+
+func TestAppendAllowanceEventKept(t *testing.T) {
+	e := newEnv(t, options{})
+	order, tok := e.startOrder(t, smallPkg, smallPrice)
+	res, err := e.createWith(t, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := res.Msg.GetHandle()
+	p := e.waitReady(t, h)
+	eq(t, e.allowance(t, order, "paid", 1_000_000, sig), nil)
+	eq(t, e.allowance(t, order, "refunded", 400_000, sig), nil)
+	e.stop(t, h)
+	kept := func(amount, keptMicros int64, tx string) error {
+		return e.allowanceEvent(t, order, &routerv1.AllowanceEvent{Phase: "kept",
+			AmountMicros: amount, KeptMicros: keptMicros, Asset: usdc, Network: solana, Tx: tx})
+	}
+	for _, c := range []struct {
+		amount, kept int64
+		tx           string
+	}{{0, 4000, sig}, {0, 0, ""}, {0, -1, ""}, {1, 4000, ""}} {
+		mustCode(t, kept(c.amount, c.kept, c.tx), connect.CodeInvalidArgument, "")
+	}
+	eq(t, kept(0, 4000, ""), nil)
+	eq(t, kept(0, 4000, ""), nil)
+	got := e.sessionEvents(t, p)["allowance"]
+	eq(t, len(got), 3)
+	eq(t, got[2], map[string]any{"phase": "kept", "amount_micros": 0.0,
+		"kept_micros": 4000.0, "asset": usdc, "network": solana})
+	rec, err := e.record(t, p.GetSessionUrl())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Events []map[string]any `json:"events"`
+	}
+	eq(t, json.Unmarshal(rec.GetRecordJson(), &record), nil)
+	var served []map[string]any
+	for _, ev := range record.Events {
+		if ev["kind"] == "allowance" {
+			delete(ev, "at")
+			served = append(served, ev)
+		}
+	}
+	eq(t, len(served), 3)
+	eq(t, served[2], map[string]any{"kind": "allowance", "phase": "kept", "amountMicros": 0.0,
+		"keptMicros": 4000.0, "asset": "USDC", "network": solana})
+	eq(t, served[1]["tx"], sig)
 }
 
 func TestAppendAllowanceEvent(t *testing.T) {

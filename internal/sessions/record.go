@@ -140,7 +140,8 @@ func servePayment(data map[string]json.RawMessage) (object, bool) {
 }
 
 func serveAllowance(data map[string]json.RawMessage) (object, bool) {
-	o := fields(data, "phase", "phase", "amount_micros", "amountMicros")
+	o := fields(data, "phase", "phase", "amount_micros", "amountMicros", "kept_micros",
+		"keptMicros")
 	// Any other mint stays out, as a base58 key could be a wallet's address (D-c)
 	if str(data["asset"]) == usdcMint {
 		o = o.with("asset", "USDC")

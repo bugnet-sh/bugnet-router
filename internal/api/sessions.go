@@ -262,14 +262,17 @@ func (ps *PaymentsServer) AppendAllowanceEvent(
 ) (*connect.Response[routerv1.AppendAllowanceEventResponse], error) {
 	s, m := ps.s, req.Msg
 	ev := m.GetEvent()
+	kept := ev.GetPhase() == "kept"
 	switch {
 	case m.GetOrderId() == "":
 		return nil, invalid("order_id is required")
-	case ev.GetPhase() != "paid" && ev.GetPhase() != "refunded":
-		return nil, invalid("phase must be paid or refunded")
+	case ev.GetPhase() != "paid" && ev.GetPhase() != "refunded" && !kept:
+		return nil, invalid("phase must be paid, refunded or kept")
 	case ev.GetAmountMicros() < 0:
 		return nil, invalid("amount_micros must be 0 or more")
-	case !validSignature(ev.GetTx()):
+	case kept && (ev.GetAmountMicros() != 0 || ev.GetKeptMicros() <= 0 || ev.GetTx() != ""):
+		return nil, invalid("kept needs amount_micros 0, kept_micros above 0 and no tx")
+	case !kept && !validSignature(ev.GetTx()):
 		return nil, invalid("tx must be the base58 of a 64-byte signature")
 	case !validMint(ev.GetAsset()):
 		return nil, invalid("asset must be a base58 mint")
@@ -289,10 +292,15 @@ func (ps *PaymentsServer) AppendAllowanceEvent(
 	case rec.ExpiresAt != nil && !time.Now().Before(*rec.ExpiresAt):
 		return connect.NewResponse(&routerv1.AppendAllowanceEventResponse{}), nil
 	}
-	if err := s.d.SessionWriter.Allowance(ctx, p.ID, sessions.Fields{
+	f := sessions.Fields{
 		"phase": ev.GetPhase(), "amount_micros": ev.GetAmountMicros(), "asset": ev.GetAsset(),
 		"network": ev.GetNetwork(), "tx": ev.GetTx(),
-	}); err != nil {
+	}
+	if kept {
+		delete(f, "tx")
+		f["kept_micros"] = ev.GetKeptMicros()
+	}
+	if err := s.d.SessionWriter.Allowance(ctx, p.ID, f); err != nil {
 		return nil, s.status(err)
 	}
 	return connect.NewResponse(&routerv1.AppendAllowanceEventResponse{}), nil

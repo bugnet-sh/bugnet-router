@@ -361,4 +361,7 @@ func TestServedPaymentAndAllowanceKeys(t *testing.T) {
 	eq(t, served(serveAllowance, `{"phase":"refunded","amount_micros":5,"asset":"`+mint+
 		`","network":"solana:x","tx":"sig"}`),
 		`{"phase":"refunded","amountMicros":5,"network":"solana:x","tx":"sig"}`)
+	eq(t, served(serveAllowance, `{"phase":"kept","amount_micros":0,"kept_micros":4000,`+
+		`"asset":"`+usdcMint+`","network":"solana:x"}`),
+		`{"phase":"kept","amountMicros":0,"keptMicros":4000,"asset":"USDC","network":"solana:x"}`)
 }
