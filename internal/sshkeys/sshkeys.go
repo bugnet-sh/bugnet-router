@@ -48,7 +48,7 @@ var accepted = map[string]bool{
 type Key struct {
 	// Wire is the key in SSH wire format, with no comment
 	Wire []byte
-	// Fingerprint is the SHA256: form ssh-keygen -l prints
+	// Fingerprint is the SHA256 form ssh-keygen -l prints
 	Fingerprint string
 }
 
@@ -190,7 +190,7 @@ func (h HandOff) Command() string {
 	return strings.Join(append(parts, h.Alias+"@"+h.Host), " ")
 }
 
-// KnownHosts answers one known_hosts line per gateway host key, [host]:port when not 22
+// KnownHosts answers one known_hosts line per gateway host key, host and port bracketed off 22
 func (h HandOff) KnownHosts(hostKeys []string) []string {
 	name := h.Host
 	if h.Port != 22 {

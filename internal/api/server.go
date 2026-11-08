@@ -20,7 +20,7 @@
 // preview's generation, so every earlier link dies and its port gets no new one.
 //
 // AddSshKey registers a public key on a placement whose provider has SSH, and SshGatewayService
-// answers bugnet-ssh: a read-only key check, connection leases in a Valkey sorted set per
+// answers bugnet-ssh with a read-only key check, connection leases in a Valkey sorted set per
 // placement, the upstream after the gateway's own key is authorised in the sandbox once, and a
 // check of the grants it holds. RemoveSshKey publishes SshKeyRemoved.
 //

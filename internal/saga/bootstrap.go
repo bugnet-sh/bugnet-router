@@ -48,8 +48,7 @@ type BootReport struct {
 // errRestricted means a restricted package reached a provider without egress control
 var errRestricted = errors.New("a restricted package needs a provider with egress control")
 
-// Boot waits for the sandbox, puts the runner in place, runs setup and harden, opens the gate
-// and makes sshd ready when the order needs SSH
+// Boot boots a sandbox, opens its gate and makes sshd ready when the order needs SSH
 func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Ref,
 	b BootPlan) (provider.Ref, BootReport, error) {
 	var rep BootReport
