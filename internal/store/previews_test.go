@@ -101,11 +101,15 @@ func TestRacingUpsertsKeepTheCap(t *testing.T) {
 	if ok != 8 || full != racers-8 {
 		t.Fatalf("%d made and %d refused, want 8 and %d", ok, full, racers-8)
 	}
+	port := 1000
+	for errs[port-1000] != nil {
+		port++
+	}
 	same := make([]store.Preview, 6)
 	for i := range same {
 		wg.Go(func() {
 			var err error
-			if same[i], err = s.UpsertPreview(ctx, p.ID, 1000, 8, previewID(100+i)); err != nil {
+			if same[i], err = s.UpsertPreview(ctx, p.ID, port, 8, previewID(100+i)); err != nil {
 				t.Error(err)
 			}
 		})
