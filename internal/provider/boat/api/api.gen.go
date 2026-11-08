@@ -941,6 +941,36 @@ func (e StopOperationStatus) Valid() bool {
 	}
 }
 
+// Defines values for WebhookEventType.
+const (
+	SandboxArchived  WebhookEventType = "sandbox.archived"
+	SandboxDegraded  WebhookEventType = "sandbox.degraded"
+	SandboxError     WebhookEventType = "sandbox.error"
+	SandboxHydrated  WebhookEventType = "sandbox.hydrated"
+	SandboxReady     WebhookEventType = "sandbox.ready"
+	SandboxRecovered WebhookEventType = "sandbox.recovered"
+)
+
+// Valid indicates whether the value is a known member of the WebhookEventType enum.
+func (e WebhookEventType) Valid() bool {
+	switch e {
+	case SandboxArchived:
+		return true
+	case SandboxDegraded:
+		return true
+	case SandboxError:
+		return true
+	case SandboxHydrated:
+		return true
+	case SandboxReady:
+		return true
+	case SandboxRecovered:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Sort.
 const (
 	SortAsc  Sort = "asc"
@@ -1948,6 +1978,85 @@ type UpdateSandboxRequest struct {
 	TtlSeconds *int `json:"ttlSeconds,omitempty"`
 }
 
+// Webhook defines model for Webhook.
+type Webhook struct {
+	CreatedAt time.Time          `json:"createdAt"`
+	Events    []WebhookEventType `json:"events"`
+
+	// Id Examples: wh_0123456789abcdef01234567
+	Id string `json:"id"`
+
+	// Name Examples: Production automation
+	Name      *string   `json:"name"`
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Url Public HTTPS endpoint on port 443.
+	//
+	// Examples: https://example.com/hooks/sandbox
+	Url string `json:"url"`
+}
+
+// WebhookCreateRequest defines model for WebhookCreateRequest.
+type WebhookCreateRequest struct {
+	Events []WebhookEventType `json:"events"`
+	Name   *string            `json:"name,omitempty"`
+	Url    string             `json:"url"`
+}
+
+// WebhookDeleteResponse defines model for WebhookDeleteResponse.
+type WebhookDeleteResponse struct {
+	Id string `json:"id"`
+
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Type Stable success envelope discriminator added by v1.
+	Type string `json:"type"`
+}
+
+// WebhookEventType defines model for WebhookEventType.
+type WebhookEventType string
+
+// WebhookListResponse defines model for WebhookListResponse.
+type WebhookListResponse struct {
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Type Stable success envelope discriminator added by v1.
+	Type     string    `json:"type"`
+	Webhooks []Webhook `json:"webhooks"`
+}
+
+// WebhookResponse defines model for WebhookResponse.
+type WebhookResponse struct {
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Type Stable success envelope discriminator added by v1.
+	Type    string  `json:"type"`
+	Webhook Webhook `json:"webhook"`
+}
+
+// WebhookSecretResponse defines model for WebhookSecretResponse.
+type WebhookSecretResponse struct {
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Secret Signing secret returned only when created or rotated.
+	Secret string `json:"secret"`
+
+	// Type Stable success envelope discriminator added by v1.
+	Type    string  `json:"type"`
+	Webhook Webhook `json:"webhook"`
+}
+
+// WebhookUpdateRequest defines model for WebhookUpdateRequest.
+type WebhookUpdateRequest struct {
+	Events *[]WebhookEventType `json:"events,omitempty"`
+	Name   *string             `json:"name,omitempty"`
+	Url    *string             `json:"url,omitempty"`
+}
+
 // ConfirmDelete defines model for ConfirmDelete.
 type ConfirmDelete = string
 
@@ -2133,6 +2242,12 @@ type HostPortJSONRequestBody = HostPortRequest
 
 // SshKeyJSONRequestBody defines body for SshKey for application/json ContentType.
 type SshKeyJSONRequestBody = SshKeyRequest
+
+// CreateWebhookJSONRequestBody defines body for CreateWebhook for application/json ContentType.
+type CreateWebhookJSONRequestBody = WebhookCreateRequest
+
+// UpdateWebhookJSONRequestBody defines body for UpdateWebhook for application/json ContentType.
+type UpdateWebhookJSONRequestBody = WebhookUpdateRequest
 
 // Getter for additional properties for CreateSandboxResponse_HostedPorts_Item. Returns the specified
 // element and whether it was found
@@ -2867,6 +2982,74 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListWebhooks List webhooks
+	//
+	// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
+	//
+	// Corresponds with GET /webhooks (the `ListWebhooks` operationId).
+	ListWebhooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateWebhookWithBody Create webhook
+	//
+	// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+	//
+	// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+	CreateWebhookWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateWebhook Create webhook
+	//
+	// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+	//
+	// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+	CreateWebhook(ctx context.Context, body CreateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteWebhook Delete webhook
+	//
+	// Deletes the endpoint and its queued deliveries. An attempt already in flight can still arrive.
+	//
+	// Corresponds with DELETE /webhooks/{webhookId} (the `DeleteWebhook` operationId).
+	DeleteWebhook(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetWebhook Get webhook
+	//
+	// Returns webhook metadata without the signing secret.
+	//
+	// Corresponds with GET /webhooks/{webhookId} (the `GetWebhook` operationId).
+	GetWebhook(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateWebhookWithBody Update webhook
+	//
+	// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+	UpdateWebhookWithBody(ctx context.Context, webhookId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateWebhook Update webhook
+	//
+	// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+	UpdateWebhook(ctx context.Context, webhookId string, body UpdateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RotateWebhookSigningSecret Rotate webhook signing secret
+	//
+	// Replaces the endpoint's signing secret. The new secret is returned only in this response; briefly accept the old secret for attempts already in flight.
+	//
+	// Corresponds with POST /webhooks/{webhookId}/rotate (the `RotateWebhookSigningSecret` operationId).
+	RotateWebhookSigningSecret(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // Sandboxes List sandboxes
@@ -3442,6 +3625,154 @@ func (c *Client) SshKeyWithBody(ctx context.Context, sandboxId SandboxId, conten
 // Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 func (c *Client) SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSshKeyRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ListWebhooks List webhooks
+//
+// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
+//
+// Corresponds with GET /webhooks (the `ListWebhooks` operationId).
+func (c *Client) ListWebhooks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListWebhooksRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateWebhookWithBody Create webhook
+//
+// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+//
+// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+func (c *Client) CreateWebhookWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWebhookRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// CreateWebhook Create webhook
+//
+// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+//
+// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+func (c *Client) CreateWebhook(ctx context.Context, body CreateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWebhookRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteWebhook Delete webhook
+//
+// Deletes the endpoint and its queued deliveries. An attempt already in flight can still arrive.
+//
+// Corresponds with DELETE /webhooks/{webhookId} (the `DeleteWebhook` operationId).
+func (c *Client) DeleteWebhook(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteWebhookRequest(c.Server, webhookId)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetWebhook Get webhook
+//
+// Returns webhook metadata without the signing secret.
+//
+// Corresponds with GET /webhooks/{webhookId} (the `GetWebhook` operationId).
+func (c *Client) GetWebhook(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWebhookRequest(c.Server, webhookId)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateWebhookWithBody Update webhook
+//
+// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+func (c *Client) UpdateWebhookWithBody(ctx context.Context, webhookId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateWebhookRequestWithBody(c.Server, webhookId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// UpdateWebhook Update webhook
+//
+// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+func (c *Client) UpdateWebhook(ctx context.Context, webhookId string, body UpdateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateWebhookRequest(c.Server, webhookId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// RotateWebhookSigningSecret Rotate webhook signing secret
+//
+// Replaces the endpoint's signing secret. The new secret is returned only in this response; briefly accept the old secret for attempts already in flight.
+//
+// Corresponds with POST /webhooks/{webhookId}/rotate (the `RotateWebhookSigningSecret` operationId).
+func (c *Client) RotateWebhookSigningSecret(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRotateWebhookSigningSecretRequest(c.Server, webhookId)
 	if err != nil {
 		return nil, err
 	}
@@ -4650,6 +4981,222 @@ func NewSshKeyRequestWithBody(server string, sandboxId SandboxId, contentType st
 	return req, nil
 }
 
+// NewListWebhooksRequest constructs an http.Request for the ListWebhooks method
+func NewListWebhooksRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateWebhookRequest calls the generic CreateWebhook builder with application/json body
+func NewCreateWebhookRequest(server string, body CreateWebhookJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateWebhookRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateWebhookRequestWithBody constructs an http.Request for the CreateWebhook method, with any body, and a specified content type
+func NewCreateWebhookRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteWebhookRequest constructs an http.Request for the DeleteWebhook method
+func NewDeleteWebhookRequest(server string, webhookId string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhookId", webhookId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetWebhookRequest constructs an http.Request for the GetWebhook method
+func NewGetWebhookRequest(server string, webhookId string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhookId", webhookId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewUpdateWebhookRequest calls the generic UpdateWebhook builder with application/json body
+func NewUpdateWebhookRequest(server string, webhookId string, body UpdateWebhookJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateWebhookRequestWithBody(server, webhookId, "application/json", bodyReader)
+}
+
+// NewUpdateWebhookRequestWithBody constructs an http.Request for the UpdateWebhook method, with any body, and a specified content type
+func NewUpdateWebhookRequestWithBody(server string, webhookId string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhookId", webhookId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRotateWebhookSigningSecretRequest constructs an http.Request for the RotateWebhookSigningSecret method
+func NewRotateWebhookSigningSecretRequest(server string, webhookId string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "webhookId", webhookId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks/%s/rotate", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -4984,6 +5531,82 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKeyWithResponse(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error)
+
+	// ListWebhooksWithResponse List webhooks
+	//
+	// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /webhooks (the `ListWebhooks` operationId).
+	ListWebhooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListWebhooksResponse, error)
+
+	// CreateWebhookWithBodyWithResponse Create webhook
+	//
+	// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+	//
+	// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+	CreateWebhookWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWebhookResponse, error)
+
+	// CreateWebhookWithResponse Create webhook
+	//
+	// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+	//
+	// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+	CreateWebhookWithResponse(ctx context.Context, body CreateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWebhookResponse, error)
+
+	// DeleteWebhookWithResponse Delete webhook
+	//
+	// Deletes the endpoint and its queued deliveries. An attempt already in flight can still arrive.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /webhooks/{webhookId} (the `DeleteWebhook` operationId).
+	DeleteWebhookWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*DeleteWebhookResponse, error)
+
+	// GetWebhookWithResponse Get webhook
+	//
+	// Returns webhook metadata without the signing secret.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /webhooks/{webhookId} (the `GetWebhook` operationId).
+	GetWebhookWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*GetWebhookResponse, error)
+
+	// UpdateWebhookWithBodyWithResponse Update webhook
+	//
+	// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+	UpdateWebhookWithBodyWithResponse(ctx context.Context, webhookId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateWebhookResponse, error)
+
+	// UpdateWebhookWithResponse Update webhook
+	//
+	// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+	UpdateWebhookWithResponse(ctx context.Context, webhookId string, body UpdateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateWebhookResponse, error)
+
+	// RotateWebhookSigningSecretWithResponse Rotate webhook signing secret
+	//
+	// Replaces the endpoint's signing secret. The new secret is returned only in this response; briefly accept the old secret for attempts already in flight.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /webhooks/{webhookId}/rotate (the `RotateWebhookSigningSecret` operationId).
+	RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error)
 }
 
 type SandboxesResponse struct {
@@ -6163,6 +6786,350 @@ func (r SshKeyResponse2) ContentType() string {
 	return ""
 }
 
+type ListWebhooksResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebhookListResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListWebhooksResponse) GetJSON200() *WebhookListResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r ListWebhooksResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetBody returns the raw response body bytes
+func (r ListWebhooksResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListWebhooksResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListWebhooksResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListWebhooksResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type CreateWebhookResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON201 the response for an HTTP 201 `application/json` response
+	JSON201 *WebhookSecretResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
+}
+
+// GetJSON201 returns the response for an HTTP 201 `application/json` response
+func (r CreateWebhookResponse) GetJSON201() *WebhookSecretResponse {
+	return r.JSON201
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r CreateWebhookResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r CreateWebhookResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r CreateWebhookResponse) GetJSON409() *Conflict {
+	return r.JSON409
+}
+
+// GetBody returns the raw response body bytes
+func (r CreateWebhookResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateWebhookResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateWebhookResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r CreateWebhookResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteWebhookResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebhookDeleteResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DeleteWebhookResponse) GetJSON200() *WebhookDeleteResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteWebhookResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteWebhookResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteWebhookResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteWebhookResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteWebhookResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteWebhookResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetWebhookResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebhookResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetWebhookResponse) GetJSON200() *WebhookResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetWebhookResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetWebhookResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r GetWebhookResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetWebhookResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetWebhookResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetWebhookResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type UpdateWebhookResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebhookResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r UpdateWebhookResponse) GetJSON200() *WebhookResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r UpdateWebhookResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r UpdateWebhookResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r UpdateWebhookResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r UpdateWebhookResponse) GetJSON409() *Conflict {
+	return r.JSON409
+}
+
+// GetBody returns the raw response body bytes
+func (r UpdateWebhookResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateWebhookResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateWebhookResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UpdateWebhookResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type RotateWebhookSigningSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *WebhookSecretResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r RotateWebhookSigningSecretResponse) GetJSON200() *WebhookSecretResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r RotateWebhookSigningSecretResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r RotateWebhookSigningSecretResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r RotateWebhookSigningSecretResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r RotateWebhookSigningSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RotateWebhookSigningSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r RotateWebhookSigningSecretResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // SandboxesWithResponse List sandboxes
 //
 // Your sandboxes. In an organization's scope (the active wallet, `org`, or `X-Boat-Org`) the list also holds every sandbox that organization pays for, whoever created it; `createdBy` and `access` say whose it is and what you may do with it.
@@ -6638,6 +7605,130 @@ func (c *ClientWithResponses) SshKeyWithResponse(ctx context.Context, sandboxId 
 		return nil, err
 	}
 	return ParseSshKeyResponse2(rsp)
+}
+
+// ListWebhooksWithResponse List webhooks
+//
+// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /webhooks (the `ListWebhooks` operationId).
+func (c *ClientWithResponses) ListWebhooksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListWebhooksResponse, error) {
+	rsp, err := c.ListWebhooks(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListWebhooksResponse(rsp)
+}
+
+// CreateWebhookWithBodyWithResponse Create webhook
+//
+// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+//
+// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+func (c *ClientWithResponses) CreateWebhookWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWebhookResponse, error) {
+	rsp, err := c.CreateWebhookWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWebhookResponse(rsp)
+}
+
+// CreateWebhookWithResponse Create webhook
+//
+// Registers an account-wide endpoint for sandbox lifecycle events. The endpoint must use HTTPS on port 443 and resolve only to public addresses. Redirects are not followed during delivery.
+//
+// The signing secret is returned only in this response. An account can register at most 10 unique endpoint URLs.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /webhooks (the `CreateWebhook` operationId).
+func (c *ClientWithResponses) CreateWebhookWithResponse(ctx context.Context, body CreateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWebhookResponse, error) {
+	rsp, err := c.CreateWebhook(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWebhookResponse(rsp)
+}
+
+// DeleteWebhookWithResponse Delete webhook
+//
+// Deletes the endpoint and its queued deliveries. An attempt already in flight can still arrive.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /webhooks/{webhookId} (the `DeleteWebhook` operationId).
+func (c *ClientWithResponses) DeleteWebhookWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*DeleteWebhookResponse, error) {
+	rsp, err := c.DeleteWebhook(ctx, webhookId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteWebhookResponse(rsp)
+}
+
+// GetWebhookWithResponse Get webhook
+//
+// Returns webhook metadata without the signing secret.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /webhooks/{webhookId} (the `GetWebhook` operationId).
+func (c *ClientWithResponses) GetWebhookWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*GetWebhookResponse, error) {
+	rsp, err := c.GetWebhook(ctx, webhookId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetWebhookResponse(rsp)
+}
+
+// UpdateWebhookWithBodyWithResponse Update webhook
+//
+// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+func (c *ClientWithResponses) UpdateWebhookWithBodyWithResponse(ctx context.Context, webhookId string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateWebhookResponse, error) {
+	rsp, err := c.UpdateWebhookWithBody(ctx, webhookId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateWebhookResponse(rsp)
+}
+
+// UpdateWebhookWithResponse Update webhook
+//
+// Updates the name, endpoint URL, or subscribed events without changing the signing secret.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PATCH /webhooks/{webhookId} (the `UpdateWebhook` operationId).
+func (c *ClientWithResponses) UpdateWebhookWithResponse(ctx context.Context, webhookId string, body UpdateWebhookJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateWebhookResponse, error) {
+	rsp, err := c.UpdateWebhook(ctx, webhookId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateWebhookResponse(rsp)
+}
+
+// RotateWebhookSigningSecretWithResponse Rotate webhook signing secret
+//
+// Replaces the endpoint's signing secret. The new secret is returned only in this response; briefly accept the old secret for attempts already in flight.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /webhooks/{webhookId}/rotate (the `RotateWebhookSigningSecret` operationId).
+func (c *ClientWithResponses) RotateWebhookSigningSecretWithResponse(ctx context.Context, webhookId string, reqEditors ...RequestEditorFn) (*RotateWebhookSigningSecretResponse, error) {
+	rsp, err := c.RotateWebhookSigningSecret(ctx, webhookId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRotateWebhookSigningSecretResponse(rsp)
 }
 
 // ParseSandboxesResponse parses an HTTP response from a SandboxesWithResponse call
@@ -7507,6 +8598,260 @@ func ParseSshKeyResponse2(rsp *http.Response) (*SshKeyResponse2, error) {
 			return nil, err
 		}
 		response.JSON402 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListWebhooksResponse parses an HTTP response from a ListWebhooksWithResponse call
+func ParseListWebhooksResponse(rsp *http.Response) (*ListWebhooksResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListWebhooksResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateWebhookResponse parses an HTTP response from a CreateWebhookWithResponse call
+func ParseCreateWebhookResponse(rsp *http.Response) (*CreateWebhookResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateWebhookResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest WebhookSecretResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteWebhookResponse parses an HTTP response from a DeleteWebhookWithResponse call
+func ParseDeleteWebhookResponse(rsp *http.Response) (*DeleteWebhookResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteWebhookResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookDeleteResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetWebhookResponse parses an HTTP response from a GetWebhookWithResponse call
+func ParseGetWebhookResponse(rsp *http.Response) (*GetWebhookResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetWebhookResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateWebhookResponse parses an HTTP response from a UpdateWebhookWithResponse call
+func ParseUpdateWebhookResponse(rsp *http.Response) (*UpdateWebhookResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateWebhookResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRotateWebhookSigningSecretResponse parses an HTTP response from a RotateWebhookSigningSecretWithResponse call
+func ParseRotateWebhookSigningSecretResponse(rsp *http.Response) (*RotateWebhookSigningSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RotateWebhookSigningSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WebhookSecretResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound
