@@ -859,3 +859,23 @@ func TestSecretWriteCommitsBeforeTheWait(t *testing.T) {
 		t.Fatal("the submit kept waiting after the apply")
 	}
 }
+
+// a key id not in secrets.box_public_keys -> KEY_UNKNOWN, on both put paths and a link
+func TestSealedWithUnknownKeyRefused(t *testing.T) {
+	e := newEnv(t, options{secrets: true})
+	h, p := e.readyPlacement(t)
+	stale := &routerv1.SealedValue{KeyId: "k0", Box: []byte("sealed to a rotated key")}
+	_, err := e.client.PutSecret(t.Context(), connect.NewRequest(&routerv1.PutSecretRequest{
+		Handle: h, Spec: hf(), Value: stale,
+	}))
+	mustCode(t, err, connect.CodeInvalidArgument, "KEY_UNKNOWN")
+	_, err = e.secretsRoute(t).PutBridgeSecret(t.Context(), connect.NewRequest(
+		&routerv1.PutBridgeSecretRequest{PutGrant: e.grant(t, h), Spec: hf(), Value: stale}))
+	mustCode(t, err, connect.CodeInvalidArgument, "KEY_UNKNOWN")
+	_, err = e.secretsRoute(t).SubmitSecretLink(t.Context(), connect.NewRequest(
+		&routerv1.SubmitSecretLinkRequest{
+			LinkToken: e.mustLink(t, h, "req-1"), Spec: hf(), Value: stale, SubmissionId: "s",
+		}))
+	mustCode(t, err, connect.CodeInvalidArgument, "KEY_UNKNOWN")
+	eq(t, e.applyJobs(t, p.GetPlacementId()), 0)
+}
