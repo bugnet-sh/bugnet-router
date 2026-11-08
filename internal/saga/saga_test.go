@@ -2549,3 +2549,25 @@ func TestFailedPlacementKeepsNoSecrets(t *testing.T) {
 	s, l, tok := e.secretsHeld(t, p.ID)
 	eq(t, [3]any{s, l, tok}, [3]any{0, 0, false})
 }
+
+func TestListExtensionsHidesAStartPackageItsExtensionRepeats(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "same-rate.json")
+	same := `{"packages": [
+	{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 50000},
+	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 50000, "extension_of": "small-10m"}
+]}`
+	if err := os.WriteFile(path, []byte(same), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnvWith(t, func(d *saga.Deps) { d.Catalog = cat }, newCapped(t, t.TempDir(), time.Hour))
+	_, h := e.placeReady(t, "order-1")
+	if got, want := e.listed(t, h), []string{"small-10m-more ok"}; !slices.Equal(got, want) {
+		t.Fatalf("listed %q, want %q", got, want)
+	}
+}
