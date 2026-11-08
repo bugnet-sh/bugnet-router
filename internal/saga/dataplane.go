@@ -136,20 +136,12 @@ func (b BootSettings) setupSpecFor(
 	pr := profiles[name]
 	spec := setupSpec{
 		V: 1, GateKey: gateKey, GateListen: ":" + strconv.Itoa(b.gatePort()),
-		PreviewDomain: b.PreviewDomain, Sample: sample,
+		PreviewDomain: b.PreviewDomain, Sample: sample, DenyPorts: b.denyPorts(name, ref),
 	}
-	deny := []int{b.gatePort(), 22, 2022}
 	// A local sandbox shares the host, so its gate listens on its own loopback port
 	if port := metaPort(ref, "gate_port"); port > 0 {
 		spec.GateListen = "127.0.0.1:" + strconv.Itoa(port)
-		deny = append(deny, port)
 	}
-	if port := metaPort(ref, "sshd_port"); port > 0 {
-		deny = append(deny, port)
-	}
-	deny = append(deny, pr.denyPorts...)
-	slices.Sort(deny)
-	spec.DenyPorts = slices.Compact(deny)
 	if pr.ca && len(b.CAPEM) > 0 {
 		spec.CAVersion = b.CAVersion
 		if pr.caBaked {
@@ -160,6 +152,19 @@ func (b BootSettings) setupSpecFor(
 		}
 	}
 	return spec
+}
+
+// denyPorts are the ports the gate of a sandbox of provider name refuses, sorted
+func (b BootSettings) denyPorts(name string, ref provider.Ref) []int {
+	deny := []int{b.gatePort(), 22, 2022}
+	for _, key := range []string{"gate_port", "sshd_port"} {
+		if port := metaPort(ref, key); port > 0 {
+			deny = append(deny, port)
+		}
+	}
+	deny = append(deny, profiles[name].denyPorts...)
+	slices.Sort(deny)
+	return slices.Compact(deny)
 }
 
 // hardenSpecFor builds the harden spec of provider name, false when it has no hardening rule
@@ -238,7 +243,14 @@ func rootCommand(
 	if err := prov.WriteFile(ctx, ref, path, data, 0o600); err != nil {
 		return runnerAnswer{}, fmt.Errorf("write the %s spec: %w", sub, err)
 	}
-	argv := []string{runnerPath, sub, "--spec", path}
+	return runRoot(ctx, prov, ref, sub, "--spec", path)
+}
+
+// runRoot runs the runner's subcommand sub as root and reads its answer
+func runRoot(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, sub string, args ...string,
+) (runnerAnswer, error) {
+	argv := append([]string{runnerPath, sub}, args...)
 	if user := prov.Capabilities().ExecUser; user != "" && user != "root" {
 		argv = append([]string{"sudo", "-n"}, argv...)
 	}

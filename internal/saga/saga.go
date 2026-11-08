@@ -24,6 +24,9 @@
 // fails it over only when the order needs previews or SSH, and is logged otherwise. The ready
 // transaction records when the gate answered and the CA version the sandbox trusts. A restricted
 // package's create carries its egress allowlist, and only a provider with egress control takes it.
+// OpenGate runs the gate steps again for a ready placement whose gate never answered, one replica
+// at a time under a Postgres advisory lock, and RepairGate runs setup --repair and PrepareGate.
+// Both store the route's meta, and only OpenGate records when the gate answered.
 package saga
 
 import (
@@ -158,6 +161,7 @@ type Saga struct {
 	d        Deps
 	wg       sync.WaitGroup
 	destroys singleflight.Group // keyed by placement, so racing terminations share one destroy
+	gates    singleflight.Group // keyed by placement, so racing gate openings share one run
 	meter    *budget.Meter
 	keyID    string // the newest data-plane root's id, empty without keys
 }
