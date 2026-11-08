@@ -56,7 +56,7 @@ done
 # The tunnel user
 equal "tunnel has no shell" "$(getent passwd tunnel | cut -d: -f7)" /usr/sbin/nologin
 read -r -a pub <"$bundle/tunnel.pub"
-ports=(18443 18445 19443 12223)
+ports=(18443 18445 18448 19443 12223)
 opts="restrict,port-forwarding"
 for p in "${ports[@]}"; do
 	opts+=",permitlisten=\"127.0.0.1:$p\""
@@ -82,21 +82,22 @@ equal "the tunnel block leaves other users alone" \
 
 # The tunnel's pid is timeout's own, which hands its signal on to ssh
 timeout 60 ssh "${ssh_opts[@]}" -N -R 127.0.0.1:18443:127.0.0.1:8443 \
-	-R 127.0.0.1:18445:127.0.0.1:8445 -R 127.0.0.1:19443:127.0.0.1:9443 \
+	-R 127.0.0.1:18445:127.0.0.1:8445 -R 127.0.0.1:18448:127.0.0.1:8448 \
+	-R 127.0.0.1:19443:127.0.0.1:9443 \
 	-R 127.0.0.1:12223:127.0.0.1:2223 tunnel@127.0.0.1 </dev/null &
 tunnel_pid=$!
 up=0
 for _ in $(seq 50); do
-	if listening 18443 && listening 18445 && listening 19443 && listening 12223; then
+	if listening 18443 && listening 18445 && listening 18448 && listening 19443 && listening 12223; then
 		up=1
 		break
 	fi
 	sleep 0.2
 done
 if ((up)); then
-	pass "tunnel listens on the four ports"
+	pass "tunnel listens on the five ports"
 else
-	fail "tunnel listens on the four ports"
+	fail "tunnel listens on the five ports"
 fi
 kill "$tunnel_pid" 2>/dev/null || true
 wait "$tunnel_pid" 2>/dev/null || true

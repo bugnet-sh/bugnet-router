@@ -1,12 +1,11 @@
 // Package live runs the data-plane and control-plane live rows against a stack on this Mac.
 //
 // scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker,
-// bugnet-edge, its secrets role and bugnet-egress, each built from the workspace, on a fresh
-// database and Valkey prefix with fresh secrets from bugnet-dev keys, and one provider. The local
-// mode
-// listens on free loopback ports with a fresh self-signed pair for the dev names, and tests
-// reach the edge with curl --resolve through a loopback front that adds the PROXY v2 header
-// HAProxy adds on the VPS.
+// bugnet-edge, its secrets and sessions roles and bugnet-egress, each built from the workspace,
+// on a fresh database and Valkey prefix with fresh secrets from bugnet-dev keys, and one
+// provider. The local mode listens on free loopback ports with a fresh self-signed pair for the
+// dev names, and tests reach the edge with curl --resolve through a loopback front that adds the
+// PROXY v2 header HAProxy adds on the VPS.
 // The vps mode listens on the fixed ports the VPS's tunnel lands on (config/dev-front.toml), gets
 // the exact names from Let's Encrypt over the tunnel with its caches kept in
 // ~/.local/state/bugnet-dev/acme, serves the wildcard make dev-certs copied, and checks that
@@ -87,15 +86,17 @@ type front struct {
 		TransferHost  string `toml:"transfer_host"`
 		HooksHost     string `toml:"hooks_host"`
 		SecretsHost   string `toml:"secrets_host"`
+		SessionsHost  string `toml:"sessions_host"`
 		EgressHost    string `toml:"egress_host"`
 		SSHHost       string `toml:"ssh_host"`
 		SSHPort       int    `toml:"ssh_port"`
 	} `toml:"names"`
 	Ports struct {
-		Edge    int `toml:"edge"`
-		Secrets int `toml:"secrets"`
-		Egress  int `toml:"egress"`
-		SSH     int `toml:"ssh"`
+		Edge     int `toml:"edge"`
+		Secrets  int `toml:"secrets"`
+		Sessions int `toml:"sessions"`
+		Egress   int `toml:"egress"`
+		SSH      int `toml:"ssh"`
 	} `toml:"ports"`
 	VPS struct {
 		EgressIPs []string `toml:"egress_ips"`
@@ -156,7 +157,8 @@ func (f front) fixedPorts() []struct {
 		name string
 		port int
 	}{
-		{"edge", f.Ports.Edge}, {"secrets route", f.Ports.Secrets}, {"egress", f.Ports.Egress},
+		{"edge", f.Ports.Edge}, {"secrets route", f.Ports.Secrets},
+		{"sessions route", f.Ports.Sessions}, {"egress", f.Ports.Egress},
 		{"SSH gateway", f.Ports.SSH},
 	}
 }
@@ -291,12 +293,13 @@ type stack struct {
 	settings string   // router settings file
 	apiURL   string
 	edgeAddr string // where TLS to the edge connects, 127.0.0.1 and a port
-	// secretsAddr is where TLS to the secrets role connects
-	secretsAddr string
-	tlsDir      string // the local mode's TLS pair, made once
-	egress      egressFiles
-	procs       []*proc
-	fronts      []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
+	// secretsAddr and sessionsAddr are where TLS to the secrets and sessions roles connect
+	secretsAddr  string
+	sessionsAddr string
+	tlsDir       string // the local mode's TLS pair, made once
+	egress       egressFiles
+	procs        []*proc
+	fronts       []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
 	// sshAddr is where SSH clients connect, and sshKnown their known_hosts file
 	sshAddr  string
 	sshKnown string
@@ -369,7 +372,15 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	s.start(t, "bugnet-edge", "-config", s.secretsSettings(t, secrets, secretsMetrics),
 		"--role", "secrets")
 	s.waitReady(t, "http://"+secretsMetrics+"/readyz")
-	s.edgeAddr, s.secretsAddr = edge, secrets
+	sessions, sessionsMetrics := net.JoinHostPort("127.0.0.1", strconv.Itoa(f.Ports.Sessions)),
+		freeAddr(t)
+	if mode == "local" {
+		sessions = freeAddr(t)
+	}
+	s.start(t, "bugnet-edge", "-config", s.sessionsSettings(t, sessions, sessionsMetrics),
+		"--role", "sessions")
+	s.waitReady(t, "http://"+sessionsMetrics+"/readyz")
+	s.edgeAddr, s.secretsAddr, s.sessionsAddr = edge, secrets, sessions
 	egressMetrics := freeAddr(t)
 	s.startWith(t, append(slices.Clone(s.env), "CREDENTIALS_DIRECTORY="+s.egress.credDir),
 		"bugnet-egress", "serve", "-config", s.egressSettings(t, egressMetrics))
@@ -377,6 +388,7 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	if mode == "local" {
 		s.edgeAddr = s.proxyFront(t, edge)
 		s.secretsAddr = s.proxyFront(t, secrets)
+		s.sessionsAddr = s.proxyFront(t, sessions)
 	}
 	s.startSSH(t)
 	if mode == "vps" {
@@ -438,6 +450,7 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 		"secrets_host": n.SecretsHost, "ssh_host": n.SSHHost, "egress_host": n.EgressHost,
 		"ssh_port": n.SSHPort,
 	}
+	table(m, "sessions")["base_url"] = "https://" + n.SessionsHost
 	egress := []string{"127.0.0.1"}
 	if s.mode == "vps" {
 		egress = s.f.VPS.EgressIPs
@@ -446,7 +459,9 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	secrets["egress_ips"] = egress
 	secrets["ca_cert_file"], secrets["ca_version"] = s.egress.certFile, 1
 	secrets["box_public_keys"] = []map[string]any{{"id": "k1", "key": s.egress.boxPub}}
-	secrets["providers"] = []string{s.provider}
+	if s.provider != "local" {
+		secrets["providers"] = []string{s.provider}
+	}
 	table(m, "fetch")["egress_addr"] = s.egress.listen
 	if s.mode == "local" {
 		// The local proxy's outer certificate is self-signed, so the fetcher trusts that one
@@ -536,6 +551,47 @@ page_dir = %q
 	return s.write(t, "secrets.toml", []byte(content))
 }
 
+// sessionsSettings is the sessions role's file, serving the built session page on the dev front's
+// sessions host
+func (s *stack) sessionsSettings(t *testing.T, listen, metrics string) string {
+	t.Helper()
+	acme := fmt.Sprintf("acme_enabled = true\nacme_directory = %q\nacme_email = %q\n"+
+		"acme_dir = %q\n", s.f.ACME.Directory, s.f.ACME.Email,
+		filepath.Join(s.f.ACME.StateDir, "sessions"))
+	if s.mode == "local" {
+		acme = fmt.Sprintf("acme_enabled = false\nstatic_dir = %q\n", s.selfSigned(t))
+	} else if err := os.MkdirAll(filepath.Join(s.f.ACME.StateDir, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf(`router_url = %q
+tls_listen_addr = %q
+metrics_listen_addr = %q
+proxy_protocol_from = ["127.0.0.1/32"]
+host = %q
+page_dir = %q
+%s`, s.apiURL, listen, metrics, s.f.Names.SessionsHost, s.sessionPage(t), acme)
+	return s.write(t, "sessions.toml", []byte(content))
+}
+
+// sessionPage is the directory of a built session page. BUGNET_SESSION_PAGE_DIR names it, else
+// the bugnet-website checkout beside the repositories holds one in packages/session-page/dist.
+func (s *stack) sessionPage(t *testing.T) string {
+	t.Helper()
+	dirs := []string{filepath.Join(s.root, "..", "bugnet-website", "packages", "session-page",
+		"dist")}
+	if dir := os.Getenv("BUGNET_SESSION_PAGE_DIR"); dir != "" {
+		dirs = []string{dir}
+	}
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, "headers.txt")); err == nil {
+			return dir
+		}
+	}
+	t.Fatalf("live: no built session page, build bugnet-website's packages/session-page " +
+		"or set BUGNET_SESSION_PAGE_DIR to its dist directory")
+	return ""
+}
+
 // sshHostKey makes the gateway's host key in a credentials directory, as the unit gets it
 func (s *stack) sshHostKey(t *testing.T) {
 	t.Helper()
@@ -606,8 +662,8 @@ func (s *stack) selfSigned(t *testing.T) string {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: n.TransferHost},
-		DNSNames: []string{n.TransferHost, n.HooksHost, n.SecretsHost, n.PreviewDomain,
-			"*." + n.PreviewDomain, n.EgressHost},
+		DNSNames: []string{n.TransferHost, n.HooksHost, n.SecretsHost, n.SessionsHost,
+			n.PreviewDomain, "*." + n.PreviewDomain, n.EgressHost},
 		NotBefore:   time.Now().Add(-time.Hour),
 		NotAfter:    time.Now().Add(24 * time.Hour),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
@@ -1074,6 +1130,21 @@ func TestStackStartsOnTheLocalProvider(t *testing.T) {
 	}
 	_ = secrets.Close()
 
+	sessions, err := tls.Dial("tcp", s.sessionsAddr, &tls.Config{
+		RootCAs: roots, ServerName: f.Names.SessionsHost, NextProtos: []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatalf("the sessions route's TLS for %s: %v", f.Names.SessionsHost, err)
+	}
+	_ = sessions.Close()
+	robots, err := exec.Command("curl", "-sS", "--connect-to",
+		f.Names.SessionsHost+":443:"+s.sessionsAddr, "--cacert",
+		filepath.Join(s.dir, "tls", "fullchain.pem"),
+		"https://"+f.Names.SessionsHost+"/robots.txt").Output()
+	if err != nil || !strings.Contains(string(robots), "Disallow: /") {
+		t.Fatalf("the sessions route's robots.txt: %v %q", err, robots)
+	}
+
 	// The URL carries the file through the edge and back, byte for byte
 	got := s.curlRetry(t, "-fsS", "-T", file, minted["url"])
 	if !strings.Contains(got, `"size":3`) {
@@ -1116,8 +1187,8 @@ func TestDevFrontSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, [4]int{f.Ports.Edge, f.Ports.Secrets, f.Ports.Egress, f.Ports.SSH},
-		[4]int{8443, 8445, 9443, 2223})
+	eq(t, [5]int{f.Ports.Edge, f.Ports.Secrets, f.Ports.Sessions, f.Ports.Egress, f.Ports.SSH},
+		[5]int{8443, 8445, 8448, 9443, 2223})
 	eq(t, f.Names.TransferHost, "transfer.dev.bugnet.sh")
 	eq(t, f.Names.SSHPort, 2200)
 	eq(t, f.Edge.AbuseContact, "support@bugnet.org")

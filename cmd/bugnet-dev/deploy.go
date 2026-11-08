@@ -60,7 +60,8 @@ var defaultDNSEnv = []string{"CF_DNS_API_TOKEN"}
 
 // sniBackends are the backends a TLS name may go to, each defined in haproxy.cfg.tmpl
 var sniBackends = []string{
-	"edge", "secrets", "egress", "mcp", "website", "edge_dev", "secrets_dev", "egress_dev",
+	"edge", "secrets", "sessions", "egress", "mcp", "website", "edge_dev", "secrets_dev",
+	"sessions_dev", "egress_dev",
 }
 
 // frontPorts are the ports HAProxy and the edge take on the VPS, so admin SSH cannot use them

@@ -322,7 +322,7 @@ func TestSNIBackendsAreInTheTemplate(t *testing.T) {
 		dev = append(dev, m[1])
 	}
 	eq(t, strings.Join(dev, " "),
-		"127.0.0.1:18443 127.0.0.1:18445 127.0.0.1:19443 127.0.0.1:12223")
+		"127.0.0.1:18443 127.0.0.1:18445 127.0.0.1:18448 127.0.0.1:19443 127.0.0.1:12223")
 }
 
 func TestCommittedSiteLoads(t *testing.T) {
