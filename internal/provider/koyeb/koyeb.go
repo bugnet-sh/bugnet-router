@@ -12,7 +12,8 @@
 // is called through a small client that reads only the fields it needs. The executor is reached
 // over HTTP/1.1 only, the protocol that can wake a sleeping service. File streams buffer each
 // upload part in memory, so a part Koyeb's front cuts is sent again, and reissue a download
-// that ends early from where it stopped.
+// that ends early from where it stopped. PrepareGate binds the executor's TCP proxy to the gate,
+// which the edges reach at the public URL's root with the executor's own path blocked.
 package koyeb
 
 import (

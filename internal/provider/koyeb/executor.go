@@ -112,7 +112,7 @@ func (t target) request(
 	}
 	req.Header.Set("Authorization", "Bearer "+t.secret)
 	if t.routing != "" {
-		req.Header.Set("X-Routing-Key", t.routing)
+		req.Header.Set(routingHeader, t.routing)
 	}
 	return req, nil
 }

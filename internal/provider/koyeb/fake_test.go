@@ -2,6 +2,7 @@ package koyeb
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"crypto/tls"
@@ -66,6 +67,8 @@ type fakeDeployment struct {
 	// startPolls is how many reads still see the deployment starting
 	startPolls int
 	routingKey string
+	// bound is the port the executor's TCP proxy on 3031 forwards to, empty when none
+	bound string
 }
 
 type logEntry struct {
@@ -197,6 +200,9 @@ type fakeKoyeb struct {
 	downloads      []http.Header
 	sessions       map[string]*fakeUpload
 	nextUpload     int
+	// refuseBinds answers every bind_port with a 500
+	refuseBinds bool
+	binds       []string
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -856,6 +862,10 @@ func (f *fakeKoyeb) edge(w http.ResponseWriter, r *http.Request) {
 		f.makeDir(w, r)
 	case "POST /files/uploads":
 		f.openUpload(w, r)
+	case "POST /bind_port":
+		f.bindPort(w, r, appID)
+	case "POST /unbind_port":
+		f.unbindPort(w, appID)
 	default:
 		f.session(w, r, route)
 	}
@@ -876,6 +886,74 @@ func (f *fakeKoyeb) session(w http.ResponseWriter, r *http.Request, route string
 		f.t.Errorf("adapter called the executor route %s %s", r.Method, route)
 		http.Error(w, "not in the fake", http.StatusNotFound)
 	}
+}
+
+// bindPort sets the one port the TCP proxy forwards to, as the executor's handler does
+func (f *fakeKoyeb) bindPort(w http.ResponseWriter, r *http.Request, appID string) {
+	raw, _ := io.ReadAll(r.Body)
+	var body struct {
+		Port string `json:"port"`
+	}
+	bad := json.Unmarshal(raw, &body) != nil
+	n, err := strconv.Atoi(body.Port)
+	bad = bad || err != nil || n < 1 || n > 65535
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.binds = append(f.binds, string(bytes.TrimSpace(raw)))
+	_, d := f.sandbox(appID)
+	switch {
+	case f.refuseBinds:
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "bind failed"})
+	case bad:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid port"})
+	case d.bound != "":
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "Port already bound"})
+	default:
+		d.bound = body.Port
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "port": body.Port})
+	}
+}
+
+// unbindPort clears the bound port
+func (f *fakeKoyeb) unbindPort(w http.ResponseWriter, appID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, d := f.sandbox(appID)
+	d.bound = ""
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// bind sets the bound port directly, as an earlier bind would have
+func (f *fakeKoyeb) bind(appID, port string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, d := f.sandbox(appID)
+	d.bound = port
+}
+
+func (f *fakeKoyeb) boundPort(appID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, d := f.sandbox(appID)
+	return d.bound
+}
+
+// bindBodies lists the body of every bind_port call, oldest first
+func (f *fakeKoyeb) bindBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.binds)
+}
+
+// totalCalls counts every control plane and executor call the fake served
+func (f *fakeKoyeb) totalCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.routes)
+	for _, c := range f.calls {
+		n += c
+	}
+	return n
 }
 
 func (f *fakeKoyeb) routesCalled() []string {
