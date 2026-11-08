@@ -30,6 +30,10 @@ import (
 	"time"
 )
 
+// fakeHostKey is the host key the fake's sshd reports
+const fakeHostKey = "ssh-ed25519 " +
+	"AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
 const (
 	fakeKey     = "boat_fake_key"
 	fakeFileCap = 5 << 20
@@ -208,7 +212,10 @@ type fakeBoat struct {
 	hosts  map[string]string
 	hosted []string
 	// hostURL replaces every hosted URL when set, an empty one leaving the url field out
-	hostURL  *string
+	hostURL *string
+	// sshKeys lists each key line sent to /sshkey, and sshReply replaces its reply when set
+	sshKeys  []string
+	sshReply map[string]any
 	requests atomic.Int64
 	cleanup  []string
 	cmds     []*exec.Cmd
@@ -247,6 +254,7 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/files/download-url":   f.downloadURL,
 		"POST " + sb + "/files/move":           f.move,
 		"POST " + sb + "/host":                 f.host,
+		"POST " + sb + "/sshkey":               f.sshKey,
 		"DELETE " + sb + "/files":              f.deleteFile,
 		"GET /api/v1/limits":                   f.readLimits,
 	} {
@@ -471,6 +479,42 @@ func (f *fakeBoat) host(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeBoat) sshKey(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.Key == "" {
+		f.fail(w, http.StatusBadRequest, "invalid_key", "key is required", nil, nil)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sshKeys = append(f.sshKeys, body.Key)
+	if f.live(w, r) == nil {
+		return
+	}
+	reply := map[string]any{
+		"ok": true, "type": "ssh_key.configured", "success": true, "machineIp": "203.0.113.10",
+		"sshUser": "user", "hostKey": fakeHostKey,
+	}
+	if f.sshReply != nil {
+		reply = f.sshReply
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func (f *fakeBoat) setSSHReply(reply map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sshReply = reply
+}
+
+func (f *fakeBoat) sentSSHKeys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.sshKeys)
 }
 
 func (f *fakeBoat) hostToken(id string, port int) string {

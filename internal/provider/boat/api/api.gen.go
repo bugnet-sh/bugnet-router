@@ -1866,6 +1866,38 @@ type SandboxListResponse struct {
 // SandboxListResponseType defines model for SandboxListResponse.Type.
 type SandboxListResponseType string
 
+// SshKeyRequest defines model for SshKeyRequest.
+type SshKeyRequest struct {
+	// Key Public SSH key in OpenSSH format. Private keys are rejected.
+	//
+	// Examples: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@host
+	Key string `json:"key"`
+}
+
+// SshKeyResponse defines model for SshKeyResponse.
+type SshKeyResponse struct {
+	// HostKey The sandbox SSH server's public host key. Pin it in `known_hosts`.
+	//
+	// Examples: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+	HostKey   *string `json:"hostKey,omitempty"`
+	MachineIp *string `json:"machineIp,omitempty"`
+
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// SshEndpoint Public IPv4 `host:port` that forwards to the sandbox SSH server, set only when the machine has no public IPv4 of its own. Connect with `ssh -p <port> user@<host>`.
+	//
+	// Examples: 203.0.113.10:22001
+	SshEndpoint *string `json:"sshEndpoint,omitempty"`
+
+	// SshUser Examples: user
+	SshUser *string `json:"sshUser,omitempty"`
+	Success *bool   `json:"success,omitempty"`
+
+	// Type Stable success envelope discriminator added by v1.
+	Type string `json:"type"`
+}
+
 // StopOperation defines model for StopOperation.
 type StopOperation struct {
 	// EndedAt When the stop completed or was superseded.
@@ -2098,6 +2130,9 @@ type CreateUploadUrlJSONRequestBody = FileUrlRequest
 
 // HostPortJSONRequestBody defines body for HostPort for application/json ContentType.
 type HostPortJSONRequestBody = HostPortRequest
+
+// SshKeyJSONRequestBody defines body for SshKey for application/json ContentType.
+type SshKeyJSONRequestBody = SshKeyRequest
 
 // Getter for additional properties for CreateSandboxResponse_HostedPorts_Item. Returns the specified
 // element and whether it was found
@@ -2798,6 +2833,40 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
 	HostPort(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SshKeyWithBody Configure sandbox SSH key
+	//
+	// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+	//
+	// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+	//
+	// ```bash
+	// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+	// ```
+	//
+	// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+	SshKeyWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SshKey Configure sandbox SSH key
+	//
+	// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+	//
+	// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+	//
+	// ```bash
+	// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+	// ```
+	//
+	// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+	SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // Sandboxes List sandboxes
@@ -3319,6 +3388,60 @@ func (c *Client) HostPortWithBody(ctx context.Context, sandboxId SandboxId, cont
 // Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
 func (c *Client) HostPort(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewHostPortRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SshKeyWithBody Configure sandbox SSH key
+//
+// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+//
+// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+//
+// ```bash
+// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+// ```
+//
+// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+func (c *Client) SshKeyWithBody(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSshKeyRequestWithBody(c.Server, sandboxId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SshKey Configure sandbox SSH key
+//
+// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+//
+// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+//
+// ```bash
+// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+// ```
+//
+// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+func (c *Client) SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSshKeyRequest(c.Server, sandboxId, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4480,6 +4603,53 @@ func NewHostPortRequestWithBody(server string, sandboxId SandboxId, contentType 
 	return req, nil
 }
 
+// NewSshKeyRequest calls the generic SshKey builder with application/json body
+func NewSshKeyRequest(server string, sandboxId SandboxId, body SshKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSshKeyRequestWithBody(server, sandboxId, "application/json", bodyReader)
+}
+
+// NewSshKeyRequestWithBody constructs an http.Request for the SshKey method, with any body, and a specified content type
+func NewSshKeyRequestWithBody(server string, sandboxId SandboxId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/sshkey", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -4780,6 +4950,40 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/host (the `HostPort` operationId).
 	HostPortWithResponse(ctx context.Context, sandboxId SandboxId, body HostPortJSONRequestBody, reqEditors ...RequestEditorFn) (*HostPortResponse2, error)
+
+	// SshKeyWithBodyWithResponse Configure sandbox SSH key
+	//
+	// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+	//
+	// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+	//
+	// ```bash
+	// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+	// ```
+	//
+	// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+	SshKeyWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error)
+
+	// SshKeyWithResponse Configure sandbox SSH key
+	//
+	// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+	//
+	// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+	//
+	// ```bash
+	// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+	// ```
+	//
+	// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+	SshKeyWithResponse(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error)
 }
 
 type SandboxesResponse struct {
@@ -5890,6 +6094,75 @@ func (r HostPortResponse2) ContentType() string {
 	return ""
 }
 
+type SshKeyResponse2 struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SshKeyResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON402 the response for an HTTP 402 `application/json` response
+	JSON402 *PaymentRequired
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r SshKeyResponse2) GetJSON200() *SshKeyResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r SshKeyResponse2) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r SshKeyResponse2) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON402 returns the response for an HTTP 402 `application/json` response
+func (r SshKeyResponse2) GetJSON402() *PaymentRequired {
+	return r.JSON402
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r SshKeyResponse2) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r SshKeyResponse2) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r SshKeyResponse2) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SshKeyResponse2) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SshKeyResponse2) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 // SandboxesWithResponse List sandboxes
 //
 // Your sandboxes. In an organization's scope (the active wallet, `org`, or `X-Boat-Org`) the list also holds every sandbox that organization pays for, whoever created it; `createdBy` and `access` say whose it is and what you may do with it.
@@ -6319,6 +6592,52 @@ func (c *ClientWithResponses) HostPortWithResponse(ctx context.Context, sandboxI
 		return nil, err
 	}
 	return ParseHostPortResponse2(rsp)
+}
+
+// SshKeyWithBodyWithResponse Configure sandbox SSH key
+//
+// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+//
+// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+//
+// ```bash
+// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+// ```
+//
+// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+func (c *ClientWithResponses) SshKeyWithBodyWithResponse(ctx context.Context, sandboxId SandboxId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error) {
+	rsp, err := c.SshKeyWithBody(ctx, sandboxId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSshKeyResponse2(rsp)
+}
+
+// SshKeyWithResponse Configure sandbox SSH key
+//
+// Adds an OpenSSH public key to the running sandbox so the caller can SSH as user `user`. The response carries `machineIp`, which is the host to connect to on port 22.
+//
+// This is also how you reach your own machine from inside a sandbox without the CLI: authorize the key, then open a reverse tunnel with stock OpenSSH, and a port on your machine answers at `127.0.0.1:<port>` inside the sandbox for as long as the ssh process runs.
+//
+// ```bash
+// ssh -o ExitOnForwardFailure=yes -i ~/.ssh/id_ed25519 -N -R 7777:127.0.0.1:7777 user@<machineIp>
+// ```
+//
+// `boat forward <id> --reverse --local 7777` is the same tunnel with the key handling and redial done for you.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
+func (c *ClientWithResponses) SshKeyWithResponse(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error) {
+	rsp, err := c.SshKey(ctx, sandboxId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSshKeyResponse2(rsp)
 }
 
 // ParseSandboxesResponse parses an HTTP response from a SandboxesWithResponse call
@@ -7109,6 +7428,60 @@ func ParseHostPortResponse2(rsp *http.Response) (*HostPortResponse2, error) {
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest HostPortResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 402:
+		var dest PaymentRequired
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON402 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSshKeyResponse2 parses an HTTP response from a SshKeyWithResponse call
+func ParseSshKeyResponse2(rsp *http.Response) (*SshKeyResponse2, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SshKeyResponse2{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SshKeyResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
