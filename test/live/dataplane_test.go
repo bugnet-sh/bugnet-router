@@ -878,7 +878,7 @@ func (g gated) timeHealth(ctx context.Context, n int) (time.Duration, error) {
 
 // curlHealth asks the gate's health with curl, whose client bot protection may refuse
 func (g gated) curlHealth() (string, error) {
-	out, err := exec.Command("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+	out, err := exec.Command("curl", "-sS", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}",
 		"-H", "Bugnet-Gate: "+g.key, g.route.BaseURL+"/__bugnet/health").Output()
 	return string(out), err
 }
