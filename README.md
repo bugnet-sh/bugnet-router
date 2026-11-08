@@ -145,6 +145,27 @@ create`, `exec`, `transfer` and `stop`, and move files with `curl` as a user wou
 | T7 | Logs the filesystems of `/tmp` and the home directory, which must not be RAM |
 | BOAT5 | Boat only: an upload the exec user cannot write and a download it cannot read |
 
+The gate rows read the placement from the stack's database and build its route with the adapter,
+as the router does, so they reach the gate the way the edges will.
+
+| Row | What it does |
+|---|---|
+| G1 | The placement records `gate_ready_at`, and `/__bugnet/health` answers through the route within 3 tries 2 s apart |
+| G2 | The route with the provider's credential but no gate key, or a wrong one, gets the gate's bare 404 |
+| E2B1 | E2B only: the traffic token from create, then from `connect {"timeout":1}` with `endAt` unchanged |
+| E2B2 | E2B only: `Bugnet-Port: 49983` gets the gate's 400 |
+| E2B5 | E2B only: logs whether the template boots systemd, and then a gate unit exists |
+| BOXD2 | boxd only: median health through the `subdomain` and `default` routes, and `curl` past bot protection, which decides `boxd.gate_route` |
+| KOYEB1 | Koyeb only: health after `bind_port`, and again after a second `PrepareGate` unbinds and binds |
+| BOAT1 | Boat only: health through `POST /host` with the runtime key |
+| BOAT2 | Boat only: raw TCP to the machine's own address on the gate port is refused or gets a 404 |
+
+`TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
+`/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
+`10.0.0.1:80` stay closed while `exec`, files and the gate route work. N2, on E2B only, removes
+the rules inside the VM and checks `network.denyOut` still closes both ranges, logging whether
+port 25 opens.
+
 | | `--front local`, the default | `--front vps`, behind the dev front |
 |---|---|---|
 | Ports | Free loopback ports | Edge 8443, secrets route 8445, egress 9443, SSH 2223, from `config/dev-front.toml` |
