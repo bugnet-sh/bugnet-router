@@ -147,6 +147,12 @@ func (s *Saga) FlagEnded(
 				return err
 			}
 		}
+		// An abuse flag closes the public page and holds the record for operators
+		err := s.d.Store.Tx(tx).CloseSessionRecord(ctx, cur.ID, store.ClosedByAbuse,
+			s.now().Add(s.d.SessionAbuseHold))
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
 		return s.signal(ctx, s.d.Store.Tx(tx), cur, e, action)
 	})
 	if err != nil {
