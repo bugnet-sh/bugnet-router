@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -25,7 +27,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/oynozan/bugnet-router/internal/catalog"
+	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/gateclient"
+	"github.com/oynozan/bugnet-router/internal/handle"
+	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/boxd"
+	"github.com/oynozan/bugnet-router/internal/providers"
+	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/oynozan/bugnet-router/internal/vkclient"
 )
 
 // row is one live row, run as the subtest <id>/<provider> on each provider it names
@@ -577,4 +589,376 @@ func TestTransferRowsAndTheirPackages(t *testing.T) {
 	eq(t, ok, true)
 	eq(t, big.Minutes, 30)
 	eq(t, big.Edge.Bytes, int64(4<<30))
+}
+
+/* Gate rows, DP 16.2 G1 and G2 and the gate's 16.3 rows */
+
+func init() {
+	dataplaneRows = append(dataplaneRows,
+		row{id: "G1", run: rowG1},
+		row{id: "G2", run: rowG2},
+		row{id: "E2B1", providers: []string{"e2b"}, run: rowE2B1},
+		row{id: "E2B2", providers: []string{"e2b"}, run: rowE2B2},
+		row{id: "E2B5", providers: []string{"e2b"}, run: rowE2B5},
+		row{id: "BOXD2", providers: []string{"boxd"}, run: rowBoxd2},
+		row{id: "KOYEB1", providers: []string{"koyeb"}, run: rowKoyeb1},
+		row{id: "BOAT1", providers: []string{"boat"}, run: rowBoat1},
+		row{id: "BOAT2", providers: []string{"boat"}, run: rowBoat2},
+	)
+}
+
+// rowG1 checks the saga recorded the gate, and /__bugnet/health through the route in 3 tries
+func rowG1(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	if g.p.GateReadyAt == nil {
+		t.Fatal("the placement is ready with no gate_ready_at")
+	}
+	t.Logf("G1 on %s: the gate answered %s after the create began, %s before ready",
+		s.provider, g.p.GateReadyAt.Sub(g.p.CreatedAt).Round(time.Millisecond),
+		g.p.ReadyAt.Sub(*g.p.GateReadyAt).Round(time.Millisecond))
+	start := time.Now()
+	g.healthWithin(t, 3)
+	t.Logf("G1 on %s: health through the route in %s", s.provider,
+		time.Since(start).Round(time.Millisecond))
+}
+
+// rowG2 calls the route as a stranger holding the provider's credential but no gate key
+func rowG2(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	for _, c := range []struct {
+		name    string
+		path    string
+		headers map[string]string
+	}{
+		{"no key, health", "/__bugnet/health", nil},
+		{"wrong key, health", "/__bugnet/health", map[string]string{"Bugnet-Gate": "wrong"}},
+		{"no key, an app port", "/", map[string]string{"Bugnet-Port": "8000"}},
+	} {
+		res, body := g.get(t, c.path, c.headers)
+		if res.StatusCode != http.StatusNotFound || len(body) != 0 ||
+			res.Header.Get("Bugnet-Gate-Response") != "1" {
+			t.Fatalf("%s: %d with %d body bytes and Bugnet-Gate-Response %q, want the gate's "+
+				"bare 404", c.name, res.StatusCode, len(body),
+				res.Header.Get("Bugnet-Gate-Response"))
+		}
+	}
+}
+
+// rowE2B1 reads the traffic token from create, then from connect {"timeout":1} with endAt kept
+func rowE2B1(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	token := g.p.ProviderRef.Meta["traffic_token"]
+	if token == "" {
+		t.Fatal("the create left no traffic token in the ref")
+	}
+	before := s.e2bEndAt(t, g)
+	adopted := *g.p.ProviderRef
+	adopted.Meta = maps.Clone(adopted.Meta)
+	delete(adopted.Meta, "traffic_token")
+	meta, err := g.prov.(provider.Gater).PrepareGate(t.Context(), adopted, g.cfg.Previews.GatePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, meta["traffic_token"] == token, true)
+	eq(t, s.e2bEndAt(t, g), before)
+}
+
+// rowE2B2 asks the gate for envd's port 49983 and gets the deny list's 400
+func rowE2B2(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	res, _ := g.get(t, "/init", map[string]string{"Bugnet-Gate": g.key, "Bugnet-Port": "49983"})
+	if res.StatusCode != http.StatusBadRequest || res.Header.Get("Bugnet-Gate-Response") != "1" {
+		t.Fatalf("port 49983 through the gate answered %d, want the gate's 400", res.StatusCode)
+	}
+}
+
+// rowE2B5 records whether the template boots systemd, which setup's init answer follows
+func rowE2B5(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	got := strings.TrimSpace(s.sh(t, h,
+		`if [ -d /run/systemd/system ]; then echo systemd; else echo setsid; fi`))
+	t.Logf("E2B5: the template's init is %s", got)
+	units := s.sh(t, h, `ls /etc/systemd/system/bugnet-*.service 2>/dev/null; true`)
+	if got == "systemd" && !strings.Contains(units, "bugnet-gate.service") {
+		t.Fatalf("systemd boots but setup wrote no gate unit: %q", units)
+	}
+}
+
+// rowBoxd2 times health through both boxd routes and checks curl gets through bot protection
+func rowBoxd2(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	times := map[string]time.Duration{g.cfg.Boxd.GateRoute: g.timeHealth(t, 10)}
+	other := "default"
+	if g.cfg.Boxd.GateRoute == "default" {
+		other = "subdomain"
+	}
+	b, err := boxd.New(boxd.Options{
+		APIKey: os.Getenv("BOXD_API_KEY"), Endpoint: g.cfg.Boxd.Endpoint,
+		Region: g.cfg.Boxd.Region, GatePort: g.cfg.Previews.GatePort, GateRoute: other,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	meta, err := b.PrepareGate(t.Context(), *g.p.ProviderRef, g.cfg.Previews.GatePort)
+	if err != nil {
+		t.Fatalf("PrepareGate with %s: %v", other, err)
+	}
+	ref := *g.p.ProviderRef
+	ref.Meta = maps.Clone(ref.Meta)
+	maps.Copy(ref.Meta, meta)
+	route, err := b.GateRoute(ref, g.cfg.Previews.GatePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2 := g
+	g2.route = route
+	times[other] = g2.timeHealth(t, 10)
+	for _, r := range []gated{g, g2} {
+		out, err := exec.Command("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+			"-H", "Bugnet-Gate: "+r.key, r.route.BaseURL+"/__bugnet/health").Output()
+		if err != nil || string(out) != "204" {
+			t.Fatalf("curl through %s answered %q, %v, want 204 past bot protection",
+				r.route.BaseURL, out, err)
+		}
+	}
+	faster := "subdomain"
+	if times["default"] < times["subdomain"] {
+		faster = "default"
+	}
+	t.Logf("BOXD2: median health through subdomain %s, default %s, so boxd.gate_route = %q",
+		times["subdomain"], times["default"], faster)
+}
+
+// rowKoyeb1 binds the gate port, and a second PrepareGate unbinds and binds again
+func rowKoyeb1(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	g.healthWithin(t, 3)
+	if _, err := g.prov.(provider.Gater).PrepareGate(t.Context(), *g.p.ProviderRef,
+		g.cfg.Previews.GatePort); err != nil {
+		t.Fatalf("a second bind_port, through unbind_port {}: %v", err)
+	}
+	g.healthWithin(t, 3)
+}
+
+// rowBoat1 hosts the gate port with the runtime key, whose scope goes to DP question 10
+func rowBoat1(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	g.healthWithin(t, 3)
+	t.Log("BOAT1: POST /host worked with BOAT_API_KEY, so its scopes suffice for the gate")
+}
+
+// rowBoat2 dials the gate port on the machine's own address with no Boat key
+func rowBoat2(t *testing.T, s *stack) {
+	g := s.gated(t, s.sandbox(t, xferPackage))
+	ip := s.boatIP(t, g)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip,
+		strconv.Itoa(g.cfg.Previews.GatePort)), 10*time.Second)
+	if err != nil {
+		t.Logf("BOAT2: raw TCP to the gate port is refused: %v", err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_, _ = io.WriteString(conn, "GET /__bugnet/health HTTP/1.0\r\n\r\n")
+	line, _ := bufio.NewReader(conn).ReadString('\n')
+	if !strings.HasPrefix(line, "HTTP/1.0 404") && !strings.HasPrefix(line, "HTTP/1.1 404") &&
+		line != "" {
+		t.Fatalf("raw TCP to the gate port answered %q, want a 404 or nothing", line)
+	}
+	t.Logf("BOAT2: raw TCP to the gate port answered %q", strings.TrimSpace(line))
+}
+
+/* Gate helpers */
+
+// gated is a placement with its provider, the route to its gate and the gate's key
+type gated struct {
+	p     store.Placement
+	cfg   config.Config
+	prov  provider.Provider
+	route provider.GateRoute
+	key   string
+}
+
+// lookup reads a variable from the stack's environment
+func (s *stack) lookup(name string) (string, bool) {
+	for _, kv := range slices.Backward(s.env) {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// gated reads the placement of handle h and builds its gate route as the router does
+func (s *stack) gated(t *testing.T, h string) gated {
+	t.Helper()
+	cfg, err := config.Load(s.settings, s.lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(t.Context(), cfg.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sha, err := handle.Hash(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys)).PlacementByHandle(
+		t.Context(), sha)
+	if err != nil || p.ProviderRef == nil {
+		t.Fatalf("live: the placement of %s: %v", h, err)
+	}
+	vk, err := vkclient.New(cfg.ValkeyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vk.Close)
+	reg, err := providers.Build(cfg, vk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov, _ := reg.Get(p.Provider)
+	g, ok := prov.(provider.Gater)
+	if !ok {
+		t.Fatalf("live: %s has no gate route", p.Provider)
+	}
+	route, err := g.GateRoute(*p.ProviderRef, cfg.Previews.GatePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := cfg.DataPlaneKeys.GateKey(p.KeyID, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gated{p: p, cfg: cfg, prov: prov, route: route, key: key}
+}
+
+// healthWithin asks the gate's health up to tries times, 2 s apart, as the saga does
+func (g gated) healthWithin(t *testing.T, tries int) {
+	t.Helper()
+	var err error
+	for i := range tries {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		if err = gateclient.Health(t.Context(), g.route, g.key); err == nil {
+			return
+		}
+	}
+	t.Fatalf("the gate's health through the route: %v", err)
+}
+
+// timeHealth is the median time of n health calls through the route
+func (g gated) timeHealth(t *testing.T, n int) time.Duration {
+	t.Helper()
+	var took []time.Duration
+	for range n {
+		start := time.Now()
+		if err := gateclient.Health(t.Context(), g.route, g.key); err != nil {
+			t.Fatalf("health through %s: %v", g.route.BaseURL, err)
+		}
+		took = append(took, time.Since(start))
+	}
+	slices.Sort(took)
+	return took[n/2].Round(time.Millisecond)
+}
+
+// get calls the route with its provider credentials and headers, and answers status and body
+func (g gated) get(t *testing.T, path string, headers map[string]string) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, g.route.BaseURL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range g.route.Header {
+		req.Header.Set(k, v)
+	}
+	for k, v := range g.route.Cookies {
+		req.AddCookie(&http.Cookie{Name: k, Value: v})
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	return res, body
+}
+
+// e2bEndAt reads the sandbox's endAt from E2B's API with the key in the environment
+func (s *stack) e2bEndAt(t *testing.T, g gated) string {
+	t.Helper()
+	domain := g.cfg.E2B.Domain
+	if domain == "" {
+		domain = "e2b.app"
+	}
+	var got struct {
+		EndAt string `json:"endAt"`
+	}
+	s.apiGet(t, "https://api."+domain+"/sandboxes/"+g.p.ProviderRef.ID,
+		map[string]string{"X-API-Key": os.Getenv("E2B_API_KEY")}, &got)
+	if got.EndAt == "" {
+		t.Fatal("E2B's sandbox info names no endAt")
+	}
+	return got.EndAt
+}
+
+// boatIP reads the machine's own address from Boat's API with the key in the environment
+func (s *stack) boatIP(t *testing.T, g gated) string {
+	t.Helper()
+	var got struct {
+		Sandbox struct {
+			IP *string `json:"ip"`
+		} `json:"sandbox"`
+	}
+	s.apiGet(t, "https://boat.dev/api/v1/sandboxes/"+g.p.ProviderRef.ID,
+		map[string]string{"Authorization": "Bearer " + os.Getenv("BOAT_API_KEY")}, &got)
+	if got.Sandbox.IP == nil || *got.Sandbox.IP == "" {
+		t.Fatal("Boat's sandbox info names no ip")
+	}
+	return *got.Sandbox.IP
+}
+
+// apiGet reads one JSON answer from a provider's API, quoting no header in a failure
+func (s *stack) apiGet(t *testing.T, url string, headers map[string]string, into any) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("live: the provider's API: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode != http.StatusOK || json.Unmarshal(body, into) != nil {
+		t.Fatalf("live: the provider's API answered %d", res.StatusCode)
+	}
+}
+
+func TestGateRowsAndTheirProviders(t *testing.T) {
+	want := map[string][]string{
+		"G1": nil, "G2": nil, "E2B1": {"e2b"}, "E2B2": {"e2b"}, "E2B5": {"e2b"},
+		"BOXD2": {"boxd"}, "KOYEB1": {"koyeb"}, "BOAT1": {"boat"}, "BOAT2": {"boat"},
+	}
+	for _, r := range dataplaneRows {
+		if p, ok := want[r.id]; ok {
+			eq(t, r.providers, p)
+			delete(want, r.id)
+		}
+	}
+	eq(t, len(want), 0)
 }

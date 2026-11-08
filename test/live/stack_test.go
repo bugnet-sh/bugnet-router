@@ -14,6 +14,7 @@ package live
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -46,6 +47,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/oynozan/bugnet-router/internal/provider/local"
 	"github.com/oynozan/bugnet-router/internal/testenv"
 )
 
@@ -670,6 +672,14 @@ func (s *stack) stop(t testing.TB) {
 			})
 		}
 		wg.Wait()
+		if s.provider == "local" {
+			// A local sandbox's gate and sampler outlive the stack until a destroy
+			p := local.New(local.Options{Name: "local", Root: filepath.Join(s.dir, "local")})
+			owned, _ := p.ListOwned(context.Background(), nil)
+			for _, o := range owned {
+				_ = p.Destroy(context.Background(), o.Ref)
+			}
+		}
 		if t.Failed() {
 			for _, p := range s.procs {
 				raw, _ := os.ReadFile(p.log)
