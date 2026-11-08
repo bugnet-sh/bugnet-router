@@ -223,3 +223,15 @@ func TestRedactTokenAfterASkippedMatch(t *testing.T) {
 	eq(t, r.Redact("xbnt_bnt_"+body+" y"), "xbnt_[redacted token] y")
 	eq(t, r.Redact("xbnt_"+body), "xbnt_"+body)
 }
+
+func TestRedactURLPasswordWithAtOrSlash(t *testing.T) {
+	r := NewRedactor()
+	eq(t, r.Redact("git clone https://me:p@ss/w0rd@github.com/a/b.git"),
+		"git clone https://me:[redacted password]@github.com/a/b.git")
+	eq(t, r.Redact("DATABASE_URL=postgres://app:x/y@z@db:5432/main ok"),
+		"DATABASE_URL=postgres://app:[redacted password]@db:5432/main ok")
+	eq(t, r.Redact(`"https://u:secret@host/@scope/pkg"`),
+		`"https://u:[redacted password]@host/@scope/pkg"`)
+	eq(t, r.Redact("GET http://localhost:5173/@vite/client"),
+		"GET http://localhost:5173/@vite/client")
+}

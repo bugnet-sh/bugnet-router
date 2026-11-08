@@ -37,7 +37,9 @@ var (
 		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
 	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
-	userinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*):[^\s/@]+@`)
+	// A URL password runs to the last @ before the host, an @ right after a slash starting a path
+	userinfo = regexp.MustCompile("([A-Za-z][A-Za-z0-9+.-]*://[^\\s/:@]*):" +
+		"[^\\s\"'<>`]*[^\\s\"'<>`/]@")
 	// Bugnet shapes of DP 20.6.4 with bnk_, then the gateway's vendor shapes, where a word starts
 	tokens = regexp.MustCompile(`(^|[^A-Za-z0-9])(?:(?:sbx_|bnp_|bnx_|bnsl_|bnsp_|bnt_|bnf_|` +
 		`bnsec_|bxd_|e2b_|boat_|bnk_|g1\.)[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{20,}|` +
