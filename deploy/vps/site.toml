@@ -4,16 +4,16 @@
 
 # TODO(founder): the production VPS's addresses. The controller writes them here before ship.sh;
 # deploy maps refuses an empty ipv4. ipv6 stays empty without IPv6 (DP question 15).
-ipv4 = ""
-ipv6 = ""
+ipv4 = "62.72.21.74"         # the test VPS, production since 2026-11-09
+ipv6 = "2a02:4780:c:ab47::1"
 # DP question 1, answered (c) on 2026-11-07: admin SSH stays on 22, HAProxy's frontend ssh binds
 # 2222, and the router's names.ssh_port is 2222. The dev front's test VPS runs front.sh with its
 # admin SSH on 2222, so a front render there passes --site with admin_ssh_port = 2222.
-admin_ssh_port = 22
-ssh_gateway_port = 2222
+admin_ssh_port = 2222        # this VPS keeps admin SSH on 2222
+ssh_gateway_port = 2201      # off the admin port; ssh.providers is empty until SSH rows pass
 ssh_gateway_ip = ""          # empty binds every address, the second IPv4 under (b)
 egress_ip = ""               # empty shares the address (X8), or DP question 11's own address
 dns_provider = "cloudflare"  # DP question 2, any lego DNS provider
 dns_env = ["CF_DNS_API_TOKEN"]   # the variables dns_provider reads from /etc/bugnet/certs.env
 # TODO(gateway team): their Unix users, which check.sh keeps off Postgres and Valkey (DP 15.3, 17)
-gateway_users = []
+gateway_users = ["bugnet-gateway"]

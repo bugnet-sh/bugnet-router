@@ -29,7 +29,7 @@ preview_domain = "preview.bugnet.sh"
 transfer_host = "transfer.bugnet.sh"
 secrets_host = "secrets.bugnet.sh"
 ssh_host = "ssh.bugnet.sh"
-ssh_port = 2222               # DP question 1 (c): admin SSH on 22, the SSH gateway on 2222
+ssh_port = 2201               # this VPS keeps admin SSH on 2222, so the SSH gateway takes 2201
 egress_host = "egress.bugnet.sh"
 
 [previews]
