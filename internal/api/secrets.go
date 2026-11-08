@@ -400,7 +400,12 @@ func (s *Server) claim(
 	if !w.spend {
 		return nil
 	}
-	if err := s.spend(ctx, p); err != nil {
+	// A link or the secret page may be held by anyone, so it never spends the owner's wallet
+	spend := s.spend
+	if w.link != nil || w.source == store.SourceBridge {
+		spend = s.spendPlacement
+	}
+	if err := spend(ctx, p); err != nil {
 		return err
 	}
 	return s.takeKey(ctx, hourly("rl:puts:", p.ID, cmp.Or(s.d.Secrets.PutsPerHour,
