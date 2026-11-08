@@ -15,6 +15,15 @@
 // under, gets its edge and egress budgets in the transaction that makes it ready, and grows them
 // in each extension's. The edges hear of a placement leaving ready through PlacementEnded, and
 // of an extension through DeadlineMoved once both spent guards are cleared.
+//
+// Boot runs after every create, whether or not the runner was uploaded: bugnet-run setup with
+// the gate key, the CA and the env lines, then harden where the provider has a hardening rule,
+// then PrepareGate and three health checks through the route, then setup again to start the
+// sampler, so harden's installs never count as the user's disk. A failed setup, or a failed
+// harden where it is required, fails the attempt over as boot_failed. A gate that never answers
+// fails it over only when the order needs previews or SSH, and is logged otherwise. The ready
+// transaction records when the gate answered and the CA version the sandbox trusts. A restricted
+// package's create carries its egress allowlist, and only a provider with egress control takes it.
 package saga
 
 import (
@@ -140,6 +149,8 @@ type Deps struct {
 	Budget config.EdgeBudget
 	// Keys are the data-plane roots, a new placement records the newest one's id
 	Keys dpkeys.Keys
+	// Boot holds what each sandbox's setup and harden specs carry
+	Boot BootSettings
 }
 
 // Saga runs placements from order to teardown
@@ -343,7 +354,7 @@ func (s *Saga) place(
 			continue
 		}
 		attempted = append(attempted, c.Provider)
-		out := s.attempt(ctx, budget, p, pkg, c, n)
+		out := s.attempt(ctx, budget, p, pkg, req, c, n)
 		if out.done {
 			// One attempt on a provider that keys its creates left no sandbox beside the kept one
 			if out.kept == nil || len(attempted) > 1 ||
@@ -402,7 +413,7 @@ func (s *Saga) reserve(ctx context.Context, id uuid.UUID, providerName string) (
 // attempt holds a capacity slot on c's provider and gives it back unless the sandbox is ready
 func (s *Saga) attempt(
 	ctx, budget context.Context, p store.Placement, pkg catalog.Package,
-	c placement.Candidate, n int,
+	req placement.Requirements, c placement.Candidate, n int,
 ) outcome {
 	prov := c.Provider
 	name := prov.Name()
@@ -423,6 +434,7 @@ func (s *Saga) attempt(
 		Size:           c.Size,
 		Labels:         s.labels(p.ID),
 		Lifetime:       time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
+		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
 	if err != nil {
 		s.d.Tracker.RecordFailure(name)
@@ -432,7 +444,11 @@ func (s *Saga) attempt(
 			detail: fmt.Sprintf("create on %s: %v", name, err),
 		}
 	}
-	if err := s.boot(ctx, prov, ref); err != nil {
+	ref, boot, err := s.Boot(ctx, prov, ref, BootPlan{
+		Placement: p.ID, KeyID: p.KeyID, NeedPreview: req.Preview, NeedSSH: req.SSH,
+		Restricted: pkg.EgressAllow,
+	})
+	if err != nil {
 		noBuild := errors.Is(err, errNoRunnerBuild)
 		reason := reasonNoRunner
 		if !noBuild {
@@ -444,7 +460,7 @@ func (s *Saga) attempt(
 			failOver: !noBuild, reason: reason, detail: fmt.Sprintf("boot on %s: %v", name, err),
 		}
 	}
-	return s.commitReady(ctx, p, pkg, c, rec, ref, started)
+	return s.commitReady(ctx, p, pkg, c, rec, ref, boot, started)
 }
 
 // create retries a create whose outcome is unknown under the same key on the same provider
@@ -486,7 +502,7 @@ func canFailOver(err error) bool {
 // commitReady starts the paid clock, or gives the sandbox back when the placement moved on
 func (s *Saga) commitReady(
 	ctx context.Context, p store.Placement, pkg catalog.Package, c placement.Candidate,
-	rec store.Attempt, ref provider.Ref, started time.Time,
+	rec store.Attempt, ref provider.Ref, boot BootReport, started time.Time,
 ) outcome {
 	prov := c.Provider
 	readyAt := s.now()
@@ -507,6 +523,13 @@ func (s *Saga) commitReady(
 		ts := s.d.Store.Tx(tx)
 		err := ts.MarkPlacementReady(tctx, p.ID, ref, c.Size.Name, readyAt, deadline)
 		if err != nil {
+			return err
+		}
+		var gateAt *time.Time
+		if boot.GateReady {
+			gateAt = &boot.GateReadyAt
+		}
+		if err := ts.SetPlacementGate(tctx, p.ID, gateAt, boot.CAVersion); err != nil {
 			return err
 		}
 		if _, _, err := s.addBudgets(tctx, ts, p.ID, pkg); err != nil {

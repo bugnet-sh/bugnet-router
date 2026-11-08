@@ -50,6 +50,8 @@ const (
 	shortPkg   = "small-10m-5"
 	shortPrice = 25000
 	longPkg    = "small-30m"
+	// restrictedPkg reaches huggingface.co alone
+	restrictedPkg = "small-10m-restricted"
 )
 
 const catalogJSON = `{"packages": [
@@ -60,22 +62,36 @@ const catalogJSON = `{"packages": [
 	{"id": "small-10m-5", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
 		"minutes": 5, "price_micros": 25000, "extension_of": "small-10m"},
 	{"id": "small-30m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
-		"minutes": 30, "price_micros": 120000}
+		"minutes": 30, "price_micros": 120000},
+	{"id": "small-10m-restricted", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "price_micros": 50000, "egress": {"allow": ["huggingface.co"]}}
 ]}`
 
 var small = provider.Size{
 	Name: "small", Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
 }
 
+// newLocal runs the built bugnet-run unless opts names another, and destroys its sandboxes last
 func newLocal(t *testing.T, opts local.Options) *local.Provider {
 	t.Helper()
 	if opts.Root == "" {
 		opts.Root = t.TempDir()
 	}
+	if opts.RunnerPath == "" {
+		opts.RunnerPath = runnerBin
+	}
 	opts.Sizes = []provider.Size{small}
 	opts.HourlyCostMicros = 1000
 	opts.Increment = time.Second
-	return local.New(opts)
+	p := local.New(opts)
+	// Each boot starts a gate and a sampler on the host, which only a destroy stops
+	t.Cleanup(func() {
+		owned, _ := p.ListOwned(context.Background(), nil)
+		for _, o := range owned {
+			_ = p.Destroy(context.Background(), o.Ref)
+		}
+	})
+	return p
 }
 
 func failWith(code provider.Code, failOver bool) func(int, provider.CreateRequest) error {
@@ -318,6 +334,7 @@ type env struct {
 	prefix    string
 	priv      ed25519.PrivateKey
 	handleKey []byte
+	keys      dpkeys.Keys
 }
 
 func newEnv(t *testing.T, ps ...provider.Provider) *env {
@@ -393,7 +410,7 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 	t.Cleanup(s.Wait)
 	return &env{
 		saga: s, store: st, pool: pool, river: rc, vk: vk, prefix: prefix, priv: priv,
-		handleKey: hk,
+		handleKey: hk, keys: deps.Keys,
 	}
 }
 
@@ -1405,7 +1422,9 @@ func writeFile(t *testing.T, dir, name, content string, mode os.FileMode) string
 func TestCreateUploadsRunnerForArch(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "runner.log")
-	fake := writeFile(t, dir, "fake-runner", "#!/bin/sh\necho \"$@\" >> "+log+"\n", 0o755)
+	fake := writeFile(t, dir, "fake-runner", "#!/bin/sh\necho \"$@\" >> "+log+"\n"+
+		"[ \"$1\" = setup ] && echo '{\"gate\":\"listening\",\"ca\":\"skipped\"}'\nexit 0\n",
+		0o755)
 	runners := map[string][]byte{"amd64": []byte("amd64 build"), "arm64": []byte("arm64 build")}
 	root := t.TempDir()
 	u := uploader{newLocal(t, local.Options{Name: "u", Root: root, RunnerPath: fake}), "arm64"}
@@ -1421,8 +1440,8 @@ func TestCreateUploadsRunnerForArch(t *testing.T) {
 		t.Fatalf("runner mode %v, %v", info.Mode(), err)
 	}
 	ran, err := os.ReadFile(log)
-	if err != nil || strings.TrimSpace(string(ran)) != "ping" {
-		t.Fatalf("runner ran with %q, %v", ran, err)
+	if err != nil || strings.Split(string(ran), "\n")[0] != "ping" {
+		t.Fatalf("runner ran with %q, %v, want ping first", ran, err)
 	}
 }
 

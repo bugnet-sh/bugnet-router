@@ -3,6 +3,8 @@ package saga
 import (
 	"testing"
 	"time"
+
+	"github.com/oynozan/bugnet-router/internal/provider"
 )
 
 // SetCleanupTimeout shortens the bound on each cleanup call for one test
@@ -14,3 +16,25 @@ func SetCleanupTimeout(t testing.TB, d time.Duration) {
 
 // ByListing is the order ListExtensions sorts its extensions in
 var ByListing = byListing
+
+// SetGateRetry spaces the gate health tries of every saga in this test binary
+func SetGateRetry(d time.Duration) { gateRetry = d }
+
+// SetupSpecFields and HardenSpecFields are the spec files Boot writes, field by field
+type (
+	SetupSpecFields  = setupSpec
+	HardenSpecFields = hardenSpec
+)
+
+// SetupSpecFor is the setup spec Boot writes for a sandbox of provider name
+func SetupSpecFor(
+	b BootSettings, name string, ref provider.Ref, key string, sample bool,
+) SetupSpecFields {
+	return b.setupSpecFor(name, ref, key, sample)
+}
+
+// HardenSpecFor is the harden spec Boot writes for provider name, false when it runs none
+func HardenSpecFor(b BootSettings, name string) (HardenSpecFields, bool) {
+	spec, _, ok := b.hardenSpecFor(name)
+	return spec, ok
+}
