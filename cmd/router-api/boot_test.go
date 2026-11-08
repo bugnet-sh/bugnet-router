@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oynozan/bugnet-router/internal/catalog"
 	"github.com/oynozan/bugnet-router/internal/config"
 )
 
@@ -100,6 +101,45 @@ func TestBootSettingsCarryTheCAAndThePools(t *testing.T) {
 		if _, err := bootSettings(discard, cfg); err == nil ||
 			!strings.Contains(err.Error(), "secrets.ca_cert_file") {
 			t.Fatalf("a CA file holding %s: %v", name, err)
+		}
+	}
+}
+
+func TestStartRefusesRestrictedOnE2BWithoutProxyIPv4(t *testing.T) {
+	pkgs := func(extra string) *catalog.Catalog {
+		t.Helper()
+		c, err := catalog.Load(writeTemp(t, "packages.json", []byte(`{"packages": [{"id": `+
+			`"locked", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10}, `+
+			`"minutes": 10, "price_micros": 50000`+extra+`}]}`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	restricted, open := pkgs(`, "egress": {"allow": ["huggingface.co"]}`), pkgs("")
+	v4, v6 := netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8::7")
+	for _, tc := range []struct {
+		name      string
+		providers []string
+		cat       *catalog.Catalog
+		ips       []netip.Addr
+		refused   bool
+	}{
+		{"no proxy address", []string{"local", "e2b"}, restricted, nil, true},
+		{"an IPv6 proxy alone", []string{"e2b"}, restricted, []netip.Addr{v6}, true},
+		{"an IPv4 proxy", []string{"e2b"}, restricted, []netip.Addr{v6, v4}, false},
+		{"no E2B", []string{"boxd"}, restricted, nil, false},
+		{"no restricted package", []string{"e2b"}, open, nil, false},
+	} {
+		cfg := config.Config{Providers: tc.providers}
+		cfg.Secrets.EgressIPs = tc.ips
+		err := checkRestrictedEgress(cfg, tc.cat)
+		if tc.refused != (err != nil) {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if err != nil && (!strings.Contains(err.Error(), "secrets.egress_ips") ||
+			!strings.Contains(err.Error(), "locked")) {
+			t.Fatalf("%s: %v, want the setting and the package named", tc.name, err)
 		}
 	}
 }

@@ -22,8 +22,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -127,6 +129,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	}
 	cat, err := catalog.Load(cfg.PackagesFile)
 	if err != nil {
+		return err
+	}
+	if err := checkRestrictedEgress(cfg, cat); err != nil {
 		return err
 	}
 	reg, err := providers.Build(cfg, vk)
@@ -252,6 +257,22 @@ func bootSettings(log *slog.Logger, cfg config.Config) (saga.BootSettings, error
 		DenyRanges: cfg.Hardening.DenyRanges, Pools: pools, Harden: cfg.Hardening.Rules,
 		EgressHost: cfg.Names.EgressHost, EgressIPs: cfg.Secrets.EgressIPs,
 	}, nil
+}
+
+// checkRestrictedEgress refuses a restricted package on E2B, whose allowOut takes IPv4 alone
+func checkRestrictedEgress(cfg config.Config, cat *catalog.Catalog) error {
+	if !slices.Contains(cfg.Providers, "e2b") ||
+		slices.ContainsFunc(cfg.Secrets.EgressIPs, netip.Addr.Is4) {
+		return nil
+	}
+	for _, p := range cat.All() {
+		if len(p.EgressAllow) > 0 {
+			return fmt.Errorf("package %q has egress.allow and providers lists e2b, while "+
+				"secrets.egress_ips holds no IPv4 address, so its E2B sandboxes would reach "+
+				"nothing, add the egress proxy's IPv4 address to secrets.egress_ips", p.ID)
+		}
+	}
+	return nil
 }
 
 // readCA reads the Bugnet CA, which must be certificates alone, as setup accepts them

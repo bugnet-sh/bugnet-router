@@ -945,7 +945,9 @@ E2B's create blocks the IPv4 entries of `hardening.deny_ranges` outside the VM w
 `network.denyOut`. `harden` blocks the IPv6 entries inside the VM, all but `fe80::/10`, which
 stays open for envd. A package with `egress.allow` is restricted: it
 lands only on a provider with egress control at create. On E2B it reaches the egress proxy's
-IPv4 addresses alone, through `network.allowOut` under a `0.0.0.0/0` deny. On boxd the
+IPv4 addresses alone, through `network.allowOut` under a `0.0.0.0/0` deny, so `router-api`
+refuses to start when `providers` lists `e2b`, a package has `egress.allow` and
+`secrets.egress_ips` holds no IPv4 address. On boxd the
 machine's `egress` list holds the package's hosts, `names.egress_host` and the proxy's IPv4
 addresses. Koyeb, Boat and `local` never take one: Boat has no egress control, and Koyeb's
 network policy waits for live test N1.
