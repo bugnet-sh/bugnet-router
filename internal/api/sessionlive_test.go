@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +300,61 @@ func TestWatchSessionJobRefusesAMadeUpCursor(t *testing.T) {
 	eq(t, again.err, nil)
 	eq(t, strings.HasSuffix(view, again.text()), true)
 	eq(t, len(again.text()) < len(view), true)
+}
+
+func TestWatchSessionJobReadsOnlyItsRecord(t *testing.T) {
+	e := newEnv(t, options{})
+	hB, pB := e.readyPlacement(t)
+	e.exec2(t, hB, "sh", "-c", "echo marker-B1")
+	hA, pA := e.readyPlacement(t)
+	// Job 1 ends after job 2, so a cursor at its end lies past every entry of job 2 and of B
+	e.startJob(t, hA, `echo marker-A1-first; while [ ! -e "$HOME/go" ]; do sleep 0.05; done; `+
+		"echo marker-A1-last")
+	e.exec2(t, hA, "sh", "-c", "echo marker-A2")
+	err := os.WriteFile(filepath.Join(e.sandboxFS(t, hA), "root", "go"), nil, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const viewA1 = "marker-A1-first\nmarker-A1-last\n"
+	a1 := e.watchSession(timeout(t), t, pA.GetSessionUrl(), 1, "", nil)
+	eq(t, a1.err, nil)
+	eq(t, a1.text(), viewA1)
+	eq(t, a1.end(), "exited")
+	var cursor string
+	for _, f := range a1.frames {
+		if strings.Contains(f.GetText().GetText(), "marker-A1-last") {
+			cursor = f.GetCursor()
+		}
+	}
+	eq(t, cursor != "", true)
+	// In its own job the cursor resumes past all of the text
+	own := e.watchSession(timeout(t), t, pA.GetSessionUrl(), 1, cursor, nil)
+	eq(t, own.text(), "")
+	eq(t, own.end(), "exited")
+	_, err = e.watchFirstSession(t, pA.GetSessionUrl(), 3)
+	mustCode(t, err, connect.CodeNotFound, "SESSION_UNKNOWN")
+	_, err = e.watchFirstSession(t, pB.GetSessionUrl(), 2)
+	mustCode(t, err, connect.CodeNotFound, "SESSION_UNKNOWN")
+	// Sent for another record or job, the cursor replays as a first connection
+	elsewhere := func(name, url string, seq uint32, want string) {
+		t.Helper()
+		w := e.watchSession(timeout(t), t, url, seq, cursor, nil)
+		if w.err != nil || w.text() != want || w.end() != "exited" {
+			t.Errorf("%s with A's job 1 cursor: %q, %q, %v, want %q from the start", name,
+				w.text(), w.end(), w.err, want)
+		}
+	}
+	elsewhere("B's job 1", pB.GetSessionUrl(), 1, "marker-B1\n")
+	elsewhere("A's job 2", pA.GetSessionUrl(), 2, "marker-A2\n")
+
+	res, err := e.client.RotateSessionLink(t.Context(), connect.NewRequest(
+		&routerv1.RotateSessionLinkRequest{Handle: hA, SessionUrl: pA.GetSessionUrl()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.watchFirstSession(t, pA.GetSessionUrl(), 1)
+	mustCode(t, err, connect.CodeNotFound, "SESSION_UNKNOWN")
+	elsewhere("A's job 1 after a rotation", res.Msg.GetSessionUrl(), 1, viewA1)
 }
 
 func TestWatchSessionJobLimits(t *testing.T) {
