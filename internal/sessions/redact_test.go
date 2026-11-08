@@ -441,6 +441,14 @@ func TestStreamLongLineKeepsAnAuthorizationValueWhole(t *testing.T) {
 	}
 }
 
+func TestStreamLongLineAfterAGapKeepsABearerValueWhole(t *testing.T) {
+	st := NewRedactor().Stream(Stdout)
+	st.Resume()
+	whole := strings.Repeat("a ", 8188) + "Bearer QJQJ0123456789abcdef tail\nafter text\n"
+	got := st.Write([]byte(whole[:carryMax]))
+	hidden(t, append(got, st.Write([]byte(whole[carryMax:]))...), "after text\n")
+}
+
 func TestRedactFullCarryAtEveryBoundary(t *testing.T) {
 	const known, other = "Kn0wnSecretQJQJ123", "Kn0wn:Secret@QJQJ!7"
 	r := NewRedactor(known, other)

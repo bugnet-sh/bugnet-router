@@ -430,9 +430,10 @@ func (st *Stream) rejoin() bool {
 		return false
 	case i < 0:
 		// A line longer than the carry goes on after its last space, which no key line has,
-		// unless the space may fall inside an Authorization value or a run a full carry cut
+		// unless the space may fall inside an Authorization value or a run a full carry cut, or
+		// follows a Bearer or Basic
 		i = bytes.LastIndexAny(b, " \t")
-		if st.wholeLine || i >= 0 && authzAny.Match(b[:i]) {
+		if st.wholeLine || i >= 0 && (authzAny.Match(b[:i]) || beforeLeadWords(b, i+1) != i+1) {
 			i, st.wholeLine = -1, true
 		}
 		st.maybeKey = st.maybeKey && i < 0
