@@ -107,9 +107,11 @@ type stack struct {
 	egressAddr   string
 	fwdListen    string
 	procs        []*proc
-	stopOnce     sync.Once
-	n            int
-	taken        map[string]bool
+	// claims are the order claims a test saw, kept out of every log the stack prints
+	claims   []string
+	stopOnce sync.Once
+	n        int
+	taken    map[string]bool
 	// egressListen is where the proxy listens and egressAddr the front forwarders dial
 	egressListen string
 	fronts       []net.Listener
@@ -200,13 +202,16 @@ func freeAddr(t testing.TB) string {
 // hostEnv is the test's environment without any BUGNET_ setting
 func hostEnv() []string {
 	var env []string
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "BUGNET_") {
-			env = append(env, kv)
+	for _, k := range hostKeys {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
 		}
 	}
 	return env
 }
+
+// hostKeys are the only host settings a stack process gets, never a real secret of this machine
+var hostKeys = []string{"PATH", "HOME", "TMPDIR", "USER", "LANG", "GOCACHE", "GOMODCACHE"}
 
 // devKeys runs bugnet-dev keys
 func (s *stack) devKeys() map[string]string {
@@ -395,7 +400,7 @@ func (s *stack) stop() {
 				raw, _ := os.ReadFile(p.log)
 				lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 				s.t.Logf("last lines of %s:\n%s", p.name,
-					strings.Join(lines[max(len(lines)-30, 0):], "\n"))
+					redactShapes(strings.Join(lines[max(len(lines)-30, 0):], "\n"), s.claims))
 			}
 		}
 		if os.Getenv("BUGNET_X402_LOCAL_KEEP") != "" {
@@ -522,11 +527,12 @@ func (s *stack) control(path string, body, out any) {
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		s.t.Fatalf("x402local: %s answered %d: %s", path, resp.StatusCode, b)
+		s.t.Fatalf("x402local: %s answered %d: %s",
+			path, resp.StatusCode, redactShapes(string(b), s.claims))
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {
-			s.t.Fatalf("x402local: %s: %v: %s", path, err, b)
+			s.t.Fatalf("x402local: %s: %v: %s", path, err, redactShapes(string(b), s.claims))
 		}
 	}
 }

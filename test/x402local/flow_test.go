@@ -60,6 +60,7 @@ func gatewayDir(t testing.TB) string {
 // gateway is the real MCP gateway running against the stack
 type gateway struct {
 	t   *testing.T
+	s   *stack
 	url string
 	p   *proc
 	id  atomic.Int64
@@ -67,14 +68,20 @@ type gateway struct {
 	claims []string
 }
 
-// redact drops session links, record keys and claims from text a failure message prints
-func (g *gateway) redact(text string) string {
-	for _, c := range g.claims {
+// redactShapes drops session links, record keys and the given claims from text the tests print
+func redactShapes(text string, claims []string) string {
+	for _, c := range claims {
 		text = strings.ReplaceAll(text, c, "[claim]")
 	}
 	for _, sh := range secretShapes {
 		text = sh.re.ReplaceAllString(text, sh.with)
 	}
+	return text
+}
+
+// redact drops session links, record keys and claims from text a failure message prints
+func (g *gateway) redact(text string) string {
+	text = redactShapes(text, g.claims)
 	if len(text) > briefMax {
 		text = text[:briefMax] + " [cut]"
 	}
@@ -86,15 +93,9 @@ func (g *gateway) brief(r toolResult) string {
 	return g.redact(r.text())
 }
 
-// gatewayEnv is the few host settings tsx needs, with no real secret of this machine
+// gatewayEnv is the host settings tsx needs, the same few every stack process gets
 func gatewayEnv() []string {
-	var env []string
-	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
+	return hostEnv()
 }
 
 // startGateway runs the gateway on a free port against the stack until the test ends
@@ -176,7 +177,7 @@ enabled = true
 	case <-time.After(gatewayWait):
 		s.fail("the gateway did not listen within %s", gatewayWait)
 	}
-	return &gateway{t: t, url: "http://" + addr + "/mcp", p: p}
+	return &gateway{t: t, s: s, url: "http://" + addr + "/mcp", p: p}
 }
 
 // toolResult is the part of a tools/call answer the flow reads
@@ -259,6 +260,7 @@ func (g *gateway) payStep(s *stack, r toolResult) (orderID, claim string) {
 	orderID, claim = r.str("orderId"), r.str("claim")
 	if claim != "" {
 		g.claims = append(g.claims, claim)
+		g.s.claims = append(g.s.claims, claim)
 	}
 	accepts, _ := r.Structured["accepts"].([]any)
 	if !r.IsError || orderID == "" || claim == "" || r.str("payUrl") == "" || len(accepts) == 0 {
