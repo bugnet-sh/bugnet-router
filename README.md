@@ -394,10 +394,10 @@ features that read them land one by one, and until then the settings only load a
 
 `boxd.gate_route` (`subdomain` or `default`), `boat.ssh_path` (`gate` or `native`) and
 `local.sshd_path` choose each provider's route. Every provider list takes known provider names,
-each once. `secrets.providers` never takes `local`, whose sandboxes share the host. `router-api` refuses to
-start when `secrets.providers` lists a provider while `secrets.ca_cert_file` is empty, so no
-placement with secrets lacks the CA, and reads the CA file once at start, refusing one that is
-not PEM certificates alone.
+each once. `secrets.providers` never takes `local`, whose sandboxes share the host.
+`router-api` refuses to start when `secrets.providers` lists a provider while
+`secrets.ca_cert_file` is empty, so no placement with secrets lacks the CA. It reads the CA file
+once at start and refuses one that is not PEM certificates alone.
 `secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
 32-byte X25519 public key.
 
@@ -745,9 +745,9 @@ expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeo
 Valkey unreachable, placements ready or terminating over 3 minutes past their deadline and stops
 still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
 outbox events, Valkey memory at 80% of `maxmemory` or more, a `maxmemory-policy` other than
-`noeviction`, and a mining pool list that is empty, missing or unreadable. A failed connection means the worker is down. When `INFO memory` fails or times out
-while Valkey answers, `/monitor` reports `valkey memory is unknown`. When an ACL or
-`rename-command` refuses `INFO`, it reports `valkey refuses INFO, so its memory and policy go
+`noeviction`, and a mining pool list that is empty, missing or unreadable. A failed connection
+means the worker is down. When `INFO memory` fails or times out while Valkey answers,
+`/monitor` reports `valkey memory is unknown`. When an ACL or `rename-command` refuses `INFO`, it reports `valkey refuses INFO, so its memory and policy go
 unchecked`, since that also leaves the start-up policy check blind, so leave `INFO` allowed. When it answers without a field, as a managed Valkey may, `/monitor` checks the
 fields it got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only
 that Postgres and Valkey answer.
