@@ -32,8 +32,10 @@ var (
 		`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemOpen  = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemClose = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	// An Authorization or Proxy-Authorization header up to its value, a quote that opens it kept
-	authz    = regexp.MustCompile(`(?i)(["']?)(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*`)
+	// An Authorization or Proxy-Authorization header up to its value, the quote that opens it
+	// kept, escaped or not, also as a quoted name before a comma in a list of pairs
+	authz = regexp.MustCompile(`(?i)((?:\\?["'])?)(?:proxy-)?authorization` +
+		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
 	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	userinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*):[^\s/@]+@`)
@@ -90,15 +92,15 @@ func redactAuthz(s string) string {
 		if m[0] < last {
 			continue
 		}
-		at, quote := m[1], byte(0)
-		if m[3] > m[2] {
-			quote = s[m[2]]
+		at, quote, escaped := m[1], byte(0), false
+		if open := s[m[2]:m[3]]; open != "" {
+			quote, escaped = open[len(open)-1], len(open) == 2
 			// A JSON or dict value opens a quote of its own after the name's
-			if at < len(s) && s[at] == quote {
-				at++
+			if strings.HasPrefix(s[at:], open) {
+				at += len(open)
 			}
 		}
-		end := valueEnd(s, at, quote)
+		end := valueEnd(s, at, quote, escaped)
 		if end == at {
 			continue
 		}
@@ -113,13 +115,16 @@ func redactAuthz(s string) string {
 	return b.String()
 }
 
-// valueEnd is where a value starting at i ends: a line break, or quote unless escaped
-func valueEnd(s string, i int, quote byte) int {
+// valueEnd is where a value starting at i ends: a line break or its closing quote, which is
+// escaped too when the name's was
+func valueEnd(s string, i int, quote byte, escaped bool) int {
 	for ; i < len(s); i++ {
 		switch c := s[i]; {
 		case c == '\r' || c == '\n':
 			return i
 		case quote == 0:
+		case c == '\\' && escaped && i+1 < len(s) && s[i+1] == quote:
+			return i
 		case c == '\\':
 			i++
 		case c == quote:

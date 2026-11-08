@@ -199,6 +199,10 @@ func TestRedactAnyAuthorizationSchemeAcrossFrames(t *testing.T) {
 			`curl -H 'Authorization: [redacted credential]' https://x` + "\n"},
 		{[]string{`{"Proxy-Authorization": "token `, secret + `", "a": 1}` + "\n"},
 			`{"Proxy-Authorization": "[redacted credential]", "a": 1}` + "\n"},
+		{[]string{`-d "{\"Authorization\": \"token `, secret + `\", \"a\": 1}"` + "\n"},
+			`-d "{\"Authorization\": \"[redacted credential]\", \"a\": 1}"` + "\n"},
+		{[]string{`[["Proxy-Authorization", "token `, secret + `"], ["a", "b"]]` + "\n"},
+			`[["Proxy-Authorization", "[redacted credential]"], ["a", "b"]]` + "\n"},
 	} {
 		got := joined(write(r, c.chunks...))
 		eq(t, got, c.want)
