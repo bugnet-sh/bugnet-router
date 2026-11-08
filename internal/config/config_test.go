@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/ratelimit"
+	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 )
 
 const secretToken = "0123456789abcdef0123456789abcdef"

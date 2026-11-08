@@ -6,11 +6,11 @@ plugins:
     out: envdpb
     opt:
       - paths=source_relative
-      - Mprocess/process.proto=github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process
-      - Mfilesystem/filesystem.proto=github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem
+      - Mprocess/process.proto=github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process
+      - Mfilesystem/filesystem.proto=github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem
   - local: protoc-gen-connect-go
     out: envdpb
     opt:
       - paths=source_relative
-      - Mprocess/process.proto=github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process
-      - Mfilesystem/filesystem.proto=github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem
+      - Mprocess/process.proto=github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process
+      - Mfilesystem/filesystem.proto=github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem

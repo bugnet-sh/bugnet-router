@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // runnerPath is where bugnet-run lives inside every sandbox

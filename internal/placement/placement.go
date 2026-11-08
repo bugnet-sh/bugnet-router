@@ -9,8 +9,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // ErrNoCandidate means no provider can host the package under the given constraints

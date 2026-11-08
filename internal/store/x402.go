@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/oynozan/bugnet-router/internal/x402"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
 // X402 service states, as the x402_services check names them

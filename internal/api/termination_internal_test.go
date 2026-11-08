@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 func TestTerminationReasonOnlyOnATerminatingOrTerminatedPlacement(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // maxLinkHops bounds the symlinks one RealPath follows, as Linux's ELOOP limit does

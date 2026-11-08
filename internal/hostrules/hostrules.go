@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
-	"github.com/oynozan/bugnet-router/internal/hostname"
+	"github.com/bugnet-sh/bugnet-router/internal/hostname"
 )
 
 // ErrRefused is the error Check answers for every host it refuses

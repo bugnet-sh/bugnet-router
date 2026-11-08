@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
 func TestStartRefusesSecretsWithoutCA(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/oynozan/bugnet-router/internal/hostname"
+	"github.com/bugnet-sh/bugnet-router/internal/hostname"
 )
 
 // X402 holds the x402 host kind's settings

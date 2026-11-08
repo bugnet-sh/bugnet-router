@@ -44,11 +44,11 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/api"
-	filesystempb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem"
-	processpb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process/processconnect"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/api"
+	filesystempb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem"
+	processpb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process/processconnect"
 )
 
 const (

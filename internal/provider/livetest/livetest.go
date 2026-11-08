@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
 // Settings reads config/dev.toml from the module root, found from this file's own path

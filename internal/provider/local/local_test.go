@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/contract"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
 
 var small = provider.Size{

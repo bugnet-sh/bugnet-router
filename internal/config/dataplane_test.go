@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // loadExample loads config/example.toml with an order token key, as a deployment fills it in

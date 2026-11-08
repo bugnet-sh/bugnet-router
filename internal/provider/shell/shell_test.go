@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/shell"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/shell"
 )
 
 func TestCommandRunsUnderShell(t *testing.T) {

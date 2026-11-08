@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // previewID is a 16 character id numbered n, the store checking no shape

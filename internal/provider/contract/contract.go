@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 const (

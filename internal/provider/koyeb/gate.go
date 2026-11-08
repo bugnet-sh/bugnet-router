@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 const routingHeader = "X-Routing-Key"

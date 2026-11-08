@@ -24,7 +24,7 @@ func run(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(dir) }()
 	runnerBin = filepath.Join(dir, "bugnet-run")
 	build := exec.Command("go", "build", "-o", runnerBin,
-		"github.com/oynozan/bugnet-run/cmd/bugnet-run")
+		"github.com/bugnet-sh/bugnet-run/cmd/bugnet-run")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build bugnet-run:", err)

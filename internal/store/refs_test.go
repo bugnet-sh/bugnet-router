@@ -14,10 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // credentials are the provider ref fields the store seals, each with a plaintext value

@@ -15,10 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/testenv"
-	"github.com/oynozan/bugnet-router/internal/x402"
-	"github.com/oynozan/bugnet-router/migrations"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
+	"github.com/bugnet-sh/bugnet-router/migrations"
 )
 
 // x402Version is the goose version of the migration that adds the x402 tables

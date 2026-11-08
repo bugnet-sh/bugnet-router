@@ -29,15 +29,15 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/gateclient"
-	"github.com/oynozan/bugnet-router/internal/handle"
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/boxd"
-	"github.com/oynozan/bugnet-router/internal/providers"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/vkclient"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
+	"github.com/bugnet-sh/bugnet-router/internal/providers"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
 )
 
 // row is one live row, run as the subtest <id>/<provider> on each provider it names

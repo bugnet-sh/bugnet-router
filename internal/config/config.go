@@ -27,8 +27,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/oynozan/bugnet-router/internal/bytesize"
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/bytesize"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 )
 
 // Config holds every router setting

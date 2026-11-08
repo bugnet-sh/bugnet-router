@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 func TestPostgresIsolated(t *testing.T) {

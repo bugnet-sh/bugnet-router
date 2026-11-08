@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/jobs"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 )
 
 // Outside package config, since jobs reaches config through store and x402

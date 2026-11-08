@@ -24,16 +24,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/edgeevents"
-	"github.com/oynozan/bugnet-router/internal/placement"
-	"github.com/oynozan/bugnet-router/internal/providers"
-	"github.com/oynozan/bugnet-router/internal/saga"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/vkclient"
-	"github.com/oynozan/bugnet-router/internal/vkinfo"
-	"github.com/oynozan/bugnet-router/internal/worker"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/providers"
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
+	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
+	"github.com/bugnet-sh/bugnet-router/internal/worker"
 )
 
 const (

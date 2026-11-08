@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 )
 
 const (

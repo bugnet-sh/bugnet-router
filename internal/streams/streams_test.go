@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-run/frame"
+	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/streams"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 func newBus(t *testing.T) (*streams.Bus, valkey.Client, string) {

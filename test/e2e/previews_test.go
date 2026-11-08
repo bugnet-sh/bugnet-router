@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"github.com/jackc/pgx/v5"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
-	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 )
 

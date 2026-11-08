@@ -10,9 +10,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/oynozan/bugnet-router/internal/jobs"
-	"github.com/oynozan/bugnet-router/internal/streams"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/jobs"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 func TestCallEndedByItsContextQuotesNoJob(t *testing.T) {

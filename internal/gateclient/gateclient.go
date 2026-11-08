@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // Wire names the gate shares with bugnet-run and the edges

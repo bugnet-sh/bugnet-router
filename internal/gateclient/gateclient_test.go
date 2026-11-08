@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/gateclient"
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 const key = "k0123456789abcdefghijklmnopqrstuvwxyzABCDEF"

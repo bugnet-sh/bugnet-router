@@ -11,14 +11,14 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/oynozan/bugnet-router/internal/edgeevents"
-	"github.com/oynozan/bugnet-router/internal/jobs"
-	"github.com/oynozan/bugnet-router/internal/placement"
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/saga"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/streams"
-	"github.com/oynozan/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/jobs"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/transfer"
 )
 
 const (

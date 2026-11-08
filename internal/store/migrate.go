@@ -12,7 +12,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
 
-	"github.com/oynozan/bugnet-router/migrations"
+	"github.com/bugnet-sh/bugnet-router/migrations"
 )
 
 // migrateLockKey is the advisory lock that serialises Migrate across processes

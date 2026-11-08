@@ -26,8 +26,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
 // Kind names one of a placement's two budgets

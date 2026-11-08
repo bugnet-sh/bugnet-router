@@ -26,9 +26,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/transfer"
 )
 
 // Sandbox is a local provider seen through an exec user who is not root

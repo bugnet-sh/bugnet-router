@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // SetCleanupTimeout shortens the bound on each cleanup call for one test

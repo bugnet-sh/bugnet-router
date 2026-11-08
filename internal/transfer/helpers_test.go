@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/transfer/transfertest"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/transfer/transfertest"
 )
 
 // eq fails the test when got and want differ

@@ -9,9 +9,9 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/oynozan/bugnet-router/internal/bytesize"
-	"github.com/oynozan/bugnet-router/internal/hostname"
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/bytesize"
+	"github.com/bugnet-sh/bugnet-router/internal/hostname"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // Package is one purchasable bundle of resources and time

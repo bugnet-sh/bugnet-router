@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/boat/api"
-	"github.com/oynozan/bugnet-router/internal/provider/contract"
-	"github.com/oynozan/bugnet-router/internal/provider/livetest"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boat/api"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/livetest"
 )
 
 const liveTimeout = 3 * time.Minute

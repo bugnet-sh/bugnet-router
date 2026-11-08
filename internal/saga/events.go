@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // Outbox event types

@@ -19,10 +19,10 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/testenv"
-	"github.com/oynozan/bugnet-router/migrations"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/migrations"
 )
 
 func newStore(t *testing.T) *store.Store {

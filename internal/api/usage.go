@@ -6,11 +6,11 @@ import (
 	"slices"
 
 	"connectrpc.com/connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/google/uuid"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 
-	"github.com/oynozan/bugnet-router/internal/budget"
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/budget"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // budgetKinds names each budget as the edge events do

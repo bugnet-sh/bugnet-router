@@ -6,8 +6,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
 
 func TestLocalHomeIsTheSandboxRoot(t *testing.T) {

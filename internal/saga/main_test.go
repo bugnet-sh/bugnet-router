@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
 )
 
 // runnerBin is the host build of bugnet-run every local sandbox in these tests runs
@@ -27,7 +27,7 @@ func run(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(dir) }()
 	runnerBin = filepath.Join(dir, "bugnet-run")
 	build := exec.Command("go", "build", "-o", runnerBin,
-		"github.com/oynozan/bugnet-run/cmd/bugnet-run")
+		"github.com/bugnet-sh/bugnet-run/cmd/bugnet-run")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build bugnet-run:", err)

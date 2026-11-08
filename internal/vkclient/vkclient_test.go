@@ -3,7 +3,7 @@ package vkclient
 import (
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 func TestValkeyUnixAddress(t *testing.T) {

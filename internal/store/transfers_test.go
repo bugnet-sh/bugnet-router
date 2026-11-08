@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/oynozan/bugnet-router/internal/testenv"
-	"github.com/oynozan/bugnet-router/migrations"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/migrations"
 )
 
 func TestTransferIndexRowOnce(t *testing.T) {

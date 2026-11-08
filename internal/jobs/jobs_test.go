@@ -24,16 +24,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/oynozan/bugnet-run/frame"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/jobs"
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/streams"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/jobs"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 var runnerPath string
@@ -51,7 +51,7 @@ func run(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(dir) }()
 	runnerPath = filepath.Join(dir, "bugnet-run")
 	build := exec.Command("go", "build", "-o", runnerPath,
-		"github.com/oynozan/bugnet-run/cmd/bugnet-run")
+		"github.com/bugnet-sh/bugnet-run/cmd/bugnet-run")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build bugnet-run:", err)

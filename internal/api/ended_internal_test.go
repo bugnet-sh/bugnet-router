@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 func TestEndedAtOnlyOnATerminatedOrFailedPlacement(t *testing.T) {

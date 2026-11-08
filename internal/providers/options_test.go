@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/provider/boxd"
-	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/koyeb"
 )
 
 func TestKoyebOptionsCarryTheTransferParts(t *testing.T) {

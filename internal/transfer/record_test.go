@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/testenv"
-	"github.com/oynozan/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/transfer"
 )
 
 var limits = transfer.Limits{MaxTokens: 16, MaxActive: 2, MaxClaims: 5, TTL: 40 * time.Minute}

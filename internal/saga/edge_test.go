@@ -8,18 +8,18 @@ import (
 	"testing"
 	"time"
 
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/google/uuid"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/oynozan/bugnet-router/internal/budget"
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
-	"github.com/oynozan/bugnet-router/internal/handle"
-	"github.com/oynozan/bugnet-router/internal/placement"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/saga"
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/budget"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // eq fails the test when got and want differ

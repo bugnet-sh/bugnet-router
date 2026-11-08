@@ -16,9 +16,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	filesystempb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem/filesystemconnect"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	filesystempb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem/filesystemconnect"
 )
 
 const (

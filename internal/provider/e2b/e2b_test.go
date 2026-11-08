@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/contract"
-	processpb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
+	processpb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process"
 )
 
 func TestE2BContract(t *testing.T) {

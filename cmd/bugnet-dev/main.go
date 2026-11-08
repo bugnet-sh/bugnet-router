@@ -32,15 +32,15 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
-	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
-	"github.com/oynozan/bugnet-router/internal/handle"
-	"github.com/oynozan/bugnet-router/internal/ordertoken"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 )
 
 const usage = `usage: bugnet-dev [--config FILE] <command> [flags]

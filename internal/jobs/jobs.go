@@ -33,12 +33,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/google/uuid"
-	"github.com/oynozan/bugnet-run/frame"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
 )
 
 const (

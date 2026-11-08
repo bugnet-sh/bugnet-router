@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/oynozan/bugnet-run/frame"
+	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/valkey-io/valkey-go"
 )
 

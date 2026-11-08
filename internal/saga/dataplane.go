@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/gateclient"
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // Sandbox paths of the spec files the root commands read and then delete

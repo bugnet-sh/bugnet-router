@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/hostname"
+	"github.com/bugnet-sh/bugnet-router/internal/hostname"
 )
 
 // maxDataplaneWorkers is the most workers River lets one queue run

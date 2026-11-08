@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"testing"
 
-	"github.com/oynozan/bugnet-proto/vectors"
+	"github.com/bugnet-sh/bugnet-proto/vectors"
 )
 
 // vector decodes one bugnet-proto x402 vector file strictly into v

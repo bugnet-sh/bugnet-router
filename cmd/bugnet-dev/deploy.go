@@ -15,8 +15,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/oynozan/bugnet-router/deploy/vps"
-	"github.com/oynozan/bugnet-router/internal/hostname"
+	"github.com/bugnet-sh/bugnet-router/deploy/vps"
+	"github.com/bugnet-sh/bugnet-router/internal/hostname"
 )
 
 /* Deploy */

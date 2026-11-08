@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 func TestBoatPrepareGateKeepsTokenNeverLogsURL(t *testing.T) {

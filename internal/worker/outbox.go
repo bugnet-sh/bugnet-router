@@ -17,8 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
-	"github.com/oynozan/bugnet-router/internal/jobargs"
-	"github.com/oynozan/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 const (

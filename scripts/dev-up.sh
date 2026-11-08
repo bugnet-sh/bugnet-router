@@ -27,7 +27,7 @@ fi
 
 mkdir -p bin/logs
 echo "dev-up: building into bin/"
-go build -o bin/ github.com/oynozan/bugnet-run/cmd/bugnet-run \
+go build -o bin/ github.com/bugnet-sh/bugnet-run/cmd/bugnet-run \
 	./cmd/router-api ./cmd/router-worker ./cmd/bugnet-dev
 
 if [ ! -f .env.keys ]; then

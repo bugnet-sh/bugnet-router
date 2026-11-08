@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 
-	"github.com/oynozan/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
 )
 
 // handleCalls maps each built RPC that takes a handle to a call of it on the handle given

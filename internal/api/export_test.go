@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 )
 
 // SetBeforeReport runs f between each report reading its budgets and counting its bytes

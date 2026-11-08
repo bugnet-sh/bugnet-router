@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd/boxdpb"
 )
 
 const (

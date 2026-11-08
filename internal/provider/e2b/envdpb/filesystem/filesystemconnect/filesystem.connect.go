@@ -8,7 +8,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	filesystem "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem"
+	filesystem "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem"
 	http "net/http"
 	strings "strings"
 )

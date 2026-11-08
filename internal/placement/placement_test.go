@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/catalog"
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/boat"
-	"github.com/oynozan/bugnet-router/internal/provider/boxd"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b"
-	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/koyeb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
 
 type fakeHealth struct {

@@ -1,6 +1,6 @@
 package api
 
-import "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+import "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 
 // SecretsRouteServer implements routerv1connect.SecretsRouteServiceHandler for bugnet-secrets
 type SecretsRouteServer struct {

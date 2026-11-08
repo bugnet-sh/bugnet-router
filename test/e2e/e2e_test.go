@@ -34,13 +34,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"github.com/google/uuid"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
-	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 
-	"github.com/oynozan/bugnet-router/internal/ordertoken"
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 const (
@@ -99,10 +99,10 @@ func runMain(m *testing.M) int {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	build := exec.Command("go", "build", "-o", dir+string(os.PathSeparator),
-		"github.com/oynozan/bugnet-run/cmd/bugnet-run",
-		"github.com/oynozan/bugnet-router/cmd/router-api",
-		"github.com/oynozan/bugnet-router/cmd/router-worker",
-		"github.com/oynozan/bugnet-router/cmd/bugnet-dev")
+		"github.com/bugnet-sh/bugnet-run/cmd/bugnet-run",
+		"github.com/bugnet-sh/bugnet-router/cmd/router-api",
+		"github.com/bugnet-sh/bugnet-router/cmd/router-worker",
+		"github.com/bugnet-sh/bugnet-router/cmd/bugnet-dev")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build binaries:", err)

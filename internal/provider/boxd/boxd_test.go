@@ -21,9 +21,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
-	"github.com/oynozan/bugnet-router/internal/provider/contract"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd/boxdpb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
 
 func TestBoxdContract(t *testing.T) {

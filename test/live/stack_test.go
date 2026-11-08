@@ -47,8 +47,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/oynozan/bugnet-router/internal/provider/local"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 var (

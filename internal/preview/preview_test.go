@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
-	"github.com/oynozan/bugnet-router/internal/preview"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/preview"
 )
 
 // eq fails the test when got and want differ

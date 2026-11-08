@@ -11,7 +11,7 @@ import (
 	"encoding/base32"
 	"strings"
 
-	"github.com/oynozan/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 )
 
 // IDLength is how many characters a preview id has

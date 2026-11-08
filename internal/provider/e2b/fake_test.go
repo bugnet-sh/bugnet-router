@@ -30,12 +30,12 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/api"
-	filesystempb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/filesystem/filesystemconnect"
-	processpb "github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process"
-	"github.com/oynozan/bugnet-router/internal/provider/e2b/envdpb/process/processconnect"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/api"
+	filesystempb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/filesystem/filesystemconnect"
+	processpb "github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b/envdpb/process/processconnect"
 )
 
 const (

@@ -6,9 +6,9 @@ plugins:
     out: boxdpb
     opt:
       - paths=source_relative
-      - Mapi.proto=github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb
+      - Mapi.proto=github.com/bugnet-sh/bugnet-router/internal/provider/boxd/boxdpb
   - local: protoc-gen-go-grpc
     out: boxdpb
     opt:
       - paths=source_relative
-      - Mapi.proto=github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb
+      - Mapi.proto=github.com/bugnet-sh/bugnet-router/internal/provider/boxd/boxdpb

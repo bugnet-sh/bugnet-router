@@ -24,10 +24,10 @@ import (
 
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/contract"
-	"github.com/oynozan/bugnet-router/internal/provider/shell"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/shell"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 const (

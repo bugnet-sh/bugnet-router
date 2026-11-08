@@ -42,9 +42,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
-	"github.com/oynozan/bugnet-router/internal/provider/boxd/boxdpb"
-	"github.com/oynozan/bugnet-router/internal/provider/shell"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd/boxdpb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/shell"
 )
 
 const (

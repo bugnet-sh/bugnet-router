@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/hostrules"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 )
 
 // payTo is a canonical base58 key of 32 bytes

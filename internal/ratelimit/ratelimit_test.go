@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/ratelimit"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // take spends one token of id's bucket and returns whether it was there and the wait otherwise

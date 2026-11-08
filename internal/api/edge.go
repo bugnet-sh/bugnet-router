@@ -4,11 +4,11 @@ import (
 	"context"
 
 	"connectrpc.com/connect"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
-	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/oynozan/bugnet-router/internal/budget"
+	"github.com/bugnet-sh/bugnet-router/internal/budget"
 )
 
 // EdgeServer implements routerv1connect.EdgeServiceHandler for bugnet-edge

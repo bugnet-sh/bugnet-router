@@ -8,13 +8,13 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/jackc/pgx/v5"
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/oynozan/bugnet-router/internal/handle"
-	"github.com/oynozan/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
 )
 
 // failingEngine answers every candidates call with err

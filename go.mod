@@ -1,4 +1,4 @@
-module github.com/oynozan/bugnet-router
+module github.com/bugnet-sh/bugnet-router
 
 go 1.27
 
@@ -7,8 +7,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/oapi-codegen/runtime v1.8.0
-	github.com/oynozan/bugnet-proto v0.1.0
-	github.com/oynozan/bugnet-run v0.1.2
+	github.com/bugnet-sh/bugnet-proto v0.1.0
+	github.com/bugnet-sh/bugnet-run v0.1.2
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.51.0
@@ -40,6 +40,6 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 )
 
-replace github.com/oynozan/bugnet-run => ../bugnet-run
+replace github.com/bugnet-sh/bugnet-run => ../bugnet-run
 
-replace github.com/oynozan/bugnet-proto => ../bugnet-proto
+replace github.com/bugnet-sh/bugnet-proto => ../bugnet-proto

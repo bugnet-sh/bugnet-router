@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // gateRoutes lists the executor's port routes the adapter called, oldest first

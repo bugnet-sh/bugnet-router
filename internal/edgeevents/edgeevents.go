@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	routerv1 "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/valkey-io/valkey-go"
 	"google.golang.org/protobuf/proto"
 )

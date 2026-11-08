@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/valkey-io/valkey-go"
 
-	"github.com/oynozan/bugnet-router/internal/ratelimit"
-	"github.com/oynozan/bugnet-router/internal/store"
-	"github.com/oynozan/bugnet-router/internal/testenv"
+	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // lateCtx is past its deadline before its own timer has ended it, as a socket deadline sees first

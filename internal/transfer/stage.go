@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // info is what bugnet-run's stat, stage-out and place print

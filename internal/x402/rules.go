@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/oynozan/bugnet-router/internal/config"
-	"github.com/oynozan/bugnet-router/internal/hostrules"
-	"github.com/oynozan/bugnet-router/internal/solana"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
+	"github.com/bugnet-sh/bugnet-router/internal/solana"
 )
 
 const (

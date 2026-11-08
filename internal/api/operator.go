@@ -1,6 +1,6 @@
 package api
 
-import "github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+import "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 
 // OperatorServer implements routerv1connect.OperatorServiceHandler for bugnet-dev's operators
 type OperatorServer struct {
