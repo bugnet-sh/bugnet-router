@@ -56,8 +56,7 @@ func (s *Saga) Gate(p store.Placement) (provider.GateRoute, string, error) {
 	return route, key, nil
 }
 
-// OpenGate runs start saga steps 2 and 3 for a ready placement whose gate never answered.
-// One replica runs them at a time and the others then find the gate open.
+// OpenGate runs start saga steps 2 and 3 once for a ready placement whose gate never answered
 func (s *Saga) OpenGate(ctx context.Context, p store.Placement) (store.Placement, error) {
 	if p.GateReadyAt != nil {
 		return p, nil
