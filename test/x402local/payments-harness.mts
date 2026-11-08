@@ -222,6 +222,14 @@ async function order(o: OrderBody): Promise<unknown> {
     return { orderId: created.orderId, orderToken: redeemed.orderToken };
 }
 
+// Pays a payment step from the test payer as a wallet does, through its public pay URL
+async function payStep(b: { payUrl: string; accepted: unknown }): Promise<unknown> {
+    const payload = await signedPayment(b.accepted, signers.payer);
+    const paid = await fetch(b.payUrl, { headers: pay.encodePaymentSignatureHeader(payload) });
+    if (paid.status !== 200) throw new Error(`pay: ${paid.status} ${await paid.text()}`);
+    return { status: paid.status };
+}
+
 async function ledger(): Promise<unknown> {
     const rows = await svc.pool.query(
         `select ref, state, amount_micros::text as amount_micros, tx_signature, host, path
@@ -258,6 +266,8 @@ const server = createServer(async (req, res) => {
             out = { ata };
         } else if (url.pathname === "/order") {
             out = await order(body);
+        } else if (url.pathname === "/pay") {
+            out = await payStep(body);
         } else if (url.pathname === "/ledger") {
             out = await ledger();
         } else if (url.pathname === "/balance") {
@@ -286,6 +296,7 @@ server.listen(0, "127.0.0.1", () => {
         `${JSON.stringify({
             control: `http://127.0.0.1:${port}`,
             signer: svc.x402Port,
+            internal: `http://127.0.0.1:${svc.internalPort}`,
             orderPublicKey: orderPublicKeyBase64(Buffer.from(input.orderSeed, "base64")),
             chain: chain.url,
             feePayer: signers.feePayer!.address,

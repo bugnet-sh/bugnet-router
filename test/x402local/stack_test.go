@@ -123,6 +123,7 @@ type paymentsControl struct {
 	OrderPublicKey   string `json:"orderPublicKey"`
 	Chain            string `json:"chain"`
 	FeePayer         string `json:"feePayer"`
+	Internal         string `json:"internal"`
 	paymentsToken    string
 	paymentsTokenKey string
 }

@@ -328,6 +328,7 @@ func TestX402Local(t *testing.T) {
 	run("ok", modeOK)
 	run("free", modeFree)
 	runMore(s, run)
+	run("flow", flow)
 }
 
 // modeOK pays one call of $0.001 from a $0.10 allowance and sees it settle on the fake chain
