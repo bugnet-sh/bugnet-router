@@ -129,6 +129,13 @@ func (s *Server) newLink(
 		if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
+		live, err := ts.LiveX402Hosts(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if err := secrets.CheckInUse(suggested, live); err != nil {
+			return err
+		}
 		if err := s.spend(ctx, p); err != nil {
 			return err
 		}
@@ -343,14 +350,21 @@ func (s *Server) storeSecret(
 		if err != nil {
 			return err
 		}
+		live, err := ts.LiveX402Hosts(ctx, p.ID)
+		if err != nil {
+			return err
+		}
 		prev, had := named(held, w.spec.GetName())
 		if had && w.key != "" && prev.IdempotencyKey == w.key &&
 			secrets.Matches(prev, w.spec, w.value) {
 			row = prev
 			return nil
 		}
+		if err := secrets.CheckInUse(w.spec, live); err != nil {
+			return err
+		}
 		most := cmp.Or(s.d.Secrets.MaxPerPlacement, defaultMaxSecrets)
-		if err := secrets.Fit(w.spec, heldOf(held), most); err != nil {
+		if err := secrets.Fit(w.spec, heldOf(held), live, most); err != nil {
 			return err
 		}
 		if err := s.claim(ctx, ts, cur, w); err != nil {

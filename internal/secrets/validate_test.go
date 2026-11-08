@@ -102,19 +102,41 @@ func TestPlacementLimits(t *testing.T) {
 	}
 	spec := &routerv1.SecretSpec{Name: "NEW", Hosts: []string{"h1.example.com"}}
 	// 21 secrets
-	mustCode(t, Fit(spec, held, 20), connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
+	mustCode(t, Fit(spec, held, nil, 20), connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
 	// Replacing one of the 20 keeps 20
 	spec.Name = "S3"
-	eq(t, Fit(spec, held, 20), nil)
+	eq(t, Fit(spec, held, nil, 20), nil)
 	// The others hold 16 hosts, so 17 new ones make 33 in all
 	spec.Hosts = []string{}
 	for i := 16; i < 33; i++ {
 		spec.Hosts = append(spec.Hosts, fmt.Sprintf("h%d.example.com", i))
 	}
-	mustCode(t, Fit(spec, held, 20), connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
+	mustCode(t, Fit(spec, held, nil, 20), connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
 	spec.Hosts = spec.Hosts[:16]
-	eq(t, Fit(spec, held, 20), nil)
+	eq(t, Fit(spec, held, nil, 20), nil)
 	// A host the others hold counts once
 	spec.Hosts = append(spec.Hosts, "h0.example.com")
-	eq(t, Fit(spec, held, 20), nil)
+	eq(t, Fit(spec, held, nil, 20), nil)
+}
+
+func TestX402HostsCountTowardThirtyTwo(t *testing.T) {
+	var held []Held
+	for i := range 27 {
+		held = append(held, Held{Name: fmt.Sprintf("S%d", i),
+			Hosts: []string{fmt.Sprintf("h%d.example.com", i)}})
+	}
+	live := []string{"a1.example.com", "a2.example.com", "a3.example.com", "a4.example.com",
+		"a5.example.com"}
+	spec := &routerv1.SecretSpec{Name: "S0", Hosts: []string{"h0.example.com"}}
+	eq(t, Fit(spec, held, live, 30), nil)
+	spec.Hosts = []string{"h0.example.com", "extra.example.com"}
+	mustCode(t, Fit(spec, held, live, 30), connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
+}
+
+func TestCheckInUse(t *testing.T) {
+	live := []string{"api.example.com"}
+	spec := &routerv1.SecretSpec{Name: "K", Hosts: []string{"b.example.com", "api.example.com"}}
+	mustCode(t, CheckInUse(spec, live), connect.CodeFailedPrecondition, "HOST_IN_USE")
+	spec.Hosts = []string{"b.example.com"}
+	eq(t, CheckInUse(spec, live), nil)
 }

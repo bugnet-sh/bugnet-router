@@ -977,3 +977,68 @@ func TestSealedWithUnknownKeyRefused(t *testing.T) {
 	mustCode(t, err, connect.CodeInvalidArgument, "KEY_UNKNOWN")
 	eq(t, e.applyJobs(t, p.GetPlacementId()), 0)
 }
+
+const liveHost = "api.example.com"
+
+// TestSecretWritesRefuseLiveX402Host covers the link, its submit, PutSecret and PutBridgeSecret
+func TestSecretWritesRefuseLiveX402Host(t *testing.T) {
+	for _, state := range []string{"applying", "active", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			e := newEnv(t, options{secrets: true, x402: x402On})
+			h, p := e.readyPlacement(t)
+			custom := &routerv1.SecretSpec{Name: "MY_KEY", Hosts: []string{liveHost}}
+			// A link made before the service, and a grant, stay valid until they are used
+			tok := e.mustLink(t, h, "before")
+			grant := e.grant(t, h)
+			e.putRow(t, p.GetPlacementId(), svc(liveHost, "/v1/"), state)
+
+			_, err := e.putSecret(t, h, custom, "")
+			mustCode(t, err, connect.CodeFailedPrecondition, "HOST_IN_USE")
+			_, err = e.putBridge(t, grant, custom)
+			mustCode(t, err, connect.CodeFailedPrecondition, "HOST_IN_USE")
+			_, err = e.submit(t, tok, "s-1", custom)
+			mustCode(t, err, connect.CodeFailedPrecondition, "HOST_IN_USE")
+			quotesNone(t, err, liveHost)
+			eq(t, e.applyJobs(t, p.GetPlacementId()), 0)
+
+			// A new link suggesting a preset host an x402 row holds is refused too
+			e.putRow(t, p.GetPlacementId(), svc("huggingface.co", "/api/"), state)
+			_, err = e.createLink(t, h, "after", "HF_TOKEN")
+			mustCode(t, err, connect.CodeFailedPrecondition, "HOST_IN_USE")
+			e.mustLink(t, h, "before")
+		})
+	}
+}
+
+func TestDisabledX402HostIsFree(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	e.putRow(t, p.GetPlacementId(), svc(liveHost, "/v1/"), "disabled")
+	e.putRow(t, p.GetPlacementId(), svc("huggingface.co", "/api/"), "disabled")
+	e.mustPutSecret(t, h, &routerv1.SecretSpec{Name: "MY_KEY", Hosts: []string{liveHost}})
+	e.mustLink(t, h, "free")
+}
+
+func TestX402HostsCountTowardThirtyTwo(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	for _, host := range hostsNamed("x", "example.net", 5) {
+		e.putRow(t, p.GetPlacementId(), svc(host, "/v1/"), "active")
+	}
+	// A disabled row counts toward nothing
+	e.putRow(t, p.GetPlacementId(), svc("off.example.net", "/v1/"), "disabled")
+	e.putSecretHosts(t, h, hostsNamed("s", "example.org", 27))
+	_, err := e.putSecret(t, h, &routerv1.SecretSpec{
+		Name: "ONE_MORE", Hosts: []string{"more.example.org"},
+	}, "")
+	mustCode(t, err, connect.CodeResourceExhausted, "TOO_MANY_SECRETS")
+}
+
+func TestSecretHostsUseHostRules(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, _ := e.readyPlacement(t)
+	_, err := e.putSecret(t, h, &routerv1.SecretSpec{
+		Name: "MY_KEY", Hosts: []string{"x.workers.dev"},
+	}, "")
+	mustCode(t, err, connect.CodeInvalidArgument, "HOST_REFUSED")
+}
