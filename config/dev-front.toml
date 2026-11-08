@@ -28,3 +28,8 @@ wildcard_dir = "~/.local/state/bugnet-dev/preview-dev"  # make dev-certs in bugn
 
 [edge]
 abuse_contact = "support@bugnet.org"  # the edge's previews.abuse_contact
+
+[egress]
+# The dev CA, made once with bugnet-egress ca init --out DIR and baked into the dev E2B templates
+# by pnpm run build:dev in deploy/e2b. Without it the stack makes a fresh CA, and E2B is refused.
+ca_dir = "~/.local/state/bugnet-dev/egress-ca"

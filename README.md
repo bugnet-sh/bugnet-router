@@ -208,6 +208,13 @@ row that needs python3 or node and finds none says so.
 | KOYEB3 | Koyeb only: logs where SSE is cut, and fails when Koyeb's CDN serves a gate answer from cache |
 | BOAT3 | Boat only: `_port_auth` reaches neither the app nor the visitor, and logs a WebSocket's life up to 20 minutes |
 | BOAT4 | Boat only: 12,000 requests in a minute straight at the route. No 429 lets `previews.boat_requests_per_minute` drop to 0 |
+| X1 | Needs `--front vps`. Curl, requests, httpx, Node, Go, git, pip and uv reach a secret host and trust the Bugnet CA. A client the sandbox lacks is logged as skipped, and fewer than four fail the row |
+| X2 | Needs `--front vps` and `BUGNET_LIVE_X2_HF_URL`, `_HF_TOKEN`, `_GIT_URL` and `_GIT_TOKEN`, throwaway tokens. A gated file downloads and a private repository clones, and `env` shows only placeholders |
+| X3 | Needs `--front vps`. A throwaway bound to `httpbin.org` shows in its echo, and the placeholder sent to `postman-echo.com` shows as the placeholder |
+| X4 | Needs `--front vps`. After the forwarder is killed by its pid file, the secret host works again within 45 s |
+| X5 | Needs `--front vps`. A tunnel from outside with no token, then with a placeholder as the token, gets 401, and the placeholder at the echo host stays inert |
+| X6 | Needs `--front vps`. `curl -X TRACE` to a secret host through the tunnel answers 405 |
+| KOYEB5 | Koyeb only, needs `--front vps`. The `/etc/hosts` block maps the secret hosts and a second secret rewrites it in place, the mount entry logged |
 
 `TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
 `/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
@@ -223,6 +230,8 @@ it opens. N1 also probes `[fd00:ec2::254]:80`.
 | Names | The dev names, reached with `curl --resolve` through a loopback front that adds HAProxy's PROXY v2 header | The dev names through the VPS |
 | TLS | ACME off, a fresh self-signed pair | Let's Encrypt for the exact names over the tunnel, the wildcard `make dev-certs` copied |
 | `secrets.egress_ips` | `127.0.0.1` | `vps.egress_ips` in `config/dev-front.toml` |
+| `bugnet-egress` | A free loopback port, which `fetch.egress_addr` follows, with the self-signed pair | Port 9443, Let's Encrypt over the tunnel |
+| `secrets.ca_cert_file` | A fresh CA for the stack | The dev CA in `egress.ca_dir` of `config/dev-front.toml` when it exists, which E2B needs |
 
 The fronted mode keeps its ACME caches in `~/.local/state/bugnet-dev/acme/<service>/`, so
 repeated runs reuse their certificates and stay inside Let's Encrypt's limits. It refuses to start

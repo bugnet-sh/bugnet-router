@@ -1872,3 +1872,392 @@ func TestRowAppScripts(t *testing.T) {
 		}
 	}
 }
+
+/* Secret rows, DP 16.2 X1 to X6 and the plan's KOYEB5 */
+
+const (
+	// echoHost answers with the headers it received, so a swapped value shows in its body
+	echoHost = "httpbin.org"
+	// otherEchoHost is a second public echo that no secret names
+	otherEchoHost = "postman-echo.com"
+	// secretName is the variable the rows' placeholder lands in
+	secretName = "ECHO_TOKEN"
+	// applyWithin is how long a secret may take to reach the sandbox's environment
+	applyWithin = time.Minute
+	// restartWithin is how long X4 gives systemd to bring the forwarder back
+	restartWithin = 45 * time.Second
+)
+
+// secretProviders are the providers whose secret rows run, never local
+var secretProviders = []string{"e2b", "boxd", "koyeb", "boat"}
+
+func init() {
+	for _, id := range []string{"X1", "X2", "X3", "X4", "X5", "X6"} {
+		dataplaneRows = append(dataplaneRows, row{id: id, providers: secretProviders, vps: true,
+			run: secretRows[id]})
+	}
+	dataplaneRows = append(dataplaneRows,
+		row{id: "KOYEB5", providers: []string{"koyeb"}, vps: true, run: rowKoyeb5})
+}
+
+var secretRows = map[string]func(t *testing.T, s *stack){
+	"X1": rowX1, "X2": rowX2, "X3": rowX3, "X4": rowX4, "X5": rowX5, "X6": rowX6,
+}
+
+// devStdin is dev with stdin, which bugnet-dev secret reads its value from
+func (s *stack) devStdin(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(s.bin, "bugnet-dev"),
+		append([]string{"--config", s.settings}, args...)...)
+	cmd.Dir, cmd.Env, cmd.Stdin = s.root, s.env, strings.NewReader(stdin)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("live: bugnet-dev %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+	return string(out)
+}
+
+// throwaway is a value that is worth nothing, since it travels to a public echo host
+func throwaway() string {
+	return "throwaway-" + strconv.FormatUint(rand.Uint64(), 36) +
+		strconv.FormatUint(rand.Uint64(), 36)
+}
+
+// putSecret puts a secret bound to hosts and answers the placeholder the sandbox sees for it
+func (s *stack) putSecret(t *testing.T, h, name, value string, hosts ...string) string {
+	t.Helper()
+	args := []string{"secret", "--handle", h, "--name", name}
+	for _, host := range hosts {
+		args = append(args, "--host", host)
+	}
+	put := kv(s.devStdin(t, value, args...))
+	if put["state"] == "failed" {
+		t.Fatalf("live: the secret %s failed: %v", name, put)
+	}
+	deadline := time.Now().Add(applyWithin)
+	for {
+		got, _, err := s.devTry(t, "exec", "--handle", h, "--", "sh", "-c", `printenv `+name)
+		got = strings.TrimSpace(got)
+		if err == nil && strings.HasPrefix(got, "bnsec_") {
+			if strings.Contains(got, value) {
+				t.Fatalf("the sandbox's %s holds the value", name)
+			}
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not reach the sandbox's environment within %s, state %s",
+				name, applyWithin, put["state"])
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// echoSandbox is a sandbox with a secret bound to the echo host, and the value and placeholder
+func (s *stack) echoSandbox(t *testing.T) (h, value, placeholder string) {
+	t.Helper()
+	h = s.sandbox(t, xferPackage)
+	value = throwaway()
+	return h, value, s.putSecret(t, h, secretName, value, echoHost)
+}
+
+// shTry runs a shell script in the sandbox and answers its output, an error included
+func (s *stack) shTry(t *testing.T, h, script string) string {
+	t.Helper()
+	out, stderr, _ := s.devTry(t, "exec", "--handle", h, "--", "sh", "-c", script)
+	return out + stderr
+}
+
+// secretClient is one client of X1's matrix
+type secretClient struct {
+	name string
+	// script prints SKIP when the tool is absent, else the response or the tool's own error
+	script string
+	// wantValue means the echo's body must show the swapped value
+	wantValue bool
+}
+
+var certErrors = []string{"SSL certificate problem", "certificate verify failed",
+	"CERTIFICATE_VERIFY_FAILED", "UnknownIssuer", "invalid peer certificate",
+	"x509: certificate", "unable to get local issuer", "self-signed certificate",
+	"self signed certificate"}
+
+func secretClients() []secretClient {
+	h := echoHost
+	bearer := `"Authorization: Bearer $` + secretName + `"`
+	return []secretClient{
+		{"curl", `curl -sS -H ` + bearer + ` https://` + h + `/headers 2>&1`, true},
+		{"requests", `python3 -c 'import requests' 2>/dev/null || pip install -q --user requests ` +
+			`>/dev/null 2>&1; python3 -c "import os,requests;print(requests.get('https://` + h +
+			`/headers',headers={'Authorization':'Bearer '+os.environ['` + secretName +
+			`']},timeout=30).text)" 2>&1 || echo SKIP`, true},
+		{"httpx", `python3 -c 'import httpx' 2>/dev/null || pip install -q --user httpx ` +
+			`>/dev/null 2>&1; python3 -c "import os,httpx;print(httpx.get('https://` + h +
+			`/headers',headers={'Authorization':'Bearer '+os.environ['` + secretName +
+			`']},timeout=30).text)" 2>&1 || echo SKIP`, true},
+		{"node", `command -v node >/dev/null || { echo SKIP; exit 0; }; node -e "fetch('https://` +
+			h + `/headers',{headers:{Authorization:'Bearer '+process.env.` + secretName +
+			`}}).then(r=>r.text()).then(console.log,e=>console.log(String(e.cause||e)))" ` +
+			`2>&1`, true},
+		{"go", `command -v go >/dev/null || { echo SKIP; exit 0; }; d=$(mktemp -d); ` +
+			`cat > $d/m.go ` +
+			`<<'GO'
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func main() {
+	req, _ := http.NewRequest("GET", "https://` + h + `/headers", nil)
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("` + secretName + `"))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	b, _ := io.ReadAll(res.Body)
+	fmt.Println(string(b))
+}
+GO
+cd $d && go run m.go 2>&1`, true},
+		{"git", `command -v git >/dev/null || { echo SKIP; exit 0; }; ` +
+			`git ls-remote https://` + h + `/ 2>&1; true`, false},
+		{"pip", `command -v pip >/dev/null || { echo SKIP; exit 0; }; ` +
+			`pip download -q --no-deps -d /tmp/pipx --index-url https://` + h +
+			`/simple/ nothing-here 2>&1; true`, false},
+		{"uv", `command -v uv >/dev/null || pip install -q --user uv >/dev/null 2>&1; ` +
+			`command -v uv >/dev/null || [ -x ~/.local/bin/uv ] || { echo SKIP; exit 0; }; ` +
+			`PATH=$PATH:~/.local/bin uv pip install --system --index-url https://` + h +
+			`/simple/ nothing-here 2>&1; true`, false},
+	}
+}
+
+// rowX1 runs the eight clients against the echo host and expects every one to trust the Bugnet CA
+func rowX1(t *testing.T, s *stack) {
+	h, value, _ := s.echoSandbox(t)
+	ran := 0
+	for _, c := range secretClients() {
+		out := s.shTry(t, h, c.script)
+		switch {
+		case strings.Contains(out, "SKIP"):
+			t.Logf("X1 on %s: %s skipped, the tool is not in the sandbox", s.provider, c.name)
+			continue
+		case slices.ContainsFunc(certErrors,
+			func(e string) bool { return strings.Contains(out, e) }):
+			t.Errorf("X1 on %s: %s does not trust the Bugnet CA: %s", s.provider, c.name,
+				strings.TrimSpace(out))
+			continue
+		case c.wantValue && !strings.Contains(out, value):
+			t.Errorf("X1 on %s: %s reached %s but the echo did not show the swapped value: %s",
+				s.provider, c.name, echoHost, strings.TrimSpace(out))
+			continue
+		}
+		ran++
+		t.Logf("X1 on %s: %s trusts the Bugnet CA", s.provider, c.name)
+	}
+	if ran < 4 {
+		t.Fatalf("X1 on %s: %d of 8 clients ran, at least curl, requests, httpx and one more "+
+			"are needed", s.provider, ran)
+	}
+}
+
+// rowX2 downloads a gated file and clones a private repository with throwaway tokens the
+// controller names, and checks the sandbox's environment holds only placeholders
+func rowX2(t *testing.T, s *stack) {
+	var (
+		hfURL    = os.Getenv("BUGNET_LIVE_X2_HF_URL")
+		hfToken  = os.Getenv("BUGNET_LIVE_X2_HF_TOKEN")
+		gitURL   = os.Getenv("BUGNET_LIVE_X2_GIT_URL")
+		gitToken = os.Getenv("BUGNET_LIVE_X2_GIT_TOKEN")
+	)
+	if hfURL == "" || hfToken == "" || gitURL == "" || gitToken == "" {
+		t.Skip("X2 needs BUGNET_LIVE_X2_HF_URL, _HF_TOKEN, _GIT_URL and _GIT_TOKEN, throwaway " +
+			"tokens for one gated file and one private repository")
+	}
+	hfHost, gitHost := hostOf(t, hfURL), hostOf(t, gitURL)
+	h := s.sandbox(t, xferPackage)
+	hfPH := s.putSecret(t, h, "HF_TOKEN", hfToken, hfHost)
+	gitPH := s.putSecret(t, h, "GIT_TOKEN", gitToken, gitHost)
+	out := s.shTry(t, h, `curl -sS -L -o /tmp/x2.bin -w '%{http_code}' -H "Authorization: Bearer `+
+		`$HF_TOKEN" `+hfURL+`; echo; wc -c < /tmp/x2.bin`)
+	if !strings.HasPrefix(strings.TrimSpace(out), "200") {
+		t.Fatalf("X2 on %s: the gated file answered %q", s.provider, out)
+	}
+	clone := s.shTry(t, h, `rm -rf /tmp/x2repo; git -c http.extraHeader="Authorization: Bearer `+
+		`$GIT_TOKEN" clone --depth 1 `+gitURL+` /tmp/x2repo 2>&1 && echo CLONED`)
+	if !strings.Contains(clone, "CLONED") {
+		t.Fatalf("X2 on %s: the private clone failed: %s", s.provider, clone)
+	}
+	env := s.shTry(t, h, `env`)
+	for _, secret := range []string{hfToken, gitToken} {
+		if strings.Contains(env, secret) {
+			t.Fatalf("X2 on %s: env shows a throwaway value", s.provider)
+		}
+	}
+	for _, ph := range []string{hfPH, gitPH} {
+		if !strings.Contains(env, ph) {
+			t.Fatalf("X2 on %s: env lacks the placeholder %s", s.provider, ph)
+		}
+	}
+}
+
+func hostOf(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		t.Fatalf("not a URL: %q", raw)
+	}
+	return u.Hostname()
+}
+
+// rowX3 binds a throwaway to the echo host, which shows the value, and sends the placeholder to a
+// host no secret names, which shows the placeholder
+func rowX3(t *testing.T, s *stack) {
+	h, value, placeholder := s.echoSandbox(t)
+	auth := `-H "Authorization: Bearer $` + secretName + `"`
+	bound := s.shTry(t, h, `curl -sS `+auth+` https://`+echoHost+`/headers`)
+	if !strings.Contains(bound, value) || strings.Contains(bound, placeholder) {
+		t.Fatalf("X3 on %s: the bound echo host did not show the value only: %s", s.provider, bound)
+	}
+	other := s.shTry(t, h, `curl -sS `+auth+` https://`+otherEchoHost+`/headers`)
+	if !strings.Contains(other, placeholder) || strings.Contains(other, value) {
+		t.Fatalf("X3 on %s: a host no secret names did not show the placeholder only: %s",
+			s.provider, other)
+	}
+}
+
+// rowX4 kills the forwarder by its pid file and expects secret hosts back after systemd's restart
+// or at the next job
+func rowX4(t *testing.T, s *stack) {
+	h, value, _ := s.echoSandbox(t)
+	auth := `-H "Authorization: Bearer $` + secretName + `"`
+	call := `curl -sS --max-time 20 ` + auth + ` https://` + echoHost + `/headers`
+	if got := s.shTry(t, h, call); !strings.Contains(got, value) {
+		t.Fatalf("X4 on %s: the secret host did not work before the kill: %s", s.provider, got)
+	}
+	s.shTry(t, h, asRoot+`$S kill $(cat /run/bugnet/forward.pid)`)
+	deadline := time.Now().Add(restartWithin)
+	for {
+		// Each exec is a job, and a job start respawns a dead forwarder
+		if got := s.shTry(t, h, call); strings.Contains(got, value) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("X4 on %s: the forwarder was not back within %s", s.provider, restartWithin)
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// tunnelStatus asks the proxy for a tunnel with the bearer, none when empty, and answers the status
+func (s *stack) tunnelStatus(t *testing.T, bearer string) string {
+	t.Helper()
+	args := []string{"-sS", "-o", "/dev/null", "-w", "%{http_code}", "--http1.1",
+		"-H", "Connection: Upgrade", "-H", "Upgrade: websocket", "-H", "Sec-WebSocket-Version: 13",
+		"-H", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+		"-H", "Sec-WebSocket-Protocol: bugnet-tunnel.v1"}
+	if bearer != "" {
+		args = append(args, "-H", "Authorization: Bearer "+bearer)
+	}
+	out, err := exec.Command("curl", append(args, "--max-time", "30",
+		"https://"+s.f.Names.EgressHost+"/v1/tunnel")...).Output()
+	if err != nil {
+		t.Fatalf("curl to the proxy: %v", err)
+	}
+	return string(out)
+}
+
+// rowX5 opens a tunnel from outside with no token, then with only a placeholder, and uses the
+// placeholder at the echo host directly
+func rowX5(t *testing.T, s *stack) {
+	_, value, placeholder := s.echoSandbox(t)
+	eq(t, s.tunnelStatus(t, ""), "401")
+	eq(t, s.tunnelStatus(t, placeholder), "401")
+	out, err := exec.Command("curl", "-sS", "--max-time", "30", "-H",
+		"Authorization: Bearer "+placeholder, "https://"+echoHost+"/headers").CombinedOutput()
+	if err != nil {
+		t.Fatalf("curl to the echo host from outside: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), value) || !strings.Contains(string(out), placeholder) {
+		t.Fatalf("X5 on %s: the placeholder from outside did not stay inert: %s", s.provider, out)
+	}
+}
+
+// rowX6 sends TRACE to the secret host through the tunnel and expects 405
+func rowX6(t *testing.T, s *stack) {
+	h, _, _ := s.echoSandbox(t)
+	got := strings.TrimSpace(s.shTry(t, h,
+		`curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X TRACE https://`+echoHost+`/`))
+	eq(t, got, "405")
+}
+
+// rowKoyeb5 checks the managed block of /etc/hosts on Koyeb, where the file may be a bind mount,
+// and that a second secret rewrites it in place
+func rowKoyeb5(t *testing.T, s *stack) {
+	h, _, _ := s.echoSandbox(t)
+	mount := strings.TrimSpace(s.shTry(t, h, `grep ' /etc/hosts ' /proc/self/mountinfo; true`))
+	t.Logf("KOYEB5: /etc/hosts mount entry %q", mount)
+	hosts := s.shTry(t, h, `cat /etc/hosts`)
+	line := mapLine(hosts, echoHost)
+	if line == "" {
+		t.Fatalf("KOYEB5: /etc/hosts maps %s to nothing in the managed block: %s", echoHost, hosts)
+	}
+	s.putSecret(t, h, "OTHER_TOKEN", throwaway(), otherEchoHost)
+	hosts = s.shTry(t, h, `cat /etc/hosts`)
+	for _, host := range []string{echoHost, otherEchoHost} {
+		if mapLine(hosts, host) == "" {
+			t.Fatalf("KOYEB5: /etc/hosts lost %s after a second secret: %s", host, hosts)
+		}
+	}
+	if strings.Count(hosts, "# bugnet begin") > 1 {
+		t.Fatalf("KOYEB5: the managed block is written twice: %s", hosts)
+	}
+}
+
+// mapLine is the /etc/hosts line that maps host to the forwarder's address
+func mapLine(hosts, host string) string {
+	for _, line := range strings.Split(hosts, "\n") {
+		f := strings.Fields(line)
+		if len(f) > 1 && f[0] == "127.77.0.1" && slices.Contains(f[1:], host) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestSecretRowsAndTheirProviders(t *testing.T) {
+	want := map[string][]string{
+		"X1": secretProviders, "X2": secretProviders, "X3": secretProviders,
+		"X4": secretProviders, "X5": secretProviders, "X6": secretProviders,
+		"KOYEB5": {"koyeb"},
+	}
+	for _, r := range dataplaneRows {
+		if p, ok := want[r.id]; ok {
+			eq(t, r.providers, p)
+			eq(t, r.vps, true)
+			delete(want, r.id)
+		}
+	}
+	eq(t, len(want), 0)
+	eq(t, slices.Contains(secretProviders, "local"), false)
+}
+
+func TestMapLineFindsTheForwardersLine(t *testing.T) {
+	hosts := "127.0.0.1 localhost\n# bugnet begin\n127.77.0.1 a.example b.example\n# bugnet end\n"
+	eq(t, mapLine(hosts, "b.example"), "127.77.0.1 a.example b.example")
+	eq(t, mapLine(hosts, "c.example"), "")
+	eq(t, mapLine("127.0.0.1 b.example\n", "b.example"), "")
+}
+
+func TestSecretClientsNameEightClients(t *testing.T) {
+	var names []string
+	for _, c := range secretClients() {
+		names = append(names, c.name)
+	}
+	eq(t, names, []string{"curl", "requests", "httpx", "node", "go", "git", "pip", "uv"})
+}
