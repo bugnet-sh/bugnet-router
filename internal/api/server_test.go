@@ -200,9 +200,10 @@ type options struct {
 	noPreviews bool
 	// providerName names the local provider, "local" when empty
 	providerName string
-	// withSSH lists a provider with a gate route in ssh.providers, nativeSSH any provider on
-	// Boat's native path
+	// withSSH lists a gate-routed provider in ssh.providers, nativeSSH any provider on Boat's sshd
 	withSSH, nativeSSH bool
+	// noSSHHost leaves the API server without names.ssh_host
+	noSSHHost bool
 	// ssh are the SSH settings, sshDefaults' fields where zero
 	ssh config.SSH
 }
@@ -331,13 +332,17 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.noKeys {
 		apiKeys = dpkeys.Keys{}
 	}
+	apiSSHHost := sshHost
+	if opts.noSSHHost {
+		apiSSHHost = ""
+	}
 	srv := api.New(api.Deps{
 		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, SSH: sshSettings(opts.ssh),
-		SSHHost: sshHost, SSHPort: 22,
+		SSHHost: apiSSHHost, SSHPort: 22,
 	})
 	t.Cleanup(srv.Close)
 

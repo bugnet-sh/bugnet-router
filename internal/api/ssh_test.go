@@ -720,3 +720,33 @@ func TestBoatNativeSSHCachedPerKey(t *testing.T) {
 	}
 	eq(t, calls.Load(), int32(2))
 }
+
+// A router without a gateway host, host keys or root keys refuses before it spends a token
+func TestAddSshKeyWithoutAGateway(t *testing.T) {
+	for name, opts := range map[string]options{
+		"no host keys": {ssh: config.SSH{HostKeys: []string{}}},
+		"no ssh host":  {noSSHHost: true},
+		"no root keys": {noKeys: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts.opsPerSecond, opts.opsBurst = 1, 1
+			e, _ := sshEnv(t, opts)
+			h, msg := e.readyWithSSH(t)
+			for range 3 {
+				_, err := e.addKey(t, h, sshkeystest.ED25519(t))
+				mustCode(t, err, connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE")
+			}
+			var n int
+			err := e.pool.QueryRow(t.Context(), `select count(*) from ssh_keys
+				where placement_id = $1`, msg.GetPlacementId()).Scan(&n)
+			eq(t, err, nil)
+			eq(t, n, 0)
+		})
+	}
+}
+
+func TestAuthorizeSshKeyWithoutRootKeys(t *testing.T) {
+	e, _ := sshEnv(t, options{noKeys: true})
+	_, err := e.authorize(t, "bn-aaaaaaaaaa", sshkeystest.ED25519(t))
+	mustCode(t, err, connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE")
+}
