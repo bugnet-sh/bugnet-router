@@ -150,6 +150,23 @@ create`, `exec`, `transfer` and `stop`, and move files with `curl` as a user wou
 | T7 | Logs the filesystems of `/tmp` and the home directory, which must not be RAM |
 | BOAT5 | Boat only: an upload the exec user cannot write and a download it cannot read |
 
+The SSH rows start `bugnet-ssh` beside the edge, on a free port locally and on the tunnel's port
+2223 with `--front vps`. They drive `bugnet-dev ssh-key` and the host's `ssh`, `scp`, `sftp` and
+`rsync`.
+
+| Row | What it does |
+|---|---|
+| S1 | `ssh host id -un` answers the exec user |
+| S2 | A PTY shell, `scp`, `scp -O`, `sftp`, `rsync` and `ssh -L` to a loopback port |
+| S3 | `ssh -D` to a remote host, `-R` and `-A` refused |
+| S4 | A 15-minute idle session, then a 60-minute one on `dev-small-75m` (50 minutes on E2B Hobby, 60 with `BUGNET_LIVE_E2B_PRO=1`) |
+| S5 | `scp` of 1 GiB, the rate logged |
+| S6 | `ssh host env` shows the CA variables |
+| S7 | A session closes at the deadline, at `StopPlacement` and at `--remove` |
+| B1 | A 64 MiB budget (`dev-edge-64m`) across a preview, a transfer and `scp`, all cut by 80 MiB |
+| B2 | Spend that budget, extend with `dev-edge-64m-more`, load the same preview link again |
+| E2B3, BOXD4, KOYEB4, KOYEB6, BOAT6 | Listeners, install time, a session past a minute, port 2022 and a reboot |
+
 The gate rows read the placement from the stack's database and build its route with the adapter,
 as the router does, so they reach the gate the way the edges will.
 
@@ -273,6 +290,7 @@ bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
 printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN --host huggingface.co
 bin/bugnet-dev ssh-key --handle sbx_... --public-key ~/.ssh/id_ed25519.pub
+bin/bugnet-dev ssh-key --handle sbx_... --remove SHA256:...
 bin/bugnet-dev x402 check --handle sbx_... \
     --service "GET,api.example.com,/search/,10000,$PAY_TO,/search"
 bin/bugnet-dev x402 list --handle sbx_...

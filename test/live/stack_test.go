@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
@@ -243,6 +244,7 @@ func binaries(t *testing.T) string {
 		for _, b := range []struct{ dir, pkg string }{
 			{root, "./cmd/router-api"}, {root, "./cmd/router-worker"}, {root, "./cmd/bugnet-dev"},
 			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-edge"},
+			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-ssh"},
 			{filepath.Join(root, "..", "bugnet-run"), "./cmd/bugnet-run"},
 		} {
 			cmd := exec.Command("go", "build", "-o", dir+string(os.PathSeparator), b.pkg)
@@ -275,7 +277,11 @@ type stack struct {
 	apiURL   string
 	edgeAddr string // where TLS to the edge connects, 127.0.0.1 and a port
 	procs    []*proc
-	front    net.Listener // the local mode's PROXY v2 front, nil in the vps mode
+	fronts   []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
+	// sshAddr is where SSH clients connect, and sshKnown their known_hosts file
+	sshAddr  string
+	sshKnown string
+	sshHost  string // the gateway's host key in authorized_keys form
 	stopOnce sync.Once
 	// previews is the preview rows' client, made once per stack
 	previews    *http.Client
@@ -314,6 +320,7 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	if out, err := migrate.CombinedOutput(); err != nil {
 		t.Fatalf("live: router-api migrate: %v\n%s", err, out)
 	}
+	s.sshHostKey(t)
 	apiAddr, workerAddr := freeAddr(t), freeAddr(t)
 	s.apiURL = "http://" + apiAddr
 	s.settings = s.routerSettings(t, prefix, apiAddr, workerAddr, runner)
@@ -332,6 +339,7 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	if mode == "local" {
 		s.edgeAddr = s.proxyFront(t, edge)
 	}
+	s.startSSH(t)
 	if mode == "vps" {
 		if err := s.reaches(); err != nil {
 			s.fail(t, "%v", err)
@@ -396,6 +404,9 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 		egress = s.f.VPS.EgressIPs
 	}
 	table(m, "secrets")["egress_ips"] = egress
+	// The gateway's host key goes into the known_hosts lines the router hands out
+	table(m, "ssh")["providers"] = []string{s.provider}
+	table(m, "ssh")["host_keys"] = []string{s.sshHost}
 	// The stack offers previews on its provider, so the preview rows can earn its place there
 	table(m, "previews")["providers"] = []string{s.provider}
 	out, err := toml.Marshal(m)
@@ -448,6 +459,62 @@ abuse_contact = %q
 	return s.write(t, "edge.toml", []byte(content))
 }
 
+// sshHostKey makes the gateway's host key in a credentials directory, as the unit gets it
+func (s *stack) sshHostKey(t *testing.T) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.dir, "credentials")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ssh_host_ed25519_key"),
+		pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(priv.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.sshHost = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	s.env = append(s.env, "CREDENTIALS_DIRECTORY="+dir)
+}
+
+// startSSH starts bugnet-ssh on a free port locally and on the tunnel's port in the vps mode
+func (s *stack) startSSH(t *testing.T) {
+	t.Helper()
+	listen := freeAddr(t)
+	if s.mode == "vps" {
+		listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(s.f.Ports.SSH))
+	}
+	metrics := freeAddr(t)
+	content := fmt.Sprintf(`router_url = %q
+gateway_id = "live-%s"
+listen_addr = %q
+metrics_listen_addr = %q
+proxy_protocol_from = ["127.0.0.1/32"]
+drain_max = "1s"
+`, s.apiURL, s.provider, listen, metrics)
+	s.start(t, "bugnet-ssh", "-config", s.write(t, "ssh.toml", []byte(content)))
+	s.waitReady(t, "http://"+metrics+"/readyz")
+	host, port := "127.0.0.1", ""
+	if s.mode == "local" {
+		_, port, _ = net.SplitHostPort(s.proxyFront(t, listen))
+		s.sshAddr = net.JoinHostPort(host, port)
+	} else {
+		host, port = s.f.Names.SSHHost, strconv.Itoa(s.f.Names.SSHPort)
+		s.sshAddr = net.JoinHostPort(host, port)
+	}
+	line := fmt.Sprintf("[%s]:%s %s\n", host, port, s.sshHost)
+	s.sshKnown = s.write(t, "ssh_known_hosts", []byte(line))
+}
+
 // selfSigned writes a fresh pair for every dev name the edge serves and answers its directory
 func (s *stack) selfSigned(t *testing.T) string {
 	t.Helper()
@@ -497,7 +564,7 @@ func (s *stack) proxyFront(t *testing.T, edge string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.front = ln
+	s.fronts = append(s.fronts, ln)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -661,8 +728,8 @@ func (s *stack) fail(t *testing.T, format string, args ...any) {
 // stop ends every process with SIGTERM, then SIGKILL, and logs their tails when t failed
 func (s *stack) stop(t testing.TB) {
 	s.stopOnce.Do(func() {
-		if s.front != nil {
-			_ = s.front.Close()
+		for _, ln := range s.fronts {
+			_ = ln.Close()
 		}
 		var wg sync.WaitGroup
 		for _, p := range s.procs {
@@ -840,6 +907,13 @@ func TestStackStartsOnTheLocalProvider(t *testing.T) {
 	eq(t, code, "410")
 	if !strings.Contains(body, "token_used") {
 		t.Fatalf("a used URL answered %s", body)
+	}
+
+	// bugnet-ssh joins the stack, reached through its own PROXY v2 front
+	if _, err := exec.LookPath("ssh"); err == nil {
+		a := s.sshKey(t, created["handle"])
+		want := strings.TrimSpace(s.sh(t, created["handle"], "id -un"))
+		eq(t, strings.TrimSpace(s.sshMust(t, a, "id -un")), want)
 	}
 }
 

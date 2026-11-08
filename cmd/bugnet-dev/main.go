@@ -82,6 +82,8 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   ssh-key --handle H --public-key FILE [--identity-file P] [--known-hosts-file P]
                                          register a public key on a placement and print the
                                          ssh command, known_hosts lines and an ssh_config stanza
+  ssh-key --handle H --remove FINGERPRINT
+                                         remove a key from a placement
   wallet block PAYER --reason R [--until T] [--stop-live] [--actor A]
                                          block a payer's new orders, until a time or a
                                          duration from now, or until lifted
