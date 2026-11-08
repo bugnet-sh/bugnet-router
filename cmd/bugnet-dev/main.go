@@ -6,8 +6,9 @@
 // order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the settings file's
 // packages_file. Only commands that need a setting read the file. exec and watch write a job's
 // output to stdout and stderr as it arrives and exit with the job's code. transfer prints a
-// transfer URL and its curl command. deploy maps renders the VPS's HAProxy and bugnet-certs
-// files from deploy/vps.
+// transfer URL and its curl command, and preview a preview link. revoke-preview calls
+// OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy and
+// bugnet-certs files from deploy/vps.
 package main
 
 import (
@@ -62,6 +63,10 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   transfer --handle H (--upload FILE | --download PATH) [--path P] [--sha256 HEX]
                                          print a transfer URL and the curl command that uses it,
                                          an upload landing at --path or ~/<file name>
+  preview --handle H --port N            print the preview link of one port of a placement
+  revoke-preview ID --reason R [--actor A]
+                                         revoke a preview for good, the actor from USER when
+                                         --actor is not given
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -78,6 +83,7 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, which calls OperatorService
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
 
@@ -122,7 +128,8 @@ func run(
 		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
 		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
-		"transfer": c.transfer, "owned": c.owned,
+		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
+		"revoke-preview": c.revokePreview,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -749,7 +756,7 @@ func apiURL(addr string) (string, error) {
 
 /* API */
 
-// bearer sends every request with the internal token
+// bearer sends every request with one service's token
 type bearer struct {
 	token string
 	next  http.RoundTripper
@@ -762,22 +769,40 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func (c *cli) client() (routerv1connect.SandboxRouterServiceClient, error) {
-	token := c.getenv("BUGNET_INTERNAL_TOKEN")
+	hc, url, err := c.http("BUGNET_INTERNAL_TOKEN")
+	if err != nil {
+		return nil, err
+	}
+	return routerv1connect.NewSandboxRouterServiceClient(hc, url), nil
+}
+
+// operator is a client of OperatorService, which takes its own token
+func (c *cli) operator() (routerv1connect.OperatorServiceClient, error) {
+	hc, url, err := c.http("BUGNET_OPERATOR_TOKEN")
+	if err != nil {
+		return nil, err
+	}
+	return routerv1connect.NewOperatorServiceClient(hc, url), nil
+}
+
+// http is an h2c client sending the token tokenEnv holds, and the API's URL
+func (c *cli) http(tokenEnv string) (*http.Client, string, error) {
+	token := c.getenv(tokenEnv)
 	if token == "" {
-		return nil, errors.New("BUGNET_INTERNAL_TOKEN is not set")
+		return nil, "", errors.New(tokenEnv + " is not set")
 	}
 	cfg, err := c.config()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	url, err := apiURL(cfg.ListenAddr)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var protocols http.Protocols
 	protocols.SetUnencryptedHTTP2(true)
 	rt := bearer{token: token, next: &http.Transport{Protocols: &protocols}}
-	return routerv1connect.NewSandboxRouterServiceClient(&http.Client{Transport: rt}, url), nil
+	return &http.Client{Transport: rt}, url, nil
 }
 
 /* Output */
