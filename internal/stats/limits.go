@@ -15,9 +15,8 @@ func RouterLimits(c *config.Config) map[string]int64 {
 		if n, ok := walletBytesPerDay(c); ok {
 			out["wallet.bytes_per_day"] = n
 		}
-		if _, n, ok := walletEnds(c); ok {
-			out["wallet.failed_refunds_per_day"] = n
-		}
+		_, refunds := walletEnds(c)
+		out["wallet.failed_refunds_per_day"] = refunds
 	}
 	if len(c.Previews.Providers) > 0 {
 		out["sandbox.max_previews"] = int64(c.Previews.MaxPerPlacement)

@@ -332,13 +332,13 @@ host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command
 and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a private key before
 calling the router. `--identity-file` and `--known-hosts-file` name the paths the command and stanza
 use. `get` and `create` print the placement's `ssh_alias` once it has one. `token` and `create` take
-`--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without `--amount` the
-allowance is added to the catalog price, so the package stays paid. `config/dev.toml` turns the
-payer claim on with one test facilitator address, so `create --payer` takes the wallet path, and
-raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`, `show`
-and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else
-`USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts until
-an operator lifts it.
+`--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without
+`--amount` the allowance is added to the catalog price, so the package stays paid. `config/dev.toml`
+turns the payer claim on with one test facilitator address, so `create --payer` takes the wallet
+path, and raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`,
+`show` and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or
+else `USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts
+until an operator lifts it.
 `x402 check` runs `CheckX402` on a change without making it. Each `--service` is
 `method,host,prefix,max_price_micros,pay_to[,paid_path]`, and a service without a paid path is
 indexed. `--disable ID` names a service id to disable. Without `--handle` it runs only the checks
@@ -1257,19 +1257,23 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   packages and the limits, and writes the one row of `stats_snapshot`.
 - A failed Payments call keeps the last good Payments part and its time, so `generatedAt` shows
   how old the money is. Without any Payments part the row holds no body.
+- `daily` leaves out Payments' days over a day before the router's first order, or over 90 days
+  back while it has none, so one stray early day never zero-fills every day since. The totals keep
+  them, and each snapshot that drops some warns with their count.
 - `router-api` serves `GET` and `HEAD` of `/api/stats` and `/api/stats/sessions` on that loopback
   listener, HTTP/1.1 only, no token. Caddy routes `/api/stats/payments*` to Payments first.
 - `/api/stats` serves the stored body as is, the row read at most once per `stats.row_cache`, and
   the last body while Postgres fails. No body answers 503 `unavailable`.
 - `/api/stats/sessions?before=<cursor>` reads 50 placements of the last 30 days a page, newest
   first, cached 30 s per cursor, at most `stats.max_queries` queries at once. A query waits 2 s
-  for a slot, then answers 503 `busy`. A bad cursor answers 400 `bad_cursor`.
+  for a slot, then answers 503 `busy`. A bad cursor answers 400 `bad_cursor`, as does one whose
+  time is outside 1970 to 9999. A cursor older than 30 days answers an empty page with no query.
 - Each client address has a bucket of `stats.per_source_per_minute` with bursts of
   `stats.per_source_burst`, the address being the last `X-Forwarded-For` entry or the peer, IPv6
   by /64. An empty bucket answers 429 `rate_limited`.
 - A session's `wallet` is its start order's payer only after the payer guard's steps 2 to 4, and
   only when it decodes to 32 bytes. Its `tx` must decode to 64 bytes. Raw reasons go out as one
-  word each, and abuse and blocks as `stopped_by_bugnet`.
+  word each, and abuse, blocks, lost control and an operator's end as `stopped_by_bugnet`.
 - `/monitor` on `router-worker` shows `stats snapshot N s old` past 2 minutes, and the Payments
   part's age past 5 minutes, naming an empty token as the cause.
 
@@ -1280,7 +1284,6 @@ one function:
 | --- | --- | --- | --- |
 | `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | `null` | `statsStartSamples` in `internal/store/stats.go` |
 | `spentMicros` in the totals and each day | Task 35's cost meter | `null` | `statsSpent` in `internal/store/stats.go` |
-| `wallet_blocked`, `control_lost`, `sandbox_exited`, `operator`, and `wallet.failed_refunds_per_day` | Task 28B | `other`, and the key left out | `walletEnds` in `internal/stats/sources.go` |
 | `wallet.bytes_per_day` | Task 29's byte cap | Left out | `walletBytesPerDay` in `internal/stats/sources.go` |
 
 ## Deployment

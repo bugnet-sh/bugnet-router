@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -253,6 +255,46 @@ func TestDaysZeroFilledFromTheEarlierFirstDay(t *testing.T) {
 	eq(t, s.Daily, []Day{})
 }
 
+func TestPaymentsFloor(t *testing.T) {
+	eq(t, PaymentsFloor(store.StatsFigures{At: t0}), date(8, 0, 0, 0).AddDate(0, 0, -90))
+	first := date(6, 0, 30, 0)
+	eq(t, PaymentsFloor(store.StatsFigures{At: t0, FirstOrderAt: &first}), date(5, 0, 0, 0))
+}
+
+func TestPaymentsDaysBeforeTheFloorDropped(t *testing.T) {
+	first := date(6, 9, 0, 0)
+	f := store.StatsFigures{At: t0, FirstOrderAt: &first, Days: []store.StatsDay{
+		{Day: date(7, 0, 0, 0), Sandboxes: 2},
+		{Day: date(8, 0, 0, 0), Sandboxes: 1},
+	}}
+	p := PaymentsPart{Totals: Money{EarnedMicros: 75}, Daily: []PaymentsDay{
+		{Day: "0001-01-01", Money: Money{EarnedMicros: 1}},
+		{Day: "1970-01-01", Money: Money{EarnedMicros: 2}},
+		{Day: "2026-11-04", Money: Money{EarnedMicros: 3}},
+		{Day: "2026-11-05", Money: Money{EarnedMicros: 30}},
+		{Day: "2026-11-07", Money: Money{EarnedMicros: 39}},
+	}}
+	kept, dropped := p.From(PaymentsFloor(f))
+	eq(t, dropped, 3)
+	eq(t, len(p.Daily), 5)
+	s := Merge(f, kept, t0, nil, nil)
+	var days []string
+	for _, d := range s.Daily {
+		days = append(days, d.Day)
+	}
+	eq(t, days, []string{"2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"})
+	eq(t, s.Daily[0].EarnedMicros, int64(30))
+	// The totals are Payments' own, dropped days included
+	eq(t, s.Totals.EarnedMicros, int64(75))
+
+	// Before any order, 90 days back
+	kept, dropped = p.From(PaymentsFloor(store.StatsFigures{At: t0}))
+	eq(t, dropped, 2)
+	eq(t, kept.Daily[0].Day, "2026-11-04")
+	kept, dropped = PaymentsPart{}.From(PaymentsFloor(f))
+	eq(t, []any{kept.Daily, dropped}, []any{[]PaymentsDay{}, 0})
+}
+
 func TestUnknownSourcesGoOutNull(t *testing.T) {
 	s := Merge(seededFigures(), PaymentsPart{}, t0, nil, nil)
 	body, err := Encode(s)
@@ -471,15 +513,15 @@ func TestRouterLimits(t *testing.T) {
 	lim := RouterLimits(cfg(t, "wallets.use_payer = true", `ssh.providers = ["e2b"]`))
 	eq(t, lim, map[string]int64{
 		"wallet.max_concurrent": 5, "wallet.starts_per_hour": 30, "wallet.starts_per_day": 200,
-		"sandbox.max_running_jobs": 16, "transfer.max_file_bytes": 1 << 30,
-		"sandbox.max_ssh_connections": 8,
+		"wallet.failed_refunds_per_day": 2, "sandbox.max_running_jobs": 16,
+		"transfer.max_file_bytes": 1 << 30, "sandbox.max_ssh_connections": 8,
 	})
-	// Tasks 29 and 28B add their keys at their switch points
-	for _, unknown := range []string{"wallet.bytes_per_day", "wallet.failed_refunds_per_day"} {
-		if _, ok := lim[unknown]; ok {
-			t.Errorf("%s sent before its source exists", unknown)
-		}
+	// Task 29 adds its key at its switch point
+	if _, ok := lim["wallet.bytes_per_day"]; ok {
+		t.Error("wallet.bytes_per_day sent before its source exists")
 	}
+	lim = RouterLimits(cfg(t, "wallets.use_payer = true", "wallets.failed_refunds_per_day = 7"))
+	eq(t, lim["wallet.failed_refunds_per_day"], int64(7))
 	for k := range lim {
 		if slices.Contains(paymentsLimits, k) {
 			t.Errorf("the router sends Payments' key %s", k)
@@ -521,11 +563,11 @@ func TestEndReasonWords(t *testing.T) {
 		{"terminated", "a_new_reason", "", "other"},
 		{"terminated", "", "", "other"},
 		{"failed", "stop", "", "stop"},
-		// Task 28B's reasons go out as other until its switch point knows them
-		{"terminated", "wallet_blocked", "", "other"},
-		{"terminated", "control_lost", "", "other"},
-		{"terminated", "sandbox_exited", "", "other"},
-		{"terminated", "operator", "", "other"},
+		// Task 28B's reasons, abuse and blocks unnamed until the founder answers CP 20.12
+		{"terminated", "wallet_blocked", "", "stopped_by_bugnet"},
+		{"terminating", "control_lost", "", "stopped_by_bugnet"},
+		{"terminated", "sandbox_exited", "", "sandbox_exited"},
+		{"terminated", "operator", "", "stopped_by_bugnet"},
 	} {
 		got := e.EndReason(c.state, c.term, c.fail)
 		if got == nil || *got != c.want {
@@ -533,6 +575,14 @@ func TestEndReasonWords(t *testing.T) {
 		}
 	}
 	eq(t, e.EndReason("ready", "", ""), (*string)(nil))
+	// The reasons as the saga writes them into termination_reason
+	for reason, want := range map[string]string{
+		saga.ReasonAbuse: "stopped_by_bugnet", saga.ReasonControlLost: "stopped_by_bugnet",
+		saga.ReasonProviderFailed: "provider_failed", saga.ReasonSandboxExited: "sandbox_exited",
+		saga.ReasonWalletBlocked: "stopped_by_bugnet", saga.ReasonOperator: "stopped_by_bugnet",
+	} {
+		eq(t, *e.EndReason("terminated", reason, ""), want)
+	}
 }
 
 func TestCursorRoundTripAndRefusals(t *testing.T) {
@@ -554,6 +604,39 @@ func TestCursorRoundTripAndRefusals(t *testing.T) {
 		if _, _, err := DecodeCursor(bad); !errors.Is(err, ErrBadCursor) {
 			t.Errorf("%q decoded", bad)
 		}
+	}
+}
+
+// cursorOf is a cursor of these 8 time bytes and a fixed id
+func cursorOf(t8 []byte) string {
+	b := append(slices.Clone(t8), bytes.Repeat([]byte{7}, 16)...)
+	return "s1." + cursorEncoding.EncodeToString(b)
+}
+
+// allOnes is 24 bytes of 0xff, whose time is a microsecond before 1970
+var allOnes = "s1." + cursorEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 24))
+
+func TestCursorTimeMustBeOneTheRouterWrote(t *testing.T) {
+	micros := func(at time.Time) []byte {
+		return binary.BigEndian.AppendUint64(nil, uint64(at.UnixMicro()))
+	}
+	for name, c := range map[string]string{
+		"all 0xff":         allOnes,
+		"just before 1970": cursorOf(micros(time.Unix(0, 0).Add(-time.Microsecond))),
+		"far past":         cursorOf([]byte{0x80, 0, 0, 0, 0, 0, 0, 0}),
+		"far future":       cursorOf([]byte{0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}),
+		"the year 10000":   cursorOf(micros(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))),
+	} {
+		if _, _, err := DecodeCursor(c); !errors.Is(err, ErrBadCursor) {
+			t.Errorf("%s: %q decoded", name, c)
+		}
+	}
+	for _, at := range []time.Time{
+		time.Unix(0, 0).UTC(), time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC),
+	} {
+		got, _, err := DecodeCursor(cursorOf(micros(at)))
+		eq(t, err, nil)
+		eq(t, got, at)
 	}
 }
 
