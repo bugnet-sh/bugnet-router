@@ -397,6 +397,19 @@ func TestMedianRoundsDownAndCountsOnlyTheEnded(t *testing.T) {
 	eq(t, f.Days[0].MedianSeconds, int64(4))
 }
 
+func TestStatsFiguresFirstOrder(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	eq(t, figures(t, s).FirstOrderAt, (*time.Time)(nil))
+	// An order after the read time is not one yet
+	seedSession(t, pool, session{created: figuresAt.Add(time.Second), state: "placing"})
+	eq(t, figures(t, s).FirstOrderAt, (*time.Time)(nil))
+	// A placement that never started still came with its paid order
+	seedSession(t, pool, session{created: clock(3, 9, 0, 0, 0), state: "failed",
+		failure: "no_candidate", terminated: at(clock(3, 9, 0, 0, 0))})
+	run(t, pool, "boat", clock(5, 10, 0, 0, 0), clock(5, 11, 0, 0, 0))
+	eq(t, figures(t, s).FirstOrderAt, at(clock(3, 9, 0, 0, 0)))
+}
+
 func TestStatsFiguresWithNoStartedPlacement(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	seedSession(t, pool, session{created: clock(8, 9, 0, 0, 0), state: "failed",

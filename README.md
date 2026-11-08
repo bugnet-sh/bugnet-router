@@ -1239,6 +1239,9 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   packages and the limits, and writes the one row of `stats_snapshot`.
 - A failed Payments call keeps the last good Payments part and its time, so `generatedAt` shows
   how old the money is. Without any Payments part the row holds no body.
+- `daily` leaves out Payments' days over a day before the router's first order, or over 90 days
+  back while it has none, so one stray early day never zero-fills every day since. The totals keep
+  them, and each snapshot that drops some warns with their count.
 - `router-api` serves `GET` and `HEAD` of `/api/stats` and `/api/stats/sessions` on that loopback
   listener, HTTP/1.1 only, no token. Caddy routes `/api/stats/payments*` to Payments first.
 - `/api/stats` serves the stored body as is, the row read at most once per `stats.row_cache`, and

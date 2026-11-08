@@ -255,6 +255,46 @@ func TestDaysZeroFilledFromTheEarlierFirstDay(t *testing.T) {
 	eq(t, s.Daily, []Day{})
 }
 
+func TestPaymentsFloor(t *testing.T) {
+	eq(t, PaymentsFloor(store.StatsFigures{At: t0}), date(8, 0, 0, 0).AddDate(0, 0, -90))
+	first := date(6, 0, 30, 0)
+	eq(t, PaymentsFloor(store.StatsFigures{At: t0, FirstOrderAt: &first}), date(5, 0, 0, 0))
+}
+
+func TestPaymentsDaysBeforeTheFloorDropped(t *testing.T) {
+	first := date(6, 9, 0, 0)
+	f := store.StatsFigures{At: t0, FirstOrderAt: &first, Days: []store.StatsDay{
+		{Day: date(7, 0, 0, 0), Sandboxes: 2},
+		{Day: date(8, 0, 0, 0), Sandboxes: 1},
+	}}
+	p := PaymentsPart{Totals: Money{EarnedMicros: 75}, Daily: []PaymentsDay{
+		{Day: "0001-01-01", Money: Money{EarnedMicros: 1}},
+		{Day: "1970-01-01", Money: Money{EarnedMicros: 2}},
+		{Day: "2026-11-04", Money: Money{EarnedMicros: 3}},
+		{Day: "2026-11-05", Money: Money{EarnedMicros: 30}},
+		{Day: "2026-11-07", Money: Money{EarnedMicros: 39}},
+	}}
+	kept, dropped := p.From(PaymentsFloor(f))
+	eq(t, dropped, 3)
+	eq(t, len(p.Daily), 5)
+	s := Merge(f, kept, t0, nil, nil)
+	var days []string
+	for _, d := range s.Daily {
+		days = append(days, d.Day)
+	}
+	eq(t, days, []string{"2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"})
+	eq(t, s.Daily[0].EarnedMicros, int64(30))
+	// The totals are Payments' own, dropped days included
+	eq(t, s.Totals.EarnedMicros, int64(75))
+
+	// Before any order, 90 days back
+	kept, dropped = p.From(PaymentsFloor(store.StatsFigures{At: t0}))
+	eq(t, dropped, 2)
+	eq(t, kept.Daily[0].Day, "2026-11-04")
+	kept, dropped = PaymentsPart{}.From(PaymentsFloor(f))
+	eq(t, []any{kept.Daily, dropped}, []any{[]PaymentsDay{}, 0})
+}
+
 func TestUnknownSourcesGoOutNull(t *testing.T) {
 	s := Merge(seededFigures(), PaymentsPart{}, t0, nil, nil)
 	body, err := Encode(s)

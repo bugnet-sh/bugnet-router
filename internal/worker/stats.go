@@ -86,6 +86,10 @@ func (w *Worker) snapshot(ctx context.Context) error {
 		}
 		raw, paidAt = prev.Payments, prev.PaymentsAt
 	}
+	part, dropped := part.From(stats.PaymentsFloor(f))
+	if dropped > 0 {
+		w.log.Warn("stats: Payments days before the floor left out of daily", "count", dropped)
+	}
 	body, err := stats.Encode(stats.Merge(f, part, paidAt, s.Catalog.All(), s.Limits))
 	if err != nil {
 		return err

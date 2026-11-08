@@ -148,6 +148,9 @@ type StatsFigures struct {
 	SpentMicros *int64
 	// Days runs from the first started placement's day through At's day
 	Days []StatsDay
+	// FirstOrderAt is the first placement's created_at, which its start order shares, nil before
+	// any
+	FirstOrderAt *time.Time
 	// Providers are the 7-day rows by name, each pointer nil while its source is unknown
 	Providers []StatsProvider
 }
@@ -232,6 +235,12 @@ func readFigures(ctx context.Context, tx pgx.Tx, f *StatsFigures) error {
 	if err != nil {
 		return err
 	}
+	err = tx.QueryRow(ctx, `select min(created_at) from placements where created_at <= $1`, t).
+		Scan(&f.FirstOrderAt)
+	if err != nil {
+		return err
+	}
+	f.FirstOrderAt = utcPtr(f.FirstOrderAt)
 	rows, err := tx.Query(ctx, `
 		select provider, count(*) from placements
 		where state = 'ready' and provider is not null and ready_at <= $1
