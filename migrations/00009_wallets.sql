@@ -8,6 +8,8 @@ alter table orders
     add column amount_micros bigint not null default 0;
 
 create index orders_fee_payer_idx on orders (fee_payer) where fee_payer is not null;
+-- the orders a payer paid, read for each blocked payer's live placements
+create index orders_payer_idx on orders (payer) where payer is not null;
 create index orders_placement_id_idx on orders (placement_id);
 
 alter table placements
@@ -73,5 +75,6 @@ drop table wallets;
 drop index placements_live_payer_idx;
 alter table placements drop column end_actor, drop column end_evidence, drop column payer;
 drop index orders_placement_id_idx;
+drop index orders_payer_idx;
 drop index orders_fee_payer_idx;
 alter table orders drop column amount_micros, drop column fee_payer, drop column payer;

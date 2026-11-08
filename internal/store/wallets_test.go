@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"io/fs"
 	"reflect"
 	"testing"
 	"time"
@@ -15,9 +16,6 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/migrations"
 )
-
-// walletsVersion is the goose version of the migration that adds wallets
-const walletsVersion = 9
 
 const (
 	walletA = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -55,6 +53,7 @@ func TestMigrationWalletsUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	walletsVersion := migrationVersion(t, "wallets")
 	tables := func() int {
 		var n int
 		err := db.QueryRowContext(ctx, `
@@ -92,6 +91,20 @@ func TestMigrationWalletsUpDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, tables(), 3)
+}
+
+// migrationVersion is the goose version of the migration file named <version>_<name>.sql
+func migrationVersion(t *testing.T, name string) int64 {
+	t.Helper()
+	files, err := fs.Glob(migrations.FS, "*_"+name+".sql")
+	if err != nil || len(files) != 1 {
+		t.Fatalf("migration %s: %v, %v", name, files, err)
+	}
+	v, err := goose.NumericComponent(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 func TestPaidMicrosSumsTheRecordedOrders(t *testing.T) {
