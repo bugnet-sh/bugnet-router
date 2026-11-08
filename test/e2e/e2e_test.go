@@ -406,6 +406,7 @@ func TestE2EValkeyOverAUnixSocket(t *testing.T) {
 
 type stack struct {
 	root     string            // local provider root every process shares
+	db       string            // the stack's database URL
 	packages string            // catalog file
 	prefix   string            // Valkey key prefix
 	keys     map[string]string // what bugnet-dev keys printed
@@ -438,7 +439,7 @@ func startStackWith(t *testing.T, o stackOptions) *stack {
 	if o.valkey == "" {
 		o.valkey = valkeyAddr()
 	}
-	s := &stack{root: t.TempDir(), prefix: prefix, keys: devKeys(t), opts: o}
+	s := &stack{root: t.TempDir(), db: dbURL, prefix: prefix, keys: devKeys(t), opts: o}
 	seed := decodeKey(t, s.keys, "BUGNET_ORDER_PRIVATE_KEY", ed25519.SeedSize)
 	s.priv = ed25519.NewKeyFromSeed(seed)
 	eventSeed := decodeKey(t, s.keys, "BUGNET_EVENT_SIGNING_KEY", ed25519.SeedSize)
@@ -513,6 +514,7 @@ prefix = %q
 
 [names]
 transfer_host = "transfer.e2e.example"
+preview_domain = "preview.e2e.example"
 
 [local]
 enabled = true
@@ -920,6 +922,7 @@ func (s *stack) dev(t *testing.T, p *proc, args ...string) (string, string, int)
 	cmd.Env = append(hostEnv(),
 		"BUGNET_INTERNAL_TOKEN="+s.keys["BUGNET_INTERNAL_TOKEN"],
 		"BUGNET_ORDER_PRIVATE_KEY="+s.keys["BUGNET_ORDER_PRIVATE_KEY"],
+		"BUGNET_OPERATOR_TOKEN="+s.keys["BUGNET_OPERATOR_TOKEN"],
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
