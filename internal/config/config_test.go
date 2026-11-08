@@ -1017,12 +1017,18 @@ func TestCommittedFilesLoad(t *testing.T) {
 	}
 	for path, suffix := range map[string]string{
 		dev.PackagesFile: "/config/dev-packages.json", dev.LocalRoot: "/bin/local",
-		dev.LocalRunnerPath:  "/bin/bugnet-run",
-		dev.RunnerLinuxAMD64: "/bugnet-run/dist/bugnet-run-linux-amd64",
+		dev.LocalRunnerPath:    "/bin/bugnet-run",
+		dev.RunnerLinuxAMD64:   "/bugnet-run/dist/bugnet-run-linux-amd64",
+		dev.Hardening.PoolList: "/config/dev-mining-pools.txt",
 	} {
 		if !filepath.IsAbs(path) || !strings.HasSuffix(path, suffix) {
 			t.Errorf("config/dev.toml path %s, want an absolute path ending in %s", path, suffix)
 		}
+	}
+	// A pool list keeps the dev stack's /monitor free of the empty pool list line
+	devPools := filepath.Join("..", "..", "config", "dev-mining-pools.txt")
+	if pools, err := LoadPoolList(devPools); err != nil || len(pools) == 0 {
+		t.Errorf("config/dev-mining-pools.txt: %v, %v", pools, err)
 	}
 	if len(dev.E2B.Templates) != 2 {
 		t.Errorf("config/dev.toml e2b templates %+v, want both deploy/e2b builds", dev.E2B)

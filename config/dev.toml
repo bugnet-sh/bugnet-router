@@ -31,6 +31,9 @@ egress_host = "egress.dev.bugnet.sh"
 [x402]
 enabled = false               # the kill switch, off here until the x402 switch-on
 
+[hardening]
+pool_list = "config/dev-mining-pools.txt"   # a stand-in, so /monitor shows no pool list line
+
 [local]
 enabled = true                # runs commands on this machine, never give it untrusted code
 root = "bin/local"

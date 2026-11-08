@@ -1,0 +1,2 @@
+# The dev stack's mining pool list, a documentation range standing in for real pools
+192.0.2.0/24

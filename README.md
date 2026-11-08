@@ -50,7 +50,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/transfer` | Transfer records and claims in Valkey, path resolution and staging through `bugnet-run` |
 | `test/e2e` | End-to-end tests over the built binaries |
 | `test/live` | The live stack and the data-plane live rows `scripts/live-test.sh` runs |
-| `config` | `example.toml` with every setting, `dev.toml` and the catalog `dev-up.sh` runs with, `dev-front.toml` for the live stack behind the VPS |
+| `config` | `example.toml` with every setting, `dev.toml`, the catalog and the pool list `dev-up.sh` runs with, `dev-front.toml` for the live stack behind the VPS |
 | `scripts` | `dev-up.sh` for a local stack and `live-test.sh` for the live provider tests |
 | `deploy/e2b` | E2B template definitions, one template per size |
 | `deploy/vps` | The VPS front: public names, site settings, the HAProxy template, the dev front |
@@ -407,7 +407,8 @@ provider's own control addresses, open before any block. Ranges and addresses ar
 or CIDRs. `hardening.pool_list` names a file of mining pool addresses or CIDRs, one per line, at
 most 10000, with blank lines and `#` lines skipped. `router-api` reads it at start and refuses a
 malformed one, naming the line by number. A missing or empty list logs a warning, `/monitor`
-reports it, and every other rule still applies.
+reports it, and every other rule still applies. `dev.toml` points at
+`config/dev-mining-pools.txt`, a documentation range standing in for real pools.
 
 `worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
 data-plane jobs away from deadlines, the sweep and the outbox. It takes 1 to 10000, the most
