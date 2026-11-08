@@ -1,10 +1,10 @@
 // Package live runs the data-plane and control-plane live rows against a stack on this Mac.
 //
-// scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker
-// and bugnet-edge, each built from the workspace, on a fresh database and Valkey prefix with
-// fresh secrets from bugnet-dev keys, and one provider. The local mode listens on free loopback
-// ports with a fresh self-signed pair for the dev names, and tests reach the edge with curl
-// --resolve through a loopback front that adds the PROXY v2 header HAProxy adds on the VPS.
+// scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker,
+// bugnet-edge and bugnet-egress, each built from the workspace, on a fresh database and Valkey
+// prefix with fresh secrets from bugnet-dev keys, and one provider. The local mode listens on free
+// loopback ports with a fresh self-signed pair for the dev names, and tests reach the edge with
+// curl --resolve through a loopback front that adds the PROXY v2 header HAProxy adds on the VPS.
 // The vps mode listens on the fixed ports the VPS's tunnel lands on (config/dev-front.toml), gets
 // the exact names from Let's Encrypt over the tunnel with its caches kept in
 // ~/.local/state/bugnet-dev/acme, serves the wildcard make dev-certs copied, and checks that
@@ -106,6 +106,9 @@ type front struct {
 	Edge struct {
 		AbuseContact string `toml:"abuse_contact"`
 	} `toml:"edge"`
+	Egress struct {
+		CADir string `toml:"ca_dir"`
+	} `toml:"egress"`
 }
 
 // loadFront reads the fronted mode's settings strictly, expanding ~ in its directories
@@ -133,7 +136,7 @@ func loadFront(path string) (front, error) {
 	if err != nil {
 		return front{}, fmt.Errorf("live: %w", err)
 	}
-	for _, dir := range []*string{&f.ACME.StateDir, &f.ACME.WildcardDir} {
+	for _, dir := range []*string{&f.ACME.StateDir, &f.ACME.WildcardDir, &f.Egress.CADir} {
 		if rest, ok := strings.CutPrefix(*dir, "~/"); ok {
 			*dir = filepath.Join(home, rest)
 		}
@@ -229,7 +232,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// binaries builds the router's binaries, bugnet-edge and bugnet-run once per test binary
+// binaries builds the router's binaries, bugnet-edge, bugnet-egress and bugnet-run once per run
 func binaries(t *testing.T) string {
 	t.Helper()
 	built.once.Do(func() {
@@ -243,6 +246,7 @@ func binaries(t *testing.T) string {
 		for _, b := range []struct{ dir, pkg string }{
 			{root, "./cmd/router-api"}, {root, "./cmd/router-worker"}, {root, "./cmd/bugnet-dev"},
 			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-edge"},
+			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-egress"},
 			{filepath.Join(root, "..", "bugnet-run"), "./cmd/bugnet-run"},
 		} {
 			cmd := exec.Command("go", "build", "-o", dir+string(os.PathSeparator), b.pkg)
@@ -261,7 +265,15 @@ func binaries(t *testing.T) string {
 
 /* The stack */
 
-// stack is one provider's router-api, router-worker and bugnet-edge
+// egressFiles are what the stack's bugnet-egress and the router's secrets settings share
+type egressFiles struct {
+	listen   string // where the proxy listens, which fetch.egress_addr dials
+	certFile string // the CA certificate the router hands every sandbox
+	credDir  string // $CREDENTIALS_DIRECTORY of the proxy, holding the CA key and the box key
+	boxPub   string // the box key's public half, base64
+}
+
+// stack is one provider's router-api, router-worker, bugnet-edge and bugnet-egress
 type stack struct {
 	provider string
 	mode     string
@@ -274,6 +286,7 @@ type stack struct {
 	settings string   // router settings file
 	apiURL   string
 	edgeAddr string // where TLS to the edge connects, 127.0.0.1 and a port
+	egress   egressFiles
 	procs    []*proc
 	front    net.Listener // the local mode's PROXY v2 front, nil in the vps mode
 	stopOnce sync.Once
@@ -303,6 +316,7 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 		t.Fatalf("live: no bugnet-run build at %s, run make -C ../bugnet-run build", runner)
 	}
 	s.keys = s.devKeys(t)
+	s.egress = s.prepareEgress(t)
 	dbURL := testenv.DatabaseURL(t)
 	_, prefix := testenv.Valkey(t)
 	s.env = append(hostEnv(), "BUGNET_DATABASE_URL="+dbURL)
@@ -328,6 +342,10 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	}
 	s.start(t, "bugnet-edge", "-config", s.edgeSettings(t, edge, metrics))
 	s.waitReady(t, "http://"+metrics+"/readyz")
+	egressMetrics := freeAddr(t)
+	s.startWith(t, append(slices.Clone(s.env), "CREDENTIALS_DIRECTORY="+s.egress.credDir),
+		"bugnet-egress", "serve", "-config", s.egressSettings(t, egressMetrics))
+	s.waitReady(t, "http://"+egressMetrics+"/readyz")
 	s.edgeAddr = edge
 	if mode == "local" {
 		s.edgeAddr = s.proxyFront(t, edge)
@@ -395,7 +413,14 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	if s.mode == "vps" {
 		egress = s.f.VPS.EgressIPs
 	}
-	table(m, "secrets")["egress_ips"] = egress
+	secrets := table(m, "secrets")
+	secrets["egress_ips"] = egress
+	secrets["ca_cert_file"], secrets["ca_version"] = s.egress.certFile, 1
+	secrets["box_public_keys"] = []map[string]any{{"id": "k1", "key": s.egress.boxPub}}
+	if s.provider != "local" {
+		secrets["providers"] = []string{s.provider}
+	}
+	table(m, "fetch")["egress_addr"] = s.egress.listen
 	// The stack offers previews on its provider, so the preview rows can earn its place there
 	table(m, "previews")["providers"] = []string{s.provider}
 	out, err := toml.Marshal(m)
@@ -448,9 +473,13 @@ abuse_contact = %q
 	return s.write(t, "edge.toml", []byte(content))
 }
 
-// selfSigned writes a fresh pair for every dev name the edge serves and answers its directory
+// selfSigned writes a fresh pair for every dev name the edge and the proxy serve, and its directory
 func (s *stack) selfSigned(t *testing.T) string {
 	t.Helper()
+	// The edge and the proxy share one pair, and the test reads the one they both loaded
+	if dir := filepath.Join(s.dir, "tls"); fileExists(filepath.Join(dir, "fullchain.pem")) {
+		return dir
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +489,7 @@ func (s *stack) selfSigned(t *testing.T) string {
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: n.TransferHost},
 		DNSNames: []string{n.TransferHost, n.HooksHost, n.PreviewDomain,
-			"*." + n.PreviewDomain},
+			"*." + n.PreviewDomain, n.EgressHost},
 		NotBefore:   time.Now().Add(-time.Hour),
 		NotAfter:    time.Now().Add(24 * time.Hour),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
@@ -488,6 +517,82 @@ func (s *stack) selfSigned(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+// prepareEgress makes the proxy's CA, credentials and box key, and picks where it listens
+//
+// The dev CA that the E2B templates carry is used when ca_dir holds one. Without it, a fresh CA
+// serves the providers whose setup installs the CA, and E2B is refused.
+func (s *stack) prepareEgress(t *testing.T) egressFiles {
+	t.Helper()
+	bin := filepath.Join(s.bin, "bugnet-egress")
+	files := egressFiles{credDir: filepath.Join(s.dir, "egress-creds")}
+	if err := os.MkdirAll(files.credDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	caDir := s.f.Egress.CADir
+	_, keyErr := os.Stat(filepath.Join(caDir, "egress-ca.key"))
+	_, certErr := os.Stat(filepath.Join(caDir, "egress-ca.pem"))
+	if caDir == "" || keyErr != nil || certErr != nil {
+		if s.provider == "e2b" {
+			t.Fatalf("live: E2B sandboxes trust only the dev CA baked into the dev templates, "+
+				"make it with bugnet-egress ca init --out %s and rebuild them with pnpm run "+
+				"build:dev in deploy/e2b", caDir)
+		}
+		caDir = filepath.Join(s.dir, "egress-ca")
+		if err := os.MkdirAll(caDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(bin, "ca", "init", "--out", caDir).CombinedOutput()
+		if err != nil {
+			t.Fatalf("live: bugnet-egress ca init: %v\n%s", err, out)
+		}
+	}
+	files.certFile = filepath.Join(caDir, "egress-ca.pem")
+	if err := os.Symlink(filepath.Join(caDir, "egress-ca.key"),
+		filepath.Join(files.credDir, "egress_ca_key")); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(bin, "box-key", "new", "--id", "k1", "--out", files.credDir).Output()
+	if err != nil {
+		t.Fatalf("live: bugnet-egress box-key new: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if pub, ok := strings.CutPrefix(line, "public_key: "); ok {
+			files.boxPub = pub
+		}
+	}
+	if files.boxPub == "" {
+		t.Fatal("live: bugnet-egress box-key new printed no public key")
+	}
+	files.listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(s.f.Ports.Egress))
+	if s.mode == "local" {
+		files.listen = freeAddr(t)
+	}
+	return files
+}
+
+// egressSettings is bugnet-egress' file, a self-signed pair locally and ACME on the dev front
+func (s *stack) egressSettings(t *testing.T, metrics string) string {
+	t.Helper()
+	acme := fmt.Sprintf("acme_enabled = true\nacme_directory = %q\nacme_email = %q\n"+
+		"acme_dir = %q\n", s.f.ACME.Directory, s.f.ACME.Email,
+		filepath.Join(s.f.ACME.StateDir, "egress"))
+	if s.mode == "local" {
+		acme = fmt.Sprintf("acme_enabled = false\nstatic_dir = %q\n", s.selfSigned(t))
+	} else if err := os.MkdirAll(filepath.Join(s.f.ACME.StateDir, "egress"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf(`router_url = %q
+listen_addr = %q
+metrics_listen_addr = %q
+proxy_protocol_from = ["127.0.0.1/32"]
+egress_host = %q
+ca_cert_file = %q
+ca_version = 1
+box_keys = [{ id = "k1", credential = "egress_box_k1" }]
+%s`, s.apiURL, s.egress.listen, metrics, s.f.Names.EgressHost, s.egress.certFile, acme)
+	return s.write(t, "egress.toml", []byte(content))
 }
 
 // proxyFront passes each loopback connection to the edge behind a PROXY v2 header, as HAProxy
@@ -608,13 +713,19 @@ type proc struct {
 
 func (s *stack) start(t *testing.T, name string, args ...string) {
 	t.Helper()
+	s.startWith(t, s.env, name, args...)
+}
+
+// startWith is start under its own environment
+func (s *stack) startWith(t *testing.T, env []string, name string, args ...string) {
+	t.Helper()
 	log, err := os.Create(filepath.Join(s.dir, name+".log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
 	cmd := exec.Command(filepath.Join(s.bin, name), args...)
-	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = s.root, s.env, log, log
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = s.root, env, log, log
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("live: start %s: %v", name, err)
 	}
@@ -867,6 +978,7 @@ func TestDevFrontSettings(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	eq(t, f.ACME.StateDir, filepath.Join(home, ".local", "state", "bugnet-dev", "acme"))
 	eq(t, f.ACME.WildcardDir, filepath.Join(home, ".local", "state", "bugnet-dev", "preview-dev"))
+	eq(t, f.Egress.CADir, filepath.Join(home, ".local", "state", "bugnet-dev", "egress-ca"))
 	bad := filepath.Join(t.TempDir(), "front.toml")
 	if err := os.WriteFile(bad, []byte("[ports]\nedge = 1\nweb = 2\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -881,4 +993,9 @@ func eq[T any](t *testing.T, got, want T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
