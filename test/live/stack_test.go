@@ -2,7 +2,8 @@
 //
 // scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker,
 // bugnet-edge, its secrets role and bugnet-egress, each built from the workspace, on a fresh
-// database and Valkey prefix with fresh secrets from bugnet-dev keys, and one provider. The local mode
+// database and Valkey prefix with fresh secrets from bugnet-dev keys, and one provider. The local
+// mode
 // listens on free loopback ports with a fresh self-signed pair for the dev names, and tests
 // reach the edge with curl --resolve through a loopback front that adds the PROXY v2 header
 // HAProxy adds on the VPS.
