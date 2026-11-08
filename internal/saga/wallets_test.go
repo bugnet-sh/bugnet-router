@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
@@ -414,4 +417,54 @@ func (e *env) paidExtend(t *testing.T, order, payer, h string) string {
 		OrderID: order, Kind: ordertoken.KindExtend, PackageID: morePkg, AmountMicros: morePrice,
 		HandleSHA256: hex.EncodeToString(sha), Payer: payer, FeePayer: facilitator,
 	})
+}
+
+// stalled is a Valkey that takes every command and never answers until released
+type stalled struct {
+	valkey.Client
+	released chan struct{}
+}
+
+func (s stalled) Do(ctx context.Context, cmd valkey.Completed) valkey.ValkeyResult {
+	select {
+	case <-ctx.Done():
+	case <-s.released:
+	}
+	return s.Client.Do(ctx, cmd)
+}
+
+func (s stalled) DoMulti(ctx context.Context, cmds ...valkey.Completed) []valkey.ValkeyResult {
+	select {
+	case <-ctx.Done():
+	case <-s.released:
+	}
+	return s.Client.DoMulti(ctx, cmds...)
+}
+
+func TestStartsGoThroughWhenValkeyStalls(t *testing.T) {
+	var logs syncBuffer
+	vk := stalled{released: make(chan struct{})}
+	e := newEnvWith(t, func(d *saga.Deps) {
+		d.Wallets = config.Wallets{UsePayer: true, FacilitatorAddresses: []string{facilitator}}
+		d.Log = slog.New(slog.NewTextHandler(&logs, nil))
+		vk.Client = d.Valkey
+		d.Valkey = vk
+	}, newLocal(t, local.Options{Name: "a"}))
+	t.Cleanup(func() { close(vk.released) })
+	for i := range 5 {
+		start := time.Now()
+		if _, err := e.createPaid(t, "order-"+string(rune('a'+i)), payerA); err != nil {
+			t.Fatalf("start %d with Valkey stalled: %v", i+1, err)
+		}
+		if took := time.Since(start); took > 3*time.Second {
+			t.Fatalf("start %d took %v with Valkey stalled", i+1, took)
+		}
+	}
+	if n := strings.Count(logs.String(),
+		`level=WARN msg="wallet start buckets unread, letting the start through"`); n != 5 {
+		t.Fatalf("%d warnings for 5 starts:\n%s", n, logs.String())
+	}
+	// The Postgres cap still holds
+	_, err := e.createPaid(t, "order-f", payerA)
+	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
 }

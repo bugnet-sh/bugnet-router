@@ -313,6 +313,34 @@ func TestPaymentsServiceRefusesOtherTokens(t *testing.T) {
 	}
 }
 
+func TestCheckPayerSaysOKWhenValkeyHangs(t *testing.T) {
+	var logs syncBuffer
+	addr, replies := valve(t)
+	e := newEnv(t, options{
+		wallets:   payerWallets(func(w *config.Wallets) { w.MaxConcurrent, w.StartsBurst = 1, 1 }),
+		apiValkey: addr, log: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	e.readyPaid(t, payerA)
+	e.stop(t, e.readyPaid(t, payerB))
+	eq(t, e.checkPayer(t, payerB, "start").GetVerdict(),
+		routerv1.PayerVerdict_PAYER_VERDICT_RATE_LIMITED)
+
+	replies.Lock()
+	t.Cleanup(replies.Unlock)
+	start := time.Now()
+	eq(t, e.checkPayer(t, payerB, "start").GetVerdict(), routerv1.PayerVerdict_PAYER_VERDICT_OK)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("CheckPayer took %v with Valkey not answering", took)
+	}
+	if !strings.Contains(logs.String(),
+		`level=WARN msg="api: wallet start buckets unread for CheckPayer"`) {
+		t.Fatalf("no warning that the start buckets were not read:\n%s", logs.String())
+	}
+	// The Postgres cap still holds
+	eq(t, e.checkPayer(t, payerA, "start").GetVerdict(),
+		routerv1.PayerVerdict_PAYER_VERDICT_BUSY)
+}
+
 func TestOperatorCallsWriteAuditRows(t *testing.T) {
 	e := newEnv(t, options{wallets: payerWallets(nil)})
 	op := e.operator(t, operatorToken)
