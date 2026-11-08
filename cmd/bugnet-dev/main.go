@@ -6,9 +6,9 @@
 // order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the settings file's
 // packages_file. Only commands that need a setting read the file. exec and watch write a job's
 // output to stdout and stderr as it arrives and exit with the job's code. transfer prints a
-// transfer URL and its curl command, and preview a preview link. revoke-preview calls
-// OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy and
-// bugnet-certs files from deploy/vps.
+// transfer URL and its curl command, and preview a preview link. revoke-preview and session hold
+// call OperatorService with BUGNET_OPERATOR_TOKEN instead, and session rotate moves a placement's
+// session link on. deploy maps renders the VPS's HAProxy and bugnet-certs files from deploy/vps.
 package main
 
 import (
@@ -67,6 +67,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
+  session hold --placement ID            print a held session record, as OperatorService
+                                         serves it to operators
+  session rotate --handle H              end a placement's session link and print its new one
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -83,7 +86,8 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
-  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, which calls OperatorService
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview and session hold, which call
+                            OperatorService
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
 
@@ -129,7 +133,7 @@ func run(
 		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
-		"revoke-preview": c.revokePreview,
+		"revoke-preview": c.revokePreview, "session": c.session,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -248,6 +252,7 @@ func (c *cli) keys(args []string) error {
 	for _, name := range []string{
 		"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
 		"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
+		"BUGNET_SESSIONS_TOKEN",
 	} {
 		lines = append(lines, [2]string{name, hex.EncodeToString(rand32())})
 	}
@@ -832,6 +837,9 @@ func (c *cli) printPlacement(p *routerv1.Placement) error {
 	if p.GetFailureReason() != "" {
 		kv = append(kv, [2]string{"failure_reason", p.GetFailureReason()},
 			[2]string{"refundable", strconv.FormatBool(p.GetRefundable())})
+	}
+	if p.GetSessionUrl() != "" {
+		kv = append(kv, [2]string{"session_url", p.GetSessionUrl()})
 	}
 	return c.print(kv)
 }

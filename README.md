@@ -26,7 +26,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox and session jobs, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
@@ -35,7 +35,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
-| `internal/worker` | River workers for deadlines, the sweep and the outbox |
+| `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy and session expiry |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
@@ -48,6 +48,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
 | `internal/budget`, `internal/edgeevents` | Edge and egress budgets in Valkey, and the edge event stream |
 | `internal/transfer` | Transfer records and claims in Valkey, path resolution and staging through `bugnet-run` |
+| `internal/sessions` | The session page: cleaning and redaction, event writes, `record_json` and `live_json` |
 | `test/e2e` | End-to-end tests over the built binaries |
 | `test/live` | The live stack and the data-plane live rows `scripts/live-test.sh` runs |
 | `config` | `example.toml` with every setting, `dev.toml`, the catalog and the pool list `dev-up.sh` runs with, `dev-front.toml` for the live stack behind the VPS |
@@ -241,6 +242,8 @@ bin/bugnet-dev transfer --handle sbx_... --upload data.csv --path ~/data.csv
 bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
 bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
+bin/bugnet-dev session rotate --handle sbx_...
+BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev session hold --placement <placement id>
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -260,7 +263,9 @@ optional `--sha256`, or a download of a sandbox path.
 `preview` prints the preview link of one port, its id, the paid deadline and whether something
 listened on the port when the router asked. `revoke-preview` calls `OperatorService` with
 `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else `USER`, and kills every link of that
-preview for good.
+preview for good. `get` prints the placement's `session_url` while its record lives. `session
+rotate` ends that link and prints the new one. `session hold` prints a held record as
+`OperatorService` serves it, with `BUGNET_OPERATOR_TOKEN`.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -327,6 +332,7 @@ does not know.
 | `BUGNET_EGRESS_FETCH_TOKEN` | `router-api` and `router-worker`, the `bnf_` token the router's private fetch opens egress tunnels with, empty or 32 characters or more |
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
 | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more |
+| `BUGNET_SESSIONS_TOKEN` | `router-api`, and `bugnet-edge --role sessions`, the bearer token of `SessionPageService`, empty or 32 characters or more |
 | `BUGNET_HOOK_PATH_SECRET` | The edge only, base64url of 32 bytes in the provider webhook path |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
@@ -341,8 +347,8 @@ one root named `k1`. Each placement records the id of the root its gate key and 
 from. To rotate, put a new root first in the list. New placements use it, and preview tokens, put
 grants and SSH grant ids made under any listed root still verify. Restart `router-api` and
 `router-worker` together with the same list, since a process without the new root cannot open or
-check what the other made under it. Remove an old root only once every placement that recorded it
-has ended.
+check what the other made under it. Remove an old root only 48 hours after the last placement that
+recorded it ended, since its session page link derives from that root until the record expires.
 
 The store seals the provider credentials in `provider_ref` (E2B's `envd_token` and
 `traffic_token`, Koyeb's `secret`, Boat's `_token`) with AES-256-GCM under a key derived from the
@@ -443,6 +449,28 @@ digits or `0x` and hex digits, such as `127.1` or `a.0x1f`. `inet_aton`, curl an
 those short forms as IPv4 addresses.
 
 Money is integer micro-USD and times are UTC.
+
+### Session page settings
+
+`[sessions]` and `[sessions.live]` size the session page (SP 6 and 7).
+
+| Key | Default | Takes |
+| --- | --- | --- |
+| `base_url` | `""` | The page's origin, `https://sessions.<domain>`, or `http` to a loopback host. No link while empty |
+| `keep` | `"48h"` | How long a page lives after its sandbox ends, at least 1h |
+| `abuse_hold` | `"720h"` | How long an abuse or operator end keeps the record for operators |
+| `max_events` | `5000` | Events per record, 1 to 100000 |
+| `job_output` | `"64KiB"` | The newest output kept of each output of a job |
+| `placement_output` | `"4MiB"` | The output kept per record, earlier jobs keeping 8 KiB per output past it |
+| `disk_budget` | `"8GiB"` | The three session tables together, `/monitor` warning at 80% |
+| `mcp_tools` | 24 names | The gateway's tool names an `mcp` event may carry |
+| `live.enabled` | `true` | The live view's kill switch |
+| `live.max_readers` | `256` | Live streams one `router-api` serves at once, 1 to 4096 |
+| `live.placement_bytes` | `"256MiB"` | Live bytes per placement |
+| `live.bytes_per_second` | `"1MiB"` | The pace of each live stream |
+| `live.replay` | `"256KiB"` | What a first connection replays of a job |
+
+`config/dev.toml` sets `base_url` to `https://sessions.dev.bugnet.sh`.
 
 ### x402
 
@@ -591,6 +619,9 @@ holds a handle or a job ID.
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
 | `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
 | `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty |
+| `NotFound` | `SESSION_UNKNOWN` | A session page call with an unknown id or a wrong key alike, a live view of a placement not running, or a hold no record has |
+| `NotFound` | `ORDER_UNKNOWN` | `AppendAllowanceEvent` names an order that is no placement's start order |
+| `FailedPrecondition` | `FEATURE_UNAVAILABLE` | `WatchSessionJob` while `sessions.live.enabled` is `false` |
 
 A provider failure carries the provider's code in lowercase instead, such as `rate_limited`. A
 call that its caller cancels or lets run out of time answers `Canceled` or `DeadlineExceeded`,
@@ -602,19 +633,20 @@ same key runs the command once.
 
 ## Caller services
 
-`router-api` serves seven Connect services on its one listener. Each admits only its own bearer
+`router-api` serves eight Connect services on its one listener. Each admits only its own bearer
 token, and a service whose token is empty admits no calls, so a router without edges serves only
 the gateway.
 
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
-| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer` and `CreatePreview` |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer`, `CreatePreview`, `AppendSessionEvents` and `RotateSessionLink` |
 | `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
-| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
-| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
+| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview`, `GetSessionHold` |
+| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder`, `AppendAllowanceEvent` |
+| `SessionPageService` | `bugnet-edge --role sessions` | `BUGNET_SESSIONS_TOKEN` | `GetSessionRecord`, `DeleteSessionRecord`, `WatchSessionJob` |
 
 ### Budgets
 
@@ -774,6 +806,50 @@ state now, and the placement's `failure_reason`, `termination_reason` and `ended
 router records an extension only once it applied it. An empty `order_id` answers
 `InvalidArgument`. `CheckPayer` answers `Unimplemented` until the wallet checks land.
 
+### Session page
+
+Every placement gets a session record (SP 6) in the transaction that creates it, so
+`Placement.session_url` is in the first answer, placing included. The link is
+`<sessions.base_url>/s/<id>#k=<key>`: `id` is 16 random lower-case base32 characters, and `key`
+is `bnk_` and the base64url of HMAC-SHA256 under the `sessions` purpose key of the placement's
+root, over the id and the record's generation. Every `Placement` answer carries the link until
+the record expires or its page is closed, then none. No link is given while `sessions.base_url`
+is empty, and the record is still kept.
+
+- **Events** (SP 6.2) go through one writer, which cleans every string, cuts it to its length and
+  logs a failure without failing the call that caused it. The saga writes `placement` (placed,
+  ready, extended, ended) and `payment` (start, extend), the jobs service `job` (start, end), the
+  API `file`, `preview` (issued, revoked) and `transfer`. A record keeps `sessions.max_events`
+  events, past which only `placement`, `payment` and `allowance` rows land and the rest are
+  counted in `eventsDropped`. A record its user deleted takes no event.
+- **Commands** (D-f): each new job gets its `seq` with the first 1 KiB of its command, cleaned and
+  redacted.
+- **The copy:** every transaction that ends a placement inserts `session_copy` on the `dataplane`
+  queue. It reads each job's stream through the page's cleaner, keeps the newest
+  `sessions.job_output` of each output and at most `sessions.placement_output` a record, newest
+  jobs first, then 8 KiB per output, and removes the streams with `UNLINK`. Missing streams set
+  the output `expired`, some missing `partial`, and 10 minutes after the end the copy gives up as
+  `expired`. At 100% of `sessions.disk_budget` a copy keeps 8 KiB per output and sets `partial`.
+- **Expiry:** `session_expiry` runs at start and hourly, deleting up to 10,000 records whose page
+  ended and whose hold is empty or past. `abuse`, `wallet_blocked` and `operator` ends close the
+  page at once and hold the record `sessions.abuse_hold` for `GetSessionHold`.
+- **Cleaning and redaction** follow bugnet-gateway's `cleanText` rule for rule, against its
+  vectors in `internal/sessions/testdata`, and then redact Bugnet and vendor token shapes,
+  `Authorization`, `Bearer` and `Basic` values, URL passwords, private key blocks, and the
+  placement's gate key and provider credentials, as `[redacted <kind>]`. A token split across
+  frames is still caught, with at most 16 KiB held back per output.
+- **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized
+  for `sessions.live.max_readers`, and counts its bytes in `live:used:<placement>`, never in the
+  edge budget. A first connection replays the newest `sessions.live.replay` after a `skip`. A
+  stream ends on the job's exit, the placement's end, a closed or rotated link, 30 minutes or
+  shutdown, re-reading its record and placement every 5 s.
+- `AppendSessionEvents` takes at most 50 `mcp` events and leaves out each with a tool outside
+  `sessions.mcp_tools` or a malformed outcome, until 10 minutes after the end.
+  `AppendAllowanceEvent` stores one event per phase of the start order's record until it
+  expires. `RotateSessionLink` moves the generation only when it names the current link.
+- The payment event's `tx` is empty, and its amount the order's whole amount, until router Task
+  28's `Tx` and `AllowanceMicros` claims land (`paymentClaims` in `internal/saga/session.go`).
+
 ## Deployment
 
 With `api.reuse_port = true`, `router-api` binds `api.listen_addr` with `SO_REUSEPORT`, so a new
@@ -806,7 +882,8 @@ expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeo
 Valkey unreachable, placements ready or terminating over 3 minutes past their deadline and stops
 still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
 outbox events, Valkey memory at 80% of `maxmemory` or more, a `maxmemory-policy` other than
-`noeviction`, and a mining pool list that is empty, missing or unreadable. A failed connection
+`noeviction`, a mining pool list that is empty, missing or unreadable, and session records at
+80% of `sessions.disk_budget` or more. A failed connection
 means the worker is down. When `INFO memory` fails or times out while Valkey answers,
 `/monitor` reports `valkey memory is unknown`. When an ACL or `rename-command` refuses `INFO`,
 it reports `valkey refuses INFO, so its memory and policy go unchecked`, since that also leaves

@@ -26,8 +26,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
@@ -175,6 +177,8 @@ type options struct {
 	deployment  string
 	// dataplaneWorkers sets Deps.DataplaneWorkers, the default when zero
 	dataplaneWorkers int
+	// sessions sets Deps.Sessions, each zero size at its default
+	sessions config.Sessions
 }
 
 type env struct {
@@ -186,6 +190,9 @@ type env struct {
 	priv       ed25519.PrivateKey
 	deployment string
 	events     <-chan *river.Event
+	worker     *worker.Worker
+	vk         valkey.Client
+	prefix     string
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -260,6 +267,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
+		Sessions: o.sessions,
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
@@ -277,7 +285,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
-		deployment: o.deployment,
+		deployment: o.deployment, worker: w, vk: vk, prefix: prefix,
 	}
 }
 

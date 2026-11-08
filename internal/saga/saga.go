@@ -64,6 +64,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -155,6 +156,12 @@ type Deps struct {
 	Keys dpkeys.Keys
 	// Boot holds what each sandbox's setup and harden specs carry
 	Boot BootSettings
+	// Sessions writes the session page's events, none when nil
+	Sessions *sessions.Writer
+	// SessionKeep is how long a record lives after its placement ends, 48 h when zero
+	SessionKeep time.Duration
+	// SessionAbuseHold keeps an abuse or operator end's record, 30 days when zero
+	SessionAbuseHold time.Duration
 }
 
 // Saga runs placements from order to teardown
@@ -183,6 +190,8 @@ func New(deps Deps) *Saga {
 	if deps.DeploymentID == "" {
 		deps.DeploymentID = defaultDeployment
 	}
+	deps.SessionKeep = cmp.Or(deps.SessionKeep, defaultSessionKeep)
+	deps.SessionAbuseHold = cmp.Or(deps.SessionAbuseHold, defaultAbuseHold)
 	s := &Saga{d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget)}
 	if roots := deps.Keys.Roots(); len(roots) > 0 {
 		s.keyID = roots[0].ID
@@ -232,9 +241,13 @@ func (s *Saga) Create(
 		return store.Placement{}, "", fmt.Errorf(
 			"%w: order %s belongs to another placement", ErrBadToken, c.OrderID)
 	}
+	if created {
+		s.sessionStarted(ctx, p, pkg, c)
+	}
 	if p.State == store.PlacementFailed && p.FailureReason == ReasonNoCandidate {
 		if created {
 			s.publish(ctx, newEvent(p, ReasonNoCandidate))
+			s.sessionEnded(ctx, p.ID)
 		}
 		return p, h, fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
 	}
@@ -254,8 +267,19 @@ func (s *Saga) record(ctx context.Context, np store.NewPlacement) (store.Placeme
 	var created bool
 	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		p, created, err = s.d.Store.Tx(tx).CreatePlacement(ctx, np)
-		if err != nil || !created || np.FailureReason == "" {
+		ts := s.d.Store.Tx(tx)
+		p, created, err = ts.CreatePlacement(ctx, np)
+		if err != nil || !created {
+			return err
+		}
+		// The record is made with the placement, so the first answer carries its link
+		if _, err := ts.CreateSessionRecord(ctx, p.ID); err != nil {
+			return err
+		}
+		if np.FailureReason == "" {
+			return nil
+		}
+		if err := s.endSession(ctx, tx, p); err != nil {
 			return err
 		}
 		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, newEvent(p, np.FailureReason))
@@ -564,6 +588,9 @@ func (s *Saga) commitReady(
 		return outcome{reason: reasonInternal, detail: fmt.Sprintf("commit ready: %v", err)}
 	}
 	s.publish(ctx, ev)
+	if s.d.Sessions != nil {
+		s.d.Sessions.Placement(ctx, p.ID, sessions.PhaseReady, pkg, &deadline, "")
+	}
 	return outcome{done: true, kept: &ref}
 }
 
@@ -612,6 +639,7 @@ func (s *Saga) fail(
 		s.d.Log.Error("mark placement failed", "placement", p.ID, "reason", reason, "err", err)
 	} else {
 		s.publish(ctx, ev)
+		s.sessionEnded(ctx, p.ID)
 	}
 	s.sweep(ctx, p.ID, attempted, nil)
 }
@@ -658,6 +686,7 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 	// The failure is committed, so cleanup runs to the end without holding up the caller
 	ctx = context.WithoutCancel(ctx)
 	s.publish(ctx, ev)
+	s.sessionEnded(ctx, id)
 	s.wg.Go(func() { s.sweep(ctx, id, s.d.Registry.Ordered(), nil) })
 	return nil
 }
@@ -672,6 +701,9 @@ func (s *Saga) recordFailed(
 	}
 	cur, err := ts.PlacementByID(ctx, id)
 	if err != nil {
+		return Event{}, err
+	}
+	if err := s.endSession(ctx, tx, cur); err != nil {
 		return Event{}, err
 	}
 	ev := newEvent(cur, reason)
@@ -782,6 +814,11 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	}
 	s.publish(ctx, ev)
 	s.deadlineMoved(ctx, p)
+	if s.d.Sessions != nil {
+		s.d.Sessions.Placement(ctx, id, sessions.PhaseExtended, pkg, p.Deadline, "")
+		amount, tx := paymentClaims(c)
+		s.d.Sessions.Payment(ctx, id, string(ordertoken.KindExtend), amount, tx)
+	}
 	return p, nil
 }
 
@@ -1075,6 +1112,9 @@ func (s *Saga) terminate(
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {
 			return err
 		}
+		if err := s.endSession(ctx, tx, ended); err != nil {
+			return err
+		}
 		// The transition to terminating recorded why, whoever finishes the placement
 		ev = newEvent(ended, cmp.Or(ended.TerminationReason, ReasonDeadline))
 		return s.d.Store.InsertOutbox(ctx, tx, EventTerminated, ev)
@@ -1084,6 +1124,7 @@ func (s *Saga) terminate(
 	}
 	if !already {
 		s.publish(ctx, ev)
+		s.sessionEnded(ctx, p.ID)
 	}
 	return ended, nil
 }

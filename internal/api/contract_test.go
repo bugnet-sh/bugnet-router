@@ -80,7 +80,7 @@ var built = []string{
 	"Estimate", "PricePackage", "CreatePlacement", "GetPlacement", "WatchPlacement",
 	"ExtendPlacement", "CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec",
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
-	"CreatePreview",
+	"CreatePreview", "AppendSessionEvents", "RotateSessionLink",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {

@@ -39,11 +39,12 @@ const (
 	purposePair        = "pair"
 	purposePlaceholder = "placeholder"
 	purposeRef         = "ref"
+	purposeSessions    = "sessions"
 )
 
 // Purposes lists every purpose key the router derives, newest purpose last
 var Purposes = []string{purposePreview, purposeGate, purposeGrant, purposeTransfer, purposeLink,
-	purposePut, purposePair, purposePlaceholder, purposeRef}
+	purposePut, purposePair, purposePlaceholder, purposeRef, purposeSessions}
 
 const (
 	keyBytes = 32
@@ -63,6 +64,7 @@ const (
 	putPrefix         = "bnsp_"
 	placeholderPrefix = "bnsec_"
 	tunnelPrefix      = "bnt_"
+	sessionPrefix     = "bnk_"
 )
 
 var (
@@ -232,6 +234,35 @@ func (k Keys) GateKey(keyID string, placement uuid.UUID) (string, error) {
 		return "", err
 	}
 	return url64.EncodeToString(r.mac(purposeGate, []byte("gate"), placement[:])), nil
+}
+
+/* Session pages */
+
+// SessionKey derives the bnk_ key of a session record's link under the root keyID names
+func (k Keys) SessionKey(keyID, id string, generation uint32) (string, error) {
+	if id == "" {
+		return "", errors.New("dpkeys: empty session id")
+	}
+	r, err := k.find(keyID)
+	if err != nil {
+		return "", err
+	}
+	return r.sessionKey(id, generation), nil
+}
+
+func (r root) sessionKey(id string, generation uint32) string {
+	gen := binary.BigEndian.AppendUint32(nil, generation)
+	return sessionPrefix + url64.EncodeToString(
+		r.mac(purposeSessions, []byte("session"), []byte(id), gen))
+}
+
+// CheckSessionKey reports in constant time whether key is the record's key under keyID's root
+func (k Keys) CheckSessionKey(keyID, id string, generation uint32, key string) bool {
+	want, err := k.SessionKey(keyID, id, generation)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal([]byte(want), []byte(key))
 }
 
 /* SSH grants */

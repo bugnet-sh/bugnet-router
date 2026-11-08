@@ -30,6 +30,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
@@ -108,7 +109,8 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 
 // openStore returns the store, sealing provider credentials under the data-plane keys
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
-	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log))
+	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
+		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents))
 }
 
 func serve(
@@ -156,9 +158,13 @@ func serve(
 		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
+		Sessions:     sessions.NewWriter(st, cfg.DataPlaneKeys, log),
+		SessionKeep:  cfg.Sessions.Keep,
+		// The hold of D-b (a), for abuse and operator ends
+		SessionAbuseHold: cfg.Sessions.AbuseHold,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
-		DataplaneWorkers: cfg.DataplaneWorkers,
+		DataplaneWorkers: cfg.DataplaneWorkers, Sessions: cfg.Sessions,
 	})
 	if err != nil {
 		return err
@@ -173,7 +179,8 @@ func serve(
 		_, _ = io.WriteString(rw, "ok\n")
 	})
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
-	mux.HandleFunc("GET /monitor", monitor(log, st, vk, read, cfg.Hardening.PoolList))
+	mux.HandleFunc("GET /monitor",
+		monitor(log, st, vk, read, cfg.Hardening.PoolList, w.SessionDiskPercent))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

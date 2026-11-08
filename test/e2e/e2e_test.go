@@ -83,6 +83,7 @@ var keyNames = []string{
 var callerTokens = []string{
 	"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
 	"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
+	"BUGNET_SESSIONS_TOKEN",
 }
 
 var bin struct{ runner, api, worker, dev string }

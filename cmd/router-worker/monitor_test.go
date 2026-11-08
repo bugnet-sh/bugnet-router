@@ -45,7 +45,7 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, read, testPools)(rec,
+	monitor(discard, st, vk, read, testPools, nil)(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -77,7 +77,7 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 	go func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
-		monitor(discard, store.New(pool), vk, hung, testPools)(rec, req)
+		monitor(discard, store.New(pool), vk, hung, testPools, nil)(rec, req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -249,12 +249,42 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 		bad:                               "the mining pool list cannot be read\n",
 	} {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, healthy, path)(rec,
+		monitor(discard, st, vk, healthy, path, nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
 			t.Errorf("monitor with %s answered %d %q, want 503 %q", path, rec.Code,
 				rec.Body.String(), want)
 		}
+	}
+}
+
+func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
+	st := store.New(migrated(t))
+	vk, _ := testenv.Valkey(t)
+	for percent, want := range map[int64]string{
+		79: "", 80: "session records at 80% of their disk budget",
+		130: "session records at 130% of their disk budget",
+	} {
+		rec := httptest.NewRecorder()
+		disk := func(context.Context) (int64, error) { return percent, nil }
+		monitor(discard, st, vk, healthy, testPools, disk)(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		if want == "" {
+			if rec.Code != http.StatusOK {
+				t.Fatalf("at %d%% /monitor gave %d: %s", percent, rec.Code, rec.Body)
+			}
+			continue
+		}
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("at %d%% /monitor gave %d: %s", percent, rec.Code, rec.Body)
+		}
+	}
+	rec := httptest.NewRecorder()
+	failing := func(context.Context) (int64, error) { return 0, errors.New("no size") }
+	monitor(discard, st, vk, healthy, testPools, failing)(rec,
+		httptest.NewRequest(http.MethodGet, "/monitor", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("an unread size gave %d: %s", rec.Code, rec.Body)
 	}
 }

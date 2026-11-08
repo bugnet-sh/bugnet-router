@@ -620,6 +620,13 @@ func (st *stream) finish(ok bool) {
 	if err != nil {
 		log.Warn("api: end a transfer claim", "done", ok, "err", err)
 	}
+	if ok && err == nil {
+		dir := "out"
+		if st.rec.Direction == upload {
+			dir = "in"
+		}
+		st.s.d.SessionWriter.Transfer(ctx, st.p.ID, dir, st.rec.Path, st.rec.Size)
+	}
 	// Staging is per URL, so a claim taken over leaves it to the new holder and the hourly sweep
 	if st.rec.StagedPath != "" && !errors.Is(err, transfer.ErrInUse) {
 		if err := transfer.Unstage(ctx, st.prov, *st.p.ProviderRef, st.rec.StagedPath); err != nil {

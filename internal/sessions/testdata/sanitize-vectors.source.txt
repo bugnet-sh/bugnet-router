@@ -1,0 +1,3 @@
+sanitize-vectors.json is bugnet-gateway packages/gateway/src/testing/sanitize-vectors.json
+as of commit 2eb3d6b812275a7736bf560cb51e6f0391506e70, unchanged. Copy it again when the
+gateway changes it, and keep its cases passing in both.

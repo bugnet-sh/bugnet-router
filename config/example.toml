@@ -115,6 +115,28 @@ shared_hosting_suffixes = ["workers.dev", "onrender.com", "vercel.app", "netlify
 allowed_shared_hosts = []              # filled at deploy from the reviewed index, never by hand
 blocked_hosts = []                     # refused at enable and dropped from ResolveTunnel
 
+[sessions]                             # the session page, SP 6 and 7
+base_url = ""                          # https://sessions.<domain>, no session link while empty
+keep = "48h"                           # how long a page lives after its sandbox ends
+abuse_hold = "720h"                    # an abuse or operator end keeps the record for operators
+max_events = 5000                      # events per record, placement, payment and allowance aside
+job_output = "64KiB"                   # newest output kept per output of each job
+placement_output = "4MiB"              # output kept per record, earlier jobs keep 8 KiB past it
+disk_budget = "8GiB"                   # the three session tables together, 100% keeps 8 KiB tails
+mcp_tools = ["bugnet_assess", "bugnet_quote", "bugnet_redeem", "bugnet_start", "bugnet_status",
+    "bugnet_extend", "bugnet_stop", "bugnet_exec", "bugnet_job", "bugnet_cancel_job",
+    "bugnet_read_file", "bugnet_write_file", "bugnet_list_files", "bugnet_preview",
+    "bugnet_transfer", "bugnet_ssh", "bugnet_ssh_remove", "bugnet_secret_link",
+    "bugnet_secret_put_grant", "bugnet_secrets", "bugnet_secret_delete", "bugnet_fetch_source",
+    "bugnet_x402_find", "bugnet_x402_budget"]
+
+[sessions.live]                        # the page's live output while the sandbox runs
+enabled = true                         # the kill switch, false ends every live stream
+max_readers = 256                      # live streams one router-api serves at once
+placement_bytes = "256MiB"             # live bytes per placement, apart from the edge budget
+bytes_per_second = "1MiB"              # the pace of each live stream
+replay = "256KiB"                      # a first connection's replay of a job's newest output
+
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",

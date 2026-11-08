@@ -10,7 +10,9 @@
 // outbox job runs every second and posts each due event, signed, to the configured events URL,
 // retrying a failed one with backoff until it is delivered. A periodic job a crashed worker left
 // running is rescued after a few minutes, so it holds back the next run of its kind only that
-// long. Data-plane jobs run on the dataplane queue with workers of their own.
+// long. Data-plane jobs run on the dataplane queue with workers of their own, the session copy
+// among them, which moves an ended placement's job output into its session record. Session
+// expiry runs at start and hourly and deletes the records whose page ended and no hold keeps.
 package worker
 
 import (
@@ -28,10 +30,13 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
 )
 
 const (
@@ -47,10 +52,18 @@ const (
 	postTimeout   = 10 * time.Second
 	callTimeout   = 30 * time.Second
 	outboxRunTime = 30 * time.Second
+	expiryEvery   = time.Hour
 )
 
 // dataplaneWorkers is the dataplane queue's workers when Deps leaves them unset
 const dataplaneWorkers = 8
+
+// The session settings' defaults, for Deps that leave them unset
+const (
+	defaultJobOutput       = 64 << 10
+	defaultPlacementOutput = 4 << 20
+	defaultDiskBudget      = 8 << 30
+)
 
 // Deps are the worker's own settings next to the saga it builds
 type Deps struct {
@@ -59,6 +72,8 @@ type Deps struct {
 	Now        func() time.Time   // time.Now when nil
 	// DataplaneWorkers works the dataplane queue, 8 when zero
 	DataplaneWorkers int
+	// Sessions sizes the session copy and its disk budget
+	Sessions config.Sessions
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -75,6 +90,10 @@ type Worker struct {
 	stuck    int // stuck outbox events at the last report
 	// stuckReported is when the watch last reported stuck events
 	stuckReported time.Time
+	// bus reads job streams for the session copy
+	bus  *streams.Bus
+	keys dpkeys.Keys
+	disk diskGauge
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -86,6 +105,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		d.Now = time.Now
 	}
 	d.DataplaneWorkers = cmp.Or(d.DataplaneWorkers, dataplaneWorkers)
+	d.Sessions.JobOutput = cmp.Or(d.Sessions.JobOutput, defaultJobOutput)
+	d.Sessions.PlacementOutput = cmp.Or(d.Sessions.PlacementOutput, defaultPlacementOutput)
+	d.Sessions.DiskBudget = cmp.Or(d.Sessions.DiskBudget, defaultDiskBudget)
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -94,6 +116,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		store:    sd.Store,
 		registry: sd.Registry,
 		log:      sd.Log,
+		bus:      streams.NewBus(sd.Valkey, sd.Prefix),
+		keys:     sd.Keys,
 		http: &http.Client{
 			Timeout: postTimeout,
 			// A redirect would turn the POST into a GET, so any 3xx counts as a failed delivery
@@ -107,6 +131,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &sweepWorker{w: w})
 	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
+	river.AddWorker(workers, &sessionCopyWorker{w: w})
+	river.AddWorker(workers, &sessionExpiryWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -155,6 +181,9 @@ func periodicJobs() []*river.PeriodicJob {
 			&river.PeriodicJobOpts{RunOnStart: true}),
 		river.NewPeriodicJob(river.PeriodicInterval(outboxEvery),
 			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Outbox{}, single },
+			&river.PeriodicJobOpts{RunOnStart: true}),
+		river.NewPeriodicJob(river.PeriodicInterval(expiryEvery),
+			func() (river.JobArgs, *river.InsertOpts) { return jobargs.SessionExpiry{}, single },
 			&river.PeriodicJobOpts{RunOnStart: true}),
 	}
 }

@@ -39,3 +39,10 @@ func SetBeforeWatch(t testing.TB, f func()) {
 func WatchTransferEvents(s *Server, placement string) (<-chan *routerv1.EdgeEvent, func()) {
 	return s.hub.watch(placement)
 }
+
+// SetLiveRecheck makes live session streams re-read their record and placement every d
+func SetLiveRecheck(t testing.TB, d time.Duration) {
+	old := liveRecheck
+	liveRecheck = d
+	t.Cleanup(func() { liveRecheck = old })
+}

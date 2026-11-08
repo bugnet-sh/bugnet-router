@@ -31,3 +31,17 @@ type Outbox struct{}
 
 // Kind returns the River job kind
 func (Outbox) Kind() string { return "outbox" }
+
+// SessionCopy asks the worker to copy an ended placement's output into its session record
+type SessionCopy struct {
+	PlacementID uuid.UUID `json:"placement_id"`
+}
+
+// Kind returns the River job kind
+func (SessionCopy) Kind() string { return "session_copy" }
+
+// SessionExpiry asks the worker to delete the session records whose page ended
+type SessionExpiry struct{}
+
+// Kind returns the River job kind
+func (SessionExpiry) Kind() string { return "session_expiry" }

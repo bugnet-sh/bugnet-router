@@ -33,6 +33,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/valkey-io/valkey-go"
 	"golang.org/x/sys/unix"
 
 	"github.com/bugnet-sh/bugnet-router/internal/api"
@@ -44,6 +45,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
@@ -106,7 +108,8 @@ func migrateDatabase(ctx context.Context, log *slog.Logger) error {
 
 // openStore returns the store, sealing provider credentials under the data-plane keys
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
-	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log))
+	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
+		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents))
 }
 
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
@@ -149,7 +152,15 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return fmt.Errorf("river client: %w", err)
 	}
 
+	// The live view's own client, so a crowd of page viewers never starves tool calls
+	liveVK, err := liveClient(cfg)
+	if err != nil {
+		return fmt.Errorf("connect to valkey for the live view: %w", err)
+	}
+	defer liveVK.Close()
+
 	st := openStore(pool, cfg, log)
+	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
 	sg := saga.New(saga.Deps{
@@ -172,8 +183,14 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
 		Boot:         boot,
+		Sessions:     writer,
+		SessionKeep:  cfg.Sessions.Keep,
+		// The hold of D-b (a), for abuse and operator ends
+		SessionAbuseHold: cfg.Sessions.AbuseHold,
 	})
-	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
+	jd := jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log)
+	jd.Sessions = writer
+	js := jobs.New(jd)
 	var scanner sync.WaitGroup
 	// The scanner runs until jobs.Shutdown, so jobs keep being taken over while HTTP drains
 	scanner.Go(func() { js.RunScanner(context.Background()) })
@@ -196,6 +213,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		TransferHost:        cfg.Names.TransferHost,
 		PreviewDomain:       cfg.Names.PreviewDomain,
 		Previews:            cfg.Previews,
+		Sessions:            cfg.Sessions,
+		SessionWriter:       writer,
+		LiveValkey:          liveVK,
 	})
 	defer srv.Close()
 
@@ -323,8 +343,18 @@ func tokens(cfg config.Config) api.Tokens {
 	return api.Tokens{
 		Internal: cfg.InternalToken, Edge: cfg.EdgeToken, Secrets: cfg.SecretsToken,
 		SSH: cfg.SSHToken, Egress: cfg.EgressToken, Operator: cfg.OperatorToken,
-		Payments: cfg.PaymentsToken,
+		Payments: cfg.PaymentsToken, Sessions: cfg.SessionsToken,
 	}
+}
+
+// liveClient connects the live view's client, its blocking pool sized for its readers
+func liveClient(cfg config.Config) (valkey.Client, error) {
+	opt, err := vkclient.Options(cfg.ValkeyAddr)
+	if err != nil {
+		return nil, err
+	}
+	opt.BlockingPoolSize = cfg.Sessions.Live.MaxReaders
+	return valkey.NewClient(opt)
 }
 
 // jobDeps gives the jobs service its dependencies and the configured output limits

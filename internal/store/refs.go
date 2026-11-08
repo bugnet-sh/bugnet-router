@@ -17,8 +17,8 @@ type RefSealer interface {
 	OpenRef(placement uuid.UUID, sealed string) (string, error)
 }
 
-// credentialFields are the Ref.Meta fields that hold a provider credential
-var credentialFields = []string{"envd_token", "traffic_token", "secret", "_token"}
+// CredentialFields are the Ref.Meta fields that hold a provider credential
+var CredentialFields = []string{"envd_token", "traffic_token", "secret", "_token"}
 
 // sealedPrefix starts every sealed field, so a field without it was written before sealing
 const sealedPrefix = "v1."
@@ -29,7 +29,7 @@ var errNoSealer = errors.New("store: provider credentials need a ref sealer")
 func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, error) {
 	out := ref
 	out.Meta = maps.Clone(ref.Meta)
-	for _, field := range credentialFields {
+	for _, field := range CredentialFields {
 		v, ok := out.Meta[field]
 		if !ok {
 			continue
@@ -44,7 +44,7 @@ func (s *Store) sealRef(placement uuid.UUID, ref provider.Ref) (provider.Ref, er
 
 // openRef opens the sealed credential fields of p's ref in place and drops any it cannot open
 func (s *Store) openRef(p *Placement) {
-	for _, field := range credentialFields {
+	for _, field := range CredentialFields {
 		v, ok := p.ProviderRef.Meta[field]
 		if !ok || !strings.HasPrefix(v, sealedPrefix) {
 			continue

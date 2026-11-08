@@ -53,6 +53,16 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
 		return err
 	}
+	calls["AppendSessionEvents"] = func(h string) error {
+		_, err := e.client.AppendSessionEvents(ctx, connect.NewRequest(
+			&routerv1.AppendSessionEventsRequest{Handle: h}))
+		return err
+	}
+	calls["RotateSessionLink"] = func(h string) error {
+		_, err := e.client.RotateSessionLink(ctx, connect.NewRequest(
+			&routerv1.RotateSessionLinkRequest{Handle: h}))
+		return err
+	}
 	return calls
 }
 
