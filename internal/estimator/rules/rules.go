@@ -12,7 +12,7 @@ import (
 )
 
 // Version names the rule set, any change to a rule or a constant bumps it
-const Version = "est-2026.11.1"
+const Version = "est-2026.11.2"
 
 const (
 	mib = int64(1) << 20
@@ -216,13 +216,14 @@ type Output struct {
 
 type defaults struct{ vcpu, memMiB, diskGiB, minutes int }
 
+// disk stays at 8 GiB so a small source still fits the 10 GiB packages
 var workloadDefaults = map[Workload]defaults{
-	WorkloadTests:     {2, 2048, 10, 10},
+	WorkloadTests:     {2, 2048, 8, 10},
 	WorkloadBuild:     {4, 4096, 20, 20},
 	WorkloadScript:    {1, 1024, 5, 10},
-	WorkloadServe:     {2, 2048, 10, 30},
-	WorkloadInference: {2, 2048, 10, 20},
-	WorkloadOther:     {2, 2048, 10, 10},
+	WorkloadServe:     {2, 2048, 8, 30},
+	WorkloadInference: {2, 2048, 8, 20},
+	WorkloadOther:     {2, 2048, 8, 10},
 }
 
 // workloadDefault is the floor of a workload with no signals at all

@@ -148,12 +148,12 @@ func TestImageManifestPins(t *testing.T) { // matched on three, unmeasured on th
 	f := facts.Facts{Repo: &facts.Repo{Pins: []facts.Pin{{Tool: "python3", Version: "3.12.4"}}}}
 	in := input(t, Request{Workload: WorkloadTests}, f)
 	unmeasured := Run(in)
-	eq(t, [2]int{unmeasured.Floor.Minutes, unmeasured.Floor.DiskGiB}, [2]int{11, 11})
+	eq(t, [2]int{unmeasured.Floor.Minutes, unmeasured.Floor.DiskGiB}, [2]int{11, 9})
 	for i := range in.Images {
 		in.Images[i].Tools.Python3 = "3.12"
 	}
 	matched := Run(in)
-	eq(t, [2]int{matched.Floor.Minutes, matched.Floor.DiskGiB}, [2]int{10, 10})
+	eq(t, [2]int{matched.Floor.Minutes, matched.Floor.DiskGiB}, [2]int{10, 8})
 	in.Images[0].Tools.Python3 = "3.11"
 	eq(t, Run(in).Floor.Minutes, 11)
 	in.Images[0].Tools.Python3 = "none"
