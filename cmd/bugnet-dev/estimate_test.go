@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	replayInputs = `{"v":"` + rules.Version + `","request":{"source":{"kind":"none","read":false},` +
+	replayInputs = `{"v":"` + rules.Version +
+		`","request":{"source":{"kind":"none","read":false},` +
 		`"workload":"tests","entry_hints":{}},"facts_ref":null,"history":{},` +
 		`"catalog_sha256":"","max_lifetime_minutes":0}`
 	replayCatalog = `{"packages":[{"ID":"p","Resources":{"VCPU":2,"MemoryMiB":2048,"DiskGiB":10},` +
@@ -34,8 +35,10 @@ func (e *estimates) GetEstimate(
 	_ context.Context, req *connect.Request[routerv1.GetEstimateRequest],
 ) (*connect.Response[routerv1.GetEstimateResponse], error) {
 	return connect.NewResponse(&routerv1.GetEstimateResponse{
-		EstimateId: req.Msg.GetEstimateId(), EstimatorVersion: e.version, Inputs: []byte(replayInputs),
-		Output: e.output, InputsSha256: "ab", Catalog: []byte(replayCatalog),
+		EstimateId:       req.Msg.GetEstimateId(),
+		EstimatorVersion: e.version,
+		Inputs:           []byte(replayInputs),
+		Output:           e.output, InputsSha256: "ab", Catalog: []byte(replayCatalog),
 	}), nil
 }
 
