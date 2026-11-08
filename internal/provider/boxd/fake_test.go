@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -37,6 +38,7 @@ const (
 	fakeListBatch      = 2
 	fakeKillGrace      = 100 * time.Millisecond
 	fakeStallLimit     = 5 * time.Second
+	fakeAccessDomain   = "boxd.test"
 )
 
 var (
@@ -66,6 +68,10 @@ type fakeVM struct {
 	// proxyPort is the default proxy's port, auto when boxd detects it from the guest
 	proxyPort string
 	sshOff    bool
+	// proxies are the named proxies and their ports, beside the default one
+	proxies      map[string]uint32
+	accessDomain string
+	botMode      string
 }
 
 // setProxyPort is one SetProxyPort call as the fake received it
@@ -110,6 +116,7 @@ type fakeBoxd struct {
 	order        []string
 	pins         []setProxyPort
 	sshSets      []setSSH
+	botSets      []string
 	scripted     bool
 	script       []*boxdpb.ExecChunk
 	creates      []*boxdpb.CreateVmRequest
@@ -289,7 +296,7 @@ func (f *fakeBoxd) add(name string, labels map[string]string) *fakeVM {
 	vm := &fakeVM{
 		id: fmt.Sprintf("vm-%04d", f.nextID), name: name, labels: labels,
 		created: time.Now(), autoHibernate: fakeHibernateSecs, status: "running",
-		proxyPort: "auto",
+		proxyPort: "auto", accessDomain: fakeAccessDomain, botMode: "on",
 	}
 	f.vms[vm.id] = vm
 	return vm
@@ -305,7 +312,8 @@ func toMachine(vm *fakeVM) *boxdpb.GetVmResponse {
 	m := &boxdpb.GetVmResponse{
 		VmId: vm.id, Name: vm.name, Status: vm.status, Labels: vm.labels,
 		CreatedAt: vm.created.Unix(), AutoHibernateTimeoutSecs: vm.autoHibernate,
-		Isolated: true, SshDisabled: vm.sshOff,
+		Isolated: true, SshDisabled: vm.sshOff, AccessDomain: vm.accessDomain,
+		BotProtection: vm.botMode != "off", BotProtectionMode: vm.botMode,
 	}
 	if !vm.deleteAt.IsZero() {
 		m.DeleteAtMs = vm.deleteAt.UnixMilli()
@@ -358,6 +366,8 @@ func (f *fakeBoxd) CreateVm(
 		startingPolls:  1,
 		agentDownExecs: 1,
 		proxyPort:      "auto",
+		accessDomain:   fakeAccessDomain,
+		botMode:        "on",
 	}
 	if n := req.GetConfig().GetNetwork(); n != nil && n.Ssh != nil {
 		vm.sshOff = !n.GetSsh()
@@ -482,12 +492,19 @@ func (f *fakeBoxd) SetProxyPort(
 	if err != nil {
 		return nil, err
 	}
-	if req.GetName() != "" {
+	if _, ok := vm.proxies[req.GetName()]; req.GetName() != "" && !ok {
 		return nil, status.Errorf(codes.NotFound, "proxy %q not found", req.GetName())
 	}
-	if n, err := strconv.Atoi(req.GetPort()); req.GetPort() != "auto" &&
-		(err != nil || n < 1 || n > 65535) {
+	n, err := strconv.Atoi(req.GetPort())
+	if req.GetPort() != "auto" && (err != nil || n < 1 || n > 65535) {
 		return nil, status.Errorf(codes.InvalidArgument, "port: %q is not a port", req.GetPort())
+	}
+	if req.GetName() != "" {
+		if req.GetPort() == "auto" {
+			return nil, status.Error(codes.InvalidArgument, "auto is for the default proxy only")
+		}
+		vm.proxies[req.GetName()] = uint32(n)
+		return &boxdpb.SetProxyPortResponse{}, nil
 	}
 	vm.proxyPort = req.GetPort()
 	return &boxdpb.SetProxyPortResponse{}, nil
@@ -505,6 +522,82 @@ func (f *fakeBoxd) SetSsh(
 	}
 	vm.sshOff = !req.GetEnabled()
 	return &boxdpb.SetSshResponse{}, nil
+}
+
+// CreateProxy adds a named proxy, refusing a name the machine already has
+func (f *fakeBoxd) CreateProxy(
+	_ context.Context, req *boxdpb.CreateProxyRequest,
+) (*boxdpb.CreateProxyResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm, err := f.lookup(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	if req.GetName() == "" || req.GetPort() < 1 || req.GetPort() > 65535 {
+		return nil, status.Error(codes.InvalidArgument, "a proxy needs a name and a port")
+	}
+	if _, ok := vm.proxies[req.GetName()]; ok {
+		return nil, status.Errorf(codes.AlreadyExists, "proxy '%s' already exists",
+			req.GetName())
+	}
+	if vm.proxies == nil {
+		vm.proxies = map[string]uint32{}
+	}
+	vm.proxies[req.GetName()] = req.GetPort()
+	return &boxdpb.CreateProxyResponse{
+		Name: req.GetName(), VmName: vm.name, Port: req.GetPort(),
+		Domain: req.GetName() + "." + vm.name + "." + vm.accessDomain,
+	}, nil
+}
+
+// SetBotProtection takes the mode, refusing one boxd does not know
+func (f *fakeBoxd) SetBotProtection(
+	_ context.Context, req *boxdpb.SetBotProtectionRequest,
+) (*boxdpb.SetBotProtectionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm, err := f.lookup(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	switch req.GetMode() {
+	case "on", "sleep_only", "off":
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "mode: %q", req.GetMode())
+	}
+	f.botSets = append(f.botSets, req.GetMode())
+	vm.botMode = req.GetMode()
+	return &boxdpb.SetBotProtectionResponse{}, nil
+}
+
+// proxiesOf copies the named proxies of a machine
+func (f *fakeBoxd) proxiesOf(id string) map[string]uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm, err := f.lookup(id)
+	if err != nil {
+		return nil
+	}
+	out := map[string]uint32{}
+	maps.Copy(out, vm.proxies)
+	return out
+}
+
+// botModes lists every mode SetBotProtection received, oldest first
+func (f *fakeBoxd) botModes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.botSets)
+}
+
+// setVM changes a machine under the fake's lock
+func (f *fakeBoxd) setVM(id string, change func(*fakeVM)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if vm, err := f.lookup(id); err == nil {
+		change(vm)
+	}
 }
 
 func (f *fakeBoxd) proxyPins() []setProxyPort {

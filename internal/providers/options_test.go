@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/oynozan/bugnet-router/internal/config"
+	"github.com/oynozan/bugnet-router/internal/provider/boxd"
 	"github.com/oynozan/bugnet-router/internal/provider/koyeb"
 )
 
@@ -22,6 +23,20 @@ func TestKoyebOptionsCarryTheTransferParts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("koyeb options %+v, want %+v", got, want)
+	}
+}
+
+func TestBoxdOptionsCarryTheGateSettings(t *testing.T) {
+	var cfg config.Config
+	cfg.Boxd = config.Boxd{Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default"}
+	cfg.Previews.GatePort = 29418
+	got := boxdOptions(cfg, "boxd_test")
+	want := boxd.Options{
+		APIKey: "boxd_test", Endpoint: "boxd.example:9443", Region: "nyc", GatePort: 29418,
+		GateRoute: "default",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("boxd options %+v, want %+v", got, want)
 	}
 }
 

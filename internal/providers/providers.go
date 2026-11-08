@@ -49,9 +49,7 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			if key == "" {
 				return nil, fmt.Errorf("providers: boxd needs BOXD_API_KEY")
 			}
-			p, err := boxd.New(boxd.Options{
-				APIKey: key, Endpoint: cfg.Boxd.Endpoint, Region: cfg.Boxd.Region,
-			})
+			p, err := boxd.New(boxdOptions(cfg, key))
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -144,6 +142,14 @@ func buildE2B(cfg config.E2B, key string) (*e2b.Provider, error) {
 		return nil, fmt.Errorf("e2b.templates: %w", err)
 	}
 	return p, nil
+}
+
+// boxdOptions maps the settings boxd reads, the gate's port and route among them, to its options
+func boxdOptions(cfg config.Config, key string) boxd.Options {
+	return boxd.Options{
+		APIKey: key, Endpoint: cfg.Boxd.Endpoint, Region: cfg.Boxd.Region,
+		GatePort: cfg.Previews.GatePort, GateRoute: cfg.Boxd.GateRoute,
+	}
 }
 
 // buildKoyeb builds Koyeb from its settings, every fra instance type is a size unless named

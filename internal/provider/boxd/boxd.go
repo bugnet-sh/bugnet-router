@@ -8,9 +8,11 @@
 // adapter refuses router keys with dots of their own. Exec takes one shell command string, which
 // package shell builds from argv with single-quote escaping, and closing either side of its
 // stream kills the command. Before Create returns a machine, its default proxy is pinned to the
-// gate port and boxd's own SSH is off, so no app inside it is public by accident. File streams
-// run on a second connection, write only to a hidden temp file beside the target and rename it
-// over the target on Commit, since FsWrite overwrites some targets in place.
+// gate port and boxd's own SSH is off, so no app inside it is public by accident. PrepareGate
+// adds a bn subdomain proxy to the gate, or turns bot protection off on the default proxy, and
+// keeps the route's host in the ref. File streams run on a second connection, write only to a
+// hidden temp file beside the target and rename it over the target on Commit, since FsWrite
+// overwrites some targets in place.
 package boxd
 
 import (
@@ -101,6 +103,8 @@ type Options struct {
 	Log      *slog.Logger // slog.Default when nil
 	// GatePort is where every machine's default proxy points, provider.DefaultGatePort when 0
 	GatePort int
+	// GateRoute is subdomain for a bn proxy to the gate, or default for the default proxy
+	GateRoute string
 }
 
 // Provider places sandboxes on boxd over one gRPC connection and streams files over a second
@@ -113,6 +117,7 @@ type Provider struct {
 	pollInterval time.Duration
 	afterCreate  time.Duration
 	gatePort     int
+	gateRoute    string
 }
 
 // New connects lazily to boxd, the first call dials the endpoint
@@ -122,6 +127,10 @@ func New(opts Options) (*Provider, error) {
 	}
 	if opts.GatePort < 0 || opts.GatePort > 65535 {
 		return nil, fmt.Errorf("boxd: gate port %d is not a TCP port", opts.GatePort)
+	}
+	route := cmp.Or(opts.GateRoute, routeSubdomain)
+	if route != routeSubdomain && route != routeDefault {
+		return nil, fmt.Errorf("boxd: gate route %q is not subdomain or default", route)
 	}
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 	if opts.Insecure {
@@ -150,6 +159,7 @@ func New(opts Options) (*Provider, error) {
 		conn: conn, api: boxdpb.NewBoxdApiClient(conn), streamConn: streamConn,
 		streams: boxdpb.NewBoxdApiClient(streamConn), log: log, pollInterval: defaultPoll,
 		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
+		gateRoute: route,
 	}, nil
 }
 
