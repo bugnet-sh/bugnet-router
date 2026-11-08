@@ -22,11 +22,15 @@ func (c *cli) sshKey(args []string) error {
 	file := fs.String("public-key", "", "public key file, such as ~/.ssh/id_ed25519.pub")
 	identity := fs.String("identity-file", "", "private key path the command names")
 	knownHosts := fs.String("known-hosts-file", "", "known_hosts path the command names")
+	remove := fs.String("remove", "", "fingerprint of a key to remove, such as SHA256:abc")
 	if err := parse(fs, args, false); err != nil {
 		return err
 	}
 	if err := required("handle", *h); err != nil {
 		return err
+	}
+	if *remove != "" {
+		return c.removeSSHKey(*h, *remove)
 	}
 	if err := required("public-key", *file); err != nil {
 		return err
@@ -80,4 +84,18 @@ func readPublicKey(path string) (string, error) {
 		return "", fmt.Errorf("%w: --public-key names a private key, give the .pub file", errUsage)
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// removeSSHKey removes a key from a placement and prints its fingerprint
+func (c *cli) removeSSHKey(handle, fingerprint string) error {
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	if _, err := api.RemoveSshKey(c.ctx, connect.NewRequest(&routerv1.RemoveSshKeyRequest{
+		Handle: handle, Fingerprint: fingerprint,
+	})); err != nil {
+		return err
+	}
+	return c.print([][2]string{{"removed", fingerprint}})
 }

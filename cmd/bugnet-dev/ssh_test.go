@@ -19,7 +19,15 @@ import (
 // sshRouter answers AddSshKey and records each request
 type sshRouter struct {
 	routerv1connect.UnimplementedSandboxRouterServiceHandler
-	got chan *connect.Request[routerv1.AddSshKeyRequest]
+	got     chan *connect.Request[routerv1.AddSshKeyRequest]
+	removed chan string
+}
+
+func (r *sshRouter) RemoveSshKey(
+	_ context.Context, req *connect.Request[routerv1.RemoveSshKeyRequest],
+) (*connect.Response[routerv1.RemoveSshKeyResponse], error) {
+	r.removed <- req.Msg.GetHandle() + " " + req.Msg.GetFingerprint()
+	return connect.NewResponse(&routerv1.RemoveSshKeyResponse{}), nil
 }
 
 func (r *sshRouter) AddSshKey(
@@ -49,7 +57,8 @@ func serveSSH(t *testing.T, r *sshRouter) string {
 }
 
 func TestSSHKey(t *testing.T) {
-	r := &sshRouter{got: make(chan *connect.Request[routerv1.AddSshKeyRequest], 1)}
+	r := &sshRouter{got: make(chan *connect.Request[routerv1.AddSshKeyRequest], 1),
+		removed: make(chan string, 1)}
 	settings := serveSSH(t, r)
 	dir := t.TempDir()
 	pub := filepath.Join(dir, "id.pub")
@@ -93,4 +102,17 @@ func TestSSHKey(t *testing.T) {
 		t.Fatalf("a refused call reached the router: %v", req.Msg)
 	default:
 	}
+}
+
+func TestSSHKeyRemove(t *testing.T) {
+	r := &sshRouter{got: make(chan *connect.Request[routerv1.AddSshKeyRequest], 1),
+		removed: make(chan string, 1)}
+	settings := serveSSH(t, r)
+	vars := env(map[string]string{"BUGNET_INTERNAL_TOKEN": strings.Repeat("i", 32)})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "ssh-key", "--handle", "sbx_x",
+		"--remove", "SHA256:abc")
+	if code != 0 || out != "removed=SHA256:abc\n" {
+		t.Fatalf("exited %d with %q and %q", code, out, stderr)
+	}
+	eq(t, <-r.removed, "sbx_x SHA256:abc")
 }
