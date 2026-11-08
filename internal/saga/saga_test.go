@@ -2467,3 +2467,85 @@ func TestChannelPatternMatchesOnlyItsPrefix(t *testing.T) {
 		t.Fatal("the placement channel did not match")
 	}
 }
+
+// holdSecrets gives a placement a secret, a link, a gateway key and a tunnel token
+func (e *env) holdSecrets(t *testing.T, id uuid.UUID) {
+	t.Helper()
+	ctx := t.Context()
+	_, _, err := e.store.PutSecret(ctx, store.Secret{
+		ID: uuid.New(), PlacementID: id, Name: "HF_TOKEN", Hosts: []string{"huggingface.co"},
+		PlaceholderSHA256: []byte(id.String()), Sealed: []byte("box"), KeyID: "k1",
+		Source: store.SourceBridge, State: store.SecretActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.store.InsertSecretLink(ctx, store.SecretLink{
+		ID: uuid.New(), PlacementID: id, TokenSHA256: []byte(id.String() + "link"),
+		PairingCode: "abc",
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.AddGatewayKey(ctx, id, "SHA256:gw"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.store.MintEgressToken(ctx, id, []byte(id.String()+"tok")); err != nil || !ok {
+		t.Fatalf("mint token: %v %v", ok, err)
+	}
+}
+
+// secretsHeld counts the secrets and links rows of the placement and says whether a token stands
+func (e *env) secretsHeld(t *testing.T, id uuid.UUID) (secrets, links int, token bool) {
+	t.Helper()
+	ctx := t.Context()
+	all, err := e.store.Secrets(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pool.QueryRow(ctx, `select count(*) from secret_links where placement_id = $1`,
+		id).Scan(&links); err != nil {
+		t.Fatal(err)
+	}
+	token, err = e.store.HasEgressToken(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(all), links, token
+}
+
+func TestEndDeletesSecretsInTheSameTransaction(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	e.holdSecrets(t, p.ID)
+	s, l, tok := e.secretsHeld(t, p.ID)
+	eq(t, [3]any{s, l, tok}, [3]any{1, 1, true})
+
+	if _, err := e.saga.Stop(t.Context(), h); err != nil {
+		t.Fatal(err)
+	}
+	s, l, tok = e.secretsHeld(t, p.ID)
+	eq(t, [3]any{s, l, tok}, [3]any{0, 0, false})
+	gw, err := e.store.HasGatewayKey(t.Context(), p.ID, "SHA256:gw")
+	eq(t, err, nil)
+	eq(t, gw, false)
+}
+
+func TestFailedPlacementKeepsNoSecrets(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
+	p, _, err := e.store.CreatePlacement(t.Context(), store.NewPlacement{
+		HandleSHA256: []byte("stuck-handle"), OrderID: "order-1", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.holdSecrets(t, p.ID)
+	if err := e.saga.FailStuck(t.Context(), p.ID, "stuck"); err != nil {
+		t.Fatal(err)
+	}
+	e.saga.Wait()
+	s, l, tok := e.secretsHeld(t, p.ID)
+	eq(t, [3]any{s, l, tok}, [3]any{0, 0, false})
+}

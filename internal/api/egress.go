@@ -1,15 +1,30 @@
 package api
 
 import (
+	"cmp"
 	"context"
+	"errors"
+	"slices"
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/budget"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
+
+const (
+	// defaultMaxTunnels is DP 10.5's tunnels a placement may hold open
+	defaultMaxTunnels = 64
+	// defaultRequestsInFlight is edge_budget.egress_requests_in_flight's default
+	defaultRequestsInFlight = 32
+)
+
+var errTunnelUnknown = errors.New("api: no placement holds that tunnel caller")
 
 // EgressServer implements routerv1connect.EgressServiceHandler for bugnet-egress
 type EgressServer struct {
@@ -61,4 +76,115 @@ func (g *EgressServer) WatchEgressEvents(
 		return stream.Send(&routerv1.WatchEgressEventsResponse{Cursor: c, Event: ev})
 	}
 	return g.s.watch(ctx, req.Peer(), req.Msg.GetCursor(), send)
+}
+
+// ResolveTunnel answers a placement's tunnel terms to its sandbox's token or to the fetcher
+func (g *EgressServer) ResolveTunnel(
+	ctx context.Context, req *connect.Request[routerv1.ResolveTunnelRequest],
+) (*connect.Response[routerv1.ResolveTunnelResponse], error) {
+	s := g.s
+	var p store.Placement
+	var err error
+	fetch := false
+	switch c := req.Msg.GetCaller().(type) {
+	case *routerv1.ResolveTunnelRequest_TokenSha256:
+		p, err = s.tunnelByToken(ctx, c.TokenSha256)
+	case *routerv1.ResolveTunnelRequest_FetchPlacementId:
+		fetch = true
+		p, err = s.tunnelByID(ctx, c.FetchPlacementId)
+	default:
+		return nil, invalid("caller is required")
+	}
+	if err == nil {
+		err = s.tunnelServable(ctx, p)
+	}
+	if err != nil {
+		return nil, s.status(err)
+	}
+	lim := s.limit(p, budget.Egress)
+	left, err := s.meter.RemainingAll(ctx, budget.Egress, []budget.Limit{lim})
+	if err != nil {
+		return nil, s.status(err)
+	}
+	held, err := s.d.Store.Secrets(ctx, p.ID)
+	if err != nil {
+		return nil, s.status(err)
+	}
+	return connect.NewResponse(&routerv1.ResolveTunnelResponse{
+		PlacementId: p.ID.String(), Deadline: timestamppb.New(*p.Deadline),
+		CaVersion: uint32(p.EgressCAVersion), Secrets: s.egressSecrets(held, fetch),
+		BytesRemaining: left[p.ID], MaxTunnels: defaultMaxTunnels,
+		SecretsVersion: uint64(max(p.SecretsVersion, 0)),
+		BytesPerSecond: uint64(max(lim.BytesPerSecond, 0)),
+		RequestsInFlight: uint32(max(
+			cmp.Or(s.d.Budget.EgressRequestsInFlight, defaultRequestsInFlight), 0)),
+	}), nil
+}
+
+// tunnelByToken finds the placement holding a tunnel token's digest
+func (s *Server) tunnelByToken(ctx context.Context, sum []byte) (store.Placement, error) {
+	if len(sum) != 32 {
+		return store.Placement{}, errTunnelUnknown
+	}
+	p, err := s.d.Store.PlacementByEgressToken(ctx, sum)
+	if errors.Is(err, store.ErrNotFound) {
+		err = errTunnelUnknown
+	}
+	return p, err
+}
+
+// tunnelByID finds the placement the fetcher acts for
+func (s *Server) tunnelByID(ctx context.Context, raw string) (store.Placement, error) {
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return store.Placement{}, errTunnelUnknown
+	}
+	p, err := s.d.Store.PlacementByID(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		err = errTunnelUnknown
+	}
+	return p, err
+}
+
+// tunnelServable refuses a placement that is not ready, has no CA yet or spent its egress budget
+func (s *Server) tunnelServable(ctx context.Context, p store.Placement) error {
+	if p.State != store.PlacementReady || p.Deadline == nil || p.EgressCAVersion <= 0 {
+		return errNotReady
+	}
+	spent, err := s.meter.Spent(ctx, budget.Egress, p.ID)
+	if err != nil {
+		return err
+	}
+	if spent {
+		return errBudgetSpent
+	}
+	return nil
+}
+
+// egressSecrets are the placement's secrets a caller may swap, the fetcher's including fetch_only
+func (s *Server) egressSecrets(held []store.Secret, fetch bool) []*routerv1.EgressSecret {
+	out := make([]*routerv1.EgressSecret, 0, len(held))
+	for _, x := range held {
+		if x.State == store.SecretFailed || (x.FetchOnly && !fetch) {
+			continue
+		}
+		hosts := slices.Clone(x.Hosts)
+		if !s.d.Secrets.CustomHosts {
+			hosts = slices.DeleteFunc(hosts, secrets.Custom)
+		}
+		out = append(out, &routerv1.EgressSecret{
+			PlaceholderSha256: x.PlaceholderSHA256,
+			Spec: &routerv1.SecretSpec{
+				Name: x.Name, Hosts: hosts, HeaderNames: x.HeaderNames, FetchOnly: x.FetchOnly,
+			},
+			Value:       &routerv1.SealedValue{KeyId: x.KeyID, Box: x.Sealed},
+			CustomHosts: customOf(hosts),
+		})
+	}
+	return out
+}
+
+// customOf lists the hosts outside every preset
+func customOf(hosts []string) []string {
+	return slices.DeleteFunc(slices.Clone(hosts), func(h string) bool { return !secrets.Custom(h) })
 }

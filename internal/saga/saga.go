@@ -764,6 +764,9 @@ func (s *Saga) recordFailed(
 	if err := ts.MarkPlacementFailed(ctx, id, reason, true); err != nil {
 		return Event{}, err
 	}
+	if err := ts.DeleteSecretsOf(ctx, id); err != nil {
+		return Event{}, err
+	}
 	cur, err := ts.PlacementByID(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -1188,6 +1191,9 @@ func (s *Saga) terminate(
 			return err
 		}
 		if err := ts.DeleteGatewayKeys(ctx, p.ID); err != nil {
+			return err
+		}
+		if err := ts.DeleteSecretsOf(ctx, p.ID); err != nil {
 			return err
 		}
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {

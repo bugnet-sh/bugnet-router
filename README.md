@@ -842,7 +842,7 @@ the gateway.
 | `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | `GetSecretLink`, `SubmitSecretLink`, `GetBridgeSealingKey`, `PutBridgeSecret` |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
-| `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
+| `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ResolveTunnel`, `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
 | `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview`, `BlockWallet`, `UnblockWallet`, `GetWallet`, `ListWallets` |
 | `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder`, `CheckPayer`, `LookupPlacement` |
 
@@ -985,6 +985,16 @@ X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP
   lag it read when it started, so a change that commits during the run stays pending for its own
   job. A token a failed write may not have reached is forgotten, so the next run mints another,
   and `token_missing` mints one at once, both writes within 75 s.
+- **The proxy's terms.** `ResolveTunnel` answers a `bnt_` token's digest, or the fetcher's
+  `fetch_placement_id`, with the placement's deadline, CA version, secrets and paces. A sandbox
+  never gets `fetch_only` secrets, and `custom_hosts` lists each secret's hosts outside every
+  preset (empty, with those hosts dropped from the secret, when `secrets.custom_hosts` is false).
+  It answers `TOKEN_UNKNOWN` for an unknown token, `NOT_READY` for a placement that is not ready
+  or has no CA version yet, and `BUDGET_SPENT` once the egress budget is spent.
+- **Deletion.** The transaction ending a placement deletes its `secrets`, `secret_links` and
+  `ssh_gateway_keys` rows and clears its tunnel token. The sweep deletes leftovers once the
+  deadline is an hour past, and the `previews`, `ssh_keys` and `ssh_hosts` rows 7 days after
+  the end.
 
 ### SSH
 
