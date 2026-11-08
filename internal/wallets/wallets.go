@@ -195,18 +195,26 @@ func (w *Store) Strike(ctx context.Context, tx pgx.Tx, s Strike) (bool, error) {
 	return err == nil, err
 }
 
-// Unblock lifts a block, store.ErrNotFound when the router never saw the payer
+// Unblock lifts a block, store.ErrNotFound when the router never saw the payer. A wallet with no
+// block in force is left alone, with no event.
 func (w *Store) Unblock(ctx context.Context, tx pgx.Tx, payer, actor, note string) error {
 	ts := w.st.Tx(tx)
 	if err := ts.LockWallets(ctx, payer); err != nil {
 		return err
 	}
+	now := w.now()
+	cur, err := ts.Wallet(ctx, payer, now)
+	if err != nil {
+		return err
+	}
+	if !cur.Blocked(now) {
+		return nil
+	}
 	if err := ts.ClearWalletBlock(ctx, payer); err != nil {
 		return err
 	}
-	err := ts.InsertWalletEvent(ctx, store.WalletEvent{
-		Payer: payer, Kind: store.WalletUnblock, Reason: note, Actor: actor,
-		CreatedAt: w.now(),
+	err = ts.InsertWalletEvent(ctx, store.WalletEvent{
+		Payer: payer, Kind: store.WalletUnblock, Reason: note, Actor: actor, CreatedAt: now,
 	})
 	if err != nil || !w.s.EmitEvents {
 		return err

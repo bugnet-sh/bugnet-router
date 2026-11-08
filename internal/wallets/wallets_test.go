@@ -141,6 +141,23 @@ func TestBlockAndUnblock(t *testing.T) {
 	eq(t, errors.Is(err, store.ErrNotFound), true)
 }
 
+func TestUnblockOfAnUnblockedWalletDoesNothing(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := t.Context()
+	err := e.tx(t, func(tx pgx.Tx) error { return e.st.Tx(tx).SeeWallet(ctx, payer, e.now) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.tx(t, func(tx pgx.Tx) error {
+		return e.w.Unblock(ctx, tx, payer, "operator:bob", "just in case")
+	})
+	eq(t, err, nil)
+	evs, err := e.st.WalletEvents(ctx, payer, 50)
+	eq(t, err, nil)
+	eq(t, len(evs), 0)
+	eq(t, len(e.outbox(t)), 0)
+}
+
 func TestBlockNeverShortens(t *testing.T) {
 	e := newEnv(t, true)
 	err := e.block(t, wallets.Block{Payer: payer, Reason: "abuse", Actor: "router"})
