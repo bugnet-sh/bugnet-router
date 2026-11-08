@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -51,6 +52,14 @@ func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }
 
+// satMul multiplies two non-negative numbers, stopping at the largest int64
+func satMul(a, b int64) int64 {
+	if a > 0 && b > math.MaxInt64/a {
+		return math.MaxInt64
+	}
+	return a * b
+}
+
 // Check decodes raw strictly and bounds every value by the size it ran on and the time paid
 func Check(raw []byte, size provider.Size, paid time.Duration) (Stats, error) {
 	return CheckMax(raw, DefaultMaxBytes, size, paid)
@@ -85,8 +94,8 @@ func CheckMax(raw []byte, maxBytes int, size provider.Size, paid time.Duration) 
 		{"mem_peak_mib", f.MemPeakMiB, memory},
 		{"swap_peak_mib", f.SwapPeakMiB, memory},
 		{"disk_peak_mib", f.DiskPeakMiB, int64(r.DiskGiB) << 10},
-		{"gpu_mem_peak_mib", f.GPUMemPeakMiB, int64(r.GPUMemoryGiB*r.GPUCount) << 10},
-		{"cpu_seconds", f.CPUSeconds, int64(r.VCPU) * int64(paid/time.Second)},
+		{"gpu_mem_peak_mib", f.GPUMemPeakMiB, satMul(satMul(int64(r.GPUMemoryGiB), int64(r.GPUCount)), 1<<10)},
+		{"cpu_seconds", f.CPUSeconds, satMul(int64(r.VCPU), int64(paid/time.Second))},
 		{"busy_p95_millicores", f.BusyP95Millicores, int64(r.VCPU) * 1000},
 		{"oom_kills", f.OOMKills, maxCount},
 		{"samples", f.Samples, maxCount},

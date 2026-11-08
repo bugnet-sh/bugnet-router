@@ -2,6 +2,7 @@ package stats_test
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,16 @@ func TestStatsLimitFollowsTheSetting(t *testing.T) {
 		t.Fatal("a file over the setting was kept")
 	}
 	if _, err := stats.CheckMax(raw, 4096, size1x4, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatsOnTheLocalSize(t *testing.T) {
+	huge := provider.Size{Name: "local", Resources: provider.Resources{
+		VCPU: math.MaxInt32, MemoryMiB: math.MaxInt32, DiskGiB: math.MaxInt32,
+		GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32}}
+	raw := `{"v":1,"mem_peak_mib":4000,"disk_peak_mib":9000,"cpu_seconds":50,"gpu_mem_peak_mib":7}`
+	if _, err := stats.Check([]byte(raw), huge, time.Hour); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -10,6 +10,7 @@ package e2e
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -425,6 +426,8 @@ type stackOptions struct {
 	valkey string // valkey.addr, the test Valkey over TCP when empty
 	worker string // lines in router-worker's [worker] table
 	extra  string // settings every process's file ends with
+	// catalog is the packages file, catalogJSON when empty
+	catalog string
 	// payments is the Payments URL that turns the stats feed on, each process on its own port
 	payments string
 }
@@ -448,7 +451,7 @@ func startStackWith(t *testing.T, o stackOptions) *stack {
 	eventSeed := decodeKey(t, s.keys, "BUGNET_EVENT_SIGNING_KEY", ed25519.SeedSize)
 	s.events = newReceiver(t, ed25519.NewKeyFromSeed(eventSeed).Public().(ed25519.PublicKey))
 	s.packages = filepath.Join(t.TempDir(), "packages.json")
-	if err := os.WriteFile(s.packages, []byte(catalogJSON), 0o644); err != nil {
+	if err := os.WriteFile(s.packages, []byte(cmp.Or(o.catalog, catalogJSON)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.env = append(hostEnv(),
