@@ -259,3 +259,45 @@ func TestBlockWaitsForTheWalletLock(t *testing.T) {
 		t.Fatal("the block never ran")
 	}
 }
+
+func TestStrikeBlocksUnderAShorterBlock(t *testing.T) {
+	strike := func(e *env) bool {
+		var hit bool
+		err := e.tx(t, func(tx pgx.Tx) error {
+			var err error
+			hit, err = e.w.Strike(t.Context(), tx, wallets.Strike{
+				Payer: payer, Reason: "control_lost", Actor: "router",
+			})
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hit
+	}
+	e := newEnv(t, false)
+	hour := e.now.Add(time.Hour)
+	if err := e.block(t, wallets.Block{
+		Payer: payer, Reason: wallets.ReasonRefusals, Until: &hour, Actor: "router",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, strike(e), false)
+	eq(t, strike(e), true)
+	w := e.wallet(t)
+	eq(t, w.BlockedReason, wallets.ReasonStrikes)
+	eq(t, *w.BlockedUntil, e.now.Add(168*time.Hour))
+
+	// A block until lifted stays as it is
+	e2 := newEnv(t, false)
+	if err := e2.block(t, wallets.Block{
+		Payer: payer, Reason: wallets.ReasonOperator, Actor: "operator:ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	strike(e2)
+	strike(e2)
+	w = e2.wallet(t)
+	eq(t, w.BlockedUntil == nil, true)
+	eq(t, []string{w.BlockedReason, w.BlockedBy}, []string{"operator", "operator:ann"})
+}

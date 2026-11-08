@@ -164,7 +164,8 @@ type unblocked struct {
 	Payer string `json:"payer"`
 }
 
-// Strike records a strike, blocking the wallet once its strikes inside the window reach the limit
+// Strike records a strike, blocking the wallet once its strikes inside the window reach the limit,
+// even under a shorter block in force
 func (w *Store) Strike(ctx context.Context, tx pgx.Tx, s Strike) (bool, error) {
 	ts := w.st.Tx(tx)
 	if err := w.guard(ctx, ts, s.Payer); err != nil {
@@ -185,10 +186,7 @@ func (w *Store) Strike(ctx context.Context, tx pgx.Tx, s Strike) (bool, error) {
 	if err != nil || n < w.s.StrikeThreshold {
 		return false, err
 	}
-	blocked, err := w.Blocked(ctx, tx, s.Payer, now)
-	if err != nil || blocked {
-		return false, err
-	}
+	// A shorter block in force gives way, Block keeps a longer one
 	until := now.Add(w.s.StrikeBlockFor)
 	err = w.Block(ctx, tx, Block{
 		Payer: s.Payer, Reason: ReasonStrikes, Until: &until, Actor: s.Actor,
