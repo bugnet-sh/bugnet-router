@@ -69,6 +69,10 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 		_, err := e.listX402(t, h)
 		return err
 	}
+	calls["EnableX402"] = func(h string) error {
+		_, err := e.enableX402(t, h, "r1", false, specsOn("api.example.com"))
+		return err
+	}
 	return calls
 }
 

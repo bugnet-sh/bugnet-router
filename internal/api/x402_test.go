@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -811,4 +812,339 @@ func TestRefusalsCarryLastAt(t *testing.T) {
 	}
 	eq(t, got, map[string]time.Time{"price_over_cap": first, "path_refused": last})
 	eq(t, counts, map[string]uint32{"price_over_cap": 1, "path_refused": 4})
+}
+
+func (e *env) enableX402(
+	t *testing.T, h, requestID string, wait bool, add []*routerv1.X402ServiceSpec,
+	disable ...string,
+) (*routerv1.EnableX402Response, error) {
+	t.Helper()
+	res, err := e.client.EnableX402(t.Context(), connect.NewRequest(&routerv1.EnableX402Request{
+		Handle: h, Add: add, Disable: disable, RequestId: requestID, WaitActive: wait,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return res.Msg, nil
+}
+
+func (e *env) mustEnableX402(
+	t *testing.T, h string, add []*routerv1.X402ServiceSpec, disable ...string,
+) *routerv1.EnableX402Response {
+	t.Helper()
+	r, err := e.enableX402(t, h, "req-1", false, add, disable...)
+	if err != nil {
+		t.Fatalf("EnableX402: %v", err)
+	}
+	return r
+}
+
+// stateOf maps the answer's service ids to their states
+func stateOf(r *routerv1.EnableX402Response) map[string]routerv1.X402ServiceState {
+	out := map[string]routerv1.X402ServiceState{}
+	for _, s := range r.GetServices() {
+		out[s.GetServiceId()] = s.GetState()
+	}
+	return out
+}
+
+// activate marks every applying row of the placement active, as the apply does
+func (e *env) activate(t *testing.T, id string) {
+	t.Helper()
+	_, err := e.pool.Exec(t.Context(), `update x402_services set state = 'active'
+		where placement_id = $1 and state = 'applying'`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// storedRows counts the placement's x402 rows
+func (e *env) storedRows(t *testing.T, id string) int {
+	t.Helper()
+	rows, err := e.store.X402Services(t.Context(), uuid.MustParse(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func TestEnableX402IdempotentByContent(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On, opsPerSecond: 1, opsBurst: 1})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	a := svc("api.example.com", "/search/")
+	// The first change empties the bucket, so a second that spent a token would be refused
+	first := e.mustEnableX402(t, h, []*routerv1.X402ServiceSpec{a})
+	eq(t, e.applyJobs(t, id), 1)
+	eq(t, stateOf(first), map[string]routerv1.X402ServiceState{idOf(a): xApplying})
+	again := e.mustEnableX402(t, h, []*routerv1.X402ServiceSpec{a})
+	eq(t, e.applyJobs(t, id), 1)
+	eq(t, stateOf(again), stateOf(first))
+}
+
+func TestReAddFailedOrDisabledMovesToApplying(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	failed, off := svc("api.example.com", "/a/"), svc("api2.example.com", "/b/")
+	e.putRow(t, id, failed, store.X402Failed)
+	e.putRow(t, id, off, store.X402Disabled)
+	r := e.mustEnableX402(t, h, []*routerv1.X402ServiceSpec{failed, off})
+	eq(t, stateOf(r), map[string]routerv1.X402ServiceState{
+		idOf(failed): xApplying, idOf(off): xApplying,
+	})
+	for _, s := range r.GetServices() {
+		eq(t, s.GetFailureReason(), "")
+	}
+	eq(t, e.applyJobs(t, id), 1)
+}
+
+func TestPinChangeUpdatesTogetherAndBumpsVersion(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	a := svc("api.example.com", "/search/")
+	e.mustEnableX402(t, h, []*routerv1.X402ServiceSpec{a})
+	e.activate(t, id)
+	before := e.secretsVersion(t, p)
+	events := e.changedEvents(t, id)
+	moved := svc("api.example.com", "/search/")
+	moved.PayTo = "11111111111111111111111111111111"
+	r := e.mustEnableX402(t, h, []*routerv1.X402ServiceSpec{moved})
+	eq(t, len(r.GetServices()), 1)
+	eq(t, r.GetServices()[0].GetState(), xApplying)
+	eq(t, r.GetServices()[0].GetSpec().GetPayTo(), moved.GetPayTo())
+	eq(t, e.secretsVersion(t, p), before+1)
+	eq(t, e.changedEvents(t, id), events+1)
+	eq(t, e.applyJobs(t, id), 2)
+}
+
+func TestAddAloneDoesNotBumpVersion(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	before := e.secretsVersion(t, p)
+	e.mustEnableX402(t, h, specsOn("api.example.com"))
+	eq(t, e.secretsVersion(t, p), before)
+	eq(t, e.changedEvents(t, p.GetPlacementId()), 0)
+}
+
+func TestDisableAloneInsertsJobAndBumpsVersion(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	a := svc("api.example.com", "/search/")
+	e.putRow(t, id, a, store.X402Active)
+	before := e.secretsVersion(t, p)
+	r := e.mustEnableX402(t, h, nil, idOf(a))
+	eq(t, stateOf(r), map[string]routerv1.X402ServiceState{idOf(a): xDisabled})
+	eq(t, e.applyJobs(t, id), 1)
+	eq(t, e.secretsVersion(t, p), before+1)
+	eq(t, e.changedEvents(t, id), 1)
+}
+
+func TestDisableDisabledChangesNothing(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On, opsPerSecond: 1, opsBurst: 5})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	a := svc("api.example.com", "/search/")
+	e.putRow(t, id, a, store.X402Disabled)
+	drain(t, e, h)
+	before := e.secretsVersion(t, p)
+	r := e.mustEnableX402(t, h, nil, idOf(a))
+	eq(t, stateOf(r), map[string]routerv1.X402ServiceState{idOf(a): xDisabled})
+	eq(t, e.applyJobs(t, id), 0)
+	eq(t, e.secretsVersion(t, p), before)
+	eq(t, e.changedEvents(t, id), 0)
+}
+
+func TestEnableWhilePlacingStoresNoJob(t *testing.T) {
+	e := newEnv(t, options{x402: x402On, secretSettings: func(c *config.Secrets) {
+		c.ApplyWait = 5 * time.Second
+	}})
+	h, p := e.placingWith(t, true)
+	start := time.Now()
+	res, err := e.enableX402(t, h, "r", true, specsOn("api.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("a placing placement waited for the apply")
+	}
+	eq(t, res.GetServices()[0].GetState(), xApplying)
+	eq(t, e.applyJobs(t, p.ID.String()), 0)
+	eq(t, e.storedRows(t, p.ID.String()), 1)
+}
+
+func TestWaitActiveWaitsOnReadyOnly(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On,
+		secretSettings: func(c *config.Secrets) { c.ApplyWait = 200 * time.Millisecond }})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	time.AfterFunc(100*time.Millisecond, func() {
+		_, _ = e.pool.Exec(context.Background(), `update x402_services set state = 'active'
+			where placement_id = $1`, id)
+	})
+	r, err := e.enableX402(t, h, "r", true, specsOn("api.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, r.GetServices()[0].GetState(), xActive)
+	start := time.Now()
+	r, err = e.enableX402(t, h, "r", true, specsOn("api2.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 150*time.Millisecond {
+		t.Fatal("the call did not wait for apply_wait")
+	}
+	eq(t, stateOf(r)[idOf(specsOn("api2.example.com")[0])], xApplying)
+}
+
+func TestCancelledCallKeepsItsCommit(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On,
+		secretSettings: func(c *config.Secrets) { c.ApplyWait = 5 * time.Second }})
+	h, p := e.readyPlacement(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_, err := e.client.EnableX402(ctx, connect.NewRequest(&routerv1.EnableX402Request{
+		Handle: h, Add: specsOn("api.example.com"), RequestId: "r", WaitActive: true,
+	}))
+	if err == nil {
+		t.Fatal("a cancelled call succeeded")
+	}
+	eq(t, e.storedRows(t, p.GetPlacementId()), 1)
+	eq(t, e.applyJobs(t, p.GetPlacementId()), 1)
+}
+
+func TestRequestIDBounds(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On})
+	h, _ := e.readyPlacement(t)
+	a := specsOn("api.example.com")
+	for _, ok := range []string{"a b", strings.Repeat("\x20", 128), strings.Repeat("~", 128)} {
+		if _, err := e.enableX402(t, h, ok, false, a); err != nil {
+			t.Fatalf("request id %q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", strings.Repeat("a", 129), "a\tb", "café"} {
+		_, err := e.enableX402(t, h, bad, false, a)
+		mustCode(t, err, connect.CodeInvalidArgument, "")
+	}
+}
+
+func TestEnableX402Gates(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On, opsPerSecond: 1, opsBurst: 2})
+	a := specsOn("api.example.com")
+	check := func(t *testing.T, h, id string, reason string) {
+		t.Helper()
+		_, err := e.enableX402(t, h, "r", false, a)
+		wantPlacementWide(t, err, connect.CodeFailedPrecondition, reason)
+		if id != "" {
+			eq(t, e.storedRows(t, id), 0)
+		}
+	}
+	placing, pp := e.placingWith(t, false)
+	check(t, placing, pp.ID.String(), "FEATURE_UNAVAILABLE")
+	terminating, p := e.readyPlacement(t)
+	if _, err := e.store.MarkPlacementTerminating(t.Context(), uuid.MustParse(p.GetPlacementId()),
+		"test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	check(t, terminating, p.GetPlacementId(), "NOT_READY")
+	terminated, tp := e.readyPlacement(t)
+	_ = e.stop(t, terminated)
+	check(t, terminated, tp.GetPlacementId(), "NOT_READY")
+	failed, sha := handle.New()
+	fp, _, err := e.store.CreatePlacement(t.Context(), store.NewPlacement{
+		HandleSHA256: sha, OrderID: "x402-failed", PackageID: smallPkg,
+		FailureReason: "no_candidate", NeedsSecrets: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(t, failed, fp.ID.String(), "NOT_READY")
+	ready, rp := e.readyPlacement(t)
+	// No gate spent a token, so the ready placement still has its burst of two
+	e.exec(t, sh(ready, "true"))
+	e.exec(t, sh(ready, "true"))
+	_ = rp
+
+	bare := newEnv(t, options{x402: x402On})
+	bh, bp := bare.readyPlacement(t)
+	_, err = bare.enableX402(t, bh, "r", false, a)
+	wantPlacementWide(t, err, connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE")
+	eq(t, bare.storedRows(t, bp.GetPlacementId()), 0)
+}
+
+func TestEnableX402KillSwitch(t *testing.T) {
+	e := newEnv(t, options{secrets: true, opsPerSecond: 1, opsBurst: 2})
+	a := specsOn("api.example.com")
+	ready, rp := e.readyPlacement(t)
+	placing, pp := e.placingWith(t, true)
+	ended, ep := e.readyPlacement(t)
+	_ = e.stop(t, ended)
+	for h, id := range map[string]string{
+		ready: rp.GetPlacementId(), placing: pp.ID.String(), ended: ep.GetPlacementId(),
+	} {
+		_, err := e.enableX402(t, h, "r", false, a)
+		wantPlacementWide(t, err, connect.CodeFailedPrecondition, "X402_DISABLED")
+		eq(t, e.storedRows(t, id), 0)
+	}
+	eq(t, e.applyJobs(t, rp.GetPlacementId()), 0)
+	e.exec(t, sh(ready, "true"))
+	e.exec(t, sh(ready, "true"))
+}
+
+func TestEnableX402EmptyBucket(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On, opsPerSecond: 1, opsBurst: 5})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	a := svc("api.example.com", "/search/")
+	e.putRow(t, id, a, store.X402Active)
+	drain(t, e, h)
+	_, err := e.enableX402(t, h, "r", false, specsOn("api2.example.com"))
+	wantPlacementWide(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
+	eq(t, e.storedRows(t, id), 1)
+	eq(t, e.applyJobs(t, id), 0)
+	r, err := e.enableX402(t, h, "r", false, []*routerv1.X402ServiceSpec{a})
+	if err != nil {
+		t.Fatalf("a call with no change was refused: %v", err)
+	}
+	eq(t, stateOf(r), map[string]routerv1.X402ServiceState{idOf(a): xActive})
+}
+
+func TestEnableX402RefusalNamesTheEntry(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: x402On, opsPerSecond: 1, opsBurst: 2})
+	h, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	e.mustPutSecret(t, h, hf())
+	first := svc("api.example.com", "/search/")
+	second := svc("huggingface.co", "/api/")
+	_, err := e.enableX402(t, h, "r", false, []*routerv1.X402ServiceSpec{first, second})
+	wantEntry(t, err, connect.CodeFailedPrecondition, "HOST_IN_USE", second)
+	eq(t, e.storedRows(t, id), 0)
+	wantPlacementWide(t, func() error {
+		_, err := e.enableX402(t, h, "r", false, specsOn(hostsNamed("api", "example.com", 6)...))
+		return err
+	}(), connect.CodeResourceExhausted, "TOO_MANY_SERVICES")
+	// No refusal spent the token the secret left
+	e.exec(t, sh(h, "true"))
+}
+
+func TestEnableX402AnswerShowsHostBlocked(t *testing.T) {
+	e := newEnv(t, options{secrets: true, x402: func(c *config.X402) {
+		c.Enabled, c.BlockedHosts = true, []string{"agent402.tools"}
+	}})
+	h, p := e.readyPlacement(t)
+	off := svc("agent402.tools", "/v2/")
+	e.putRow(t, p.GetPlacementId(), off, store.X402Disabled)
+	blocked := svc("agent402.tools", "/v1/auto/")
+	e.putRow(t, p.GetPlacementId(), blocked, store.X402Active)
+	r := e.mustEnableX402(t, h, specsOn("api.example.com"))
+	got := map[string]*routerv1.X402ServiceInfo{}
+	for _, s := range r.GetServices() {
+		got[s.GetServiceId()] = s
+	}
+	eq(t, got[idOf(blocked)].GetState(), xFailed)
+	eq(t, got[idOf(blocked)].GetFailureReason(), "HOST_BLOCKED")
+	eq(t, got[idOf(off)].GetState(), xDisabled)
 }

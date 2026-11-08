@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
@@ -78,6 +80,168 @@ func (s *Server) CheckX402(
 		return nil, s.status(err)
 	}
 	return connect.NewResponse(&routerv1.CheckX402Response{}), nil
+}
+
+// EnableX402 makes a change idempotent by content, then waits for the apply when asked
+func (s *Server) EnableX402(
+	ctx context.Context, req *connect.Request[routerv1.EnableX402Request],
+) (*connect.Response[routerv1.EnableX402Response], error) {
+	m := req.Msg
+	if !secrets.ValidKey(m.GetRequestId()) {
+		return nil, invalid("request_id must be 1 to 128 printable ASCII characters")
+	}
+	p, err := s.placement(ctx, m.GetHandle())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	var res x402Result
+	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		res, err = s.enableInTx(ctx, tx, p.ID, m)
+		return err
+	})
+	if err != nil {
+		return nil, s.status(err)
+	}
+	if res.bumped {
+		s.secretsChanged(ctx, p.ID)
+	}
+	s.d.Log.Debug("api: x402 change", "request_id", m.GetRequestId(), "stored", res.stored)
+	if m.GetWaitActive() && res.ready {
+		s.awaitX402(ctx, p.ID, res.added)
+	}
+	rows, err := s.d.Store.X402Services(ctx, p.ID)
+	if err != nil {
+		return nil, s.status(err)
+	}
+	out := &routerv1.EnableX402Response{}
+	for _, r := range rows {
+		out.Services = append(out.Services, s.x402Info(r))
+	}
+	return connect.NewResponse(out), nil
+}
+
+// x402Result is what a stored change leaves for the code after its commit
+type x402Result struct {
+	// stored is true when the change differed from the stored rows
+	stored bool
+	// ready is true when the placement was ready, so an apply runs or ran
+	ready bool
+	// bumped is true when secrets_version moved, so egress must drop its cached set
+	bumped bool
+	// added holds the ids of every add entry, written now or before
+	added []string
+}
+
+// enableInTx checks the change under the placement's row lock and stores what differs
+func (s *Server) enableInTx(
+	ctx context.Context, tx pgx.Tx, id uuid.UUID, m *routerv1.EnableX402Request,
+) (x402Result, error) {
+	ts := s.d.Store.Tx(tx)
+	cur, err := ts.PlacementForUpdate(ctx, id)
+	if err != nil {
+		return x402Result{}, err
+	}
+	rows, err := ts.X402Services(ctx, id)
+	if err != nil {
+		return x402Result{}, err
+	}
+	plan, err := s.checkX402Change(ctx, cur, rows, m.GetAdd(), m.GetDisable())
+	if err != nil {
+		return x402Result{}, err
+	}
+	ready := cur.State == store.PlacementReady
+	res := x402Result{ready: ready}
+	for _, r := range plan.put {
+		res.added = append(res.added, r.ServiceID)
+	}
+	if ready && s.d.River == nil {
+		return x402Result{}, errNoX402Feature
+	}
+	puts, disables, pinned := changes(rows, plan)
+	if len(puts) == 0 && len(disables) == 0 {
+		return res, nil
+	}
+	if err := s.spend(ctx, cur); err != nil {
+		return x402Result{}, err
+	}
+	res.stored = true
+	for _, r := range puts {
+		if err := ts.PutX402Service(ctx, r); err != nil {
+			return x402Result{}, err
+		}
+	}
+	for _, sid := range disables {
+		if err := ts.DisableX402Service(ctx, id, sid); err != nil {
+			return x402Result{}, err
+		}
+	}
+	if res.bumped = len(disables) > 0 || pinned; res.bumped {
+		if err := ts.BumpSecretsVersion(ctx, id, ready); err != nil {
+			return x402Result{}, err
+		}
+	}
+	if ready {
+		if err := s.insertApply(ctx, tx, id); err != nil {
+			return x402Result{}, err
+		}
+	}
+	return res, nil
+}
+
+// changes picks the puts and disables that differ from the stored rows, and a put's pin move
+func changes(
+	rows []store.X402Service, plan x402Plan,
+) (puts []store.X402Service, disables []string, pinned bool) {
+	byID := map[string]store.X402Service{}
+	for _, r := range rows {
+		byID[r.ServiceID] = r
+	}
+	for _, r := range plan.put {
+		old, had := byID[r.ServiceID]
+		if had && old.State != store.X402Failed && old.State != store.X402Disabled &&
+			old.Spec == r.Spec {
+			continue
+		}
+		puts = append(puts, r)
+		live := old.State == store.X402Applying || old.State == store.X402Active
+		pinned = pinned || had && live && (old.Spec.MaxPriceMicros != r.Spec.MaxPriceMicros ||
+			old.Spec.PayTo != r.Spec.PayTo || old.Spec.PaidPath != r.Spec.PaidPath)
+	}
+	for _, id := range plan.disable {
+		if byID[id].State != store.X402Disabled {
+			disables = append(disables, id)
+		}
+	}
+	return puts, disables, pinned
+}
+
+// awaitX402 rereads the added rows until none is applying or apply_wait passes
+func (s *Server) awaitX402(ctx context.Context, id uuid.UUID, added []string) {
+	if len(added) == 0 {
+		return
+	}
+	timer := time.NewTimer(cmp.Or(s.d.Secrets.ApplyWait, defaultApplyWait))
+	defer timer.Stop()
+	tick := time.NewTicker(applyPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		case <-s.ctx.Done():
+			return
+		}
+		rows, err := s.d.Store.X402Services(ctx, id)
+		if err != nil || !slices.ContainsFunc(rows, func(r store.X402Service) bool {
+			return slices.Contains(added, r.ServiceID) && r.State == store.X402Applying
+		}) {
+			return
+		}
+	}
 }
 
 // ListX402 answers the placement's services and refusals in any state, spending no token

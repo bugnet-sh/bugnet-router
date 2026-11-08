@@ -21,11 +21,6 @@ func unbuilt(
 				&routerv1.FetchSourceRequest{Handle: h}))
 			return err
 		},
-		"EnableX402": func() error {
-			_, err := c.EnableX402(ctx, connect.NewRequest(
-				&routerv1.EnableX402Request{Handle: h}))
-			return err
-		},
 	}
 }
 
@@ -36,7 +31,7 @@ var built = []string{
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
 	"CreatePreview", "CreateSecretLink", "CreateSecretPutGrant", "GetSecretSealingKey",
 	"PutSecret", "ListSecrets", "DeleteSecret", "AddSshKey", "RemoveSshKey", "CheckX402",
-	"ListX402",
+	"ListX402", "EnableX402",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {
