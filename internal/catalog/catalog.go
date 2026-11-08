@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
+	"unicode"
 
 	"github.com/bugnet-sh/bugnet-router/internal/bytesize"
 	"github.com/bugnet-sh/bugnet-router/internal/hostname"
@@ -16,8 +18,10 @@ import (
 
 // Package is one purchasable bundle of resources and time
 type Package struct {
-	ID          string
-	Resources   provider.Resources
+	ID        string
+	Resources provider.Resources
+	// GPUModel names each GPU as the catalog states it, such as NVIDIA L4, empty without a GPU
+	GPUModel    string
 	Minutes     int
 	PriceMicros int64
 	ExtensionOf string
@@ -49,11 +53,12 @@ type Catalog struct {
 }
 
 type fileResources struct {
-	VCPU         int `json:"vcpu"`
-	MemoryMiB    int `json:"memory_mib"`
-	DiskGiB      int `json:"disk_gib"`
-	GPUCount     int `json:"gpu_count"`
-	GPUMemoryGiB int `json:"gpu_memory_gib"`
+	VCPU         int    `json:"vcpu"`
+	MemoryMiB    int    `json:"memory_mib"`
+	DiskGiB      int    `json:"disk_gib"`
+	GPUCount     int    `json:"gpu_count"`
+	GPUMemoryGiB int    `json:"gpu_memory_gib"`
+	GPUModel     string `json:"gpu_model"`
 }
 
 type filePackage struct {
@@ -109,7 +114,8 @@ func Load(path string) (*Catalog, error) {
 				DiskGiB: fp.Resources.DiskGiB, GPUCount: fp.Resources.GPUCount,
 				GPUMemoryGiB: fp.Resources.GPUMemoryGiB,
 			},
-			Minutes: fp.Minutes, PriceMicros: fp.PriceMicros, ExtensionOf: fp.ExtensionOf,
+			GPUModel: fp.Resources.GPUModel,
+			Minutes:  fp.Minutes, PriceMicros: fp.PriceMicros, ExtensionOf: fp.ExtensionOf,
 		}
 		if err := validate(p); err != nil {
 			return nil, err
@@ -138,7 +144,7 @@ func Load(path string) (*Catalog, error) {
 		case target.ExtensionOf != "":
 			return nil, fmt.Errorf(
 				"catalog: package %q extends %q, which is itself an extension", p.ID, target.ID)
-		case target.Resources != p.Resources:
+		case target.Resources != p.Resources || target.GPUModel != p.GPUModel:
 			return nil, fmt.Errorf(
 				"catalog: package %q has different resources than %q it extends", p.ID, target.ID)
 		case !sameHosts(target.EgressAllow, p.EgressAllow):
@@ -168,12 +174,28 @@ func validate(p Package) error {
 		return fmt.Errorf("catalog: package %q has negative disk or gpu resources", p.ID)
 	case p.Resources.GPUMemoryGiB > 0 && p.Resources.GPUCount == 0:
 		return fmt.Errorf("catalog: package %q has gpu memory but no gpu", p.ID)
+	case p.Resources.GPUCount > 0 && !gpuModel(p.GPUModel):
+		return fmt.Errorf("catalog: package %q needs a gpu_model of 1 to %d printable characters "+
+			"with no space at either end, such as NVIDIA L4", p.ID, maxGPUModel)
+	case p.Resources.GPUCount == 0 && p.GPUModel != "":
+		return fmt.Errorf("catalog: package %q has a gpu_model but no gpu", p.ID)
 	case p.ExtensionOf == p.ID && p.ExtensionOf != "":
 		return fmt.Errorf("catalog: package %q extends itself", p.ID)
 	case p.PriceMicros < 0:
 		return fmt.Errorf("catalog: package %q has a negative price", p.ID)
 	}
 	return nil
+}
+
+// maxGPUModel bounds the GPU name the public stats feed sends
+const maxGPUModel = 64
+
+// gpuModel reports whether s can name a GPU on a public page
+func gpuModel(s string) bool {
+	if s == "" || len(s) > maxGPUModel || strings.TrimSpace(s) != s {
+		return false
+	}
+	return !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) })
 }
 
 // read checks each override given and returns them, every field zero when edge is absent

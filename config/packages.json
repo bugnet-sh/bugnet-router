@@ -1,0 +1,34 @@
+{
+	"packages": [
+		{
+			"id": "small-10m",
+			"resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 50000
+		},
+		{
+			"id": "medium-10m",
+			"resources": {"vcpu": 2, "memory_mib": 4096, "disk_gib": 40, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 80000
+		},
+		{
+			"id": "large-10m",
+			"resources": {"vcpu": 4, "memory_mib": 8192, "disk_gib": 10, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 150000
+		},
+		{
+			"id": "xlarge-10m",
+			"resources": {"vcpu": 8, "memory_mib": 16384, "disk_gib": 100, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 300000
+		},
+		{
+			"id": "2xlarge-10m",
+			"resources": {"vcpu": 16, "memory_mib": 32768, "disk_gib": 250, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 500000
+		}
+	]
+}

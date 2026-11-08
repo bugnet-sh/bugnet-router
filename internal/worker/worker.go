@@ -15,6 +15,7 @@
 // advisory lock, so any number of queued jobs converge. A prepare_ssh job makes one ready
 // placement's sshd ready through the saga, within 150 s. wallet_stop_live ends a blocked payer's
 // live placements a few at a time, and wallet_expiry lifts timed wallet blocks every 10 minutes.
+// With Deps.Stats set, stats_snapshot writes the public stats feed's row every 30 s.
 package worker
 
 import (
@@ -72,6 +73,8 @@ type Deps struct {
 	DefaultWorkers int
 	// Egress is where apply_secrets points every forwarder
 	Egress Egress
+	// Stats turns on the stats_snapshot job, off when nil
+	Stats *Stats
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -91,6 +94,10 @@ type Worker struct {
 	stuck    int // stuck outbox events at the last report
 	// stuckReported is when the watch last reported stuck events
 	stuckReported time.Time
+	statsMu       sync.Mutex
+	noTokenLogged time.Time
+	// tokenRefused holds back the error log of a refused token until Payments answers again
+	tokenRefused bool
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -130,10 +137,11 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &prepareSSHWorker{w: w})
 	river.AddWorker(workers, &walletStopLiveWorker{w: w})
 	river.AddWorker(workers, &walletExpiryWorker{w: w})
+	river.AddWorker(workers, &statsWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
-		PeriodicJobs:         periodicJobs(),
+		PeriodicJobs:         periodicJobs(d),
 		JobTimeout:           jobTimeout,
 		RescueStuckJobsAfter: rescueAfter,
 		Logger:               sd.Log,
@@ -183,10 +191,10 @@ func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
 // periodicJobs runs the sweep, watch, outbox and wallet expiry at start and on their intervals,
 // one at a time
-func periodicJobs() []*river.PeriodicJob {
+func periodicJobs(d Deps) []*river.PeriodicJob {
 	single := singleRun()
 	var out []*river.PeriodicJob
-	for _, p := range periodic() {
+	for _, p := range periodic(d) {
 		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),
 			func() (river.JobArgs, *river.InsertOpts) { return p.args, single },
 			&river.PeriodicJobOpts{RunOnStart: true}))
@@ -200,13 +208,17 @@ type periodicJob struct {
 	args  river.JobArgs
 }
 
-func periodic() []periodicJob {
-	return []periodicJob{
+func periodic(d Deps) []periodicJob {
+	out := []periodicJob{
 		{sweepEvery, jobargs.Sweep{}},
 		{watchEvery, jobargs.Watch{}},
 		{outboxEvery, jobargs.Outbox{}},
 		{expiryEvery, jobargs.WalletExpiry{}},
 	}
+	if d.Stats != nil {
+		out = append(out, periodicJob{statsEvery, jobargs.StatsSnapshot{}})
+	}
+	return out
 }
 
 // singleRun skips inserting a job while one of its kind waits or runs

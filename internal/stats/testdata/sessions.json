@@ -1,0 +1,84 @@
+{
+    "items": [
+        {
+            "startedAt": "2026-11-08T11:50:02Z",
+            "endedAt": null,
+            "provider": "boat",
+            "vcpu": 2,
+            "memoryMiB": 2048,
+            "gpu": null,
+            "seconds": 596,
+            "commands": 2,
+            "priceMicros": 50000,
+            "status": "running",
+            "endReason": null,
+            "wallet": "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx",
+            "tx": "6pc4LiB8KHAPvbUbkozrTcPL5zXspYBdATv5raNDyVbhiKjrKokLb9o111kxTD5KkPVd7UBSCcFcnWFkrJ82Hu6"
+        },
+        {
+            "startedAt": "2026-11-08T10:00:00Z",
+            "endedAt": "2026-11-08T10:40:12Z",
+            "provider": "e2b",
+            "vcpu": 8,
+            "memoryMiB": 32768,
+            "gpu": {
+                "count": 1,
+                "memoryGiB": 24,
+                "model": "NVIDIA L4"
+            },
+            "seconds": 2400,
+            "commands": 7,
+            "priceMicros": 1545000,
+            "status": "ended",
+            "endReason": "deadline",
+            "wallet": null,
+            "tx": "6pc4LiB8KHAPvbUbkozrTcPL5zXspYBdATv5raNDyVbhiKjrKokLb9o111kxTD5KkPVd7UBSCcFcnWFkrJ82Hu6"
+        },
+        {
+            "startedAt": "2026-11-08T09:00:00Z",
+            "endedAt": "2026-11-08T09:00:30Z",
+            "provider": null,
+            "vcpu": null,
+            "memoryMiB": null,
+            "gpu": null,
+            "seconds": 0,
+            "commands": 0,
+            "priceMicros": 50000,
+            "status": "failed",
+            "endReason": "start_failed",
+            "wallet": "k7FaK87WHGVXzkaoHb7CdVPgkKDQhZ29VLDeBVbDfYn",
+            "tx": null
+        },
+        {
+            "startedAt": "2026-11-07T20:00:00Z",
+            "endedAt": "2026-11-07T20:05:03Z",
+            "provider": "boat",
+            "vcpu": 2,
+            "memoryMiB": 2048,
+            "gpu": null,
+            "seconds": 300,
+            "commands": 1,
+            "priceMicros": 50000,
+            "status": "ended",
+            "endReason": "stop",
+            "wallet": null,
+            "tx": null
+        },
+        {
+            "startedAt": "2026-11-07T19:00:00Z",
+            "endedAt": "2026-11-07T19:01:03Z",
+            "provider": "koyeb",
+            "vcpu": 2,
+            "memoryMiB": 2048,
+            "gpu": null,
+            "seconds": 60,
+            "commands": 0,
+            "priceMicros": 50000,
+            "status": "ended",
+            "endReason": "stopped_by_bugnet",
+            "wallet": null,
+            "tx": null
+        }
+    ],
+    "next": null
+}

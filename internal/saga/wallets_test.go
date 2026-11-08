@@ -493,3 +493,37 @@ func TestStartsGoThroughWhenValkeyStalls(t *testing.T) {
 	_, err := e.createPaid(t, "order-f", payerA)
 	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
 }
+
+func TestOrdersKeepTheTxClaim(t *testing.T) {
+	const (
+		startTx = "36CpwVLKDRH7UU96nxCVFzCR8DNoDFCxNu19SKnFiTWW" +
+			"TgJUs3HQbSHTb2zHgh2uo8yqUVZz2MjWanciehRuemgr"
+		extendTx = "2GxEQDvUNB1J644jDee6TixtWGkyKRydgKnTXmVKohxq" +
+			"vUqm7uMfhRnnCWgiWyiqDTX1DAJ2fB2BU8dWS4E7moZ5"
+	)
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h, err := e.saga.Create(t.Context(), e.token(t, ordertoken.Claims{
+		OrderID: "o1", Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: smallPrice,
+		Tx: startTx,
+	}), placement.Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.saga.Wait()
+	eq(t, e.reload(t, p.ID).State, store.PlacementReady)
+	sha, err := handle.Hash(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.saga.Extend(t.Context(), h, e.token(t, ordertoken.Claims{
+		OrderID: "x1", Kind: ordertoken.KindExtend, PackageID: morePkg, AmountMicros: morePrice,
+		HandleSHA256: hex.EncodeToString(sha), Tx: extendTx,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	for order, want := range map[string]string{"o1": startTx, "x1": extendTx} {
+		o, err := e.store.OrderByID(t.Context(), order)
+		eq(t, err, nil)
+		eq(t, o.Tx, want)
+	}
+}

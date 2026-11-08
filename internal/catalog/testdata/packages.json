@@ -14,7 +14,7 @@
 		},
 		{
 			"id": "gpu-small-30m",
-			"resources": {"vcpu": 4, "memory_mib": 16384, "disk_gib": 50, "gpu_count": 1, "gpu_memory_gib": 20},
+			"resources": {"vcpu": 4, "memory_mib": 16384, "disk_gib": 50, "gpu_count": 1, "gpu_memory_gib": 20, "gpu_model": "NVIDIA RTX 4000 SFF Ada"},
 			"minutes": 30,
 			"price_micros": 1500000
 		}

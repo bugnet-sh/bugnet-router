@@ -185,6 +185,10 @@ type options struct {
 	wallets config.Wallets
 	// defaultWorkers sets Deps.DefaultWorkers, the default when zero
 	defaultWorkers int
+	// stats turns on the stats_snapshot job
+	stats *worker.Stats
+	// now is the worker's clock when set, beside workerClock
+	now func() time.Time
 }
 
 type env struct {
@@ -200,6 +204,7 @@ type env struct {
 	prefix     string
 	keys       dpkeys.Keys
 	worker     *worker.Worker
+	catalog    *catalog.Catalog
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -275,10 +280,13 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
-		Egress: o.egress, DefaultWorkers: o.defaultWorkers,
+		Egress: o.egress, DefaultWorkers: o.defaultWorkers, Stats: o.stats,
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
+	}
+	if o.now != nil {
+		wd.Now = o.now
 	}
 	w, err := worker.New(pool, sd, wd)
 	if err != nil {
@@ -293,7 +301,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
-		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys, worker: w,
+		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys, worker: w, catalog: cat,
 	}
 }
 

@@ -50,6 +50,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
 | `internal/wallet`, `internal/wallets` | Payer addresses and the payer decision, wallet blocks, strikes and buckets |
+| `internal/stats` | The public stats feed, its Payments totals call, its routes and the source functions of values later tasks build |
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
 | `internal/budget`, `internal/edgeevents` | Edge and egress budgets in Valkey, and the edge event stream |
 | `internal/transfer` | Transfer records and claims in Valkey, path resolution and staging through `bugnet-run` |
@@ -310,7 +311,7 @@ host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command
 and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a private key before
 calling the router. `--identity-file` and `--known-hosts-file` name the paths the command and stanza
 use. `get` and `create` print the placement's `ssh_alias` once it has one. `token` and `create` take
-`--payer`, `--fee-payer` and `--allowance-micros`, which set those claims. Without `--amount` the
+`--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without `--amount` the
 allowance is added to the catalog price, so the package stays paid. `config/dev.toml` turns the
 payer claim on with one test facilitator address, so `create --payer` takes the wallet path, and
 raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`, `show`
@@ -388,7 +389,7 @@ does not know.
 | `BUGNET_EDGE_TOKEN`, `BUGNET_SECRETS_TOKEN`, `BUGNET_SSH_TOKEN`, `BUGNET_EGRESS_TOKEN` | `router-api` and `router-worker`, one bearer token per edge process, each empty or 32 characters or more |
 | `BUGNET_EGRESS_FETCH_TOKEN` | `router-api` and `router-worker`, the `bnf_` token the router's private fetch opens egress tunnels with, empty or 32 characters or more |
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
-| `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more |
+| `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more. `router-worker` sends it to Payments' totals call while the stats feed is on |
 | `BUGNET_HOOK_PATH_SECRET` | The edge only, base64url of 32 bytes in the provider webhook path |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
@@ -509,6 +510,11 @@ router's setting. `egress.allow` lists exact lowercase host names, at least one.
 carry the same `egress.allow` as the package it extends, since a sandbox keeps the egress rules
 it was created with.
 
+A package with `gpu_count` above 0 names its GPU in `resources.gpu_model`, as the public stats
+feed and the landing's pricing show it, such as `"NVIDIA L4"`, and `gpu_memory_gib` is each GPU's
+own memory. The name is 1 to 64 printable characters with no space at either end. A package
+without a GPU has no `gpu_model`, and an extension carries the same one as the package it extends.
+
 A host name here and in `[names]` is never an IP address, and never ends in a label that is all
 digits or `0x` and hex digits, such as `127.1` or `a.0x1f`. `inet_aton`, curl and browsers read
 those short forms as IPv4 addresses.
@@ -570,6 +576,23 @@ second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
 `router-api` refuses to start with `use_payer = true` while `BUGNET_PAYMENTS_ROUTER_TOKEN` is
 empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
 block. With `use_payer = false` it logs once at start that every order counts as having no payer.
+
+### Stats
+
+`[stats]` holds the public stats feed (see [Public stats feed](#public-stats-feed)). It is off
+while `listen_addr` is empty, the default and `config/dev.toml`'s value. Production sets
+`"127.0.0.1:8082"`.
+
+| Key | Default | Takes |
+| --- | --- | --- |
+| `listen_addr` | `""` | A loopback IP address and port for router-api's feed listener, or empty |
+| `payments_url` | `"http://127.0.0.1:8447"` | Payments' internal API, `http://` to a loopback address and port while the feed is on |
+| `payments_timeout` | `"5s"` | 1ms to 15s for Payments' totals call |
+| `row_cache` | `"5s"` | 1ms to 1m, how long router-api serves the snapshot row before reading it again |
+| `sessions_cache` | `256` | 1 to 100000 cached session pages per router-api |
+| `max_queries` | `4` | 1 to 64 session page queries at once per router-api |
+| `per_source_per_minute`, `per_source_burst` | `60`, `20` | 1 to 1000000, a bucket per client address |
+| `max_sources` | `10000` | 1 to 1000000 per-source buckets per router-api |
 
 `CheckX402` checks a change of a placement's x402 services without making it, in this order: the
 handle, `enabled`, the state (placing or ready), the capability, each `add` entry in request
@@ -708,7 +731,8 @@ requirements' `extra.feePayer`, `tx`, the payment's transaction signature, and o
 canonical base58 text of 32 bytes, and `tx` must decode to 64 bytes, else the token is refused
 with `PermissionDenied`. `allowance_micros` runs from 0 to `amount_micros`, and an extend token
 carrying it is refused. The underpaid check and `orders.amount_micros` use `amount_micros` less
-the allowance. `tx` is checked and kept nowhere yet.
+the allowance. Each order keeps its checked `tx` in `orders.tx`, which the public stats feed shows
+beside the start order's payer.
 
 The router decides the payer an order counts under in this order: `wallets.use_payer` false, no
 payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or seen
@@ -1158,6 +1182,44 @@ one key, the handle's SHA-256 as 64 lower-case hex or the placement's start orde
 A missing key, an empty start order id or a hash that is not 64 lower-case hex answers
 `InvalidArgument`. An unknown hash answers `NotFound` `HANDLE_UNKNOWN`. A start order id that
 names no placement, such as an extend order's, answers `NotFound` `ORDER_UNKNOWN`.
+
+## Public stats feed
+
+bugnet.sh/stats and the landing's pricing read the feed (control-plane 20, the website's contract
+in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
+
+- `router-worker` runs `stats_snapshot` every 30 s and at start, on the default queue, with a
+  25 s timeout and one attempt. It reads the router's figures in one read-only repeatable-read
+  transaction, calls Payments' `GET /internal/v1/stats/totals` with
+  `BUGNET_PAYMENTS_ROUTER_TOKEN`, checks the answer, merges both with the catalog's start
+  packages and the limits, and writes the one row of `stats_snapshot`.
+- A failed Payments call keeps the last good Payments part and its time, so `generatedAt` shows
+  how old the money is. Without any Payments part the row holds no body.
+- `router-api` serves `GET` and `HEAD` of `/api/stats` and `/api/stats/sessions` on that loopback
+  listener, HTTP/1.1 only, no token. Caddy routes `/api/stats/payments*` to Payments first.
+- `/api/stats` serves the stored body as is, the row read at most once per `stats.row_cache`, and
+  the last body while Postgres fails. No body answers 503 `unavailable`.
+- `/api/stats/sessions?before=<cursor>` reads 50 placements of the last 30 days a page, newest
+  first, cached 30 s per cursor, at most `stats.max_queries` queries at once. A query waits 2 s
+  for a slot, then answers 503 `busy`. A bad cursor answers 400 `bad_cursor`.
+- Each client address has a bucket of `stats.per_source_per_minute` with bursts of
+  `stats.per_source_burst`, the address being the last `X-Forwarded-For` entry or the peer, IPv6
+  by /64. An empty bucket answers 429 `rate_limited`.
+- A session's `wallet` is its start order's payer only after the payer guard's steps 2 to 4, and
+  only when it decodes to 32 bytes. Its `tx` must decode to 64 bytes. Raw reasons go out as one
+  word each, and abuse and blocks as `stopped_by_bugnet`.
+- `/monitor` on `router-worker` shows `stats snapshot N s old` past 2 minutes, and the Payments
+  part's age past 5 minutes, naming an empty token as the cause.
+
+Values that later tasks build go out as the contract's unknown form until each lands, each from
+one function:
+
+| Value | Until | Goes out as | Function |
+| --- | --- | --- | --- |
+| `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | `null` | `statsStartSamples` in `internal/store/stats.go` |
+| `spentMicros` in the totals and each day | Task 35's cost meter | `null` | `statsSpent` in `internal/store/stats.go` |
+| `wallet_blocked`, `control_lost`, `sandbox_exited`, `operator`, and `wallet.failed_refunds_per_day` | Task 28B | `other`, and the key left out | `walletEnds` in `internal/stats/sources.go` |
+| `wallet.bytes_per_day` | Task 29's byte cap | Left out | `walletBytesPerDay` in `internal/stats/sources.go` |
 
 ## Deployment
 

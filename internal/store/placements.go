@@ -87,6 +87,8 @@ type NewPlacement struct {
 	AmountMicros int64
 	// SecondsBought is the paid time the start order buys from ready
 	SecondsBought int64
+	// Tx is the start token's Tx claim once Verify checked it, empty for none
+	Tx string
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -103,6 +105,8 @@ type Order struct {
 	AmountMicros int64
 	// SecondsBought is the paid time the order added, 0 for an order from before it was kept
 	SecondsBought int64
+	// Tx is the token's Tx claim once Verify checked it, empty for none
+	Tx string
 }
 
 // Attempt is one try at creating a sandbox on a provider
@@ -215,9 +219,10 @@ func (s *Store) OrderByID(ctx context.Context, id string) (Order, error) {
 	o := Order{ID: id}
 	err := s.q.QueryRow(ctx, `
 		select kind, placement_id, coalesce(payer, ''), coalesce(fee_payer, ''), amount_micros,
-			seconds_bought
+			seconds_bought, coalesce(tx, '')
 		from orders where order_id = $1`, id).
-		Scan(&o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros, &o.SecondsBought)
+		Scan(&o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros, &o.SecondsBought,
+			&o.Tx)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Order{}, ErrNotFound
 	}
@@ -261,6 +266,7 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 		id, inserted, err := ts.InsertOrder(ctx, Order{
 			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: claim,
 			FeePayer: p.FeePayer, AmountMicros: p.AmountMicros, SecondsBought: p.SecondsBought,
+			Tx: p.Tx,
 		})
 		if err != nil {
 			return err
@@ -283,10 +289,10 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 func (s *Store) InsertOrder(ctx context.Context, o Order) (uuid.UUID, bool, error) {
 	tag, err := s.q.Exec(ctx, `
 		insert into orders (order_id, kind, placement_id, payer, fee_payer, amount_micros,
-			seconds_bought)
-		values ($1, $2, $3, $4, $5, $6, $7)
+			seconds_bought, tx)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		on conflict (order_id) do nothing`, o.ID, o.Kind, o.PlacementID, nullIfEmpty(o.Payer),
-		nullIfEmpty(o.FeePayer), o.AmountMicros, o.SecondsBought)
+		nullIfEmpty(o.FeePayer), o.AmountMicros, o.SecondsBought, nullIfEmpty(o.Tx))
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("insert order: %w", err)
 	}
@@ -567,7 +573,7 @@ func (s *Store) ExtendDeadline(
 	return s.ExtendWithOrder(ctx, Order{ID: orderID, PlacementID: placementID}, by)
 }
 
-// ExtendWithOrder is ExtendDeadline recording the extend order's payer and package share
+// ExtendWithOrder is ExtendDeadline recording the extend order's payer, package share and Tx
 func (s *Store) ExtendWithOrder(
 	ctx context.Context, o Order, by time.Duration,
 ) (Placement, bool, error) {

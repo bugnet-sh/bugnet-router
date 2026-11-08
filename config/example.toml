@@ -139,6 +139,17 @@ refund_stopped_live = false            # wallet_blocked ends refund their unused
 failed_refunds_per_day = 2             # refundable provider_failed ends per start payer in 24 h
 anonymous_failed_refunds_per_day = 20  # the same for all placements without a payer, together
 
+[stats]                                # the public stats feed of bugnet.sh/stats, control-plane 20
+listen_addr = ""                       # router-api's loopback listener, production "127.0.0.1:8082"
+payments_url = "http://127.0.0.1:8447" # Payments' internal API, read for its totals every 30 s
+payments_timeout = "5s"                # 1ms to 15s
+row_cache = "5s"                       # router-api reads the snapshot row at most this often
+sessions_cache = 256                   # cached session pages per router-api
+max_queries = 4                        # session page queries at once per router-api
+per_source_per_minute = 60             # requests per client address, a starting value
+per_source_burst = 20
+max_sources = 10000                    # per-source buckets kept per router-api
+
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",

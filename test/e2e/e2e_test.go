@@ -424,6 +424,8 @@ type stackOptions struct {
 	valkey string // valkey.addr, the test Valkey over TCP when empty
 	worker string // lines in router-worker's [worker] table
 	extra  string // settings every process's file ends with
+	// payments is the Payments URL that turns the stats feed on, each process on its own port
+	payments string
 }
 
 func startStack(t *testing.T) *stack {
@@ -491,13 +493,18 @@ func devKeys(t *testing.T) map[string]string {
 	return keys
 }
 
-// settings writes the settings file of the process name, listening on addr in table
-func (s *stack) settings(t *testing.T, name, table, addr string) string {
+// settings writes the settings file of the process name, on addr in table and feed for stats
+func (s *stack) settings(t *testing.T, name, table, addr, feed string) string {
 	t.Helper()
 	pub := s.priv.Public().(ed25519.PublicKey)
 	var lines string
 	if table == "worker" {
 		lines = s.opts.worker
+	}
+	extra := s.opts.extra
+	if feed != "" {
+		extra += fmt.Sprintf("\n[stats]\nlisten_addr = %q\npayments_url = %q\n", feed,
+			s.opts.payments)
 	}
 	content := fmt.Sprintf(`order_token_public_key = %q
 packages_file = %q
@@ -521,7 +528,7 @@ enabled = true
 root = %q
 runner = %q
 %s`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
-		lines, s.opts.valkey, s.prefix, s.root, bin.runner, s.opts.extra)
+		lines, s.opts.valkey, s.prefix, s.root, bin.runner, extra)
 	path := filepath.Join(t.TempDir(), name+".toml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -574,6 +581,7 @@ type proc struct {
 	name    string
 	cmd     *exec.Cmd
 	url     string
+	stats   string // the stats feed's base URL, empty while the feed is off
 	config  string // settings file
 	log     string
 	done    chan struct{}
@@ -585,7 +593,11 @@ type proc struct {
 func (s *stack) start(t *testing.T, logs, name, binary, table string) *proc {
 	t.Helper()
 	addr := freeAddr(t)
-	config := s.settings(t, name, table, addr)
+	feed := ""
+	if s.opts.payments != "" {
+		feed = freeAddr(t)
+	}
+	config := s.settings(t, name, table, addr, feed)
 	log, err := os.Create(filepath.Join(logs, name+".log"))
 	if err != nil {
 		t.Fatal(err)
@@ -599,6 +611,9 @@ func (s *stack) start(t *testing.T, logs, name, binary, table string) *proc {
 	}
 	p := &proc{name: name, cmd: cmd, url: "http://" + addr, config: config, log: log.Name(),
 		done: make(chan struct{})}
+	if feed != "" {
+		p.stats = "http://" + feed
+	}
 	go func() {
 		p.waitErr = cmd.Wait()
 		close(p.done)

@@ -264,6 +264,7 @@ func (s *Saga) Create(
 		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
 		SecondsBought: int64(pkg.Minutes) * 60,
+		Tx:            c.Tx,
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
@@ -330,6 +331,7 @@ func (s *Saga) record(
 		id, inserted, err := ts.InsertOrder(ctx, store.Order{
 			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
 			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros, SecondsBought: np.SecondsBought,
+			Tx: np.Tx,
 		})
 		if err != nil {
 			return err
@@ -865,6 +867,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
 			ID: c.OrderID, PlacementID: id, Payer: c.Payer, FeePayer: c.FeePayer,
 			AmountMicros: c.PackageMicros(), SecondsBought: int64(by / time.Second),
+			Tx: c.Tx,
 		}, by)
 		if err != nil || !applied {
 			return err

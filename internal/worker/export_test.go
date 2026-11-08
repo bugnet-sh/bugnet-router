@@ -41,8 +41,20 @@ func ExpiryTimeout() time.Duration {
 // Periodic names each periodic job kind with its interval
 func Periodic() map[string]time.Duration {
 	out := map[string]time.Duration{}
-	for _, p := range periodic() {
+	for _, p := range periodic(Deps{}) {
 		out[p.args.Kind()] = p.every
 	}
 	return out
 }
+
+// StatsEvery and StatsTimeout are the stats_snapshot job's period and run time
+const (
+	StatsEvery   = statsEvery
+	StatsTimeout = statsTimeout
+)
+
+// Snapshot runs one stats_snapshot
+func (w *Worker) Snapshot(ctx context.Context) error { return w.snapshot(ctx) }
+
+// StatsJobTimeout is the timeout River gives one stats_snapshot run
+func StatsJobTimeout() time.Duration { return (*statsWorker).Timeout(nil, nil) }

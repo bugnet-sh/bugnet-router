@@ -25,6 +25,9 @@ const (
 	// memoryAlertPercent is the share of Valkey's maxmemory in use that /monitor reports
 	memoryAlertPercent = 80
 	monitorTimeout     = 2 * time.Second
+	// snapshotStaleAfter and paymentsStaleAfter are CP 20.9's alert ages of the stats row
+	snapshotStaleAfter = 2 * time.Minute
+	paymentsStaleAfter = 5 * time.Minute
 )
 
 // health is what one /monitor request found, memory holding only what INFO gave
@@ -33,6 +36,19 @@ type health struct {
 	overdue, ending, stuck int
 	valkey                 valkeyHealth
 	pools                  poolHealth
+	feed                   feedHealth
+}
+
+// feedCheck says whether the stats snapshot job runs, and whether it lacks the Payments token
+type feedCheck struct {
+	on, noToken bool
+}
+
+// feedHealth is how old the stats snapshot's two parts were, zero when there is no row to judge
+type feedHealth struct {
+	check                   feedCheck
+	routerAge, paymentsAge  time.Duration
+	present, noPaymentsPart bool
 }
 
 // poolHealth is what the mining pool list held when /monitor read it
@@ -47,7 +63,7 @@ const (
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
-	poolList string,
+	poolList string, feed feedCheck,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -58,6 +74,7 @@ func monitor(
 		wg.Go(func() { h.overdue, h.ending, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
 		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, prefix, read) })
 		wg.Go(func() { h.pools = checkPools(log, poolList) })
+		wg.Go(func() { h.feed = checkFeed(ctx, log, st, feed) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -86,6 +103,31 @@ func checkPostgres(
 		return 0, 0, 0, true
 	}
 	return overdue, ending, stuck, false
+}
+
+// checkFeed reads the stats snapshot row's ages while the snapshot job runs
+func checkFeed(ctx context.Context, log *slog.Logger, st *store.Store, c feedCheck) feedHealth {
+	h := feedHealth{check: c}
+	if !c.on {
+		return h
+	}
+	snap, err := st.ReadStatsSnapshot(ctx)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return h
+	case err != nil:
+		log.Warn("monitor cannot read the stats snapshot", "err", err)
+		return h
+	}
+	now := time.Now()
+	h.present = true
+	h.routerAge = now.Sub(snap.RouterAt)
+	if snap.PaymentsAt.IsZero() {
+		h.noPaymentsPart = true
+	} else {
+		h.paymentsAge = now.Sub(snap.PaymentsAt)
+	}
+	return h
 }
 
 // checkPools reads the mining pool list with the loader router-api starts with
@@ -189,6 +231,29 @@ func (h health) problems() []string {
 		out = append(out, "the mining pool list is empty or missing")
 	case poolsUnreadable:
 		out = append(out, "the mining pool list cannot be read")
+	}
+	return append(out, h.feed.problems()...)
+}
+
+// problems are CP 20.9's two lines, the Payments one naming an empty token as its cause
+func (f feedHealth) problems() []string {
+	if !f.present {
+		return nil
+	}
+	var out []string
+	if f.routerAge > snapshotStaleAfter {
+		out = append(out, fmt.Sprintf("stats snapshot %d s old", int(f.routerAge.Seconds())))
+	}
+	why := ""
+	if f.check.noToken {
+		why = ", BUGNET_PAYMENTS_ROUTER_TOKEN is empty in router-worker"
+	}
+	switch {
+	case f.noPaymentsPart:
+		out = append(out, "stats: no Payments part yet, so /api/stats answers 503"+why)
+	case f.paymentsAge > paymentsStaleAfter:
+		out = append(out, fmt.Sprintf("stats: Payments part %d min old%s",
+			int(f.paymentsAge.Minutes()), why))
 	}
 	return out
 }

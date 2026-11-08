@@ -5,6 +5,7 @@
 // Serving builds every service from them, runs the jobs scanner that takes over commands from
 // replicas that went away, and answers Connect calls over HTTP/1.1 and unencrypted HTTP/2 on a
 // listener bound with SO_REUSEPORT when api.reuse_port is set, so a new process binds beside it.
+// With stats.listen_addr set it also serves the public stats feed on that loopback listener.
 // On SIGTERM or SIGINT it stops accepting requests, ends long polls and watch streams and hands
 // its jobs to peers at once. It lets its transfer streams finish for up to transfers.max_duration,
 // cuts what is left, waits a bounded time for placements still being placed, and exits.
@@ -19,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,6 +47,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
@@ -231,8 +234,17 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddr, err)
 	}
-	failed := make(chan error, 1)
+	feed, feedLn, err := statsServer(cfg, stats.NewHandler(st, cat, &cfg, time.Now, log))
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	failed := make(chan error, 2)
 	go func() { failed <- hs.Serve(ln) }()
+	if feed != nil {
+		go func() { failed <- feed.Serve(feedLn) }()
+		log.Info("serving the stats feed", "addr", cfg.Stats.ListenAddr)
+	}
 	log.Info("serving", "addr", cfg.ListenAddr, "replica", cfg.ReplicaID,
 		"providers", cfg.Providers)
 
@@ -242,6 +254,12 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		log.Info("shutting down")
 	case err := <-failed:
 		serveErr = fmt.Errorf("serve: %w", err)
+	}
+	if feed != nil {
+		// The feed's answers are short, its WriteTimeout bounds what is left
+		sctx, cancel := context.WithTimeout(context.Background(), statsWriteTimeout)
+		_ = feed.Shutdown(sctx)
+		cancel()
 	}
 	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
 	scanner.Wait()
@@ -349,6 +367,36 @@ func listen(addr string, reusePort bool) (net.Listener, error) {
 		}
 	}
 	return lc.Listen(context.Background(), "tcp", addr)
+}
+
+const (
+	statsReadHeaderTimeout = 5 * time.Second
+	statsWriteTimeout      = 10 * time.Second
+	statsIdleTimeout       = 60 * time.Second
+	statsMaxHeaderBytes    = 8 << 10
+)
+
+// statsServer binds the public stats feed's loopback listener, nil when stats.listen_addr is empty
+func statsServer(cfg config.Config, h http.Handler) (*http.Server, net.Listener, error) {
+	if !cfg.Stats.Enabled() {
+		return nil, nil, nil
+	}
+	ln, err := listen(cfg.Stats.ListenAddr, cfg.APIReusePort)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen on stats.listen_addr: %w", err)
+	}
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	return &http.Server{
+		Handler:           h,
+		Protocols:         &protocols,
+		ReadHeaderTimeout: statsReadHeaderTimeout,
+		WriteTimeout:      statsWriteTimeout,
+		IdleTimeout:       statsIdleTimeout,
+		MaxHeaderBytes:    statsMaxHeaderBytes,
+		// net/http's own error lines name client addresses, which this listener never logs
+		ErrorLog: stdlog.New(io.Discard, "", 0),
+	}, ln, nil
 }
 
 // tokens are the callers' bearer tokens from the environment
