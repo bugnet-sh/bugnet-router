@@ -40,7 +40,7 @@ preview_domain = "preview.bugnet.sh"   # previews are <id>.<preview_domain>
 transfer_host = "transfer.bugnet.sh"
 secrets_host = "secrets.bugnet.sh"
 ssh_host = "ssh.bugnet.sh"
-ssh_port = 22                          # known_hosts uses [host]:port when this is not 22
+ssh_port = 2222                        # known_hosts uses [host]:port when this is not 22
 egress_host = "egress.bugnet.sh"
 
 [edge_budget]
