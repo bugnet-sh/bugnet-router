@@ -215,3 +215,11 @@ func TestRedactAnyAuthorizationSchemeAcrossFrames(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactTokenAfterASkippedMatch(t *testing.T) {
+	r := NewRedactor()
+	body := strings.Repeat("Ab3_", 10)
+	eq(t, r.Redact("risk-sk-ant-api03-"+body), "risk-[redacted token]")
+	eq(t, r.Redact("xbnt_bnt_"+body+" y"), "xbnt_[redacted token] y")
+	eq(t, r.Redact("xbnt_"+body), "xbnt_"+body)
+}

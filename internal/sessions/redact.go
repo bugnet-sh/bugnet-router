@@ -39,12 +39,13 @@ var (
 	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	userinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*):[^\s/@]+@`)
-	// The Bugnet shapes of DP 20.6.4 with bnk_, then the vendor shapes the gateway redacts
-	tokens = regexp.MustCompile(`(?:sbx_|bnp_|bnx_|bnsl_|bnsp_|bnt_|bnf_|bnsec_|bxd_|e2b_|` +
-		`boat_|bnk_|g1\.)[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|` +
-		`gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|hf_[A-Za-z0-9]{30,}|` +
-		`xox[abpr]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|glpat-[A-Za-z0-9_-]{20,}|` +
-		`r8_[A-Za-z0-9]{30,}`)
+	// The Bugnet shapes of DP 20.6.4 with bnk_, then the vendor shapes the gateway redacts, each
+	// where a word starts, after the character before it, which stays
+	tokens = regexp.MustCompile(`(^|[^A-Za-z0-9])(?:(?:sbx_|bnp_|bnx_|bnsl_|bnsp_|bnt_|bnf_|` +
+		`bnsec_|bxd_|e2b_|boat_|bnk_|g1\.)[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{20,}|` +
+		`sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|` +
+		`hf_[A-Za-z0-9]{30,}|xox[abpr]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|` +
+		`glpat-[A-Za-z0-9_-]{20,}|r8_[A-Za-z0-9]{30,})`)
 	// Words after which a credential follows, so a frame never ends between the two
 	leadWords = regexp.MustCompile(`(?i)^(bearer|basic|(proxy-)?authorization\s*[:=]?)$`)
 )
@@ -158,24 +159,10 @@ func ordinaryWord(s string) bool {
 	return true
 }
 
-// replaceTokens redacts each token shape that starts a word
+// replaceTokens redacts each token shape that starts a word, also one a longer word runs into, as
+// searching again one byte past each shape that does not start a word would, in one pass
 func replaceTokens(s string) string {
-	locs := tokens.FindAllStringIndex(s, -1)
-	if locs == nil {
-		return s
-	}
-	var b strings.Builder
-	last := 0
-	for _, loc := range locs {
-		if loc[0] > 0 && isAlnum(s[loc[0]-1]) {
-			continue
-		}
-		b.WriteString(s[last:loc[0]])
-		b.WriteString(redactedToken)
-		last = loc[1]
-	}
-	b.WriteString(s[last:])
-	return b.String()
+	return tokens.ReplaceAllString(s, "${1}"+redactedToken)
 }
 
 func isAlnum(c byte) bool {
