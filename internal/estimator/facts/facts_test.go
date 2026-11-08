@@ -174,6 +174,13 @@ func TestCommandHints(t *testing.T) {
 		{"python -m sglang.launch_server --context-length 16384", EntryHints{
 			ContextTokens: 16384, Tools: []string{"sglang"}}},
 		{"make -j 99999 -c abc --dtype weird", EntryHints{Tools: []string{"make"}}},
+		{"ping -c 1 host && vllm serve m", EntryHints{Tools: []string{"vllm"}}},
+		{"head -c 100 f; curl -C 4096 u", EntryHints{}},
+		{"llama-server -m other.gguf && head -c 100000 x", EntryHints{
+			Tools: []string{"llamacpp"}}},
+		{"python -m llama_cpp.server -c 4096", EntryHints{ContextTokens: 4096,
+			Tools: []string{"llamacpp"}}},
+		{"sudo llama-server -C 4096", EntryHints{Tools: []string{"llamacpp"}}},
 	} {
 		eq(t, Hints(c.cmd, model), c.want)
 	}

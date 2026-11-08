@@ -11,7 +11,7 @@ import (
 type EntryHints struct {
 	// Jobs is the largest -j N
 	Jobs int `json:"jobs,omitempty"`
-	// ContextTokens is the largest --max-model-len, -c or --ctx-size
+	// ContextTokens is the largest --max-model-len, --ctx-size, or -c given to llama.cpp
 	ContextTokens int `json:"context_tokens,omitempty"`
 	// DType is auto, f32, f16 or bf16 from --dtype
 	DType string `json:"dtype,omitempty"`
@@ -63,10 +63,10 @@ func Hints(cmd string, f Facts) EntryHints {
 	var h EntryHints
 	tools := map[string]bool{}
 	words := shellWords(cmd)
-	atCommand := true
+	atCommand, llama := true, false
 	for i, w := range words {
 		if w.op {
-			atCommand = true
+			atCommand, llama = true, false
 			continue
 		}
 		lw := strings.ToLower(w.s)
@@ -115,6 +115,7 @@ func Hints(cmd string, f Facts) EntryHints {
 			tools[ToolSGLang] = true
 		case llamaCPPBinaries[base] || strings.HasPrefix(lw, "llama_cpp"):
 			tools[ToolLlamaCPP] = true
+			llama = true
 		case base == "docker-compose":
 			tools[ToolCompose] = true
 			tools[ToolDocker] = true
@@ -131,8 +132,12 @@ func Hints(cmd string, f Facts) EntryHints {
 			if n, ok := count(value, maxJobs); ok {
 				h.Jobs = max(h.Jobs, n)
 			}
-		case "--max-model-len", "--ctx-size", "-c", "--context-length":
+		case "--max-model-len", "--ctx-size", "--context-length":
 			if n, ok := count(value, maxContext); ok {
+				h.ContextTokens = max(h.ContextTokens, n)
+			}
+		case "-c":
+			if n, ok := count(value, maxContext); ok && llama && rawFlag == "-c" {
 				h.ContextTokens = max(h.ContextTokens, n)
 			}
 		case "--dtype":
