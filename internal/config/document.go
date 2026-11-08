@@ -437,8 +437,11 @@ func valueKind(t reflect.Type) string {
 	case reflect.Float64:
 		return "a number"
 	case reflect.Slice:
-		if t.Elem().Kind() == reflect.Struct {
+		switch t.Elem().Kind() {
+		case reflect.Struct:
 			return "an array of tables"
+		case reflect.Int, reflect.Int64:
+			return "an array of whole numbers"
 		}
 		return "an array of strings"
 	case reflect.Map:

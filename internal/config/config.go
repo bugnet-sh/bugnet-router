@@ -86,6 +86,7 @@ type Config struct {
 	Fetch         Fetch
 	Hooks         Hooks
 	X402          X402
+	Hardening     Hardening
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -265,32 +266,33 @@ type Hooks struct {
 
 // file is the settings file's schema, each struct type naming one table
 type file struct {
-	OrderTokenPublicKey string     `toml:"order_token_public_key"`
-	PackagesFile        string     `toml:"packages_file"`
-	Providers           *[]string  `toml:"providers"`
-	MarginFloor         float64    `toml:"margin_floor"`
-	DeploymentID        string     `toml:"deployment_id"`
-	ReplicaID           string     `toml:"replica_id"`
-	EventsURL           string     `toml:"events_url"`
-	API                 apiFile    `toml:"api"`
-	Worker              workerFile `toml:"worker"`
-	Valkey              valkeyFile `toml:"valkey"`
-	Runner              runnerFile `toml:"runner"`
-	Limits              limitsFile `toml:"limits"`
-	Local               localFile  `toml:"local"`
-	Boxd                Boxd       `toml:"boxd"`
-	E2B                 e2bFile    `toml:"e2b"`
-	Koyeb               Koyeb      `toml:"koyeb"`
-	Boat                Boat       `toml:"boat"`
-	Names               Names      `toml:"names"`
-	EdgeBudget          budgetFile `toml:"edge_budget"`
-	Previews            Previews   `toml:"previews"`
-	Transfers           xferFile   `toml:"transfers"`
-	SSH                 sshFile    `toml:"ssh"`
-	Secrets             secretFile `toml:"secrets"`
-	Fetch               fetchFile  `toml:"fetch"`
-	Hooks               Hooks      `toml:"hooks"`
-	X402                x402File   `toml:"x402"`
+	OrderTokenPublicKey string        `toml:"order_token_public_key"`
+	PackagesFile        string        `toml:"packages_file"`
+	Providers           *[]string     `toml:"providers"`
+	MarginFloor         float64       `toml:"margin_floor"`
+	DeploymentID        string        `toml:"deployment_id"`
+	ReplicaID           string        `toml:"replica_id"`
+	EventsURL           string        `toml:"events_url"`
+	API                 apiFile       `toml:"api"`
+	Worker              workerFile    `toml:"worker"`
+	Valkey              valkeyFile    `toml:"valkey"`
+	Runner              runnerFile    `toml:"runner"`
+	Limits              limitsFile    `toml:"limits"`
+	Local               localFile     `toml:"local"`
+	Boxd                boxdFile      `toml:"boxd"`
+	E2B                 e2bFile       `toml:"e2b"`
+	Koyeb               koyebFile     `toml:"koyeb"`
+	Boat                boatFile      `toml:"boat"`
+	Names               Names         `toml:"names"`
+	EdgeBudget          budgetFile    `toml:"edge_budget"`
+	Previews            Previews      `toml:"previews"`
+	Transfers           xferFile      `toml:"transfers"`
+	SSH                 sshFile       `toml:"ssh"`
+	Secrets             secretFile    `toml:"secrets"`
+	Fetch               fetchFile     `toml:"fetch"`
+	Hooks               Hooks         `toml:"hooks"`
+	X402                x402File      `toml:"x402"`
+	Hardening           hardeningFile `toml:"hardening"`
 }
 
 type apiFile struct {
@@ -331,9 +333,33 @@ type localFile struct {
 }
 
 type e2bFile struct {
-	Domain      string        `toml:"domain"`
-	MaxLifetime string        `toml:"max_lifetime"`
-	Templates   []E2BTemplate `toml:"templates"`
+	Domain         string        `toml:"domain"`
+	MaxLifetime    string        `toml:"max_lifetime"`
+	Templates      []E2BTemplate `toml:"templates"`
+	HardenRequired bool          `toml:"harden_required"`
+	HardenAllow    []string      `toml:"harden_allow"`
+}
+
+type boxdFile struct {
+	Region         string   `toml:"region"`
+	Endpoint       string   `toml:"endpoint"`
+	GateRoute      string   `toml:"gate_route"`
+	HardenRequired bool     `toml:"harden_required"`
+	HardenAllow    []string `toml:"harden_allow"`
+}
+
+type koyebFile struct {
+	Region         string            `toml:"region"`
+	InstanceTypes  map[string]string `toml:"instance_types"`
+	HardenRequired bool              `toml:"harden_required"`
+	HardenAllow    []string          `toml:"harden_allow"`
+}
+
+type boatFile struct {
+	Types          map[string]string `toml:"types"`
+	SSHPath        string            `toml:"ssh_path"`
+	HardenRequired bool              `toml:"harden_required"`
+	HardenAllow    []string          `toml:"harden_allow"`
 }
 
 type budgetFile struct {
@@ -413,9 +439,10 @@ func defaults() file {
 		Local: localFile{
 			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
 		},
-		Boxd:  Boxd{Region: "fra", GateRoute: "subdomain"},
-		Koyeb: Koyeb{Region: "fra"},
-		Boat:  Boat{SSHPath: "gate"},
+		Boxd:  boxdFile{Region: "fra", GateRoute: "subdomain", HardenRequired: true},
+		E2B:   e2bFile{HardenRequired: true},
+		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
+		Boat:  boatFile{SSHPath: "gate", HardenRequired: true},
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
 			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
@@ -445,6 +472,7 @@ func defaults() file {
 			// A clone, since go-toml decodes a list into the slice it finds
 			SharedHostingSuffixes: slices.Clone(sharedHostingSuffixes),
 		},
+		Hardening: defaultHardening(),
 	}
 }
 
@@ -623,12 +651,15 @@ func (f file) config() (Config, error) {
 	if err := f.dataPlane(&c); err != nil {
 		return Config{}, err
 	}
+	if err := f.hardening(&c); err != nil {
+		return Config{}, err
+	}
 	if c.X402, err = f.X402.read(d.X402); err != nil {
 		return Config{}, err
 	}
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
-		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile,
+		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile, &c.Hardening.PoolList,
 	} {
 		if *p == "" {
 			continue

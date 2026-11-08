@@ -115,6 +115,12 @@ shared_hosting_suffixes = ["workers.dev", "onrender.com", "vercel.app", "netlify
 allowed_shared_hosts = []              # filled at deploy from the reviewed index, never by hand
 blocked_hosts = []                     # refused at enable and dropped from ResolveTunnel
 
+[hardening]                            # bugnet-run harden, outbound only, local never runs it
+mail_ports = [25, 465, 587]            # TCP to any address, at most 64
+deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
+    "169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"]   # E2B's go to network.denyOut instead
+pool_list = "/etc/bugnet/mining-pools.txt"   # CIDRs, one per line, at most 10000, read at start
+
 [local]
 enabled = false               # must be true for the local provider, it runs commands on the host
 root = ""                     # $TMPDIR/bugnet-local when empty
@@ -126,10 +132,14 @@ sshd_path = "/usr/sbin/sshd"  # the host's sshd, which ssh-up never installs
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
 gate_route = "subdomain"      # a bn proxy to the gate, or "default" for the pinned default proxy
+harden_required = true        # a failed harden fails the boot over to the next provider
+harden_allow = []             # the provider's own control addresses, open before any block
 
 [e2b]
 domain = ""                   # e2b.app when empty
 max_lifetime = ""             # Go duration, empty = adapter default (1h Hobby), "24h" on Pro
+harden_required = true
+harden_allow = []
 
 # No templates by default, and E2B is never chosen without one. These two tables are the builds
 # deploy/e2b makes, one per size, keep them once they are built on the E2B account.
@@ -149,10 +159,14 @@ disk_gib = 10
 
 [koyeb]
 region = "fra"                # region every Koyeb sandbox runs in
+harden_required = true
+harden_allow = []
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
 
 [boat]
 ssh_path = "gate"             # or "native", only if the gate path fails on Boat
+harden_required = true
+harden_allow = []
 
 [boat.types]                  # size = machine type, every type when empty

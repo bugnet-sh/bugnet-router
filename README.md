@@ -369,12 +369,21 @@ features that read them land one by one, and until then the settings only load a
 | `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
 | `[fetch]` | The private repository fetch's byte cap and the egress proxy's listener |
 | `[hooks]` | `providers` whose webhooks are verified |
+| `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 
 `boxd.gate_route` (`subdomain` or `default`), `boat.ssh_path` (`gate` or `native`) and
 `local.sshd_path` choose each provider's route. Every provider list takes known provider names,
 each once. `secrets.providers` never takes `local`, whose sandboxes share the host.
 `secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
 32-byte X25519 public key.
+
+`[e2b]`, `[boxd]`, `[koyeb]` and `[boat]` each take `harden_required` (`true`), which fails a
+boot over to the next provider when `harden` fails there, and `harden_allow` (`[]`), the
+provider's own control addresses, open before any block. Ranges and addresses are IP addresses
+or CIDRs. `hardening.pool_list` names a file of mining pool addresses or CIDRs, one per line, at
+most 10000, with blank lines and `#` lines skipped. `router-api` reads it at start and refuses a
+malformed one, naming the line by number. A missing or empty list logs a warning, `/monitor`
+reports it, and every other rule still applies.
 
 `worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
 data-plane jobs away from deadlines, the sweep and the outbox. It takes 1 to 10000, the most
