@@ -16,3 +16,6 @@ func TestLocalrunSeams(t *testing.T) {
 	eq(t, spec.CAPEM, string(ca))
 	eq(t, spec.CAVersion, 2)
 }
+
+// localrunCA is the CA version a local sandbox gets from version v
+func localrunCA(v int) int { return v }
