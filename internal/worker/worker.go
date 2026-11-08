@@ -10,7 +10,8 @@
 // outbox job runs every second and posts each due event, signed, to the configured events URL,
 // retrying a failed one with backoff until it is delivered. A periodic job a crashed worker left
 // running is rescued after a few minutes, so it holds back the next run of its kind only that
-// long. Data-plane jobs run on the dataplane queue with workers of their own.
+// long. Data-plane jobs run on the dataplane queue with workers of their own. A prepare_ssh job
+// makes one ready placement's sshd ready through the saga, within 150 s.
 package worker
 
 import (
@@ -107,6 +108,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &sweepWorker{w: w})
 	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
+	river.AddWorker(workers, &prepareSSHWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
