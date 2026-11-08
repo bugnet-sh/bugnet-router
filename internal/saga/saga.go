@@ -16,8 +16,8 @@
 // in each extension's. The edges hear of a placement leaving ready through PlacementEnded, and
 // of an extension through DeadlineMoved once both spent guards are cleared.
 //
-// Boot runs after every create, whether or not the runner was uploaded: bugnet-run setup with
-// the gate key, the CA and the env lines, then harden where the provider has a hardening rule,
+// Boot runs after every create, whether or not the runner was uploaded. It runs bugnet-run setup
+// with the gate key, the CA and the env lines, then harden where the provider has a hardening rule,
 // then PrepareGate and three health checks through the route, then setup again to start the
 // sampler, so harden's installs never count as the user's disk. A failed setup, or a failed
 // harden where it is required, fails the attempt over as boot_failed. A gate that never answers

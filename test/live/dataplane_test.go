@@ -644,7 +644,7 @@ func rowG2(t *testing.T, s *stack) {
 	}
 }
 
-// rowE2B1 reads the traffic token from create, then from connect {"timeout":1} with endAt kept
+// rowE2B1 reads the traffic token from create, then from a one-second connect with endAt kept
 func rowE2B1(t *testing.T, s *stack) {
 	g := s.gated(t, s.sandbox(t, xferPackage))
 	token := g.p.ProviderRef.Meta["traffic_token"]
