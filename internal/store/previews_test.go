@@ -246,3 +246,29 @@ func TestWithLockSerialisesOneName(t *testing.T) {
 		t.Fatalf("WithLock gave %v, want fn's error", err)
 	}
 }
+
+func TestMarkGateReadyKeepsAnEarlierTime(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o-gate")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := s.MarkGateReady(ctx, p.ID, now); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("a placing placement's gate: %v", err)
+	}
+	ref := provider.Ref{Provider: "local", ID: "sbx-1"}
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{now, now.Add(time.Minute)} {
+		if err := s.MarkGateReady(ctx, p.ID, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GateReadyAt == nil || !got.GateReadyAt.Equal(now) {
+		t.Fatalf("gate ready at %v, want %v", got.GateReadyAt, now)
+	}
+}

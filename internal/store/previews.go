@@ -158,3 +158,10 @@ func (s *Store) SetPlacementRoute(
 		update placements set provider_ref = $2, gate_ready_at = coalesce($3, gate_ready_at)
 		where id = $1 and state = $4`, raw, utcPtr(gateAt), PlacementReady)
 }
+
+// MarkGateReady records at as a ready placement's gate time unless it has one
+func (s *Store) MarkGateReady(ctx context.Context, id uuid.UUID, at time.Time) error {
+	return s.transition(ctx, id, "mark gate ready", `
+		update placements set gate_ready_at = coalesce(gate_ready_at, $2)
+		where id = $1 and state = $3`, at.UTC(), PlacementReady)
+}
