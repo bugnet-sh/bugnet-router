@@ -41,6 +41,7 @@ func TestBoxdPrepareGateSubdomainAndDefault(t *testing.T) {
 
 	p = routed(t, f, "default")
 	ref = mustCreate(t, p, "key-gate-default")
+	f.setVM(ref.ID, func(vm *fakeVM) { vm.proxyPort = "auto" })
 	vm, _ = f.vm(ref.ID)
 	meta, err = p.PrepareGate(t.Context(), ref, 29417)
 	if err != nil {
