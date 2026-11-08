@@ -3,6 +3,8 @@
 // All state lives on disk under Root so several router processes see the same sandboxes.
 // Root/<id>/meta.json holds a sandbox's labels, idempotency key, creation time and deadline, and
 // Root/<id>/fs is its filesystem, with fs/root as HOME and the default working directory.
+// meta.json also holds the two loopback ports Create picks for the sandbox's gate and sshd, since
+// every sandbox shares the host's port space.
 // A sandbox appears and disappears with one directory rename, built under Root/.staging and
 // removed through Root/.trash. An idempotency key derives the sandbox id, and Root/.keys/<id>,
 // created with O_EXCL, records that the key was used so it keeps naming that sandbox.
@@ -138,6 +140,9 @@ type meta struct {
 	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 	Deadline       time.Time         `json:"deadline,omitzero"`
+	// GatePort and SSHDPort are the loopback ports this sandbox's gate and sshd listen on
+	GatePort int `json:"gate_port,omitempty"`
+	SSHDPort int `json:"sshd_port,omitempty"`
 }
 
 type sandbox struct {
@@ -161,7 +166,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if req.IdempotencyKey != "" {
 		_, err := os.Stat(p.keyPath(ref.ID))
 		if err == nil {
-			return ref, nil
+			return p.withPorts(ref), nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
 			return provider.Ref{}, internalErr(err)
@@ -175,7 +180,15 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 			return provider.Ref{}, internalErr(err)
 		}
 	}
-	return ref, nil
+	return p.withPorts(ref), nil
+}
+
+// withPorts adds the ports the sandbox on disk holds, which a build that lost a race did not pick
+func (p *Provider) withPorts(ref provider.Ref) provider.Ref {
+	if s, err := p.open(ref); err == nil {
+		ref.Meta = portsMeta(s.meta)
+	}
+	return ref
 }
 
 // newID derives the id from the key so every process creating with that key names one sandbox
@@ -224,6 +237,9 @@ func (p *Provider) build(id string, req provider.CreateRequest) error {
 		Labels:         req.Labels,
 		IdempotencyKey: req.IdempotencyKey,
 		CreatedAt:      now,
+	}
+	if m.GatePort, m.SSHDPort, err = freePorts(); err != nil {
+		return err
 	}
 	if req.Lifetime > 0 {
 		m.Deadline = now.Add(req.Lifetime)
@@ -425,7 +441,7 @@ func (p *Provider) ListOwned(
 			continue
 		}
 		owned = append(owned, provider.Summary{
-			Ref:       provider.Ref{Provider: p.opts.Name, ID: e.Name()},
+			Ref:       provider.Ref{Provider: p.opts.Name, ID: e.Name(), Meta: portsMeta(m)},
 			Labels:    m.Labels,
 			CreatedAt: m.CreatedAt,
 		})

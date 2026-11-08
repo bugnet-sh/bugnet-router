@@ -911,10 +911,29 @@ the API read capabilities only through it. A provider offers previews when it is
 `previews.providers` and its adapter has a gate route, SSH when it is listed in `ssh.providers`
 and has a gate route, or with `boat.ssh_path = "native"` an SSH server of its own, and secrets
 when it is listed in `secrets.providers`. A listed provider whose adapter lacks what the feature
-needs stops both binaries at start, naming it. No adapter has a gate route yet and every list is
-empty, so no provider offers SSH, previews or secrets. An order that requires any of them finds
-no provider. `Estimate` marks every package, and `PricePackage` the one it prices,
+needs stops both binaries at start, naming it. Every list is empty until a live test passes, so
+no provider offers SSH, previews or secrets yet. An order that requires any of them finds no
+provider. `Estimate` marks every package, and `PricePackage` the one it prices,
 `feature_unavailable` for it.
+
+Every adapter has a gate route, the way the edges reach the `bugnet-run` gate inside a sandbox.
+`PrepareGate` opens it once and returns the `provider_ref` meta to keep. `GateRoute` builds it
+from the ref alone and never calls the provider. The router adds the gate key itself.
+
+| Adapter | `PrepareGate` | Route | Credential | Meta kept |
+| --- | --- | --- | --- | --- |
+| E2B | `connect {"timeout":1}`, only for a ref without the token | `https://<port>-<id>.<domain>` | `e2b-traffic-access-token` header | `traffic_token` |
+| boxd, `subdomain` | `CreateProxy bn`, or `SetProxyPort bn` when it exists | `https://bn.<name>.<access domain>` | None | `gate_host` |
+| boxd, `default` | Pins the default proxy, turns bot protection off | `https://<name>.<access domain>` | None | `gate_host` |
+| Koyeb | `bind_port`, with `unbind_port` and a second bind on 409 | The public URL, `/koyeb-sandbox/` blocked | `X-Routing-Key` in pool mode | `executor_url`, `routing_key` |
+| Boat | `POST /host` | `https://<sub>-<port>.on.boat.dev` | `_port_auth` cookie | `gate_host`, `_token` |
+| local | None, the ports come from `Create` | `http://127.0.0.1:<gate_port>` | None | `gate_port`, `sshd_port` |
+
+E2B's create keeps `traffic_token`, since every sandbox is created closed to public traffic.
+Boat's hosted URL is split into its host and token and never stored or logged whole. A local
+sandbox gets two free loopback ports at create, kept in its `meta.json`, since local sandboxes
+share the host. A route whose meta is missing fails as `invalid`, wrapping
+`provider.ErrGateUnprepared`.
 
 Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
 running the router on `local`.
