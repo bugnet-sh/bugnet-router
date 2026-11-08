@@ -277,6 +277,9 @@ type stack struct {
 	procs    []*proc
 	front    net.Listener // the local mode's PROXY v2 front, nil in the vps mode
 	stopOnce sync.Once
+	// previews is the preview rows' client, made once per stack
+	previews    *http.Client
+	previewOnce sync.Once
 }
 
 // startStack starts a stack on provider, or on local for the stack's own test
@@ -393,6 +396,8 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 		egress = s.f.VPS.EgressIPs
 	}
 	table(m, "secrets")["egress_ips"] = egress
+	// The stack offers previews on its provider, so the preview rows can earn its place there
+	table(m, "previews")["providers"] = []string{s.provider}
 	out, err := toml.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
