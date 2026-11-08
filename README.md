@@ -753,10 +753,10 @@ provider's exec user, `root` when it has none, never what `ssh-up` prints (DP 9)
   is the same `GRANT_UNKNOWN`. No SSH RPC spends an operation token.
 - **Leases.** `AcquireSshConnection` refuses a spent edge budget (`BUDGET_SPENT`), then adds a
   lease to the sorted set `ssh:conns:<placement>` under `valkey.prefix`, scored by its expiry
-  `ssh.connection_lease` ahead, at most `ssh.max_connections_per_placement` live ones, in one
-  Valkey function that first drops lapsed leases. `RenewSshConnection` moves a lease's expiry, or
-  takes it again after a lapse while there is room, and `ReleaseSshConnection` removes it, also
-  after the placement ended. The set expires an hour after the deadline.
+  `ssh.connection_lease` ahead on Valkey's clock, at most `ssh.max_connections_per_placement` live
+  ones, in one Lua script that first drops lapsed leases. `RenewSshConnection` moves a lease's
+  expiry, or takes it again after a lapse while there is room, and `ReleaseSshConnection` removes
+  it, also after the placement ended. The set expires an hour after the deadline.
 - **Upstream.** `OpenSshUpstream` waits up to `ssh.prepare_timeout` for the sshd record, asking
   for `prepare_ssh` again, then answers `SSH_PREPARING`. It runs `ssh-up` once per gateway key,
   under a Postgres advisory lock per placement, with the key in `authorize` behind

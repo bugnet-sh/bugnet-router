@@ -52,18 +52,21 @@ var (
 // leaseShape is a lease id as Acquire makes it
 var leaseShape = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-// leaseScript takes or renews lease ARGV[4] in KEYS[1] unless ARGV[3] other leases are live
+// leaseScript takes or renews a lease on Valkey's own clock, answering its Unix ms expiry or 0
 var leaseScript = valkey.NewLuaScript(`
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
-if not redis.call('ZSCORE', KEYS[1], ARGV[4]) and
-	redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local expiry = now + tonumber(ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+if not redis.call('ZSCORE', KEYS[1], ARGV[3]) and
+	redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
 	return 0
 end
-redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
-if redis.call('PEXPIRETIME', KEYS[1]) < tonumber(ARGV[5]) then
-	redis.call('PEXPIREAT', KEYS[1], ARGV[5])
+redis.call('ZADD', KEYS[1], expiry, ARGV[3])
+if redis.call('PEXPIRETIME', KEYS[1]) < tonumber(ARGV[4]) then
+	redis.call('PEXPIREAT', KEYS[1], ARGV[4])
 end
-return 1
+return expiry
 `)
 
 // SSHGatewayServer implements routerv1connect.SshGatewayServiceHandler for bugnet-ssh
@@ -338,11 +341,11 @@ func (s *Server) connsKey(placement uuid.UUID) string {
 
 // lease takes or renews lease id on the placement, answering when it lapses
 func (s *Server) lease(ctx context.Context, p store.Placement, id string) (time.Time, error) {
-	now := time.Now()
-	until := now.Add(cmp.Or(s.d.SSH.ConnectionLease, defaultLease))
+	life := cmp.Or(s.d.SSH.ConnectionLease, defaultLease)
 	most := cmp.Or(s.d.SSH.MaxConnectionsPerPlacement, defaultMaxConns)
 	args := []string{
-		ms(now), ms(until), strconv.Itoa(most), id, ms(p.Deadline.Add(connsLife)),
+		strconv.FormatInt(life.Milliseconds(), 10), strconv.Itoa(most), id,
+		ms(p.Deadline.Add(connsLife)),
 	}
 	n, err := leaseScript.Exec(ctx, s.d.Valkey, []string{s.connsKey(p.ID)}, args).AsInt64()
 	switch {
@@ -351,7 +354,7 @@ func (s *Server) lease(ctx context.Context, p store.Placement, id string) (time.
 	case n == 0:
 		return time.Time{}, errTooManyConns
 	}
-	return until, nil
+	return time.UnixMilli(n), nil
 }
 
 // awaitPrepared waits up to ssh.prepare_timeout for the placement's sshd, asking for it again
