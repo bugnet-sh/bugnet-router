@@ -169,6 +169,43 @@ func TestSessionURLShape(t *testing.T) {
 	eq(t, strings.Contains(p.GetSessionUrl(), p.GetPlacementId()), false)
 }
 
+func TestSessionURLOnEveryAnswer(t *testing.T) {
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	url := p.GetSessionUrl()
+	link(t, url)
+	check, err := e.checkExtend(t, h, morePkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, check.Msg.GetPlacement().GetSessionUrl(), url)
+	ext, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+		&routerv1.ExtendPlacementRequest{
+			Handle: h, OrderToken: e.extendToken(t, h, morePkg, morePrice),
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, ext.Msg.GetPlacement().GetSessionUrl(), url)
+	stream, err := e.client.WatchPlacement(timeout(t), connect.NewRequest(
+		&routerv1.WatchPlacementRequest{Handle: h}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	sent := 0
+	for stream.Receive() {
+		eq(t, stream.Msg().GetPlacement().GetSessionUrl(), url)
+		if sent++; sent == 1 {
+			e.stop(t, h)
+		}
+	}
+	eq(t, stream.Err(), nil)
+	if sent < 2 {
+		t.Fatalf("watch sent %d placements, want the ready one and the stop's", sent)
+	}
+}
+
 func TestSessionURLEmptyAfterExpiry(t *testing.T) {
 	e := newEnv(t, options{})
 	h, p := e.readyPlacement(t)
