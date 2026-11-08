@@ -20,12 +20,15 @@ type EgressServer struct {
 
 var _ routerv1connect.EgressServiceHandler = (*EgressServer)(nil)
 
-// ReportEgressUsage adds tunnel bytes to the egress budget and answers the bytes left
+// ReportEgressUsage adds tunnel bytes and unpaid x402 use and answers the egress bytes left
 func (g *EgressServer) ReportEgressUsage(
 	ctx context.Context, req *connect.Request[routerv1.ReportEgressUsageRequest],
 ) (*connect.Response[routerv1.ReportEgressUsageResponse], error) {
 	left, _, err := g.s.report(ctx, budget.Egress, budget.ByEdge, req.Msg.GetUsage())
 	if err != nil {
+		return nil, err
+	}
+	if err := g.s.reportX402(ctx, req.Msg.GetX402Unpaid()); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&routerv1.ReportEgressUsageResponse{BytesRemaining: left}), nil
