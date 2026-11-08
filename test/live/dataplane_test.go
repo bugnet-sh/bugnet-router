@@ -17,6 +17,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,10 +25,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/net/websocket"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
@@ -978,4 +981,890 @@ func TestGateRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, len(want), 0)
+}
+
+/* Preview rows, DP 16.2 P1 to P5, P8 and G3 and the previews' 16.3 rows */
+
+const (
+	// longPackage holds P2's 30-minute WebSocket with room to spare
+	longPackage = "dev-small-40m"
+	// minutePackage reaches its deadline while P8 watches
+	minutePackage = "dev-small-1m"
+	// appPort is where the row app listens, and listingPort python's own file server
+	appPort     = 8001
+	listingPort = 8000
+	// closeWithin is how fast DP 16.2 P8 wants a live WebSocket closed
+	closeWithin = time.Second
+)
+
+func init() {
+	dataplaneRows = append(dataplaneRows,
+		row{id: "P1", run: rowP1},
+		row{id: "P2", run: rowP2},
+		row{id: "P3", run: rowP3},
+		row{id: "P4", run: rowP4},
+		row{id: "P5", run: rowP5},
+		row{id: "P8", run: rowP8},
+		row{id: "G3", run: rowG3},
+		row{id: "E2B4", providers: []string{"e2b"}, run: rowE2B4},
+		row{id: "E2B6", providers: []string{"e2b"}, run: rowE2B6},
+		row{id: "E2B7", providers: []string{"e2b"}, run: rowE2B7},
+		row{id: "E2B8", providers: []string{"e2b"}, run: rowE2B8},
+		row{id: "BOXD3", providers: []string{"boxd"}, run: rowBoxd3},
+		row{id: "KOYEB2", providers: []string{"koyeb"}, run: rowKoyeb2},
+		row{id: "KOYEB3", providers: []string{"koyeb"}, run: rowKoyeb3},
+		row{id: "BOAT3", providers: []string{"boat"}, run: rowBoat3},
+		row{id: "BOAT4", providers: []string{"boat"}, run: rowBoat4},
+	)
+}
+
+// rowP1 serves python's file listing on 8000 by the header token, and the app sees its Host
+func rowP1(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	s.sh(t, h, `mkdir -p /tmp/bugnet-p1 && echo p1 > /tmp/bugnet-p1/bugnet-p1.txt && `+
+		background(`python3 -m http.server `+strconv.Itoa(listingPort)+
+			` --bind 127.0.0.1 --directory /tmp/bugnet-p1`, "p1"))
+	s.waitPort(t, h, listingPort)
+	pv := s.preview(t, h, listingPort)
+	res, body := s.previewGet(t, pv, "/", headerToken, pv.token)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, "Directory listing") ||
+		!strings.Contains(body, "bugnet-p1.txt") {
+		t.Fatalf("the listing through the preview answered %d:\n%.400s", res.StatusCode, body)
+	}
+	app := s.app(t, h)
+	seen := s.appHeaders(t, app)
+	eq(t, seen["host"], app.host)
+	t.Logf("P1 on %s: the app saw Host %s and X-Forwarded-For %q", s.provider, seen["host"],
+		seen["x-forwarded-for"])
+}
+
+// rowP2 holds a WebSocket open for 30 minutes, echoing every 30 s
+func rowP2(t *testing.T, s *stack) {
+	h := s.sandbox(t, longPackage)
+	pv := s.app(t, h)
+	w := s.previewWS(t, pv, "/ws")
+	start := time.Now()
+	for i := 0; time.Since(start) < 30*time.Minute; i++ {
+		if err := w.echo(fmt.Sprintf("p2 %d", i)); err != nil {
+			t.Fatalf("the WebSocket stopped echoing after %s: %v", time.Since(start).Round(
+				time.Second), err)
+		}
+		time.Sleep(30 * time.Second)
+	}
+	if err := w.echo("p2 end"); err != nil {
+		t.Fatalf("the WebSocket stopped echoing at 30 minutes: %v", err)
+	}
+}
+
+// rowP3 runs a 3-minute SSE stream and a 3-minute long poll at once and records any cut
+func rowP3(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	type result struct {
+		what string
+		took time.Duration
+		err  error
+	}
+	got := make(chan result, 2)
+	go func() {
+		start := time.Now()
+		events, err := s.sse(t, pv, "/sse?secs=180")
+		if err == nil && events < 180 {
+			err = fmt.Errorf("%d of 180 events", events)
+		}
+		got <- result{"SSE", time.Since(start), err}
+	}()
+	go func() {
+		start := time.Now()
+		res, body, err := s.previewTry(t, pv, "/poll?secs=180", headerToken, pv.token)
+		if err == nil && (res.StatusCode != http.StatusOK || body != "done") {
+			err = fmt.Errorf("answered %d %q", res.StatusCode, body)
+		}
+		got <- result{"long poll", time.Since(start), err}
+	}()
+	for range 2 {
+		r := <-got
+		if r.err != nil {
+			t.Logf("P3 on %s: the %s was cut after %s: %v", s.provider, r.what,
+				r.took.Round(time.Second), r.err)
+			continue
+		}
+		t.Logf("P3 on %s: the %s ran its 3 minutes uncut (%s)", s.provider, r.what,
+			r.took.Round(time.Second))
+	}
+}
+
+// rowP4 downloads 50 MiB through the preview, which the 5 MiB/s pace holds to about 10 s
+func rowP4(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	start := time.Now()
+	res, n := s.previewDrain(t, pv, "/big?n="+strconv.Itoa(50*mib))
+	took := time.Since(start)
+	eq(t, res.StatusCode, http.StatusOK)
+	eq(t, n, int64(50*mib))
+	t.Logf("P4 on %s: 50 MiB in %s, %.1f MiB/s", s.provider, took.Round(time.Millisecond),
+		50/took.Seconds())
+	if took < 8*time.Second {
+		t.Fatalf("50 MiB took %s, faster than the 5 MiB/s pace allows", took)
+	}
+}
+
+// p5Version is the Vite the row runs, the last before host and WebSocket token checks
+const p5Version = "vite@5.4.11"
+
+// rowP5 loads a Vite page of 300 modules through the preview, then sees HMR after an edit
+func rowP5(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	if out := strings.TrimSpace(s.sh(t, h, `command -v npx || true`)); out == "" {
+		t.Skipf("P5 needs node and npx in the %s sandbox, and found none", s.provider)
+	}
+	s.sh(t, h, viteProject(s.f.Names.PreviewDomain)+` && cd /tmp/bugnet-p5 && `+
+		background(`npx --yes `+p5Version+` --host 127.0.0.1 --port 5173 --strictPort`, "p5"))
+	s.waitPortFor(t, h, 5173, 3*time.Minute)
+	pv := s.preview(t, h, 5173)
+	res, body := s.previewGet(t, pv, "/", headerToken, pv.token)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, "/@vite/client") {
+		t.Fatalf("the Vite page answered %d:\n%.400s", res.StatusCode, body)
+	}
+	start := time.Now()
+	codes := map[int]int{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := range 300 {
+		wg.Go(func() {
+			res, _, err := s.previewTry(t, pv, fmt.Sprintf("/src/m%d.js", i), headerToken,
+				pv.token)
+			code := 0
+			if err == nil {
+				code = res.StatusCode
+			}
+			mu.Lock()
+			codes[code]++
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	t.Logf("P5 on %s: 300 modules in %s: %v", s.provider,
+		time.Since(start).Round(time.Millisecond), codes)
+	eq(t, codes[http.StatusOK], 300)
+
+	ws := s.hmr(t, pv)
+	defer func() { _ = ws.Close() }()
+	s.sh(t, h, `echo 'export const v0 = "edited"' > /tmp/bugnet-p5/src/m0.js`)
+	_ = ws.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for {
+		var msg string
+		if err := websocket.Message.Receive(ws, &msg); err != nil {
+			t.Fatalf("no HMR message after the edit: %v", err)
+		}
+		if strings.Contains(msg, `"update"`) || strings.Contains(msg, `"full-reload"`) {
+			t.Logf("P5 on %s: HMR answered the edit with %.120s", s.provider, msg)
+			return
+		}
+	}
+}
+
+// viteProject writes a Vite project whose page imports 300 modules into /tmp/bugnet-p5
+func viteProject(previewDomain string) string {
+	var b strings.Builder
+	b.WriteString(`mkdir -p /tmp/bugnet-p5/src && cd /tmp/bugnet-p5 && ` +
+		`printf '{"name":"p5","private":true,"type":"module"}' > package.json && ` +
+		`printf '<!doctype html><script type="module" src="/src/main.js"></script>' ` +
+		`> index.html && `)
+	fmt.Fprintf(&b, `printf 'export default {server:{allowedHosts:[".%s"],hmr:{clientPort:443}}}' `+
+		`> vite.config.js && `, previewDomain)
+	b.WriteString(`i=0; : > src/main.js; while [ $i -lt 300 ]; do ` +
+		`echo "export const v$i = $i" > src/m$i.js; ` +
+		`echo "import { v$i } from './m$i.js'; console.log(v$i)" >> src/main.js; ` +
+		`i=$((i+1)); done`)
+	return b.String()
+}
+
+// rowP8 closes a live WebSocket within 1 s of RevokePreview, StopPlacement and the deadline
+func rowP8(t *testing.T, s *stack) {
+	t.Run("revoke", func(t *testing.T) {
+		h := s.sandbox(t, xferPackage)
+		pv := s.app(t, h)
+		w := s.previewWS(t, pv, "/ws")
+		s.dev(t, "revoke-preview", pv.id, "--reason", "live P8", "--actor", "live-test")
+		w.closesWithin(t, closeWithin)
+		res, _ := s.previewGet(t, pv, "/", headerToken, pv.token)
+		eq(t, res.StatusCode, http.StatusGone)
+	})
+	t.Run("stop", func(t *testing.T) {
+		h := s.sandbox(t, xferPackage)
+		pv := s.app(t, h)
+		w := s.previewWS(t, pv, "/ws")
+		s.dev(t, "stop", "--handle", h)
+		w.closesWithin(t, closeWithin)
+	})
+	t.Run("deadline", func(t *testing.T) {
+		h := s.sandbox(t, minutePackage)
+		pv := s.app(t, h)
+		w := s.previewWS(t, pv, "/ws")
+		wait := time.Until(pv.expires)
+		if wait <= 0 {
+			t.Fatal("the one-minute package ended before its preview opened")
+		}
+		w.closesWithin(t, wait+closeWithin)
+		t.Logf("P8 on %s: closed %s after the deadline", s.provider,
+			time.Since(pv.expires).Round(time.Millisecond))
+	})
+}
+
+// rowG3 kills the gate from user code, then waits for a repair to heal the preview
+func rowG3(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	killGate := asRoot + `for p in $(pgrep -f 'bugnet-run gate'); do $S kill "$p"; done`
+	s.sh(t, h, killGate)
+	killed := time.Now()
+	saw502 := false
+	for time.Since(killed) < 90*time.Second {
+		res, body, err := s.previewTry(t, pv, "/", headerToken, pv.token)
+		switch {
+		case err != nil:
+		case res.StatusCode == http.StatusOK && body == "app /":
+			if !saw502 {
+				t.Logf("G3 on %s: the gate was back before any request failed (%s)",
+					s.provider, time.Since(killed).Round(time.Millisecond))
+			}
+			t.Logf("G3 on %s: healed %s after the kill", s.provider,
+				time.Since(killed).Round(time.Second))
+			return
+		case res.StatusCode == http.StatusBadGateway:
+			if !strings.Contains(body, "preview service stopped") {
+				t.Fatalf("the 502 is not the edge's page:\n%.400s", body)
+			}
+			saw502 = true
+		default:
+			t.Logf("G3 on %s: %d while the gate was down", s.provider, res.StatusCode)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("the preview did not heal within 90 s of killing the gate")
+}
+
+// rowE2B4 shows the app never receives E2B's traffic token or any Bugnet header
+func rowE2B4(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	seen := s.appHeaders(t, pv)
+	for name := range seen {
+		if strings.HasPrefix(name, "e2b-") || strings.HasPrefix(name, "bugnet-") ||
+			name == "x-routing-key" {
+			t.Fatalf("the app received %s", name)
+		}
+	}
+	if strings.Contains(seen["cookie"], "__Host-bnp") {
+		t.Fatal("the app received the preview cookie")
+	}
+}
+
+// rowE2B6 times 200 MiB from the app straight through E2B's route, the provider's own speed
+func rowE2B6(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	s.app(t, h)
+	g := s.gated(t, h)
+	start := time.Now()
+	n := g.drain(t, "/big?n="+strconv.Itoa(200*mib), appPort)
+	took := time.Since(start)
+	eq(t, n, int64(200*mib))
+	t.Logf("E2B6: 200 MiB straight through E2B's route in %s, %.1f MiB/s",
+		took.Round(time.Millisecond), 200/took.Seconds())
+}
+
+// rowE2B7 stops the gate and checks the visitor sees only the edge's 502 page, never E2B's
+func rowE2B7(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	s.sh(t, h, asRoot+`for p in $(pgrep -f 'bugnet-run gate'); do $S kill -STOP "$p"; `+
+		`$S kill "$p"; $S kill -CONT "$p"; done`)
+	for range 5 {
+		res, body := s.previewGet(t, pv, "/", headerToken, pv.token)
+		if res.StatusCode == http.StatusOK {
+			t.Log("E2B7: the gate answered again before E2B's own answer could be seen")
+			return
+		}
+		lower := strings.ToLower(body)
+		if res.StatusCode != http.StatusBadGateway || strings.Contains(lower, "e2b") ||
+			!strings.Contains(body, "preview service stopped") {
+			t.Fatalf("the visitor saw %d:\n%.400s", res.StatusCode, body)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// rowE2B8 sends 1,000 requests in a minute through one preview and finds no 429 from E2B
+func rowE2B8(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	codes := s.burst(t, 1000, time.Minute, func() (int, error) {
+		res, _, err := s.previewTry(t, pv, "/", headerToken, pv.token)
+		if err != nil {
+			return 0, err
+		}
+		return res.StatusCode, nil
+	})
+	t.Logf("E2B8: 1,000 requests in a minute answered %v", codes)
+	if codes[http.StatusTooManyRequests] > 0 {
+		t.Fatalf("%d of 1,000 requests drew a 429", codes[http.StatusTooManyRequests])
+	}
+}
+
+// rowBoxd3 records the Host and X-Forwarded-For the app sees and the gate's listening sockets
+func rowBoxd3(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	seen := s.appHeaders(t, pv)
+	eq(t, seen["host"], pv.host)
+	listen := s.sh(t, h, `ss -ltn 2>/dev/null | grep ':29417' || true`)
+	t.Logf("BOXD3: the app saw Host %s and X-Forwarded-For %q; the gate listens on:\n%s",
+		seen["host"], seen["x-forwarded-for"], listen)
+}
+
+// rowKoyeb2 holds a WebSocket through Koyeb's / route, the path SSH needs too
+func rowKoyeb2(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	w := s.previewWS(t, pv, "/ws")
+	for i := range 3 {
+		if err := w.echo(fmt.Sprintf("koyeb %d", i)); err != nil {
+			t.Fatalf("the WebSocket through Koyeb's route: %v; Koyeb stays out of "+
+				"previews.providers and ssh.providers", err)
+		}
+	}
+}
+
+// rowKoyeb3 records where Koyeb cuts SSE, and checks its CDN never serves the gate's answers
+func rowKoyeb3(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	pv := s.app(t, h)
+	start := time.Now()
+	events, err := s.sse(t, pv, "/sse?secs=150")
+	t.Logf("KOYEB3: SSE gave %d events in %s, %v", events,
+		time.Since(start).Round(time.Second), err)
+	g := s.gated(t, h)
+	var second http.Header
+	for range 2 {
+		res, _ := g.get(t, "/static.css", map[string]string{
+			"Bugnet-Gate": g.key, "Bugnet-Port": strconv.Itoa(appPort),
+		})
+		eq(t, res.StatusCode, http.StatusOK)
+		second = res.Header
+	}
+	t.Logf("KOYEB3: the second fetch had Age %q and Cf-Cache-Status %q", second.Get("Age"),
+		second.Get("Cf-Cache-Status"))
+	if second.Get("Cf-Cache-Status") == "HIT" {
+		t.Fatal("Koyeb's CDN served a gate answer from its cache")
+	}
+}
+
+// rowBoat3 keeps _port_auth from the app and the visitor, and times a WebSocket on on.boat.dev
+func rowBoat3(t *testing.T, s *stack) {
+	h := s.sandbox(t, bigPackage)
+	pv := s.app(t, h)
+	seen := s.appHeaders(t, pv)
+	if strings.Contains(seen["cookie"], "_port_auth") {
+		t.Fatal("the app received _port_auth")
+	}
+	for _, path := range []string{"/", "/headers", "/static.css"} {
+		res, _ := s.previewGet(t, pv, path, headerToken, pv.token)
+		for _, c := range res.Header.Values("Set-Cookie") {
+			if strings.Contains(c, "_port_auth") {
+				t.Fatalf("a _port_auth refresh reached the visitor on %s", path)
+			}
+		}
+	}
+	w := s.previewWS(t, pv, "/ws")
+	start := time.Now()
+	for time.Since(start) < 20*time.Minute {
+		if err := w.echo("boat"); err != nil {
+			t.Logf("BOAT3: the WebSocket on on.boat.dev ended after %s: %v",
+				time.Since(start).Round(time.Second), err)
+			return
+		}
+		time.Sleep(30 * time.Second)
+	}
+	t.Log("BOAT3: the WebSocket on on.boat.dev lived 20 minutes")
+}
+
+// rowBoat4 sends 12,000 requests in a minute to Boat's route from this address, past its limit
+func rowBoat4(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	s.app(t, h)
+	g := s.gated(t, h)
+	codes := s.burst(t, 12000, time.Minute, func() (int, error) {
+		return g.status(t, "/", appPort)
+	})
+	t.Logf("BOAT4: 12,000 requests to on.boat.dev in a minute answered %v", codes)
+	if codes[http.StatusTooManyRequests] == 0 {
+		t.Log("BOAT4: no 429, so on.boat.dev is not under the 10,000 a minute limit and " +
+			"previews.boat_requests_per_minute may drop to 0")
+		return
+	}
+	t.Log("BOAT4: Boat answered 429, so previews.boat_requests_per_minute stays")
+}
+
+/* Preview helpers */
+
+// headerToken is the header that carries a preview token for programs
+const headerToken = "Bugnet-Token"
+
+// previewLink is one preview bugnet-dev made
+type previewLink struct {
+	id      string
+	host    string
+	token   string
+	expires time.Time
+}
+
+// preview makes the link of one port with bugnet-dev preview
+func (s *stack) preview(t *testing.T, h string, port int) previewLink {
+	t.Helper()
+	m := kv(s.dev(t, "preview", "--handle", h, "--port", strconv.Itoa(port)))
+	u, err := url.Parse(m["url"])
+	if err != nil || u.Host == "" {
+		t.Fatalf("live: bugnet-dev preview printed the keys %v", slices.Sorted(maps.Keys(m)))
+	}
+	pv := previewLink{id: m["preview_id"], host: u.Host, token: u.Query().Get("bugnet_token")}
+	if pv.expires, err = time.Parse(time.RFC3339Nano, m["expires_at"]); err != nil {
+		t.Fatalf("live: bugnet-dev preview printed expires_at %q", m["expires_at"])
+	}
+	if !strings.HasPrefix(pv.token, "bnp_") || pv.id == "" {
+		t.Fatal("live: bugnet-dev preview printed no token or id")
+	}
+	return pv
+}
+
+// rowApp is a small Python app with /headers, /big, /sse, /poll, /static.css and an echo socket
+const rowApp = `import http.server, json, socketserver, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def body(self, code, b, ctype="text/plain", extra=()):
+        b = b if isinstance(b, bytes) else b.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(b)))
+        for k, v in extra: self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        q = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.end_headers()
+            self.wfile.flush()
+            while True:
+                d = self.connection.recv(65536)
+                if not d: break
+                self.connection.sendall(d)
+            self.close_connection = True
+        elif path == "/headers":
+            self.body(200, json.dumps({k.lower(): v for k, v in self.headers.items()}),
+                "application/json")
+        elif path == "/big":
+            n = int(q.get("n", "0"))
+            self.send_response(200)
+            self.send_header("Content-Length", str(n))
+            self.end_headers()
+            chunk = bytes(65536)
+            while n > 0:
+                self.wfile.write(chunk[:min(n, 65536)])
+                n -= 65536
+        elif path == "/sse":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for i in range(int(q.get("secs", "180"))):
+                self.wfile.write(("data: %d\n\n" % i).encode())
+                self.wfile.flush()
+                time.sleep(1)
+            self.close_connection = True
+        elif path == "/poll":
+            time.sleep(int(q.get("secs", "180")))
+            self.body(200, "done")
+        elif path == "/static.css":
+            self.body(200, "body{color:red}", "text/css",
+                [("Cache-Control", "public, max-age=600")])
+        else:
+            self.body(200, "app " + path)
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+S(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+`
+
+// background starts command detached from the job, its output in /tmp/bugnet-<name>.log
+func background(command, name string) string {
+	return `setsid nohup sh -c '` + command + `' > /tmp/bugnet-` + name + `.log 2>&1 < /dev/null &`
+}
+
+// app starts the row app on appPort and answers its preview link
+func (s *stack) app(t *testing.T, h string) previewLink {
+	t.Helper()
+	s.sh(t, h, `command -v python3 >/dev/null || { echo "no python3"; exit 1; }; `+
+		`cat > /tmp/bugnet-app.py <<'BUGNET_APP'
+`+rowApp+`BUGNET_APP
+`+background("python3 /tmp/bugnet-app.py "+strconv.Itoa(appPort), "app"))
+	s.waitPort(t, h, appPort)
+	return s.preview(t, h, appPort)
+}
+
+func (s *stack) waitPort(t *testing.T, h string, port int) {
+	t.Helper()
+	s.waitPortFor(t, h, port, 30*time.Second)
+}
+
+// waitPortFor waits in the sandbox until something accepts on 127.0.0.1:port
+func (s *stack) waitPortFor(t *testing.T, h string, port int, wait time.Duration) {
+	t.Helper()
+	tries := int(wait / time.Second)
+	out := s.sh(t, h, fmt.Sprintf(`i=0; while [ $i -lt %d ]; do `+
+		`python3 -c 'import socket; socket.create_connection(("127.0.0.1", %d), 1)' `+
+		`2>/dev/null && { echo up; exit 0; }; i=$((i+1)); sleep 1; done; echo down`, tries, port))
+	if strings.TrimSpace(out) != "up" {
+		t.Fatalf("live: nothing listened on port %d in the sandbox within %s", port, wait)
+	}
+}
+
+// previewClient reaches the edge for the preview names, HTTP/2 offered
+func (s *stack) previewClient() *http.Client {
+	tr := &http.Transport{ForceAttemptHTTP2: true, MaxIdleConnsPerHost: 64}
+	if s.mode == "local" {
+		roots := x509.NewCertPool()
+		if pem, err := os.ReadFile(filepath.Join(s.dir, "tls", "fullchain.pem")); err == nil {
+			roots.AppendCertsFromPEM(pem)
+		}
+		tr.TLSClientConfig = &tls.Config{RootCAs: roots}
+		d := &net.Dialer{}
+		tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return d.DialContext(ctx, network, s.edgeAddr)
+		}
+	}
+	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+}
+
+// previewTry sends one GET through the edge and answers status, body and error
+func (s *stack) previewTry(t *testing.T, pv previewLink, path string, header ...string) (
+	*http.Response, string, error,
+) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		"https://"+pv.host+path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	s.previewOnce.Do(func() { s.previews = s.previewClient() })
+	res, err := s.previews.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = res.Body.Close() }()
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	return res, string(b), err
+}
+
+// previewGet is previewTry that fails the test on a transport error
+func (s *stack) previewGet(t *testing.T, pv previewLink, path string, header ...string) (
+	*http.Response, string,
+) {
+	t.Helper()
+	res, body, err := s.previewTry(t, pv, path, header...)
+	if err != nil {
+		t.Fatalf("live: GET %s through the preview: %v", path, err)
+	}
+	return res, body
+}
+
+// previewDrain reads a whole answer through the preview and counts its bytes
+func (s *stack) previewDrain(t *testing.T, pv previewLink, path string) (*http.Response, int64) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+pv.host+path,
+		nil)
+	req.Header.Set(headerToken, pv.token)
+	s.previewOnce.Do(func() { s.previews = s.previewClient() })
+	res, err := s.previews.Do(req)
+	if err != nil {
+		t.Fatalf("live: GET %s through the preview: %v", path, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	n, err := io.Copy(io.Discard, res.Body)
+	if err != nil {
+		t.Fatalf("live: reading %s through the preview after %d bytes: %v", path, n, err)
+	}
+	return res, n
+}
+
+// appHeaders reads the headers the row app received through the preview
+func (s *stack) appHeaders(t *testing.T, pv previewLink) map[string]string {
+	t.Helper()
+	res, body := s.previewGet(t, pv, "/headers", headerToken, pv.token)
+	eq(t, res.StatusCode, http.StatusOK)
+	seen := map[string]string{}
+	if err := json.Unmarshal([]byte(body), &seen); err != nil {
+		t.Fatalf("live: /headers answered %q", body)
+	}
+	return seen
+}
+
+// sse reads server-sent events through the preview until the stream ends
+func (s *stack) sse(t *testing.T, pv previewLink, path string) (int, error) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+pv.host+path,
+		nil)
+	req.Header.Set(headerToken, pv.token)
+	req.Header.Set("Accept", "text/event-stream")
+	s.previewOnce.Do(func() { s.previews = s.previewClient() })
+	res, err := s.previews.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("answered %d", res.StatusCode)
+	}
+	events := 0
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "data: ") {
+			events++
+		}
+	}
+	return events, sc.Err()
+}
+
+// liveWS is one WebSocket through the edge, raw bytes after the upgrade
+type liveWS struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
+// dialEdge opens TLS to the edge for host over HTTP/1.1
+func (s *stack) dialEdge(t *testing.T, host string) net.Conn {
+	t.Helper()
+	cfg := &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}}
+	addr := net.JoinHostPort(host, "443")
+	if s.mode == "local" {
+		roots := x509.NewCertPool()
+		if pem, err := os.ReadFile(filepath.Join(s.dir, "tls", "fullchain.pem")); err == nil {
+			roots.AppendCertsFromPEM(pem)
+		}
+		cfg.RootCAs, addr = roots, s.edgeAddr
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, cfg)
+	if err != nil {
+		t.Fatalf("live: TLS to the edge for %s: %v", host, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// previewWS upgrades path through the preview with the header token and checks the echo
+func (s *stack) previewWS(t *testing.T, pv previewLink, path string) *liveWS {
+	t.Helper()
+	conn := s.dialEdge(t, pv.host)
+	_, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\n"+
+		"Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n%s: %s\r\n\r\n",
+		path, pv.host, headerToken, pv.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	br := bufio.NewReader(conn)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("live: the upgrade through the preview: %v", err)
+	}
+	if res.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("live: the upgrade through the preview answered %d", res.StatusCode)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	w := &liveWS{conn: conn, br: br}
+	if err := w.echo("hello"); err != nil {
+		t.Fatalf("live: the first echo through the preview: %v", err)
+	}
+	return w
+}
+
+// echo sends msg and reads it back within 30 s
+func (w *liveWS) echo(msg string) error {
+	_ = w.conn.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() { _ = w.conn.SetDeadline(time.Time{}) }()
+	if _, err := io.WriteString(w.conn, msg); err != nil {
+		return err
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(w.br, got); err != nil {
+		return err
+	}
+	if string(got) != msg {
+		return fmt.Errorf("echoed %q for %q", got, msg)
+	}
+	return nil
+}
+
+// closesWithin fails the test unless the edge closes the socket within d
+func (w *liveWS) closesWithin(t *testing.T, d time.Duration) {
+	t.Helper()
+	start := time.Now()
+	_ = w.conn.SetReadDeadline(start.Add(d))
+	_, err := w.br.ReadByte()
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("the WebSocket was still open %s later", d)
+	}
+	if err == nil {
+		t.Fatal("the WebSocket sent a byte instead of closing")
+	}
+	t.Logf("the WebSocket closed in %s", time.Since(start).Round(time.Millisecond))
+}
+
+// hmr opens Vite's HMR socket through the preview, as the page's client does
+func (s *stack) hmr(t *testing.T, pv previewLink) *websocket.Conn {
+	t.Helper()
+	cfg, err := websocket.NewConfig("wss://"+pv.host+"/", "https://"+pv.host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Protocol = []string{"vite-hmr"}
+	cfg.Header = http.Header{headerToken: {pv.token}}
+	ws, err := websocket.NewClient(cfg, s.dialEdge(t, pv.host))
+	if err != nil {
+		t.Fatalf("live: Vite's HMR socket through the preview: %v", err)
+	}
+	return ws
+}
+
+// burst runs n calls spread over d from 32 workers and counts their answers
+func (s *stack) burst(t *testing.T, n int, d time.Duration, call func() (int, error)) map[int]int {
+	t.Helper()
+	codes := map[int]int{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	gap := d / time.Duration(n)
+	next := make(chan struct{})
+	for range 32 {
+		wg.Go(func() {
+			for range next {
+				code, err := call()
+				if err != nil {
+					code = 0
+				}
+				mu.Lock()
+				codes[code]++
+				mu.Unlock()
+			}
+		})
+	}
+	tick := time.NewTicker(gap)
+	for range n {
+		next <- struct{}{}
+		<-tick.C
+	}
+	tick.Stop()
+	close(next)
+	wg.Wait()
+	return codes
+}
+
+// drain reads an app path straight through the gate route and counts its bytes
+func (g gated) drain(t *testing.T, path string, port int) int64 {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, g.route.BaseURL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.credentials(req, port)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	n, err := io.Copy(io.Discard, res.Body)
+	if err != nil {
+		t.Fatalf("live: reading %s through the route after %d bytes: %v", path, n, err)
+	}
+	return n
+}
+
+// status asks an app path straight through the gate route and answers the status
+func (g gated) status(t *testing.T, path string, port int) (int, error) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, g.route.BaseURL+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	g.credentials(req, port)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+	return res.StatusCode, nil
+}
+
+// credentials adds the route's provider credentials, the gate key and the app's port
+func (g gated) credentials(req *http.Request, port int) {
+	for k, v := range g.route.Header {
+		req.Header.Set(k, v)
+	}
+	for k, v := range g.route.Cookies {
+		req.AddCookie(&http.Cookie{Name: k, Value: v})
+	}
+	req.Header.Set("Bugnet-Gate", g.key)
+	req.Header.Set("Bugnet-Port", strconv.Itoa(port))
+}
+
+func TestPreviewRowsAndTheirProviders(t *testing.T) {
+	want := map[string][]string{
+		"P1": nil, "P2": nil, "P3": nil, "P4": nil, "P5": nil, "P8": nil, "G3": nil,
+		"E2B4": {"e2b"}, "E2B6": {"e2b"}, "E2B7": {"e2b"}, "E2B8": {"e2b"},
+		"BOXD3": {"boxd"}, "KOYEB2": {"koyeb"}, "KOYEB3": {"koyeb"},
+		"BOAT3": {"boat"}, "BOAT4": {"boat"},
+	}
+	for _, r := range dataplaneRows {
+		if p, ok := want[r.id]; ok {
+			eq(t, r.providers, p)
+			eq(t, r.vps, false)
+			delete(want, r.id)
+		}
+	}
+	eq(t, len(want), 0)
+	c, err := catalog.Load(filepath.Join(repo(t), "config", "dev-packages.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	long, ok := c.Get(longPackage)
+	eq(t, ok, true)
+	eq(t, long.Minutes, 40)
+	minute, ok := c.Get(minutePackage)
+	eq(t, ok, true)
+	eq(t, minute.Minutes, 1)
+}
+
+func TestRowAppScripts(t *testing.T) {
+	eq(t, background("python3 a.py 1", "x"),
+		`setsid nohup sh -c 'python3 a.py 1' > /tmp/bugnet-x.log 2>&1 < /dev/null &`)
+	// The app goes in a quoted here-document, which only its own end line can close
+	eq(t, strings.Contains(rowApp, "BUGNET_APP"), false)
+	p := viteProject("preview.dev.bugnet.sh")
+	for _, want := range []string{`allowedHosts:[".preview.dev.bugnet.sh"]`, "src/m$i.js",
+		"-lt 300"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("the Vite project script lacks %q", want)
+		}
+	}
 }

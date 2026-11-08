@@ -160,6 +160,31 @@ as the router does, so they reach the gate the way the edges will.
 | BOAT1 | Boat only: health through `POST /host` with the runtime key |
 | BOAT2 | Boat only: raw TCP to the machine's own address on the gate port is refused or gets a 404 |
 
+The preview rows start a small Python app in the sandbox on port 8001 (`/headers`, `/big`,
+`/sse`, `/poll`, `/static.css` and a raw echo WebSocket), make its link with `bugnet-dev preview`
+and reach it through the stack's edge with the `Bugnet-Token` header, as an agent's fetch does.
+The stack lists its provider in `previews.providers`, so the rows can show it belongs there. A
+row that needs python3 or node and finds none says so.
+
+| Row | What it does |
+|---|---|
+| P1 | `python3 -m http.server 8000` lists its directory, and the app sees the preview's `Host` |
+| P2 | A WebSocket on `dev-small-40m` still echoes after 30 minutes |
+| P3 | SSE and a long poll of 3 minutes each, logging any cut and when |
+| P4 | 50 MiB in about 10 s at the 5 MiB/s pace, failing under 8 s |
+| P5 | Vite 5.4.11 with 300 modules loads, then an edit reaches the HMR socket. Skips without node |
+| P8 | `revoke-preview`, `stop` and the deadline of `dev-small-1m` each close a live WebSocket within 1 s |
+| G3 | Killing the gate gives the edge's 502 page, and a repair heals the preview within 90 s |
+| E2B4 | E2B only: the app gets no `e2b-*`, `Bugnet-*` or `x-routing-key` header and no preview cookie |
+| E2B6 | E2B only: logs 200 MiB straight through E2B's route, its own speed |
+| E2B7 | E2B only: with the gate gone the visitor sees only the edge's 502 page |
+| E2B8 | E2B only: 1,000 requests in a minute through one preview draw no 429 |
+| BOXD3 | boxd only: the app sees the preview's `Host`, logged with `X-Forwarded-For` and the gate's sockets |
+| KOYEB2 | Koyeb only: a WebSocket through the `/` route. A failure keeps Koyeb out of previews and SSH |
+| KOYEB3 | Koyeb only: logs where SSE is cut, and fails when Koyeb's CDN serves a gate answer from cache |
+| BOAT3 | Boat only: `_port_auth` reaches neither the app nor the visitor, and logs a WebSocket's life up to 20 minutes |
+| BOAT4 | Boat only: 12,000 requests in a minute straight at the route. No 429 lets `previews.boat_requests_per_minute` drop to 0 |
+
 `TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
 `/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
 `10.0.0.1:80` stay closed while `exec`, files and the gate route work. N2, on E2B only, removes
