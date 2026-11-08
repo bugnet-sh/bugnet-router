@@ -530,8 +530,6 @@ func (s *Server) home(p store.Placement) (provider.Provider, error) {
 
 // spend takes a token from the placement's, payer's and provider account's buckets, or from none
 func (s *Server) spend(ctx context.Context, p store.Placement) error {
-	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
-	defer cancel()
 	buckets := []ratelimit.Bucket{s.ops.Ops(p.ID)}
 	if p.Payer != "" {
 		buckets = append(buckets, wallets.OpsBucket(s.w, p.Payer))
@@ -539,6 +537,19 @@ func (s *Server) spend(ctx context.Context, p store.Placement) error {
 	if rate := s.d.ProviderOps[p.Provider]; rate > 0 {
 		buckets = append(buckets, wallets.AccountBucket(p.Provider, rate))
 	}
+	return s.take(ctx, buckets)
+}
+
+// spendPlacement takes a token from the placement's bucket alone, for a call a stranger holding
+// a transfer URL can make, so it never drains the payer's or the account's buckets
+func (s *Server) spendPlacement(ctx context.Context, p store.Placement) error {
+	return s.take(ctx, []ratelimit.Bucket{s.ops.Ops(p.ID)})
+}
+
+// take spends one token from every bucket or from none
+func (s *Server) take(ctx context.Context, buckets []ratelimit.Bucket) error {
+	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
+	defer cancel()
 	ok, wait, err := s.ops.TakeAll(tctx, buckets)
 	switch {
 	case err != nil && gaveUp(ctx):
