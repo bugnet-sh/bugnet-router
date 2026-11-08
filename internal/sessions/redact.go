@@ -369,11 +369,13 @@ func (st *Stream) skipKeyLines() bool {
 	for {
 		b := st.buf
 		i := bytes.IndexByte(b, '\n')
-		line := b
+		raw := b
 		if i >= 0 {
-			line = b[:i]
+			raw = b[:i]
 		}
-		line = bytes.TrimRight(line, " \t\r")
+		raw = bytes.TrimRight(raw, " \t\r")
+		// A key in YAML or a heredoc is indented
+		line := bytes.TrimLeft(raw, " \t")
 		kind := keyLine(line, i >= 0)
 		n := i + 1
 		switch {
@@ -386,7 +388,7 @@ func (st *Stream) skipKeyLines() bool {
 			n = len(b)
 		case kind == keyEnd:
 			// The END line's break stays, as it does after a whole block
-			n = len(line)
+			n = len(raw)
 			st.maybeKey = false
 		}
 		st.dropped += int64(n)

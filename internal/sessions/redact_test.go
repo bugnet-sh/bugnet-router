@@ -304,6 +304,35 @@ func TestStreamGapInsideAKeyShowsNoBody(t *testing.T) {
 	got += joined(st.Write([]byte(line("B") + line("C") + "BBB=\nok then\n")))
 	noBody(got)
 	eq(t, got, "[redacted private key]ok then\n")
+	// A block the gap found open stays dropped through its END, whatever its lines look like
+	st = NewRedactor().Stream(Stdout)
+	got = joined(st.Write([]byte(begin + strings.Repeat(line("F"), 300))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte("FF\nnot a body line\n" + end + "after\n")))
+	eq(t, got, "[redacted private key]\nafter\n")
+	// and its END right after the gap still ends it
+	st = NewRedactor().Stream(Stdout)
+	got = joined(st.Write([]byte(begin + strings.Repeat(line("F"), 300))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte(end + "after\n")))
+	eq(t, got, "[redacted private key]\nafter\n")
+}
+
+func TestStreamGapInsideAnIndentedKeyShowsNoBody(t *testing.T) {
+	line := func(c string) string { return "    " + strings.Repeat(c, 64) + "\n" }
+	const begin = "  tls.key: |\n    -----BEGIN RSA PRIVATE KEY-----\n"
+	const end = "    -----END RSA PRIVATE KEY-----  \n"
+	st := NewRedactor().Stream(Stdout)
+	st.Late()
+	got := joined(st.Write([]byte(line("Q") + "\t" + strings.Repeat("J", 40) + "==\n" + end)))
+	got += joined(st.Write([]byte("after text\n")))
+	eq(t, got, "  \nafter text\n")
+	st = NewRedactor().Stream(Stdout)
+	got = joined(st.Write([]byte(begin + line("Q") + line("J"))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte(line("Q") + line("J") + "    Proc-Type: 4,ENCRYPTED\n" +
+		"    QJQJ==\n" + end + "after text\n")))
+	eq(t, got, "  tls.key: |\n    [redacted private key]  \nafter text\n")
 }
 
 // chunks cuts s into frames of size bytes
