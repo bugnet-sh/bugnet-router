@@ -485,13 +485,13 @@ func TestRevokePreviewLogsRefusals(t *testing.T) {
 	out := logs.String()
 	eq(t, strings.Count(out, `level=INFO msg="api: preview revoke refused"`), 3)
 	for _, want := range []string{"actor=ops-unknown", "preview=aaaaaaaaaaaaaaaa",
-		"actor=ops-pasted", "preview=" + r.GetPreviewId()} {
+		"actor=ops-pasted", "preview_malformed=true", "preview=" + r.GetPreviewId()} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the log lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, r.GetToken()) {
-		t.Fatalf("the log holds a preview token:\n%s", out)
+	if strings.Contains(out, r.GetToken()) || strings.Contains(out, r.GetUrl()) {
+		t.Fatalf("the log holds a preview token or link:\n%s", out)
 	}
 }
 
