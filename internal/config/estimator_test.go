@@ -20,7 +20,7 @@ func TestEstimatorDefaults(t *testing.T) {
 		"https://huggingface.co"})
 	eq(t, []time.Duration{e.FetchBudget, e.BackgroundBudget, e.CacheTTL, e.RefTTL, e.NegativeTTL,
 		e.HistoryWindow, e.MaxEstimateAge},
-		[]time.Duration{1500 * time.Millisecond, 10 * time.Second, time.Hour, time.Minute,
+		[]time.Duration{5 * time.Second, 10 * time.Second, time.Hour, time.Minute,
 			5 * time.Minute, 2160 * time.Hour, time.Hour})
 	eq(t, []int{e.MaxBackground, e.MaxFiles, e.GithubConcurrency, e.MaxPerSecond, e.MaxBurst,
 		e.NewSourcesPerMinute, e.StoredPerMinute, e.DefaultContextTokens},
