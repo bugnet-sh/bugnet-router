@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -57,10 +58,16 @@ func (o *OperatorServer) BlockWallet(
 		}
 		until = &t
 	}
+	var evidence json.RawMessage
+	if m.GetReason() != "" {
+		if evidence, err = json.Marshal(map[string]string{"note": m.GetReason()}); err != nil {
+			return nil, s.status(err)
+		}
+	}
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
 		return s.wl.Block(ctx, tx, wallets.Block{
 			Payer: payer, Reason: wallets.ReasonOperator, Until: until, Actor: actor,
-			Note: m.GetReason(),
+			Evidence: evidence,
 		})
 	})
 	if err != nil {

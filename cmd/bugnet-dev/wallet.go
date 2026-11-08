@@ -72,7 +72,7 @@ func untilOf(raw string, now time.Time) (*timestamppb.Timestamp, error) {
 
 func (c *cli) walletBlock(args []string) error {
 	fs := newFlags("wallet block")
-	reason := fs.String("reason", "", "why, kept as the block event's reason")
+	reason := fs.String("reason", "", "why, kept as the block event's evidence")
 	until := fs.String("until", "", "an RFC 3339 time or a duration from now, none for ever")
 	stopLive := fs.Bool("stop-live", false, "end the wallet's live placements too")
 	actor := fs.String("actor", "", "who blocks, $USER when empty")

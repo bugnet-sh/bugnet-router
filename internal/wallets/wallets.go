@@ -49,9 +49,7 @@ type Block struct {
 	// Until is nil for a block an operator must lift
 	Until *time.Time
 	// Actor is router or operator:<name>
-	Actor string
-	// Note is free text kept as the event's reason when set, Reason otherwise
-	Note        string
+	Actor       string
 	PlacementID uuid.UUID
 	Provider    string
 	Evidence    json.RawMessage
@@ -123,7 +121,7 @@ func (w *Store) Block(ctx context.Context, tx pgx.Tx, b Block) error {
 		return err
 	}
 	now := w.now()
-	at, until := now, b.Until
+	at, until, reason, by := now, b.Until, b.Reason, b.Actor
 	cur, err := ts.Wallet(ctx, b.Payer, now)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -131,25 +129,22 @@ func (w *Store) Block(ctx context.Context, tx pgx.Tx, b Block) error {
 		return err
 	case cur.Blocked(now):
 		at = *cur.BlockedAt
+		// The block in force stays whole, the new one is only an event
 		if cur.BlockedUntil == nil || until != nil && cur.BlockedUntil.After(*until) {
-			until = cur.BlockedUntil
+			until, reason, by = cur.BlockedUntil, cur.BlockedReason, cur.BlockedBy
 		}
 	}
-	if err := ts.SetWalletBlock(ctx, b.Payer, at, until, b.Reason, b.Actor); err != nil {
+	if err := ts.SetWalletBlock(ctx, b.Payer, at, until, reason, by); err != nil {
 		return err
 	}
-	reason := b.Reason
-	if b.Note != "" {
-		reason = b.Note
-	}
 	err = ts.InsertWalletEvent(ctx, store.WalletEvent{
-		Payer: b.Payer, Kind: store.WalletBlock, Reason: reason, PlacementID: b.PlacementID,
+		Payer: b.Payer, Kind: store.WalletBlock, Reason: b.Reason, PlacementID: b.PlacementID,
 		Provider: b.Provider, Evidence: b.Evidence, Actor: b.Actor, CreatedAt: now,
 	})
 	if err != nil || !w.s.EmitEvents {
 		return err
 	}
-	ev := blocked{Payer: b.Payer, Until: until, Reason: b.Reason}
+	ev := blocked{Payer: b.Payer, Until: until, Reason: reason}
 	if b.PlacementID != uuid.Nil {
 		ev.PlacementID = &b.PlacementID
 	}

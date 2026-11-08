@@ -263,7 +263,7 @@ func TestCheckPayerChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.saga.Wait()
-	rows, state := e.rowCounts(t), e.valkeyState(t)
+	rows, contents, state := e.rowCounts(t), e.walletRows(t), e.valkeyState(t)
 	verdicts := map[routerv1.PayerVerdict]bool{}
 	for range 3 {
 		for _, payer := range []string{payerA, payerB, payerC, facilitator, ""} {
@@ -274,7 +274,24 @@ func TestCheckPayerChangesNothing(t *testing.T) {
 	}
 	eq(t, len(verdicts), 4)
 	eq(t, e.rowCounts(t), rows)
+	eq(t, e.walletRows(t), contents)
 	eq(t, e.valkeyState(t), state)
+}
+
+// walletRows hashes the contents of the tables CheckPayer reads, so an update shows too
+func (e *env) walletRows(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, table := range []string{"wallets", "wallet_events", "orders", "placements"} {
+		var sum string
+		err := e.pool.QueryRow(t.Context(), `select coalesce(md5(string_agg(r::text, ','
+			order by r::text)), '') from `+table+` r`).Scan(&sum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[table] = sum
+	}
+	return out
 }
 
 func TestPaymentsServiceRefusesOtherTokens(t *testing.T) {
@@ -336,8 +353,9 @@ func TestOperatorCallsWriteAuditRows(t *testing.T) {
 		rows = append(rows, ev.GetKind()+" "+ev.GetReason()+" "+ev.GetActor())
 	}
 	eq(t, rows, []string{
-		"unblock appeal granted operator:bob", "block phishing operator:ann",
+		"unblock appeal granted operator:bob", "block operator operator:ann",
 	})
+	eq(t, got.Msg.GetEvents()[1].GetEvidenceJson(), `{"note": "phishing"}`)
 
 	h := e.readyPaid(t, payerA)
 	got, err = op.GetWallet(ctx, connect.NewRequest(&routerv1.GetWalletRequest{Payer: payerA}))
@@ -424,8 +442,10 @@ func TestListWalletsPages(t *testing.T) {
 }
 
 func TestThreeOperationBucketsTogether(t *testing.T) {
+	// Slow buckets keep each key a second after a take, where a full one expires
 	e := newEnv(t, options{
-		wallets: payerWallets(nil), providerOps: map[string]int{"local": 1},
+		wallets:     payerWallets(func(w *config.Wallets) { w.OpsPerSecond, w.OpsBurst = 1, 2 }),
+		providerOps: map[string]int{"local": 1}, opsPerSecond: 1, opsBurst: 2,
 	})
 	h := e.readyPaid(t, payerA)
 	id := e.get(t, h, 0, 0).GetPlacementId()

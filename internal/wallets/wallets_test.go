@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +97,7 @@ func TestBlockAndUnblock(t *testing.T) {
 	until := e.now.Add(time.Hour)
 	err := e.block(t, wallets.Block{
 		Payer: payer, Reason: wallets.ReasonOperator, Until: &until, Actor: "operator:ann",
-		Note: "spam", Evidence: json.RawMessage(`{"ticket":7}`),
+		Evidence: json.RawMessage(`{"ticket":7}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +129,7 @@ func TestBlockAndUnblock(t *testing.T) {
 	eq(t, []string{evs[0].Kind, evs[0].Reason, evs[0].Actor},
 		[]string{"unblock", "paid back", "operator:bob"})
 	eq(t, []string{evs[1].Kind, evs[1].Reason, evs[1].Actor},
-		[]string{"block", "spam", "operator:ann"})
+		[]string{"block", "operator", "operator:ann"})
 	eq(t, string(evs[1].Evidence), `{"ticket": 7}`)
 	out := e.outbox(t)
 	eq(t, len(out), 2)
@@ -141,19 +142,45 @@ func TestBlockAndUnblock(t *testing.T) {
 }
 
 func TestBlockNeverShortens(t *testing.T) {
-	e := newEnv(t, false)
+	e := newEnv(t, true)
 	err := e.block(t, wallets.Block{Payer: payer, Reason: "abuse", Actor: "router"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	hour := e.now.Add(time.Hour)
+	e.now = e.now.Add(time.Minute)
 	if err := e.block(t, wallets.Block{
+		Payer: payer, Reason: "operator", Until: &hour, Actor: "operator:ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := e.wallet(t)
+	eq(t, w.BlockedUntil == nil, true)
+	eq(t, []string{w.BlockedReason, w.BlockedBy}, []string{"abuse", "router"})
+	evs, err := e.st.WalletEvents(t.Context(), payer, 50)
+	eq(t, err, nil)
+	eq(t, []string{evs[0].Kind, evs[0].Reason, evs[0].Actor},
+		[]string{"block", "operator", "operator:ann"})
+	out := e.outbox(t)
+	eq(t, len(out), 2)
+	eq(t, strings.Contains(out[1], `"reason": "abuse"`), true)
+	eq(t, strings.Contains(out[1], `"until": null`), true)
+
+	// A block over a shorter one replaces it whole
+	e2 := newEnv(t, false)
+	if err := e2.block(t, wallets.Block{
 		Payer: payer, Reason: "refusals", Until: &hour, Actor: "router",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	eq(t, e.wallet(t).BlockedUntil == nil, true)
-	eq(t, len(e.outbox(t)), 0)
+	if err := e2.block(t, wallets.Block{
+		Payer: payer, Reason: "operator", Actor: "operator:ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w = e2.wallet(t)
+	eq(t, w.BlockedUntil == nil, true)
+	eq(t, []string{w.BlockedReason, w.BlockedBy}, []string{"operator", "operator:ann"})
 }
 
 func TestFacilitatorBlockRefused(t *testing.T) {
