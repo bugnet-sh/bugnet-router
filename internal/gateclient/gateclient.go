@@ -38,6 +38,9 @@ const maxBody = 4 << 10
 // ErrNotGate means the answer did not come from the gate, as a provider's own 404 or 502
 var ErrNotGate = errors.New("gateclient: the answer did not come from the gate")
 
+// ErrKeyRefused means the gate answered its health with 404, which it gives a wrong key
+var ErrKeyRefused = errors.New("gateclient: the gate refused the key")
+
 var client = &http.Client{
 	Transport: http.DefaultTransport.(*http.Transport).Clone(),
 	CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -51,10 +54,13 @@ func Health(ctx context.Context, r provider.GateRoute, gateKey string) error {
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNoContent {
-		return fmt.Errorf("gateclient: the gate's health answered %d", status)
+	switch status {
+	case http.StatusNoContent:
+		return nil
+	case http.StatusNotFound:
+		return ErrKeyRefused
 	}
-	return nil
+	return fmt.Errorf("gateclient: the gate's health answered %d", status)
 }
 
 // PortListening asks the gate whether something inside the sandbox accepts on port
@@ -71,6 +77,10 @@ func PortListening(ctx context.Context, r provider.GateRoute, gateKey string,
 	case http.StatusNoContent:
 		return true, nil
 	case http.StatusNotFound:
+		// The gate gives a wrong key the same bare 404, so a closed port needs a healthy gate
+		if err := Health(ctx, r, gateKey); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	return false, fmt.Errorf("gateclient: the gate's port check answered %d", status)

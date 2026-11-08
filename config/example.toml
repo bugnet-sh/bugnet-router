@@ -118,7 +118,7 @@ blocked_hosts = []                     # refused at enable and dropped from Reso
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
-    "169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"]   # E2B puts IPv4 in denyOut, fe80 stays open
+    "169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"]   # E2B sends IPv4 to denyOut
 pool_list = "/etc/bugnet/mining-pools.txt"   # CIDRs, one per line, at most 10000, read at start
 
 [local]

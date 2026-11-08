@@ -72,8 +72,8 @@ func TestHealthSendsTheKeyAndTheProviderCredentials(t *testing.T) {
 
 func TestHealthRefusesAWrongKeyAndAnswersNotFromTheGate(t *testing.T) {
 	r := serve(t, &fakeGate{})
-	if err := gateclient.Health(t.Context(), r, "wrong"); err == nil ||
-		strings.Contains(err.Error(), "wrong") {
+	if err := gateclient.Health(t.Context(), r, "wrong"); !errors.Is(err,
+		gateclient.ErrKeyRefused) || strings.Contains(err.Error(), "wrong") {
 		t.Fatalf("a wrong key: %v", err)
 	}
 	proxy := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -135,6 +135,13 @@ func TestPortListening(t *testing.T) {
 	if _, err := gateclient.PortListening(t.Context(), proxy, key, 8000); !errors.Is(err,
 		gateclient.ErrNotGate) {
 		t.Fatalf("a provider's own 404: %v", err)
+	}
+	// The gate answers a wrong key with the same 404 as a closed port, so health tells them apart
+	for _, port := range []int{8000, 3000} {
+		got, err := gateclient.PortListening(t.Context(), r, "wrong", port)
+		if got || !errors.Is(err, gateclient.ErrKeyRefused) {
+			t.Fatalf("port %d with a wrong key: %v, %v", port, got, err)
+		}
 	}
 }
 
