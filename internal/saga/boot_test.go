@@ -474,8 +474,9 @@ func TestHardenSpecPerProvider(t *testing.T) {
 		}
 		return spec
 	}
-	// E2B blocks the IPv4 ranges at create and leaves IPv6 link-local to envd
-	eq(t, hardenSpec(t, "e2b").DenyRanges, []string{"fc00::/7", "fd00:ec2::254/128"})
+	// E2B blocks the IPv4 ranges at create but MMDS, and leaves IPv6 link-local to envd
+	eq(t, hardenSpec(t, "e2b").DenyRanges,
+		[]string{"fc00::/7", "169.254.169.254/32", "fd00:ec2::254/128"})
 	eq(t, hardenSpec(t, "e2b").MailPorts, []int{25, 465, 587})
 	eq(t, hardenSpec(t, "e2b").Pools, []string{"203.0.113.0/24"})
 	for _, p := range []string{"boxd", "koyeb", "boat"} {
@@ -484,6 +485,21 @@ func TestHardenSpecPerProvider(t *testing.T) {
 	}
 	if _, ok := saga.HardenSpecFor(b, "local"); ok {
 		t.Fatal("local runs harden")
+	}
+	for _, c := range []struct {
+		deny []string
+		want []string
+	}{
+		{[]string{"10.0.0.0/8", "fc00::/7"}, []string{"fc00::/7"}},
+		{[]string{"169.254.169.254/32"}, []string{"169.254.169.254/32"}},
+		{[]string{"169.254.0.0/16", "169.254.169.254/32", "0.0.0.0/0"},
+			[]string{"169.254.169.254/32"}},
+		{[]string{"169.254.169.0/31"}, []string{}},
+	} {
+		e2b := b
+		e2b.DenyRanges = c.deny
+		spec, _ := saga.HardenSpecFor(e2b, "e2b")
+		eq(t, spec.DenyRanges, c.want)
 	}
 	b.Harden = map[string]config.HardenRule{"boat": {Required: true,
 		Allow: []string{"100.64.0.1/32"}}}

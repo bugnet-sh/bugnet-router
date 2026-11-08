@@ -194,15 +194,23 @@ func (b BootSettings) hardenSpecFor(name string) (hardenSpec, config.HardenRule,
 // linkLocal6 stays open inside an E2B VM, since blocking it there could cut envd
 var linkLocal6 = netip.MustParsePrefix("fe80::/10")
 
+// mmds is Firecracker's metadata service, answered in the VM before E2B's denyOut sees it
+var mmds = netip.MustParsePrefix("169.254.169.254/32")
+
 // insideRanges are the ranges an E2B create leaves open, so harden blocks them in the VM
 func insideRanges(ranges []string) []string {
 	out := []string{}
 	for _, r := range ranges {
 		p, err := netip.ParsePrefix(r)
-		if err != nil || p.Addr().Is4() || p.Overlaps(linkLocal6) {
-			continue
+		switch {
+		case err != nil:
+		case p.Addr().Is4():
+			if p.Contains(mmds.Addr()) && !slices.Contains(out, mmds.String()) {
+				out = append(out, mmds.String())
+			}
+		case !p.Overlaps(linkLocal6):
+			out = append(out, r)
 		}
-		out = append(out, r)
 	}
 	return out
 }
