@@ -1607,3 +1607,33 @@ func TestOrderByID(t *testing.T) {
 		t.Fatalf("an unknown order gave %v, want ErrNotFound", err)
 	}
 }
+
+func TestSetPlacementGate(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o-gate")
+	at := time.Date(2026, 11, 8, 9, 30, 0, 0, time.FixedZone("x", 3600))
+	if err := s.SetPlacementGate(ctx, p.ID, &at, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PlacementByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GateReadyAt == nil || !got.GateReadyAt.Equal(at) || got.EgressCAVersion != 2 {
+		t.Fatalf("gate ready at %v and CA version %d", got.GateReadyAt, got.EgressCAVersion)
+	}
+	if err := s.SetPlacementGate(ctx, p.ID, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	var ready *time.Time
+	var ca *int
+	err = pool.QueryRow(ctx, `select gate_ready_at, egress_ca_version from placements
+		where id = $1`, p.ID).Scan(&ready, &ca)
+	if err != nil || ready != nil || ca != nil {
+		t.Fatalf("after nil and 0: %v, %v, %v, want both null", ready, ca, err)
+	}
+	if err := s.SetPlacementGate(ctx, uuid.New(), nil, 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an unknown placement: %v", err)
+	}
+}

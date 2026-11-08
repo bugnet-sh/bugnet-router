@@ -388,6 +388,26 @@ func (s *Store) MarkPlacementReady(
 		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing)
 }
 
+// SetPlacementGate records the gate's ready time and the CA version in one write, nil and 0 as null
+func (s *Store) SetPlacementGate(
+	ctx context.Context, id uuid.UUID, at *time.Time, caVersion int,
+) error {
+	var ca *int
+	if caVersion > 0 {
+		ca = &caVersion
+	}
+	tag, err := s.q.Exec(ctx, `
+		update placements set gate_ready_at = $2, egress_ca_version = $3 where id = $1`,
+		id, utcPtr(at), ca)
+	if err != nil {
+		return fmt.Errorf("set gate of %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set gate of %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // MarkPlacementFailed moves a placing placement to failed, ending it now
 func (s *Store) MarkPlacementFailed(
 	ctx context.Context, id uuid.UUID, reason string, refundable bool,
