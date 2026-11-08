@@ -115,6 +115,20 @@ func (s *Store) JobByID(ctx context.Context, id string) (Job, error) {
 	return j, err
 }
 
+// PlacementJobIDs returns the ids of every job the placement ran, whatever its record holds
+func (s *Store) PlacementJobIDs(ctx context.Context, placement uuid.UUID) ([]string, error) {
+	rows, err := s.q.Query(ctx, `select id from jobs where placement_id = $1 order by id`,
+		placement)
+	if err != nil {
+		return nil, fmt.Errorf("placement job ids: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("placement job ids: %w", err)
+	}
+	return ids, nil
+}
+
 // JobOutcome is how a job ended, a lost job keeping no exit code
 type JobOutcome struct {
 	State                    string

@@ -75,14 +75,22 @@ func (w *Worker) SessionDiskPercent(ctx context.Context) (int64, error) {
 
 // copySession copies an ended placement's job output into its record, then removes the streams
 func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
+	// The jobs table lists every stream, a job started after Delete now or a record already
+	// expired included, since the record's own rows may be gone (F8)
+	streamIDs, err := w.store.PlacementJobIDs(ctx, id)
+	if err != nil {
+		return err
+	}
 	rec, err := w.store.SessionRecordByPlacement(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
+		w.unlink(ctx, id, streamIDs)
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	if rec.CopyState != store.CopyPending {
+		w.unlink(ctx, id, streamIDs)
 		return nil
 	}
 	p, err := w.store.PlacementByID(ctx, id)
@@ -101,9 +109,9 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 	switch {
 	case rec.ClosedAt != nil && !rec.Held(now):
 		// The page was deleted, so nothing is kept and the output only goes
-		return w.copied(ctx, rec, jobs, store.CopyExpired)
+		return w.copied(ctx, rec, streamIDs, store.CopyExpired)
 	case ended != nil && now.After(ended.Add(copyWindow)):
-		return w.copied(ctx, rec, jobs, store.CopyExpired)
+		return w.copied(ctx, rec, streamIDs, store.CopyExpired)
 	}
 	percent, err := w.SessionDiskPercent(ctx)
 	if err != nil {
@@ -152,25 +160,26 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 	case missing > 0 || full:
 		state = store.CopyPartial
 	}
-	return w.copied(ctx, rec, jobs, state)
+	return w.copied(ctx, rec, streamIDs, state)
 }
 
 // copied records how the copy ended, then removes the job streams (F8)
 func (w *Worker) copied(
-	ctx context.Context, rec store.SessionRecord, jobs []store.SessionJob, state string,
+	ctx context.Context, rec store.SessionRecord, streamIDs []string, state string,
 ) error {
 	if err := w.store.SetSessionCopyState(ctx, rec.ID, state); err != nil {
 		return err
 	}
-	ids := make([]string, len(jobs))
-	for i, j := range jobs {
-		ids[i] = j.JobID
-	}
-	if err := w.bus.Unlink(ctx, ids...); err != nil {
-		// The streams still expire 10 minutes past the deadline
-		w.log.Warn("remove a session's job streams", "placement", rec.PlacementID, "err", err)
-	}
+	w.unlink(ctx, rec.PlacementID, streamIDs)
 	return nil
+}
+
+// unlink removes the placement's job streams, a failure leaving them to their expiry
+func (w *Worker) unlink(ctx context.Context, placement uuid.UUID, streamIDs []string) {
+	if err := w.bus.Unlink(ctx, streamIDs...); err != nil {
+		// The streams still expire 10 minutes past the deadline
+		w.log.Warn("remove a session's job streams", "placement", placement, "err", err)
+	}
 }
 
 // copyJob reads a job's stream through the page's cleaner, keeping limit bytes of each output and

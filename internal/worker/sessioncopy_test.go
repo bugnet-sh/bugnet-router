@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -58,9 +59,14 @@ func (e *env) job(t *testing.T, p store.Placement, id string, out []byte, gone b
 		time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if gone {
-		return
+	if !gone {
+		e.output(t, id, out)
 	}
+}
+
+// output writes out to the job's stream as stdout frames of 4 KiB and an exit
+func (e *env) output(t *testing.T, id string, out []byte) {
+	t.Helper()
 	var frames []frame.Frame
 	for off := 0; off < len(out); off += 4096 {
 		end := min(off+4096, len(out))
@@ -226,6 +232,50 @@ func TestExpiryKeepsAHeldRecord(t *testing.T) {
 	for id, want := range map[string]bool{grec.ID: false, hrec.ID: true, live.ID: true} {
 		_, err := e.store.SessionRecordByID(t.Context(), id)
 		eq(t, err == nil, want)
+	}
+}
+
+func TestCopyUnlinksEveryStreamAfterDeleteNow(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("record expired %v", expired), func(t *testing.T) {
+			e := newEnv(t, options{})
+			e.start(t)
+			p, h := e.placeReady(t, fmt.Sprintf("del-%v", expired))
+			rec, err := e.store.SessionRecordByPlacement(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.job(t, p, "j_before", lines(100), false)
+			if err := e.store.DeleteSessionRecordNow(t.Context(), rec.ID,
+				time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			// A job started after Delete now gets no row on the record, yet it has a stream
+			if _, _, err := e.store.CreateJob(t.Context(), store.NewJob{ID: "j_after",
+				PlacementID: p.ID}); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = e.store.StartSessionJob(t.Context(), p.ID, "j_after", "make",
+				time.Now())
+			eq(t, errors.Is(err, store.ErrNotFound), true)
+			e.output(t, "j_after", lines(100))
+			if expired {
+				// The hourly expiry may delete the closed record before the placement ends
+				e.run(t, jobargs.SessionExpiry{})
+				_, err := e.store.SessionRecordByID(t.Context(), rec.ID)
+				eq(t, errors.Is(err, store.ErrNotFound), true)
+			}
+			if _, err := e.saga.Stop(t.Context(), h); err != nil {
+				t.Fatal(err)
+			}
+			e.finished(t, jobargs.SessionCopy{}.Kind())
+			for _, id := range []string{"j_before", "j_after"} {
+				n, err := e.vk.Do(t.Context(), e.vk.B().Exists().Key(e.stream(id)).Build()).
+					AsInt64()
+				eq(t, err, nil)
+				eq(t, n, int64(0))
+			}
+		})
 	}
 }
 
