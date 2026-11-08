@@ -64,6 +64,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
                                          print a transfer URL and the curl command that uses it,
                                          an upload landing at --path or ~/<file name>
   preview --handle H --port N            print the preview link of one port of a placement
+  secret --handle H --name N --host HOST... [--header NAME]... [--fetch-only]
+                                         seal a value read from stdin to the router's newest
+                                         sealing key and put it as a secret of the placement
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
@@ -129,7 +132,7 @@ func run(
 		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
-		"revoke-preview": c.revokePreview,
+		"revoke-preview": c.revokePreview, "secret": c.secret,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

@@ -15,6 +15,7 @@ require (
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.51.0
 	github.com/riverqueue/river/rivertype v0.51.0
 	github.com/valkey-io/valkey-go v1.0.79
+	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
