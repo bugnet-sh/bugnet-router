@@ -179,6 +179,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		SSH:          saga.SSHSettingsOf(cfg),
 		Wallets:      cfg.Wallets,
 	})
+	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
+	if err != nil {
+		return err
+	}
 	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
 	var scanner sync.WaitGroup
 	// The scanner runs until jobs.Shutdown, so jobs keep being taken over while HTTP drains
@@ -213,6 +217,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		SSHPort:             cfg.Names.SSHPort,
 		Wallets:             cfg.Wallets,
 		ProviderOps:         cfg.ProviderOps,
+		Estimator:           est,
 	})
 	defer srv.Close()
 

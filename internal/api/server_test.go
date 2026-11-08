@@ -44,6 +44,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/estimator"
+	"github.com/bugnet-sh/bugnet-router/internal/estimator/estimatortest"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
@@ -218,6 +220,10 @@ type options struct {
 	x402 func(*config.X402)
 	// egressControl has the provider report EgressControl, so restricted packages place
 	egressControl bool
+	// estimator gives the API server an estimator over the fake GitHub, tuned by estimatorTune
+	estimator     bool
+	estimatorTune func(*config.Estimator)
+	githubRepos   []*estimatortest.Repo
 }
 
 type env struct {
@@ -227,6 +233,7 @@ type env struct {
 	url       string
 	dbURL     string
 	pool      *pgxpool.Pool
+	gh        *estimatortest.GitHub // the estimator's fake GitHub, nil without opts.estimator
 	store     *store.Store
 	jobs      *jobs.Service
 	vk        valkey.Client
@@ -350,8 +357,14 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.noSSHHost {
 		apiSSHHost = ""
 	}
+	var est *estimator.Service
+	var gh *estimatortest.GitHub
+	if opts.estimator {
+		est, gh = newEstimator(t, st, apiVK, prefix, apiCat, opts)
+	}
 	srv := api.New(api.Deps{
-		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
+		Estimator: est,
+		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
@@ -363,7 +376,7 @@ func newEnv(t *testing.T, opts options) *env {
 	t.Cleanup(srv.Close)
 
 	e := &env{
-		api: srv, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
+		api: srv, gh: gh, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
 		tracker: tracker, apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root,
 		priv: priv, handleKey: handleKey, dpKeys: keys,
 	}

@@ -238,6 +238,13 @@ func (s *Saga) now() time.Time { return s.d.Now().UTC() }
 func (s *Saga) Create(
 	ctx context.Context, token string, req placement.Requirements,
 ) (store.Placement, string, error) {
+	return s.CreateWith(ctx, token, req, nil)
+}
+
+// CreateWith is Create for an order whose quote had a source, which the placement copies
+func (s *Saga) CreateWith(
+	ctx context.Context, token string, req placement.Requirements, src *store.PlacementSource,
+) (store.Placement, string, error) {
 	c, err := s.verify(token, ordertoken.KindStart)
 	if err != nil {
 		return store.Placement{}, "", err
@@ -253,6 +260,7 @@ func (s *Saga) Create(
 	np := store.NewPlacement{
 		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
+		Source: src,
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
