@@ -680,6 +680,12 @@ func (s *stack) prepareEgress(t *testing.T) egressFiles {
 	if files.boxPub == "" {
 		t.Fatal("live: bugnet-egress box-key new printed no public key")
 	}
+	// The dev pair lands in the proxy's credential directory, where its key is a credential
+	dev := exec.Command(filepath.Join(s.bin, "bugnet-dev"), "mtls", "init", "--dev",
+		"--out", files.credDir)
+	if out, err := dev.CombinedOutput(); err != nil {
+		t.Fatalf("live: bugnet-dev mtls init --dev: %v\n%s", err, out)
+	}
 	files.listen = net.JoinHostPort("127.0.0.1", strconv.Itoa(s.f.Ports.Egress))
 	if s.mode == "local" {
 		files.listen = freeAddr(t)
@@ -706,7 +712,14 @@ egress_host = %q
 ca_cert_file = %q
 ca_version = 1
 box_keys = [{ id = "k1", credential = "egress_box_k1" }]
-%s`, s.apiURL, s.egress.listen, metrics, s.f.Names.EgressHost, s.egress.certFile, acme)
+%s
+[x402]
+payments_url = %q
+payments_ca_file = %q
+payments_client_cert_file = %q
+`, s.apiURL, s.egress.listen, metrics, s.f.Names.EgressHost, s.egress.certFile, acme,
+		"https://"+freeAddr(t), filepath.Join(s.egress.credDir, "internal-ca.pem"),
+		filepath.Join(s.egress.credDir, "egress-x402-client.pem"))
 	return s.write(t, "egress.toml", []byte(content))
 }
 
