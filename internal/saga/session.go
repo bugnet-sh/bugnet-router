@@ -23,7 +23,7 @@ const (
 
 // paymentClaims is the one place the payment event reads Task 28's Tx and AllowanceMicros claims
 func paymentClaims(c ordertoken.Claims) (packageMicros int64, tx string) {
-	return packageShare(c.AmountMicros, 0), ""
+	return packageShare(c.AmountMicros, c.AllowanceMicros), c.Tx
 }
 
 // packageShare is an order's amount less the x402 allowance it carries (XS 6.15)
