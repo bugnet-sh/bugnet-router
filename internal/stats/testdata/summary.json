@@ -1,0 +1,166 @@
+{
+    "version": 1,
+    "generatedAt": "2026-11-08T11:59:40Z",
+    "now": {
+        "active": 3,
+        "activeByProvider": [
+            {
+                "provider": "boat",
+                "active": 2
+            },
+            {
+                "provider": "e2b",
+                "active": 1
+            }
+        ]
+    },
+    "totals": {
+        "sandboxes": 40,
+        "computeSeconds": 51234,
+        "earnedMicros": 1300000,
+        "refundedMicros": 50000,
+        "allowanceReturnedMicros": 250000,
+        "x402SpentMicros": 30000,
+        "spentMicros": null
+    },
+    "daily": [
+        {
+            "day": "2026-11-05",
+            "earnedMicros": 100000,
+            "refundedMicros": 0,
+            "allowanceReturnedMicros": 0,
+            "x402SpentMicros": 0,
+            "spentMicros": null,
+            "sandboxes": 0,
+            "computeSeconds": 0,
+            "peakActive": 0,
+            "medianSeconds": 0
+        },
+        {
+            "day": "2026-11-06",
+            "earnedMicros": 0,
+            "refundedMicros": 0,
+            "allowanceReturnedMicros": 0,
+            "x402SpentMicros": 0,
+            "spentMicros": null,
+            "sandboxes": 10,
+            "computeSeconds": 12000,
+            "peakActive": 3,
+            "medianSeconds": 540
+        },
+        {
+            "day": "2026-11-07",
+            "earnedMicros": 1200000,
+            "refundedMicros": 50000,
+            "allowanceReturnedMicros": 250000,
+            "x402SpentMicros": 30000,
+            "spentMicros": null,
+            "sandboxes": 24,
+            "computeSeconds": 21000,
+            "peakActive": 4,
+            "medianSeconds": 600
+        },
+        {
+            "day": "2026-11-08",
+            "earnedMicros": 0,
+            "refundedMicros": 0,
+            "allowanceReturnedMicros": 0,
+            "x402SpentMicros": 0,
+            "spentMicros": null,
+            "sandboxes": 6,
+            "computeSeconds": 18234,
+            "peakActive": 3,
+            "medianSeconds": 0
+        }
+    ],
+    "providers": [
+        {
+            "provider": "boat",
+            "sandboxes7d": 30,
+            "active": 2,
+            "startP50Ms": null,
+            "startP95Ms": null,
+            "failed7d": null
+        },
+        {
+            "provider": "e2b",
+            "sandboxes7d": 10,
+            "active": 1,
+            "startP50Ms": null,
+            "startP95Ms": null,
+            "failed7d": null
+        }
+    ],
+    "payments": {
+        "byKind": [
+            {
+                "kind": "sandbox",
+                "count": 9,
+                "micros": 1100000
+            },
+            {
+                "kind": "extend",
+                "count": 2,
+                "micros": 90000
+            },
+            {
+                "kind": "x402_allowance",
+                "count": 1,
+                "micros": 1000000
+            },
+            {
+                "kind": "x402_fee",
+                "count": 1,
+                "micros": 110000
+            }
+        ],
+        "byMethod": [
+            {
+                "method": "checkout",
+                "count": 3,
+                "micros": 300000
+            },
+            {
+                "method": "pay_cli",
+                "count": 8,
+                "micros": 2000000
+            }
+        ],
+        "refunds": {
+            "count": 1,
+            "micros": 50000
+        }
+    },
+    "packages": [
+        {
+            "id": "cpu-small-10m",
+            "vcpu": 2,
+            "memoryMiB": 2048,
+            "diskGiB": 10,
+            "gpu": null,
+            "minutes": 10,
+            "priceMicros": 50000
+        },
+        {
+            "id": "gpu-l4-30m",
+            "vcpu": 8,
+            "memoryMiB": 32768,
+            "diskGiB": 100,
+            "gpu": {
+                "count": 1,
+                "memoryGiB": 24,
+                "model": "NVIDIA L4"
+            },
+            "minutes": 30,
+            "priceMicros": 1500000
+        }
+    ],
+    "limits": {
+        "order.max_micros": 100000000,
+        "sandbox.max_running_jobs": 16,
+        "transfer.max_file_bytes": 1073741824,
+        "wallet.max_concurrent": 5,
+        "x402.max_allowance_micros": 5000000,
+        "x402.max_price_per_call_micros": 500000
+    }
+}

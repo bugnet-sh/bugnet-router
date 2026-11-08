@@ -1,0 +1,50 @@
+{
+    "version": 1,
+    "daily": [
+        {
+            "day": "2026-11-05",
+            "earnedMicros": 100000,
+            "refundedMicros": 0,
+            "allowanceReturnedMicros": 0,
+            "x402SpentMicros": 0
+        },
+        {
+            "day": "2026-11-06",
+            "earnedMicros": 0,
+            "refundedMicros": 0,
+            "allowanceReturnedMicros": 0,
+            "x402SpentMicros": 0
+        },
+        {
+            "day": "2026-11-07",
+            "earnedMicros": 1200000,
+            "refundedMicros": 50000,
+            "allowanceReturnedMicros": 250000,
+            "x402SpentMicros": 30000
+        }
+    ],
+    "totals": {
+        "earnedMicros": 1300000,
+        "refundedMicros": 50000,
+        "allowanceReturnedMicros": 250000,
+        "x402SpentMicros": 30000
+    },
+    "byKind": [
+        { "kind": "sandbox", "count": 9, "micros": 1100000 },
+        { "kind": "extend", "count": 2, "micros": 90000 },
+        { "kind": "x402_allowance", "count": 1, "micros": 1000000 },
+        { "kind": "x402_fee", "count": 1, "micros": 110000 }
+    ],
+    "refunds": { "count": 1, "micros": 50000 },
+    "byMethod": [
+        { "method": "checkout", "count": 3, "micros": 300000 },
+        { "method": "pay_cli", "count": 8, "micros": 2000000 }
+    ],
+    "limits": {
+        "order.max_micros": 100000000,
+        "x402.max_allowance_micros": 5000000,
+        "x402.max_price_per_call_micros": 500000,
+        "gateway.quotes_per_minute": 99
+    },
+    "futureField": { "ignored": 1.5 }
+}
