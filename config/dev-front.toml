@@ -27,4 +27,4 @@ state_dir = "~/.local/state/bugnet-dev/acme"           # one cache per service, 
 wildcard_dir = "~/.local/state/bugnet-dev/preview-dev"  # make dev-certs in bugnet-edges copies it
 
 [edge]
-abuse_contact = "abuse@bugnet.org"  # the edge's previews.abuse_contact
+abuse_contact = "support@bugnet.org"  # the edge's previews.abuse_contact
