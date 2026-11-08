@@ -276,6 +276,8 @@ printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN -
 bin/bugnet-dev ssh-key --handle sbx_... --public-key ~/.ssh/id_ed25519.pub
 bin/bugnet-dev x402 check --handle sbx_... \
     --service "GET,api.example.com,/search/,10000,$PAY_TO,/search"
+bin/bugnet-dev x402 enable --handle sbx_... --wait \
+    --service "GET,api.example.com,/search/,10000,$PAY_TO,/search"
 bin/bugnet-dev x402 list --handle sbx_...
 bin/bugnet-dev stop --handle sbx_...
 bin/bugnet-dev create --package dev-small-10m --payer <base58> \
@@ -322,8 +324,11 @@ an operator lifts it.
 `method,host,prefix,max_price_micros,pay_to[,paid_path]`, and a service without a paid path is
 indexed. `--disable ID` names a service id to disable. Without `--handle` it runs only the checks
 that need no placement. It prints `passed=true`, or exits 1 with the code, the reason and the
-refused entry's `service_id` and `host`. `x402 list` prints `enabled`, then one line per service
-with its state, pins and counts, then one line per refusal reason with its count and last time.
+refused entry's `service_id` and `host`. `x402 enable` calls `EnableX402` with the same flags, adds `--wait` to wait up to
+`secrets.apply_wait` for the added services, and `--request-id R` (a fresh id when empty), then
+prints one line for every service of the placement, disabled ones too. `x402 list` prints
+`enabled`, then one line per service with its state, pins and counts, then one line per refusal
+reason with its count and last time.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 

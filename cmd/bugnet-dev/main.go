@@ -76,6 +76,8 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
         [--disable ID]...                check an x402 change without making it, a service
                                          indexed when it has no paid path, with no handle only
                                          the checks that need no placement
+  x402 enable --handle H [--service ...]... [--disable ID]... [--wait] [--request-id R]
+                                         make an x402 change and print every service
   x402 list --handle H                   list a placement's x402 services and refusals
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when

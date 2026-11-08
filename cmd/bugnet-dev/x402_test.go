@@ -20,8 +20,9 @@ const testPayTo = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 // x402Router answers CheckX402, refusing the host bad.example.com, and ListX402
 type x402Router struct {
 	routerv1connect.UnimplementedSandboxRouterServiceHandler
-	checks chan *connect.Request[routerv1.CheckX402Request]
-	lists  chan *connect.Request[routerv1.ListX402Request]
+	checks  chan *connect.Request[routerv1.CheckX402Request]
+	enables chan *connect.Request[routerv1.EnableX402Request]
+	lists   chan *connect.Request[routerv1.ListX402Request]
 }
 
 func (r *x402Router) CheckX402(
@@ -43,6 +44,22 @@ func (r *x402Router) CheckX402(
 		}
 	}
 	return connect.NewResponse(&routerv1.CheckX402Response{}), nil
+}
+
+func (r *x402Router) EnableX402(
+	_ context.Context, req *connect.Request[routerv1.EnableX402Request],
+) (*connect.Response[routerv1.EnableX402Response], error) {
+	r.enables <- req
+	return connect.NewResponse(&routerv1.EnableX402Response{
+		Services: []*routerv1.X402ServiceInfo{{
+			ServiceId: "xs_aaaaaaaaaaaaaaaa",
+			State:     routerv1.X402ServiceState_X402_SERVICE_STATE_APPLYING,
+			Spec: &routerv1.X402ServiceSpec{
+				Method: "GET", Host: "api.example.com", Prefix: "/search/",
+				MaxPriceMicros: 10000, PayTo: testPayTo, Indexed: true,
+			},
+		}},
+	}), nil
 }
 
 func (r *x402Router) ListX402(
@@ -77,8 +94,9 @@ func (r *x402Router) ListX402(
 
 func newX402Router() *x402Router {
 	return &x402Router{
-		checks: make(chan *connect.Request[routerv1.CheckX402Request], 1),
-		lists:  make(chan *connect.Request[routerv1.ListX402Request], 1),
+		checks:  make(chan *connect.Request[routerv1.CheckX402Request], 1),
+		lists:   make(chan *connect.Request[routerv1.ListX402Request], 1),
+		enables: make(chan *connect.Request[routerv1.EnableX402Request], 1),
 	}
 }
 
@@ -156,5 +174,38 @@ func TestX402List(t *testing.T) {
 	eq(t, (<-r.lists).Msg.GetHandle(), "sbx_x")
 	if _, _, code := runCLI(t, vars, "--config", settings, "x402", "list"); code != 2 {
 		t.Errorf("list without a handle exited %d, want 2", code)
+	}
+}
+
+func TestX402Enable(t *testing.T) {
+	r := newX402Router()
+	settings := serve(t, r)
+	vars := env(map[string]string{"BUGNET_INTERNAL_TOKEN": strings.Repeat("i", 32)})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "x402", "enable", "--handle",
+		"sbx_x", "--wait", "--request-id", "r-1", "--service",
+		"GET,api.example.com,/search/,10000,"+testPayTo, "--disable", "xs_one")
+	want := "service=xs_aaaaaaaaaaaaaaaa state=applying method=GET host=api.example.com " +
+		"prefix=/search/ indexed=true max_price_micros=10000 pay_to=" + testPayTo +
+		" requests=0 paid=0 uncertain=0\n"
+	if code != 0 || out != want {
+		t.Fatalf("x402 enable exited %d with %q and %q, want %q", code, out, stderr, want)
+	}
+	got := (<-r.enables).Msg
+	wantReq := &routerv1.EnableX402Request{
+		Handle: "sbx_x", Disable: []string{"xs_one"}, RequestId: "r-1", WaitActive: true,
+		Add: []*routerv1.X402ServiceSpec{{
+			Method: "GET", Host: "api.example.com", Prefix: "/search/", MaxPriceMicros: 10000,
+			PayTo: testPayTo, Indexed: true,
+		}},
+	}
+	if !proto.Equal(got, wantReq) {
+		t.Fatalf("EnableX402 got %v, want %v", got, wantReq)
+	}
+	if _, _, code := runCLI(t, vars, "--config", settings, "x402", "enable"); code != 2 {
+		t.Errorf("enable without a handle exited %d, want 2", code)
+	}
+	runCLI(t, vars, "--config", settings, "x402", "enable", "--handle", "sbx_x")
+	if id := (<-r.enables).Msg.GetRequestId(); id == "" {
+		t.Error("enable without --request-id sent an empty request id")
 	}
 }
