@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"io/fs"
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -197,4 +198,20 @@ type NativeSSH struct {
 type NativeSSHer interface {
 	// AuthorizeNativeSSH adds gatewayKey, an authorized_keys line, to the sandbox's SSH server
 	AuthorizeNativeSSH(ctx context.Context, ref Ref, gatewayKey string) (NativeSSH, error)
+}
+
+// HookEvent is a verified provider webhook reduced to what the router acts on
+type HookEvent struct {
+	ID        string
+	Type      string
+	SandboxID string
+	// Labels are the sandbox's labels when the event carries them, else nil
+	Labels map[string]string
+	At     time.Time
+}
+
+// HookVerifier is a provider whose lifecycle webhooks the router accepts
+type HookVerifier interface {
+	// VerifyHook checks h and the exact body against secret and parses the body
+	VerifyHook(h http.Header, body []byte, secret []byte) (HookEvent, error)
 }
