@@ -129,6 +129,7 @@ func (g *SSHGatewayServer) AcquireSshConnection(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	s.sshEvent(ctx, p.ID, "start")
 	return connect.NewResponse(&routerv1.AcquireSshConnectionResponse{
 		LeaseId: id, LeaseExpiresAt: timestamppb.New(until), Budget: s.edgeBudget(p, left),
 	}), nil
@@ -167,10 +168,14 @@ func (g *SSHGatewayServer) ReleaseSshConnection(
 	if !leaseShape.MatchString(m.GetLeaseId()) {
 		return nil, s.status(errLeaseMalformed)
 	}
-	err = s.d.Valkey.Do(ctx, s.d.Valkey.B().Zrem().Key(s.connsKey(placement)).
-		Member(m.GetLeaseId()).Build()).Error()
+	removed, err := s.d.Valkey.Do(ctx, s.d.Valkey.B().Zrem().Key(s.connsKey(placement)).
+		Member(m.GetLeaseId()).Build()).AsInt64()
 	if err != nil {
 		return nil, s.status(err)
+	}
+	// A lease released twice, or expired already, writes one end at most
+	if removed > 0 {
+		s.sshEvent(ctx, placement, "end")
 	}
 	return connect.NewResponse(&routerv1.ReleaseSshConnectionResponse{}), nil
 }
@@ -355,6 +360,14 @@ func (s *Server) lease(ctx context.Context, p store.Placement, id string) (time.
 		return time.Time{}, errTooManyConns
 	}
 	return time.UnixMilli(n), nil
+}
+
+// sshEvent writes the start or end of an SSH connection to the placement's session record, the
+// gateway reporting no byte counts to the router
+func (s *Server) sshEvent(ctx context.Context, id uuid.UUID, phase string) {
+	if s.d.SessionWriter != nil {
+		s.d.SessionWriter.SSH(ctx, id, phase, 0, 0)
+	}
 }
 
 // awaitPrepared waits up to ssh.prepare_timeout for the placement's sshd, asking for it again

@@ -750,3 +750,25 @@ func TestAuthorizeSshKeyWithoutRootKeys(t *testing.T) {
 	_, err := e.authorize(t, "bn-aaaaaaaaaa", sshkeystest.ED25519(t))
 	mustCode(t, err, connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE")
 }
+
+func TestSSHConnectionWritesSessionEvents(t *testing.T) {
+	e := newEnv(t, options{withSSH: true})
+	h, msg := e.readyPlacement(t)
+	grant := e.grantFor(t, h, sshkeystest.ED25519(t))
+	lease, err := e.acquire(t, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := connect.NewRequest(
+		&routerv1.ReleaseSshConnectionRequest{GrantId: grant, LeaseId: lease.GetLeaseId()})
+	for range 2 {
+		if _, err := e.ssh(t).ReleaseSshConnection(t.Context(), release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var phases []any
+	for _, d := range e.sessionEvents(t, msg)["ssh"] {
+		phases = append(phases, d["phase"])
+	}
+	eq(t, phases, []any{"start", "end"})
+}

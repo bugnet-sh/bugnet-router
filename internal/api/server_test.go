@@ -390,6 +390,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
 		X402: x402Of(opts), HostRules: hostRules(x402Of(opts)), SSH: sshSettings(opts.ssh),
 		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, ProviderOps: opts.providerOps,
+		Sessions: sess, SessionWriter: writer,
 	})
 	t.Cleanup(srv.Close)
 
