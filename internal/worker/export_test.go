@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -58,3 +59,19 @@ func (w *Worker) Snapshot(ctx context.Context) error { return w.snapshot(ctx) }
 
 // StatsJobTimeout is the timeout River gives one stats_snapshot run
 func StatsJobTimeout() time.Duration { return (*statsWorker).Timeout(nil, nil) }
+
+// GoldenSpec marshals the spec bugnet-run's golden file holds, in the router's spec type
+func GoldenSpec() []byte {
+	b, err := json.Marshal(egressSpec{
+		V: 1, Token: "bnt_AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+		Endpoint: "egress.bugnet.sh", IPs: []string{"203.0.113.7", "2001:db8::7"},
+		Port: 443, Listen: "127.77.0.1:443",
+		Hosts: []string{"agent402.tools", "api.example.com", "huggingface.co"},
+		Env:   []egressEnv{{Name: "HF_TOKEN", Value: "bnsec_aaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Home:  "/home/boxd", X402Hosts: []string{"agent402.tools", "api.example.com"},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}

@@ -157,16 +157,29 @@ func (s *Store) MarkSecrets(
 	return tag.RowsAffected(), nil
 }
 
-// SecretsPending says whether apply_secrets has work, and the lag of changes no run applied
+// SecretsPending says whether apply_secrets has work, secrets or x402 rows, and the lag of changes
 func (s *Store) SecretsPending(ctx context.Context, placement uuid.UUID) (bool, int64, error) {
 	var pending bool
 	var lag int64
 	err := s.q.QueryRow(ctx, `
 		select secrets_version <> secrets_applied_version or exists (
 			select 1 from secrets
-			where placement_id = $1 and not fetch_only and state = $2),
+			where placement_id = $1 and not fetch_only and state = $2)
+			or exists (
+			select 1 from x402_services
+			where placement_id = $1 and state = $3)
+			or exists (
+			select 1 from x402_services d
+			where d.placement_id = $1 and d.state = $4 and d.host = any(placements.applied_hosts)
+				and not exists (
+					select 1 from x402_services l
+					where l.placement_id = $1 and l.state <> $4 and l.host = d.host)
+				and not exists (
+					select 1 from secrets s, unnest(s.hosts) as sh
+					where s.placement_id = $1 and not s.fetch_only and sh = d.host)),
 			secrets_version - secrets_applied_version
-		from placements where id = $1`, placement, SecretApplying).Scan(&pending, &lag)
+		from placements where id = $1`,
+		placement, SecretApplying, X402Applying, X402Disabled).Scan(&pending, &lag)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, 0, ErrNotFound
 	}
