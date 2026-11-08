@@ -108,6 +108,12 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   session hold --placement ID            print a held session record, as OperatorService
                                          serves it to operators
   session rotate --handle H              end a placement's session link and print its new one
+  hooks register|list|rotate PROVIDER    register this deployment's webhook endpoint at e2b or
+                                         boat, list the endpoints, or rotate the secret and
+                                         print it once, the path secret from
+                                         BUGNET_HOOK_PATH_SECRET and Boat's admin key from
+                                         BOAT_ADMIN_API_KEY, each asked for with echo off
+  hooks delete PROVIDER ID               remove an endpoint
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -169,6 +175,10 @@ type cli struct {
 	settings   *config.Config // read on first use
 	// seller replaces the seller check's resolver and dialer in tests
 	seller *sellerCheck
+	// ask replaces the terminal prompt with echo off in tests
+	ask func(label string) (string, error)
+	// hookBase replaces each provider's webhook API address in tests
+	hookBase map[string]string
 }
 
 // run executes one command and returns the process exit code, 2 for bad usage
@@ -184,7 +194,7 @@ func run(
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
 		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls, "estimate": c.estimate,
 		"session":      c.session,
-		"fetch-source": c.fetchSource,
+		"fetch-source": c.fetchSource, "hooks": c.hooks,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
