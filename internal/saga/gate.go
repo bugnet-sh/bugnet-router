@@ -67,27 +67,24 @@ func (s *Saga) OpenGate(ctx context.Context, p store.Placement) (store.Placement
 		defer cancel()
 		return s.openOnce(octx, p.ID)
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrGateUnavailable) {
 		return store.Placement{}, err
 	}
-	return v.(store.Placement), nil
+	return v.(store.Placement), err
 }
 
 // openOnce runs the gate steps under the placement's gate lock unless the gate is open already
 func (s *Saga) openOnce(ctx context.Context, id uuid.UUID) (store.Placement, error) {
 	var out store.Placement
 	var failed error
-	err := s.d.Store.WithLock(ctx, "gate:"+id.String(), func(ts *store.Store) error {
-		cur, err := ts.PlacementByID(ctx, id)
+	err := s.d.Store.WithLock(ctx, gateLock(id), func(ts *store.Store) error {
+		cur, err := readyRow(ctx, ts, id)
 		if err != nil {
 			return err
 		}
 		out = cur
 		if cur.GateReadyAt != nil {
 			return nil
-		}
-		if cur.State != store.PlacementReady {
-			return fmt.Errorf("%w: placement is %s", ErrNotReady, cur.State)
 		}
 		prov, ref, err := s.home(cur)
 		if err != nil {
@@ -105,7 +102,7 @@ func (s *Saga) openOnce(ctx context.Context, id uuid.UUID) (store.Placement, err
 			failed = fmt.Errorf("%w: %w", ErrGateUnavailable, err)
 		}
 		// The entries PrepareGate gave are kept even when the gate did not answer
-		if err := ts.SetPlacementRoute(ctx, id, ref, gateAt); err != nil {
+		if err := setRoute(ctx, ts, id, ref, gateAt); err != nil {
 			return err
 		}
 		out.ProviderRef, out.GateReadyAt = &ref, gateAt
@@ -122,37 +119,73 @@ func (s *Saga) openOnce(ctx context.Context, id uuid.UUID) (store.Placement, err
 
 // RepairGate runs setup --repair and PrepareGate again for a ready placement, keeping the meta
 func (s *Saga) RepairGate(ctx context.Context, p store.Placement) (store.Placement, error) {
-	if p.State != store.PlacementReady {
-		return store.Placement{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
-	}
-	prov, ref, err := s.home(p)
-	if err != nil {
-		return store.Placement{}, err
-	}
-	g, ok := prov.(provider.Gater)
-	if !ok {
-		return store.Placement{}, fmt.Errorf("%w: %w", ErrGateUnavailable, errNoGate)
-	}
 	ctx, cancel := context.WithTimeout(ctx, repairTimeout)
 	defer cancel()
-	sctx, scancel := context.WithTimeout(ctx, setupTimeout)
-	_, err = runRoot(sctx, prov, ref, "setup", "--repair")
-	scancel()
+	var out store.Placement
+	err := s.d.Store.WithLock(ctx, gateLock(p.ID), func(ts *store.Store) error {
+		cur, err := readyRow(ctx, ts, p.ID)
+		if err != nil {
+			return err
+		}
+		prov, ref, err := s.home(cur)
+		if err != nil {
+			return err
+		}
+		g, ok := prov.(provider.Gater)
+		if !ok {
+			return fmt.Errorf("%w: %w", ErrGateUnavailable, errNoGate)
+		}
+		sctx, scancel := context.WithTimeout(ctx, setupTimeout)
+		_, err = runRoot(sctx, prov, ref, "setup", "--repair")
+		scancel()
+		if err != nil {
+			return fmt.Errorf("%w: setup --repair: %w", ErrGateUnavailable, err)
+		}
+		pctx, pcancel := context.WithTimeout(ctx, gateTimeout)
+		meta, err := g.PrepareGate(pctx, ref, s.d.Boot.gatePort())
+		pcancel()
+		if err != nil {
+			return fmt.Errorf("%w: prepare the gate route: %w", ErrGateUnavailable, err)
+		}
+		ref = withMeta(ref, meta)
+		if err := setRoute(ctx, ts, p.ID, ref, nil); err != nil {
+			return err
+		}
+		s.d.Log.Info("gate repaired", "placement", p.ID, "provider", prov.Name())
+		cur.ProviderRef = &ref
+		out = cur
+		return nil
+	})
 	if err != nil {
-		return store.Placement{}, fmt.Errorf("%w: setup --repair: %w", ErrGateUnavailable, err)
-	}
-	pctx, pcancel := context.WithTimeout(ctx, gateTimeout)
-	meta, err := g.PrepareGate(pctx, ref, s.d.Boot.gatePort())
-	pcancel()
-	if err != nil {
-		return store.Placement{}, fmt.Errorf("%w: prepare the gate route: %w",
-			ErrGateUnavailable, err)
-	}
-	ref = withMeta(ref, meta)
-	if err := s.d.Store.SetPlacementRoute(ctx, p.ID, ref, nil); err != nil {
 		return store.Placement{}, err
 	}
-	s.d.Log.Info("gate repaired", "placement", p.ID, "provider", prov.Name())
-	p.ProviderRef = &ref
-	return p, nil
+	return out, nil
+}
+
+// gateLock names the advisory lock that one placement's gate steps run under
+func gateLock(id uuid.UUID) string {
+	return "gate:" + id.String()
+}
+
+// readyRow reads a placement inside the gate lock, ErrNotReady unless it is ready
+func readyRow(ctx context.Context, ts *store.Store, id uuid.UUID) (store.Placement, error) {
+	cur, err := ts.PlacementByID(ctx, id)
+	if err != nil {
+		return store.Placement{}, err
+	}
+	if cur.State != store.PlacementReady {
+		return store.Placement{}, fmt.Errorf("%w: placement is %s", ErrNotReady, cur.State)
+	}
+	return cur, nil
+}
+
+// setRoute stores a placement's route, ErrNotReady when the placement left ready meanwhile
+func setRoute(
+	ctx context.Context, ts *store.Store, id uuid.UUID, ref provider.Ref, gateAt *time.Time,
+) error {
+	err := ts.SetPlacementRoute(ctx, id, ref, gateAt)
+	if errors.Is(err, store.ErrStateConflict) {
+		return fmt.Errorf("%w: the placement left ready", ErrNotReady)
+	}
+	return err
 }

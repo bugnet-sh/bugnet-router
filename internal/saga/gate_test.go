@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/oynozan/bugnet-router/internal/gateclient"
 	"github.com/oynozan/bugnet-router/internal/provider"
@@ -191,5 +192,125 @@ func TestPortRefusedFollowsTheGatesDenyList(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRepairGateFailureIsGateUnavailable(t *testing.T) {
+	var prepares atomic.Int32
+	l := newLocal(t, local.Options{Name: "a"})
+	s := newScripted(l, map[string]answer{})
+	a := scriptedGate{s, countedGate{hostGate{l}, &prepares}}
+	e := newEnv(t, a)
+	p, _ := e.placeReady(t, "order-1")
+	s.answers["setup"] = answer{out: `{"error":"runner says no"}`, code: 3}
+	prepares.Store(0)
+	if _, err := e.saga.RepairGate(t.Context(), p); !errors.Is(err, saga.ErrGateUnavailable) {
+		t.Fatalf("RepairGate whose setup --repair failed: %v", err)
+	}
+	eq(t, prepares.Load(), int32(0))
+	eq(t, e.reload(t, p.ID).ProviderRef.Meta, p.ProviderRef.Meta)
+}
+
+func TestRepairGatePrepareFailureIsGateUnavailable(t *testing.T) {
+	l := newLocal(t, local.Options{Name: "a"})
+	var broken atomic.Bool
+	e := newEnv(t, brokenGate{hostGate{l}, &broken})
+	p, _ := e.placeReady(t, "order-1")
+	broken.Store(true)
+	if _, err := e.saga.RepairGate(t.Context(), p); !errors.Is(err, saga.ErrGateUnavailable) {
+		t.Fatalf("RepairGate whose PrepareGate failed: %v", err)
+	}
+	eq(t, e.reload(t, p.ID).ProviderRef.Meta, p.ProviderRef.Meta)
+}
+
+func TestGateStepsRacingAStopAreNotReady(t *testing.T) {
+	steps := map[string]func(*saga.Saga, context.Context, store.Placement) error{
+		"open": func(s *saga.Saga, ctx context.Context, p store.Placement) error {
+			_, err := s.OpenGate(ctx, p)
+			return err
+		},
+		"repair": func(s *saga.Saga, ctx context.Context, p store.Placement) error {
+			_, err := s.RepairGate(ctx, p)
+			return err
+		},
+	}
+	for name, step := range steps {
+		t.Run(name, func(t *testing.T) {
+			g := heldGate{hostGate: hostGate{newLocal(t, local.Options{Name: "a"})},
+				armed: &atomic.Bool{}, entered: make(chan struct{}), release: make(chan struct{})}
+			e := newEnv(t, g)
+			p, h := e.placeReady(t, "order-1")
+			p = forget(t, e, p)
+			g.armed.Store(true)
+			done := make(chan error, 1)
+			go func() { done <- step(e.saga, t.Context(), p) }()
+			<-g.entered
+			if _, err := e.saga.Stop(t.Context(), h); err != nil {
+				t.Fatal(err)
+			}
+			close(g.release)
+			if err := <-done; !errors.Is(err, saga.ErrNotReady) {
+				t.Fatalf("gate steps racing a stop: %v", err)
+			}
+		})
+	}
+}
+
+// brokenGate is hostGate whose PrepareGate fails while broken is set
+type brokenGate struct {
+	hostGate
+	broken *atomic.Bool
+}
+
+func (b brokenGate) PrepareGate(
+	ctx context.Context, ref provider.Ref, port int,
+) (map[string]string, error) {
+	if b.broken.Load() {
+		return nil, errors.New("injected by provider a")
+	}
+	return b.hostGate.PrepareGate(ctx, ref, port)
+}
+
+// heldGate is hostGate whose next PrepareGate, once armed, answers only when release closes
+type heldGate struct {
+	hostGate
+	armed   *atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h heldGate) PrepareGate(
+	ctx context.Context, ref provider.Ref, port int,
+) (map[string]string, error) {
+	meta, err := h.hostGate.PrepareGate(ctx, ref, port)
+	if h.armed.CompareAndSwap(true, false) {
+		close(h.entered)
+		<-h.release
+	}
+	return meta, err
+}
+
+func TestRepairGateWaitsForTheGateLock(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, _ := e.placeReady(t, "order-1")
+	done := make(chan error, 1)
+	err := e.store.WithLock(t.Context(), "gate:"+p.ID.String(), func(*store.Store) error {
+		go func() {
+			_, err := e.saga.RepairGate(t.Context(), p)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			done <- err
+			t.Errorf("RepairGate finished while another replica held the gate lock: %v", err)
+		case <-time.After(500 * time.Millisecond):
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
