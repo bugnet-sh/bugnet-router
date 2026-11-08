@@ -59,10 +59,10 @@ var _ routerv1connect.SessionPageServiceHandler = (*SessionPageServer)(nil)
 
 /* Links */
 
-// sessionKeyID is the root a placement's session key derives from
-func (s *Server) sessionKeyID(p store.Placement) string {
-	if p.KeyID != "" || len(s.d.Keys.Roots()) == 0 {
-		return p.KeyID
+// anyKeyID is a root for the HMAC a check of an unknown id makes, so it takes a wrong key's time
+func (s *Server) anyKeyID() string {
+	if len(s.d.Keys.Roots()) == 0 {
+		return ""
 	}
 	return s.d.Keys.Current().ID
 }
@@ -72,7 +72,12 @@ func (s *Server) sessionLink(p store.Placement, rec store.SessionRecord) string 
 	if s.d.Sessions.BaseURL == "" || !rec.Open(time.Now()) || len(s.d.Keys.Roots()) == 0 {
 		return ""
 	}
-	key, err := s.d.Keys.SessionKey(s.sessionKeyID(p), rec.ID, rec.Generation)
+	if p.KeyID == "" {
+		// A key from the current root would change at the next root rotation
+		s.d.Log.Warn("api: no session link for a placement with no key_id", "placement", p.ID)
+		return ""
+	}
+	key, err := s.d.Keys.SessionKey(p.KeyID, rec.ID, rec.Generation)
 	if err != nil {
 		s.d.Log.Warn("api: derive a session key", "placement", p.ID, "err", err)
 		return ""
@@ -186,7 +191,7 @@ func (s *Server) sessionFor(
 	if errors.Is(err, store.ErrNotFound) {
 		// The same read and HMAC as a wrong key, so the time taken never tells a live id
 		_, _ = s.d.Store.PlacementByID(ctx, uuid.Nil)
-		s.d.Keys.CheckSessionKey(s.sessionKeyID(store.Placement{}), id, 0, key)
+		s.d.Keys.CheckSessionKey(s.anyKeyID(), id, 0, key)
 		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
 	if err != nil {
@@ -196,7 +201,7 @@ func (s *Server) sessionFor(
 	if err != nil {
 		return store.SessionRecord{}, store.Placement{}, err
 	}
-	if !s.d.Keys.CheckSessionKey(s.sessionKeyID(p), rec.ID, rec.Generation, key) {
+	if !s.d.Keys.CheckSessionKey(p.KeyID, rec.ID, rec.Generation, key) {
 		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
 	return rec, p, nil

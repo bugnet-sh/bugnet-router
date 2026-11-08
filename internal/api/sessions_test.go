@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -197,6 +198,27 @@ func TestNoBaseURLGivesNoLink(t *testing.T) {
 	eq(t, p.GetSessionUrl(), "")
 	// The record is still kept, the link only waits for the page's origin
 	e.sessionRecord(t, p)
+}
+
+func TestNoKeyIDGivesNoLink(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, options{log: slog.New(slog.NewTextHandler(&logs, nil))})
+	h, p := e.readyPlacement(t)
+	id, _ := link(t, p.GetSessionUrl())
+	if _, err := e.pool.Exec(t.Context(), `update placements set key_id = null where id = $1`,
+		e.placementOf(t, p).ID); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, e.get(t, h, 0, 0).GetSessionUrl(), "")
+	eq(t, strings.Count(logs.String(), "no session link"), 1)
+	// A key under the current root opens nothing, as a root rotation would change it
+	key, err := e.dpKeys.SessionKey(e.dpKeys.Current().ID, id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.sessionPage(t).GetSessionRecord(t.Context(), connect.NewRequest(
+		&routerv1.GetSessionRecordRequest{Id: id, Key: key}))
+	mustCode(t, err, connect.CodeNotFound, "SESSION_UNKNOWN")
 }
 
 func TestEveryRouterKindWritten(t *testing.T) {

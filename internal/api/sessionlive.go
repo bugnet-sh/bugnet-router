@@ -139,7 +139,7 @@ func (ls *liveStream) at() string {
 	}
 	s := ls.ss.s
 	pos := ls.pos + "." + strconv.FormatInt(ls.outAt, 10) + "." + strconv.FormatInt(ls.errAt, 10)
-	c, err := s.d.Keys.SessionCursor(s.sessionKeyID(ls.p), ls.rec.ID, ls.rec.Generation,
+	c, err := s.d.Keys.SessionCursor(ls.p.KeyID, ls.rec.ID, ls.rec.Generation,
 		uint32(ls.job.Seq), pos)
 	if err != nil {
 		return ""
@@ -150,7 +150,7 @@ func (ls *liveStream) at() string {
 // resume takes the position a cursor of this record's job seals, false for any other cursor
 func (ls *liveStream) resume(cursor string) bool {
 	s := ls.ss.s
-	pos, ok := s.d.Keys.OpenSessionCursor(s.sessionKeyID(ls.p), ls.rec.ID, ls.rec.Generation,
+	pos, ok := s.d.Keys.OpenSessionCursor(ls.p.KeyID, ls.rec.ID, ls.rec.Generation,
 		uint32(ls.job.Seq), cursor)
 	parts := strings.Split(pos, ".")
 	if !ok || len(parts) != 3 {

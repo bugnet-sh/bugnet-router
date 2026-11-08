@@ -814,7 +814,8 @@ Every placement gets a session record (SP 6) in the transaction that creates it,
 is `bnk_` and the base64url of HMAC-SHA256 under the `sessions` purpose key of the placement's
 root, over the id and the record's generation. Every `Placement` answer carries the link until
 the record expires or its page is closed, then none. No link is given while `sessions.base_url`
-is empty, and the record is still kept.
+is empty, and the record is still kept. A placement with no `key_id` gets no link either, and a
+log line, since a key from the current root would change at the next root rotation.
 
 - **Events** (SP 6.2) go through one writer, which cleans every string, cuts it to its length and
   logs a failure without failing the call that caused it. The saga writes `placement` (placed,
