@@ -82,6 +82,7 @@ func CheckEvent(ev *routerv1.X402Event) error {
 		{"reason", reasonOK(status, reason)},
 		{"asked_micros", ev.GetAskedMicros() >= 0},
 		{"amount_micros", ev.GetAmountMicros() >= 0},
+		{"allowance_left_micros", ev.GetAllowanceLeftMicros() >= 0},
 		{"asset", ev.GetAsset() == "" || ev.GetAsset() == usdcMint},
 		{"network", ev.GetNetwork() == "" || ev.GetNetwork() == solanaMain},
 		{"scheme", ev.GetScheme() == "" || ev.GetScheme() == exactScheme},
