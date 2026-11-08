@@ -827,9 +827,11 @@ is empty, and the record is still kept.
 - **The copy:** every transaction that ends a placement inserts `session_copy` on the `dataplane`
   queue. It reads each job's stream through the page's cleaner, keeps the newest
   `sessions.job_output` of each output and at most `sessions.placement_output` a record, newest
-  jobs first, then 8 KiB per output, and removes the streams with `UNLINK`. Missing streams set
-  the output `expired`, some missing `partial`, and 10 minutes after the end the copy gives up as
-  `expired`. At 100% of `sessions.disk_budget` a copy keeps 8 KiB per output and sets `partial`.
+  jobs first, then 8 KiB per output, and removes the streams with `UNLINK`: every job the
+  `jobs` table lists for the placement, also after Delete now or once the record expired. Missing
+  streams set the output `expired`, some missing `partial`, and 10 minutes after the end the copy
+  gives up as `expired`. At 100% of `sessions.disk_budget` a copy keeps 8 KiB per output and sets
+  `partial`.
 - **Expiry:** `session_expiry` runs at start and hourly, deleting up to 10,000 records whose page
   ended and whose hold is empty or past. `abuse`, `wallet_blocked` and `operator` ends close the
   page at once and hold the record `sessions.abuse_hold` for `GetSessionHold`.
@@ -837,7 +839,9 @@ is empty, and the record is still kept.
   vectors in `internal/sessions/testdata`, and then redact Bugnet and vendor token shapes,
   `Authorization`, `Bearer` and `Basic` values, URL passwords, private key blocks, and the
   placement's gate key and provider credentials, as `[redacted <kind>]`. A token split across
-  frames is still caught, with at most 16 KiB held back per output.
+  frames is still caught, with at most 16 KiB held back per output. Output that goes on after a
+  gap, a `skip` or a replay start inside a line drops its text up to the next line break, so a
+  token whose prefix was left out is never shown.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized
   for `sessions.live.max_readers`, and counts its bytes in `live:used:<placement>`, never in the
   edge budget. A first connection replays the newest `sessions.live.replay` after a `skip`. A
