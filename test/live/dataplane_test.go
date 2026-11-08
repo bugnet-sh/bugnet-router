@@ -684,50 +684,61 @@ func rowE2B5(t *testing.T, s *stack) {
 	}
 }
 
-// rowBoxd2 times health through both boxd routes and checks curl gets through bot protection
+// rowBoxd2 times health through the route boxd.gate_route names and logs whether the other answers
 func rowBoxd2(t *testing.T, s *stack) {
 	g := s.gated(t, s.sandbox(t, xferPackage))
-	times := map[string]time.Duration{g.cfg.Boxd.GateRoute: g.timeHealth(t, 10)}
-	other := "default"
-	if g.cfg.Boxd.GateRoute == "default" {
-		other = "subdomain"
+	route := g.cfg.Boxd.GateRoute
+	took, err := g.timeHealth(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("health through the %s route: %v", route, err)
 	}
+	if code, err := g.curlHealth(); err != nil || code != "204" {
+		t.Fatalf("curl through the %s route answered %q, %v, want 204 past bot protection",
+			route, code, err)
+	}
+	t.Logf("BOXD2: median health through the %s route %s", route, took)
+	// The other route only logs, since a bn proxy made after boot can lack its certificate
+	other := "subdomain"
+	if route == "subdomain" {
+		other = "default"
+	}
+	g2, err := g.boxdRoute(t, other)
+	if err != nil {
+		t.Logf("BOXD2: the %s route did not open: %v", other, err)
+		return
+	}
+	if took, err = g2.timeHealth(t.Context(), 10); err != nil {
+		t.Logf("BOXD2: the %s route does not answer yet: %v", other, err)
+		return
+	}
+	code, err := g2.curlHealth()
+	t.Logf("BOXD2: the %s route answers too, median health %s, curl %q, %v",
+		other, took, code, err)
+}
+
+// boxdRoute opens the gate of g's machine through boxd's other route kind
+func (g gated) boxdRoute(t *testing.T, kind string) (gated, error) {
 	b, err := boxd.New(boxd.Options{
 		APIKey: os.Getenv("BOXD_API_KEY"), Endpoint: g.cfg.Boxd.Endpoint,
-		Region: g.cfg.Boxd.Region, GatePort: g.cfg.Previews.GatePort, GateRoute: other,
+		Region: g.cfg.Boxd.Region, GatePort: g.cfg.Previews.GatePort, GateRoute: kind,
 	})
 	if err != nil {
-		t.Fatal(err)
+		return gated{}, err
 	}
 	t.Cleanup(func() { _ = b.Close() })
 	meta, err := b.PrepareGate(t.Context(), *g.p.ProviderRef, g.cfg.Previews.GatePort)
 	if err != nil {
-		t.Fatalf("PrepareGate with %s: %v", other, err)
+		return gated{}, err
 	}
 	ref := *g.p.ProviderRef
 	ref.Meta = maps.Clone(ref.Meta)
 	maps.Copy(ref.Meta, meta)
 	route, err := b.GateRoute(ref, g.cfg.Previews.GatePort)
 	if err != nil {
-		t.Fatal(err)
+		return gated{}, err
 	}
-	g2 := g
-	g2.route = route
-	times[other] = g2.timeHealth(t, 10)
-	for _, r := range []gated{g, g2} {
-		out, err := exec.Command("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-			"-H", "Bugnet-Gate: "+r.key, r.route.BaseURL+"/__bugnet/health").Output()
-		if err != nil || string(out) != "204" {
-			t.Fatalf("curl through %s answered %q, %v, want 204 past bot protection",
-				r.route.BaseURL, out, err)
-		}
-	}
-	faster := "subdomain"
-	if times["default"] < times["subdomain"] {
-		faster = "default"
-	}
-	t.Logf("BOXD2: median health through subdomain %s, default %s, so boxd.gate_route = %q",
-		times["subdomain"], times["default"], faster)
+	g.route = route
+	return g, nil
 }
 
 // rowKoyeb1 binds the gate port, and a second PrepareGate unbinds and binds again
@@ -852,18 +863,24 @@ func (g gated) healthWithin(t *testing.T, tries int) {
 }
 
 // timeHealth is the median time of n health calls through the route
-func (g gated) timeHealth(t *testing.T, n int) time.Duration {
-	t.Helper()
+func (g gated) timeHealth(ctx context.Context, n int) (time.Duration, error) {
 	var took []time.Duration
 	for range n {
 		start := time.Now()
-		if err := gateclient.Health(t.Context(), g.route, g.key); err != nil {
-			t.Fatalf("health through %s: %v", g.route.BaseURL, err)
+		if err := gateclient.Health(ctx, g.route, g.key); err != nil {
+			return 0, err
 		}
 		took = append(took, time.Since(start))
 	}
 	slices.Sort(took)
-	return took[n/2].Round(time.Millisecond)
+	return took[n/2].Round(time.Millisecond), nil
+}
+
+// curlHealth asks the gate's health with curl, whose client bot protection may refuse
+func (g gated) curlHealth() (string, error) {
+	out, err := exec.Command("curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+		"-H", "Bugnet-Gate: "+g.key, g.route.BaseURL+"/__bugnet/health").Output()
+	return string(out), err
 }
 
 // get calls the route with its provider credentials and headers, and answers status and body

@@ -74,17 +74,20 @@ func rowN1(t *testing.T, s *stack) {
 		s.provider)
 }
 
-// rowN2 removes the rules inside the VM and checks E2B's denyOut still blocks the ranges
+// rowN2 removes the rules inside the VM and checks E2B's denyOut still blocks 10.0.0.1
 func rowN2(t *testing.T, s *stack) {
 	h := s.sandbox(t, xferPackage)
 	s.sh(t, h, `nft delete table inet bugnet 2> /dev/null; `+
 		`iptables -F BUGNET 2> /dev/null; ip6tables -F BUGNET 2> /dev/null; true`)
 	open := s.probe(t, h)
 	// denyOut holds the IPv4 ranges alone, the IPv6 ones stay with harden inside the VM
-	for _, p := range probes[1:3] {
-		if slices.Contains(open, p) {
-			t.Fatalf("with the rules inside removed %s is reachable, so denyOut does not hold", p)
-		}
+	if slices.Contains(open, probes[2]) {
+		t.Fatalf("with the rules inside removed %s is reachable, so denyOut does not hold",
+			probes[2])
+	}
+	// MMDS answers inside the VM before denyOut sees the packet, so only harden holds it
+	if slices.Contains(open, probes[1]) {
+		t.Log("N2: 169.254.169.254 is MMDS, held only by harden")
 	}
 	// E2B filters by CIDR alone, so mail is blocked inside the VM only
 	t.Logf("N2: with the rules inside removed, port 25 is %v",

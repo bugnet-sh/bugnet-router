@@ -155,7 +155,7 @@ as the router does, so they reach the gate the way the edges will.
 | E2B1 | E2B only: the traffic token from create, then from `connect {"timeout":1}` with `endAt` unchanged |
 | E2B2 | E2B only: `Bugnet-Port: 49983` gets the gate's 400 |
 | E2B5 | E2B only: logs whether the template boots systemd, and then a gate unit exists |
-| BOXD2 | boxd only: median health through the `subdomain` and `default` routes, and `curl` past bot protection, which decides `boxd.gate_route` |
+| BOXD2 | boxd only: median health and `curl` past bot protection through the route `boxd.gate_route` names, and a log of whether the other route answers |
 | KOYEB1 | Koyeb only: health after `bind_port`, and again after a second `PrepareGate` unbinds and binds |
 | BOAT1 | Boat only: health through `POST /host` with the runtime key |
 | BOAT2 | Boat only: raw TCP to the machine's own address on the gate port is refused or gets a 404 |
@@ -163,8 +163,10 @@ as the router does, so they reach the gate the way the edges will.
 `TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
 `/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
 `10.0.0.1:80` stay closed while `exec`, files and the gate route work. N2, on E2B only, removes
-the rules inside the VM and checks `network.denyOut` still closes both IPv4 ranges, logging
-whether port 25 opens and the VM's IPv6 default route. N1 also probes `[fd00:ec2::254]:80`.
+the rules inside the VM and checks `network.denyOut` still closes `10.0.0.1:80`, logging whether
+port 25 opens and the VM's IPv6 default route. `169.254.169.254` on E2B is Firecracker's MMDS,
+answered inside the VM before `denyOut` sees it, so only `harden` holds it and N2 logs it when
+it opens. N1 also probes `[fd00:ec2::254]:80`.
 
 | | `--front local`, the default | `--front vps`, behind the dev front |
 |---|---|---|
