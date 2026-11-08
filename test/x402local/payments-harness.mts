@@ -51,7 +51,7 @@ const SEEDS = { payer: 3, feePayer: 5, refund: 6, recipient: 1, allowance: 11 };
 const signers: Record<string, { address: string; keyPair: unknown }> = {};
 for (const [name, n] of Object.entries(SEEDS)) signers[name] = await testSigner(n);
 
-const chain = await startFakeChain({ autoFinalize: true, autoAdvanceMs: 400 });
+const chain = await startFakeChain({ autoFinalize: true, autoAdvanceMs: 100 });
 const own = [
     ["payer", 20_000_000n],
     ["recipient", 0n],
@@ -102,6 +102,8 @@ const tables = {
         client_ca_file: input.pki.ca,
         indexed_services_file: join(input.workDir, "x402-index.json"),
         min_allowance_micros: 50_000,
+        max_services: 32,
+        max_new_services_per_order: 32,
         release_every: "1s",
         events_every: "1s",
         fast_pass_every: "1s",
@@ -159,11 +161,7 @@ const internal = (path: string, body: unknown) =>
         body: JSON.stringify(body),
     });
 
-interface OrderBody {
-    packageId: string;
-    packageMicros: number;
-    allowanceMicros: number;
-    feeMicros: number;
+interface Pinned {
     method: string;
     url: string;
     maxPriceMicros: number;
@@ -171,10 +169,18 @@ interface OrderBody {
     accepted: unknown;
 }
 
-// A start order with one pinned service, paid from the test payer, then redeemed for its token
+interface OrderBody {
+    packageId: string;
+    packageMicros: number;
+    allowanceMicros: number;
+    feeMicros: number;
+    services: Pinned[];
+}
+
+// A start order with pinned services, paid from the test payer, then redeemed for its token. Each
+// pin carries the probe the seller's ok route answered, so a route whose later 402 is odd is
+// still pinned and the odd 402 meets Payments' own checks
 async function order(o: OrderBody): Promise<unknown> {
-    const u = new URL(o.url);
-    const prefix = u.pathname.slice(0, u.pathname.lastIndexOf("/") + 1);
     const created = (await (
         await internal("/v1/orders", {
             kind: "start",
@@ -184,20 +190,22 @@ async function order(o: OrderBody): Promise<unknown> {
             feeMicros: o.feeMicros,
             description: "Bugnet x402 local run",
             x402: {
-                services: [
-                    {
-                        serviceId: serviceIdFor(o.method, u.host, prefix),
-                        method: o.method,
+                services: o.services.map((p) => {
+                    const u = new URL(p.url);
+                    const prefix = u.pathname.slice(0, u.pathname.lastIndexOf("/") + 1);
+                    return {
+                        serviceId: serviceIdFor(p.method, u.host, prefix),
+                        method: p.method,
                         host: u.host,
                         prefix,
-                        url: o.url,
-                        maxPriceMicros: o.maxPriceMicros,
-                        payTo: o.payTo,
+                        url: p.url,
+                        maxPriceMicros: p.maxPriceMicros,
+                        payTo: p.payTo,
                         listed: "unlisted",
                         pinnedFrom: "probe",
-                        probe: { at: new Date().toISOString(), status: 402, accepted: o.accepted },
-                    },
-                ],
+                        probe: { at: new Date().toISOString(), status: 402, accepted: p.accepted },
+                    };
+                }),
             },
         })
     ).json()) as { status: string; orderId: string; claim: string; payUrl: string };
@@ -280,6 +288,7 @@ server.listen(0, "127.0.0.1", () => {
             signer: svc.x402Port,
             orderPublicKey: orderPublicKeyBase64(Buffer.from(input.orderSeed, "base64")),
             chain: chain.url,
+            feePayer: signers.feePayer!.address,
         })}\n`,
     );
 });

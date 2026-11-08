@@ -100,6 +100,7 @@ type stack struct {
 	sellerAddr   string
 	sellerPayTo  string
 	sellerATA    string
+	sellerToken  string
 	payments     paymentsControl
 	egressCAFile string // the CA the sandbox's code trusts, Bugnet's own
 	outerCert    string // egress' self-signed outer certificate, which the forwarder trusts
@@ -121,6 +122,7 @@ type paymentsControl struct {
 	Signer           int    `json:"signer"`
 	OrderPublicKey   string `json:"orderPublicKey"`
 	Chain            string `json:"chain"`
+	FeePayer         string `json:"feePayer"`
 	paymentsToken    string
 	paymentsTokenKey string
 }
@@ -545,7 +547,6 @@ func (s *stack) startSeller() {
 	s.t.Helper()
 	payTo, _ := newWallet(s.t)
 	feePayer, feeSecret := newWallet(s.t)
-	bugnetFee, _ := newWallet(s.t)
 	var ata struct {
 		ATA string `json:"ata"`
 	}
@@ -561,11 +562,16 @@ fee_payer = %q
 bugnet_fee_payer = %q
 settle = "self"
 chain_url = %q
+late = "4s"
+slow = "20s"
+stall = "6s"
 `, s.sellerAddr, filepath.Join(s.dir, "seller", "cert.pem"),
-		filepath.Join(s.dir, "seller", "key.pem"), payTo, ata.ATA, feePayer, bugnetFee,
+		filepath.Join(s.dir, "seller", "key.pem"), payTo, ata.ATA, feePayer, s.payments.FeePayer,
 		s.payments.Chain)
 	path := s.write("seller/seller.toml", []byte(cfg))
-	env := append(hostEnv(), "TESTSELLER_FEE_PAYER_KEY="+feeSecret)
+	s.sellerToken = rand.Text()
+	env := append(hostEnv(), "TESTSELLER_FEE_PAYER_KEY="+feeSecret,
+		"TESTSELLER_TEST_TOKEN="+s.sellerToken)
 	s.startProc(env, "x402-fake-seller", filepath.Join(s.bin, "x402-fake-seller"), "-config", path)
 	s.waitTLS(s.sellerAddr)
 }
@@ -663,6 +669,7 @@ func (s *stack) startRouter() {
 	table(m, "fetch")["egress_addr"] = s.egressAddr
 	table(m, "fetch")["egress_roots_file"] = s.outerCert
 	table(m, "x402")["enabled"] = true
+	table(m, "x402")["max_services"] = 32
 	_, port, _ := net.SplitHostPort(s.egressAddr)
 	p, _ := strconv.Atoi(port)
 	m["localrun"] = map[string]any{"forward_listen": s.fwdListen, "egress_port": p}
@@ -699,6 +706,7 @@ static_dir = %q
 payments_url = %q
 payments_ca_file = %q
 payments_client_cert_file = %q
+first_header_timeout = "3s"
 [localrun]
 upstream_roots_file = %q
 [localrun.upstream_addrs]
