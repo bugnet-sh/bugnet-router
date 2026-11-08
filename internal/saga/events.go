@@ -33,6 +33,11 @@ type Event struct {
 	BilledSeconds int64      `json:"billed_seconds"`
 	Refundable    bool       `json:"refundable"`
 	Reason        string     `json:"reason,omitempty"`
+	// UnusedSeconds is the paid time a refundable end left, 0 otherwise, on placement.terminated
+	// alone
+	UnusedSeconds *int64 `json:"unused_seconds,omitzero"`
+	// Refunds prices UnusedSeconds per order, newest first, on placement.terminated alone
+	Refunds []Refund `json:"refunds,omitzero"`
 }
 
 func newEvent(p store.Placement, reason string) Event {

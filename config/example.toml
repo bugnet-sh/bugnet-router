@@ -18,6 +18,7 @@ reuse_port = false            # SO_REUSEPORT, so a new router-api binds beside a
 [worker]
 listen_addr = ":8081"         # /healthz, /readyz and /monitor
 dataplane_workers = 8         # River workers on the dataplane queue, 1 to 10000
+default_workers = 20          # River workers on the default queue, 1 to 10000
 
 [valkey]
 addr = "127.0.0.1:6379"       # host:port, or unix:///run/valkey/valkey.sock for a Unix socket
@@ -132,6 +133,11 @@ emit_events = false                    # wallet.blocked and wallet.unblocked to 
 strike_threshold = 2                   # strikes inside strike_window that block a wallet
 strike_window = "24h"
 strike_block_for = "168h"
+abuse_block_for = ""                   # empty blocks until an operator lifts it
+stop_live_on_abuse = true              # an abuse end also ends the payers' other sandboxes
+refund_stopped_live = false            # wallet_blocked ends refund their unused time
+failed_refunds_per_day = 2             # refundable provider_failed ends per start payer in 24 h
+anonymous_failed_refunds_per_day = 20  # the same for all placements without a payer, together
 
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64

@@ -59,6 +59,7 @@ func TestDataPlaneDefaults(t *testing.T) {
 			eq(t, c.Fetch, Fetch{MaxBytes: 2 << 30, EgressAddr: "127.0.0.1:9443"})
 			eq(t, c.Hooks, Hooks{})
 			eq(t, c.DataplaneWorkers, 8)
+			eq(t, c.DefaultWorkers, 20)
 			eq(t, c.Boxd.GateRoute, "default")
 			eq(t, c.Boat.SSHPath, "gate")
 			eq(t, c.LocalSSHDPath, "/usr/sbin/sshd")
@@ -84,6 +85,7 @@ addr = "unix:///run/valkey/valkey.sock"
 
 [worker]
 dataplane_workers = 3
+default_workers = 4
 
 [names]
 preview_domain = "preview.dev.example.com"
@@ -167,6 +169,7 @@ ssh_path = "native"
 	}
 	eq(t, c.ValkeyAddr, "unix:///run/valkey/valkey.sock")
 	eq(t, c.DataplaneWorkers, 3)
+	eq(t, c.DefaultWorkers, 4)
 	eq(t, c.Names, Names{
 		PreviewDomain: "preview.dev.example.com", TransferHost: "transfer.dev.example.com",
 		SecretsHost: "secrets.dev.example.com", SSHHost: "ssh.dev.example.com", SSHPort: 2200,
@@ -254,6 +257,8 @@ func TestDataPlaneValidation(t *testing.T) {
 			"worker.dataplane_workers must be 1 to 10000"},
 		{"dataplane workers past river's limit", "[worker]\ndataplane_workers = 10001",
 			"worker.dataplane_workers must be 1 to 10000"},
+		{"no default workers", "[worker]\ndefault_workers = 0",
+			"worker.default_workers must be 1 to 10000"},
 		{"preview domain with a scheme", "[names]\npreview_domain = \"https://p.example.com\"",
 			"names.preview_domain must be a lowercase host name"},
 		{"transfer host in capitals", "[names]\ntransfer_host = \"Transfer.example.com\"",

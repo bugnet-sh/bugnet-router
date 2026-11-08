@@ -29,6 +29,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
@@ -180,6 +181,10 @@ type options struct {
 	features provider.Features
 	// egress is where apply_secrets points forwarders
 	egress worker.Egress
+	// wallets are the saga's and the wallet jobs' wallet settings
+	wallets config.Wallets
+	// defaultWorkers sets Deps.DefaultWorkers, the default when zero
+	defaultWorkers int
 }
 
 type env struct {
@@ -194,6 +199,7 @@ type env struct {
 	vk         valkey.Client
 	prefix     string
 	keys       dpkeys.Keys
+	worker     *worker.Worker
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -262,13 +268,14 @@ func newEnv(t *testing.T, o options) *env {
 		Log:          slog.New(slog.NewTextHandler(out, nil)),
 		Events:       edgeevents.New(vk, prefix, slog.New(slog.NewTextHandler(out, nil))),
 		Keys:         keys,
+		Wallets:      o.wallets,
 	}
 	if o.sagaClock != nil {
 		sd.Now = o.sagaClock.Now
 	}
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
-		Egress: o.egress,
+		Egress: o.egress, DefaultWorkers: o.defaultWorkers,
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
@@ -286,7 +293,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
-		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys,
+		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys, worker: w,
 	}
 }
 
@@ -1466,9 +1473,8 @@ func TestOutboxAlertsOnceTheTenthFailureIsRecorded(t *testing.T) {
 
 func TestDataplaneQueueHasEightWorkers(t *testing.T) {
 	q := worker.Queues(worker.Deps{})
-	if q[jobargs.QueueDataplane].MaxWorkers != 8 || q[river.QueueDefault].MaxWorkers != 10 ||
-		len(q) != 2 {
-		t.Fatalf("queues %+v, want dataplane at 8 workers beside default at 10", q)
+	if q[jobargs.QueueDataplane].MaxWorkers != 8 || len(q) != 2 {
+		t.Fatalf("queues %+v, want dataplane at 8 workers beside default", q)
 	}
 	three := worker.Queues(worker.Deps{DataplaneWorkers: 3})
 	if three[jobargs.QueueDataplane].MaxWorkers != 3 {

@@ -41,6 +41,11 @@
 // payer's transaction lock in the transaction that records the order. A blocked payer is refused
 // with nothing recorded, and a start over the wallet's cap or start buckets is recorded failed and
 // refundable, as CP 7.7 and 7.9 say.
+//
+// End ends a placement for a reason of CP 3.3 with the wallet actions of CP 6.4, under every
+// payer's wallet lock and then the placement row, the order Extend takes them in. FlagEnded runs
+// the abuse actions on a placement that already ended. placement.terminated prices a refundable
+// end's unused seconds per order, newest first.
 package saga
 
 import (
@@ -130,6 +135,9 @@ const (
 	heartbeatEvery   = 10 * time.Second
 )
 
+// EndTimeout bounds one End's destroy, which runs on past its caller's context
+const EndTimeout = terminateTimeout
+
 // cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
 var cleanupTimeout = 30 * time.Second
 
@@ -192,6 +200,8 @@ type Saga struct {
 	wallets  *wallets.Store
 	// unguardedAt is when step 4 of the payer decision was last logged, in Unix nanoseconds
 	unguardedAt atomic.Int64
+	// beforeMark runs between End's first read and its row lock, set only by tests
+	beforeMark func()
 }
 
 var errNoKeys = errors.New("saga: no data-plane keys to create a placement under")
@@ -253,6 +263,7 @@ func (s *Saga) Create(
 	np := store.NewPlacement{
 		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
+		SecondsBought: int64(pkg.Minutes) * 60,
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
@@ -318,7 +329,7 @@ func (s *Saga) record(
 		// The order keeps the claim and the placement the decision (CP 7.1, 7.5)
 		id, inserted, err := ts.InsertOrder(ctx, store.Order{
 			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
-			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros,
+			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros, SecondsBought: np.SecondsBought,
 		})
 		if err != nil {
 			return err
@@ -853,7 +864,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}
 		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
 			ID: c.OrderID, PlacementID: id, Payer: c.Payer, FeePayer: c.FeePayer,
-			AmountMicros: c.PackageMicros(),
+			AmountMicros: c.PackageMicros(), SecondsBought: int64(by / time.Second),
 		}, by)
 		if err != nil || !applied {
 			return err
@@ -1107,10 +1118,16 @@ func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, due time.Ti
 	return err
 }
 
-// endReasons maps a termination reason to the EndReason the edges get
+// endReasons maps a termination reason to the EndReason the edges get (CP 3.3)
 var endReasons = map[string]routerv1.EndReason{
-	ReasonStop:     routerv1.EndReason_END_REASON_STOPPED,
-	ReasonDeadline: routerv1.EndReason_END_REASON_EXPIRED,
+	ReasonStop:           routerv1.EndReason_END_REASON_STOPPED,
+	ReasonDeadline:       routerv1.EndReason_END_REASON_EXPIRED,
+	ReasonAbuse:          routerv1.EndReason_END_REASON_ABUSE,
+	ReasonWalletBlocked:  routerv1.EndReason_END_REASON_ABUSE,
+	ReasonControlLost:    routerv1.EndReason_END_REASON_CONTROL_LOST,
+	ReasonProviderFailed: routerv1.EndReason_END_REASON_PROVIDER_FAILED,
+	ReasonSandboxExited:  routerv1.EndReason_END_REASON_SANDBOX_EXITED,
+	ReasonOperator:       routerv1.EndReason_END_REASON_OPERATOR,
 }
 
 // placementEnded tells the edges to close all of the placement's traffic
@@ -1200,7 +1217,11 @@ func (s *Saga) terminate(
 			return err
 		}
 		// The transition to terminating recorded why, whoever finishes the placement
-		ev = newEvent(ended, cmp.Or(ended.TerminationReason, ReasonDeadline))
+		ev, err = s.terminatedEvent(ctx, ts, ended,
+			cmp.Or(ended.TerminationReason, ReasonDeadline))
+		if err != nil {
+			return err
+		}
 		return s.d.Store.InsertOutbox(ctx, tx, EventTerminated, ev)
 	})
 	if err != nil {

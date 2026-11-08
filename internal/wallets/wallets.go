@@ -32,6 +32,9 @@ const (
 	ReasonOperator = "operator"
 )
 
+// ReasonExpired is the reason of the unblock event a block whose time passed gets
+const ReasonExpired = "expired"
+
 // ActorRouter is the actor of every block and strike the router makes itself
 const ActorRouter = "router"
 
@@ -198,22 +201,55 @@ func (w *Store) Strike(ctx context.Context, tx pgx.Tx, s Strike) (bool, error) {
 // Unblock lifts a block, store.ErrNotFound when the router never saw the payer. A wallet with no
 // block in force is left alone, with no event.
 func (w *Store) Unblock(ctx context.Context, tx pgx.Tx, payer, actor, note string) error {
+	_, err := w.Lift(ctx, tx, payer, actor, note)
+	return err
+}
+
+// Lift is Unblock reporting whether a block was in force and lifted
+func (w *Store) Lift(ctx context.Context, tx pgx.Tx, payer, actor, note string) (bool, error) {
 	ts := w.st.Tx(tx)
 	if err := ts.LockWallets(ctx, payer); err != nil {
-		return err
+		return false, err
 	}
 	now := w.now()
 	cur, err := ts.Wallet(ctx, payer, now)
+	if err != nil || !cur.Blocked(now) {
+		return false, err
+	}
+	return true, w.clear(ctx, tx, payer, actor, note, now)
+}
+
+// Expire lifts the payer's block when its time has passed, under the wallet's lock, reporting
+// whether it did
+func (w *Store) Expire(ctx context.Context, tx pgx.Tx, payer string) (bool, error) {
+	ts := w.st.Tx(tx)
+	if err := ts.LockWallets(ctx, payer); err != nil {
+		return false, err
+	}
+	now := w.now()
+	cur, err := ts.Wallet(ctx, payer, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !cur.Blocked(now) {
-		return nil
+	// A block lengthened or lifted since the caller read it is left as it is
+	if cur.BlockedAt == nil || cur.BlockedUntil == nil || cur.BlockedUntil.After(now) {
+		return false, nil
 	}
+	return true, w.clear(ctx, tx, payer, ActorRouter, ReasonExpired, now)
+}
+
+// clear lifts a block with its event, and wallet.unblocked when events are on
+func (w *Store) clear(
+	ctx context.Context, tx pgx.Tx, payer, actor, note string, now time.Time,
+) error {
+	ts := w.st.Tx(tx)
 	if err := ts.ClearWalletBlock(ctx, payer); err != nil {
 		return err
 	}
-	err = ts.InsertWalletEvent(ctx, store.WalletEvent{
+	err := ts.InsertWalletEvent(ctx, store.WalletEvent{
 		Payer: payer, Kind: store.WalletUnblock, Reason: note, Actor: actor, CreatedAt: now,
 	})
 	if err != nil || !w.s.EmitEvents {

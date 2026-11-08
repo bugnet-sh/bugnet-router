@@ -13,7 +13,8 @@
 // long. Data-plane jobs run on the dataplane queue with workers of their own. apply_secrets
 // writes a placement's whole secret set into its sandbox, one run at a time per placement under an
 // advisory lock, so any number of queued jobs converge. A prepare_ssh job makes one ready
-// placement's sshd ready through the saga, within 150 s.
+// placement's sshd ready through the saga, within 150 s. wallet_stop_live ends a blocked payer's
+// live placements a few at a time, and wallet_expiry lifts timed wallet blocks every 10 minutes.
 package worker
 
 import (
@@ -37,10 +38,10 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
 const (
-	maxWorkers  = 10
 	jobTimeout  = 60 * time.Second
 	rescueAfter = 3 * time.Minute // a crashed worker's running job blocks its kind until rescued
 	sweepEvery  = 60 * time.Second
@@ -54,8 +55,11 @@ const (
 	outboxRunTime = 30 * time.Second
 )
 
-// dataplaneWorkers is the dataplane queue's workers when Deps leaves them unset
-const dataplaneWorkers = 8
+// dataplaneWorkers and defaultWorkers are each queue's workers when Deps leaves them unset
+const (
+	dataplaneWorkers = 8
+	defaultWorkers   = 20
+)
 
 // Deps are the worker's own settings next to the saga it builds
 type Deps struct {
@@ -64,6 +68,8 @@ type Deps struct {
 	Now        func() time.Time   // time.Now when nil
 	// DataplaneWorkers works the dataplane queue, 8 when zero
 	DataplaneWorkers int
+	// DefaultWorkers works the default queue, 20 when zero
+	DefaultWorkers int
 	// Egress is where apply_secrets points every forwarder
 	Egress Egress
 }
@@ -76,6 +82,7 @@ type Worker struct {
 	log      *slog.Logger
 	river    *river.Client[pgx.Tx]
 	saga     *saga.Saga
+	wallets  *wallets.Store
 	keys     dpkeys.Keys
 	events   *edgeevents.Bus
 	http     *http.Client
@@ -95,6 +102,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		d.Now = time.Now
 	}
 	d.DataplaneWorkers = cmp.Or(d.DataplaneWorkers, dataplaneWorkers)
+	d.DefaultWorkers = cmp.Or(d.DefaultWorkers, defaultWorkers)
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -120,6 +128,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &outboxWorker{w: w})
 	river.AddWorker(workers, &applySecretsWorker{w: w})
 	river.AddWorker(workers, &prepareSSHWorker{w: w})
+	river.AddWorker(workers, &walletStopLiveWorker{w: w})
+	river.AddWorker(workers, &walletExpiryWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -134,19 +144,34 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	sd.River = rc
 	w.river = rc
 	w.saga = saga.New(sd)
+	ws := sd.Wallets.OrDefaults()
+	w.wallets = wallets.New(sd.Store, wallets.Settings{
+		Facilitators: ws.FacilitatorAddresses, StrikeThreshold: ws.StrikeThreshold,
+		StrikeWindow: ws.StrikeWindow, StrikeBlockFor: ws.StrikeBlockFor,
+		EmitEvents: ws.EmitEvents, Now: sd.Now,
+	})
 	return w, nil
 }
 
 // queues gives data-plane jobs their own queue, so slow Execs never delay deadlines or the outbox
 func queues(d Deps) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
-		river.QueueDefault:     {MaxWorkers: maxWorkers},
+		river.QueueDefault:     {MaxWorkers: cmp.Or(d.DefaultWorkers, defaultWorkers)},
 		jobargs.QueueDataplane: {MaxWorkers: cmp.Or(d.DataplaneWorkers, dataplaneWorkers)},
 	}
 }
 
 // DataplaneWorkers is how many workers River runs on the dataplane queue
 func (w *Worker) DataplaneWorkers() int { return w.d.DataplaneWorkers }
+
+// Workers is how many workers River runs on every queue together, each holding a connection
+func (w *Worker) Workers() int {
+	n := 0
+	for _, q := range queues(w.d) {
+		n += q.MaxWorkers
+	}
+	return n
+}
 
 // River returns the client to start and stop
 func (w *Worker) River() *river.Client[pgx.Tx] { return w.river }
@@ -156,19 +181,31 @@ func (w *Worker) Saga() *saga.Saga { return w.saga }
 
 func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
-// periodicJobs runs the sweep, watch and outbox at start and on their intervals, one at a time
+// periodicJobs runs the sweep, watch, outbox and wallet expiry at start and on their intervals,
+// one at a time
 func periodicJobs() []*river.PeriodicJob {
 	single := singleRun()
-	return []*river.PeriodicJob{
-		river.NewPeriodicJob(river.PeriodicInterval(sweepEvery),
-			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Sweep{}, single },
-			&river.PeriodicJobOpts{RunOnStart: true}),
-		river.NewPeriodicJob(river.PeriodicInterval(watchEvery),
-			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Watch{}, single },
-			&river.PeriodicJobOpts{RunOnStart: true}),
-		river.NewPeriodicJob(river.PeriodicInterval(outboxEvery),
-			func() (river.JobArgs, *river.InsertOpts) { return jobargs.Outbox{}, single },
-			&river.PeriodicJobOpts{RunOnStart: true}),
+	var out []*river.PeriodicJob
+	for _, p := range periodic() {
+		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),
+			func() (river.JobArgs, *river.InsertOpts) { return p.args, single },
+			&river.PeriodicJobOpts{RunOnStart: true}))
+	}
+	return out
+}
+
+// periodicJob is one job kind the worker inserts on an interval
+type periodicJob struct {
+	every time.Duration
+	args  river.JobArgs
+}
+
+func periodic() []periodicJob {
+	return []periodicJob{
+		{sweepEvery, jobargs.Sweep{}},
+		{watchEvery, jobargs.Watch{}},
+		{outboxEvery, jobargs.Outbox{}},
+		{expiryEvery, jobargs.WalletExpiry{}},
 	}
 }
 

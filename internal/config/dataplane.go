@@ -17,7 +17,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/hostname"
 )
 
-// maxDataplaneWorkers is the most workers River lets one queue run
+// maxDataplaneWorkers is the most workers River lets one queue run, any queue
 const maxDataplaneWorkers = 10_000
 
 // maxKoyebPart is the most one request carries through Koyeb's front
@@ -33,6 +33,10 @@ func (f file) dataPlane(c *Config) error {
 		return fmt.Errorf("worker.dataplane_workers must be 1 to %d", maxDataplaneWorkers)
 	}
 	c.DataplaneWorkers = int(f.Worker.DataplaneWorkers)
+	if w := f.Worker.DefaultWorkers; w < 1 || w > maxDataplaneWorkers {
+		return fmt.Errorf("worker.default_workers must be 1 to %d", maxDataplaneWorkers)
+	}
+	c.DefaultWorkers = int(f.Worker.DefaultWorkers)
 	c.Previews = f.Previews
 	b, x, s, k := f.EdgeBudget, f.Transfers, f.SSH, f.Secrets
 	for _, n := range []struct {

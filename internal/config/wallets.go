@@ -36,6 +36,16 @@ type Wallets struct {
 	StrikeThreshold int
 	StrikeWindow    time.Duration
 	StrikeBlockFor  time.Duration
+	// AbuseBlockFor is how long an abuse end blocks its payers, 0 until an operator lifts it
+	AbuseBlockFor time.Duration
+	// StopLiveOnAbuse ends the other live placements of every payer an abuse end blocks
+	StopLiveOnAbuse bool
+	// RefundStoppedLive makes those wallet_blocked ends refund their unused time
+	RefundStoppedLive bool
+	// FailedRefundsPerDay is the refundable provider_failed ends per start payer in 24 h
+	FailedRefundsPerDay int
+	// AnonymousFailedRefundsPerDay is the same for every placement without a payer, together
+	AnonymousFailedRefundsPerDay int
 }
 
 type walletsFile struct {
@@ -55,6 +65,12 @@ type walletsFile struct {
 	StrikeThreshold        int64    `toml:"strike_threshold"`
 	StrikeWindow           string   `toml:"strike_window"`
 	StrikeBlockFor         string   `toml:"strike_block_for"`
+	AbuseBlockFor          string   `toml:"abuse_block_for"`
+	StopLiveOnAbuse        bool     `toml:"stop_live_on_abuse"`
+	RefundStoppedLive      bool     `toml:"refund_stopped_live"`
+	FailedRefundsPerDay    int64    `toml:"failed_refunds_per_day"`
+	// AnonymousFailedRefunds is anonymous_failed_refunds_per_day
+	AnonymousFailedRefunds int64 `toml:"anonymous_failed_refunds_per_day"`
 }
 
 // maxWalletLimit keeps every count and rate far inside what the buckets and Postgres hold
@@ -65,10 +81,12 @@ func defaultWallets() walletsFile {
 		MaxConcurrent: 5, StartsPerHour: 30, StartsBurst: 5, StartsPerDay: 200,
 		AnonymousMaxConcurrent: 20, OpsPerSecond: 20, OpsBurst: 40, RefusalsPerHour: 10,
 		RefusalBlockFor: "1h", StrikeThreshold: 2, StrikeWindow: "24h", StrikeBlockFor: "168h",
+		StopLiveOnAbuse: true, FailedRefundsPerDay: 2, AnonymousFailedRefunds: 20,
 	}
 }
 
-// OrDefaults returns w with each zero limit at its default, for callers built without settings
+// OrDefaults returns w with each zero limit at its default, for callers built without settings,
+// leaving every switch and abuse_block_for as given
 func (w Wallets) OrDefaults() Wallets {
 	d, _ := defaultWallets().read(defaultWallets())
 	w.MaxConcurrent = cmp.Or(w.MaxConcurrent, d.MaxConcurrent)
@@ -83,6 +101,9 @@ func (w Wallets) OrDefaults() Wallets {
 	w.StrikeThreshold = cmp.Or(w.StrikeThreshold, d.StrikeThreshold)
 	w.StrikeWindow = cmp.Or(w.StrikeWindow, d.StrikeWindow)
 	w.StrikeBlockFor = cmp.Or(w.StrikeBlockFor, d.StrikeBlockFor)
+	w.FailedRefundsPerDay = cmp.Or(w.FailedRefundsPerDay, d.FailedRefundsPerDay)
+	w.AnonymousFailedRefundsPerDay = cmp.Or(w.AnonymousFailedRefundsPerDay,
+		d.AnonymousFailedRefundsPerDay)
 	return w
 }
 
@@ -92,7 +113,10 @@ func (f walletsFile) read(d walletsFile) (Wallets, error) {
 		// Every start would count as having no payer and be refused after Payments charged it
 		return Wallets{}, errors.New("wallets.require_payer = true needs wallets.use_payer = true")
 	}
-	w := Wallets{UsePayer: f.UsePayer, RequirePayer: f.RequirePayer, EmitEvents: f.EmitEvents}
+	w := Wallets{
+		UsePayer: f.UsePayer, RequirePayer: f.RequirePayer, EmitEvents: f.EmitEvents,
+		StopLiveOnAbuse: f.StopLiveOnAbuse, RefundStoppedLive: f.RefundStoppedLive,
+	}
 	for _, n := range []struct {
 		key  string
 		raw  int64
@@ -107,6 +131,9 @@ func (f walletsFile) read(d walletsFile) (Wallets, error) {
 		{"ops_burst", f.OpsBurst, &w.OpsBurst},
 		{"refusals_per_hour", f.RefusalsPerHour, &w.RefusalsPerHour},
 		{"strike_threshold", f.StrikeThreshold, &w.StrikeThreshold},
+		{"failed_refunds_per_day", f.FailedRefundsPerDay, &w.FailedRefundsPerDay},
+		{"anonymous_failed_refunds_per_day", f.AnonymousFailedRefunds,
+			&w.AnonymousFailedRefundsPerDay},
 	} {
 		if n.raw < 1 || n.raw > maxWalletLimit {
 			return Wallets{}, fmt.Errorf("wallets.%s must be 1 to %d", n.key, maxWalletLimit)
@@ -127,6 +154,14 @@ func (f walletsFile) read(d walletsFile) (Wallets, error) {
 				p.key)
 		}
 		*p.into = v
+	}
+	if f.AbuseBlockFor != "" {
+		v, err := time.ParseDuration(f.AbuseBlockFor)
+		if err != nil || v <= 0 {
+			return Wallets{}, errors.New("wallets.abuse_block_for must be empty or a positive " +
+				"Go duration such as 720h")
+		}
+		w.AbuseBlockFor = v
 	}
 	for i, addr := range f.FacilitatorAddresses {
 		if _, err := wallet.ParseSolana(addr); err != nil {

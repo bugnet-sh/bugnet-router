@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
@@ -37,8 +38,7 @@ const (
 	readActor = "operator"
 )
 
-var errStopLive = errors.New(
-	"api: stop_live ends live placements through wallet_stop_live, which is not built yet")
+var errStopLive = errors.New("api: stop_live needs the job queue, which this router lacks")
 
 // BlockWallet blocks a payer's new orders until the time given, or until an operator lifts it
 func (o *OperatorServer) BlockWallet(
@@ -49,7 +49,7 @@ func (o *OperatorServer) BlockWallet(
 	if err != nil {
 		return nil, err
 	}
-	if m.GetStopLive() {
+	if m.GetStopLive() && s.d.River == nil {
 		return nil, withInfo(connect.NewError(connect.CodeFailedPrecondition, errStopLive),
 			reasonFeatureUnavailable)
 	}
@@ -68,15 +68,27 @@ func (o *OperatorServer) BlockWallet(
 		}
 	}
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
-		return s.wl.Block(ctx, tx, wallets.Block{
+		err := s.wl.Block(ctx, tx, wallets.Block{
 			Payer: payer, Reason: wallets.ReasonOperator, Until: until, Actor: actor,
 			Evidence: evidence,
 		})
+		if err != nil || !m.GetStopLive() {
+			return err
+		}
+		w, err := s.d.Store.Tx(tx).Wallet(ctx, payer, time.Now())
+		if err != nil {
+			return err
+		}
+		// The job commits with the block, so it sees every placement the block let through
+		_, err = s.d.River.InsertTx(ctx, tx,
+			jobargs.WalletStopLive{Payer: payer, BlockedAt: w.BlockedAt}, nil)
+		return err
 	})
 	if err != nil {
 		return nil, s.status(err)
 	}
-	s.d.Log.Info("operator blocked a wallet", "actor", actor, "payer", payer)
+	s.d.Log.Info("operator blocked a wallet", "actor", actor, "payer", payer,
+		"stop_live", m.GetStopLive())
 	w, err := s.walletMsg(ctx, payer)
 	if err != nil {
 		return nil, s.status(err)
@@ -93,13 +105,20 @@ func (o *OperatorServer) UnblockWallet(
 	if err != nil {
 		return nil, err
 	}
+	var lifted bool
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
-		return s.wl.Unblock(ctx, tx, payer, actor, m.GetNote())
+		var err error
+		lifted, err = s.wl.Lift(ctx, tx, payer, actor, m.GetNote())
+		return err
 	})
 	if err != nil {
 		return nil, s.status(err)
 	}
-	s.d.Log.Info("operator unblocked a wallet", "actor", actor, "payer", payer)
+	if lifted {
+		s.d.Log.Info("operator unblocked a wallet", "actor", actor, "payer", payer)
+	} else {
+		s.d.Log.Debug("operator unblock found no block in force", "actor", actor, "payer", payer)
+	}
 	w, err := s.walletMsg(ctx, payer)
 	if err != nil {
 		return nil, s.status(err)
@@ -126,12 +145,8 @@ func (o *OperatorServer) GetWallet(
 		return nil, s.status(err)
 	}
 	out := &routerv1.GetWalletResponse{Wallet: w}
-	for _, p := range live {
-		op, err := s.operatorPlacement(ctx, p)
-		if err != nil {
-			return nil, s.status(err)
-		}
-		out.Live = append(out.Live, op)
+	for _, l := range live {
+		out.Live = append(out.Live, operatorPlacementOf(l.p, l.extend))
 	}
 	evs, err := s.d.Store.WalletEvents(ctx, payer, walletEventsShown)
 	if err != nil {
@@ -237,14 +252,8 @@ func walletEventMsg(e store.WalletEvent) *routerv1.WalletEvent {
 	return out
 }
 
-// operatorPlacement describes a placement for an operator, with every payer that differs
-func (s *Server) operatorPlacement(
-	ctx context.Context, p store.Placement,
-) (*routerv1.OperatorPlacement, error) {
-	extend, err := s.extendPayers(ctx, p)
-	if err != nil {
-		return nil, err
-	}
+// operatorPlacementOf describes a placement for an operator, with every payer that differs
+func operatorPlacementOf(p store.Placement, extend []string) *routerv1.OperatorPlacement {
 	out := &routerv1.OperatorPlacement{
 		PlacementId: p.ID.String(), State: placementState(p.State), Provider: p.Provider,
 		PackageId: p.PackageID, CreatedAt: timestamppb.New(p.CreatedAt), Payer: p.Payer,
@@ -256,7 +265,7 @@ func (s *Server) operatorPlacement(
 	if p.Deadline != nil {
 		out.Deadline = timestamppb.New(*p.Deadline)
 	}
-	return out, nil
+	return out
 }
 
 // decide runs the payer decision again on an order's claims, without the logs Saga.Create writes
@@ -285,24 +294,29 @@ func (s *Server) extendPayers(ctx context.Context, p store.Placement) ([]string,
 	return out, nil
 }
 
-// livePlacementsOf returns the live placements payer paid a start or an extension of, as decided
-func (s *Server) livePlacementsOf(ctx context.Context, payer string) ([]store.Placement, error) {
+// livePlacement is a live placement with its decided extension payers other than its start payer
+type livePlacement struct {
+	p      store.Placement
+	extend []string
+}
+
+// livePlacementsOf returns the live placements payer paid a start or an extension of, as decided,
+// each with its extension payers worked out once
+func (s *Server) livePlacementsOf(ctx context.Context, payer string) ([]livePlacement, error) {
 	ps, err := s.d.Store.LivePlacementsOf(ctx, payer)
 	if err != nil {
 		return nil, err
 	}
-	out := ps[:0]
+	var out []livePlacement
 	for _, p := range ps {
-		if p.Payer != payer {
-			extend, err := s.extendPayers(ctx, p)
-			if err != nil {
-				return nil, err
-			}
-			if !slices.Contains(extend, payer) {
-				continue
-			}
+		extend, err := s.extendPayers(ctx, p)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, p)
+		if p.Payer != payer && !slices.Contains(extend, payer) {
+			continue
+		}
+		out = append(out, livePlacement{p: p, extend: extend})
 	}
 	return out, nil
 }

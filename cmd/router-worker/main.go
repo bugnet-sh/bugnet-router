@@ -106,6 +106,16 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
+// checkPool warns when the Postgres pool cannot give every River worker a connection and keep
+// one for the HTTP checks
+func checkPool(log *slog.Logger, maxConns int32, workers int) {
+	if int(maxConns) > workers {
+		return
+	}
+	log.Warn("the Postgres pool is too small for the River workers, raise pool_max_conns in "+
+		"BUGNET_DATABASE_URL", "pool_max_conns", maxConns, "workers", workers)
+}
+
 // openStore returns the store, sealing provider credentials under the data-plane keys
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
 	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log))
@@ -157,14 +167,16 @@ func serve(
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
 		SSH:          saga.SSHSettingsOf(cfg),
+		Wallets:      cfg.Wallets,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
-		DataplaneWorkers: cfg.DataplaneWorkers,
-		Egress:           worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
+		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
+		Egress: worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
 	})
 	if err != nil {
 		return err
 	}
+	checkPool(log, pool.Config().MaxConns, w.Workers())
 	// Start gets its own context because cancelling it would skip the soft stop
 	if err := w.River().Start(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("start river: %w", err)

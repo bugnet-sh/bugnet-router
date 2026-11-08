@@ -378,7 +378,7 @@ does not know.
 
 | Variable | Who reads it |
 | --- | --- |
-| `BUGNET_DATABASE_URL` | `router-api`, `router-worker`, `router-api migrate` and `router-worker outbox-redrive`, may hold a password |
+| `BUGNET_DATABASE_URL` | `router-api`, `router-worker`, `router-api migrate` and `router-worker outbox-redrive`, may hold a password, and sets `pool_max_conns=48` for `router-worker` |
 | `BUGNET_INTERNAL_TOKEN` | `router-api`, `router-worker` and `bugnet-dev`, the API's bearer token, 32 characters or more |
 | `BUGNET_HANDLE_KEY` | `router-api` and `router-worker`, base64 of 32 bytes or more that derives handles |
 | `BUGNET_DATA_PLANE_KEYS` | `router-api` and `router-worker`, required, root keys as `<id>:<base64 of 32 bytes>` entries separated by commas, newest first |
@@ -417,6 +417,14 @@ fails.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
 no settings file.
+
+Each River worker of `router-worker` holds a Postgres connection while it runs a job, so the pool
+needs more connections than its workers together: `worker.default_workers` (20) and
+`worker.dataplane_workers` (8) today, and `health.probe_workers` (4) once the canaries land, 32
+in all. Put `pool_max_conns=48` in `BUGNET_DATABASE_URL`, for example
+`postgres://host:5432/bugnet_router?sslmode=require&pool_max_conns=48`. pgx's own default is 4
+or the number of CPUs, whichever is larger. At start `router-worker` logs a warning naming
+`pool_max_conns` when the pool's size is not above its workers.
 
 ## Settings
 
@@ -483,8 +491,9 @@ reports it, and every other rule still applies. `dev.toml` points at
 `config/dev-mining-pools.txt`, a documentation range standing in for real pools.
 
 `worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
-data-plane jobs away from deadlines, the sweep and the outbox. It takes 1 to 10000, the most
-River runs on one queue.
+data-plane jobs away from deadlines, the sweep and the outbox. `worker.default_workers` (20) sets
+the default queue's, which runs deadlines, the sweep, the watch, the outbox and the wallet jobs.
+Each takes 1 to 10000, the most River runs on one queue.
 
 A package in the catalog may carry its own edge budget and a restricted egress list:
 
@@ -549,6 +558,11 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 | `facilitator_addresses` | `[]` | Canonical base58 addresses that count as no payer and are never blocked |
 | `emit_events` | `false` | `wallet.blocked` and `wallet.unblocked` to Payments |
 | `strike_threshold`, `strike_window`, `strike_block_for` | `2`, `"24h"`, `"168h"` | Strikes inside the window that block a wallet, and for how long |
+| `abuse_block_for` | `""` | How long an abuse end blocks its payers, empty until an operator lifts it |
+| `stop_live_on_abuse` | `true` | An abuse end also ends every other live placement of each payer it blocks |
+| `refund_stopped_live` | `false` | Those `wallet_blocked` ends refund their unused time |
+| `failed_refunds_per_day` | `2` | Refundable `provider_failed` ends per start payer in 24 h |
+| `anonymous_failed_refunds_per_day` | `20` | The same for every placement without a payer, together |
 
 `[boat]`, `[e2b]`, `[boxd]` and `[koyeb]` each take `ops_per_second`, the user operations a
 second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
@@ -732,9 +746,43 @@ token. An extension is checked for a block only. A bad address answers `InvalidA
 every change, written as `operator:<actor>` on the wallet and its event. A block waits for any order
 of that payer in flight, never shortens a block in force, and is refused for a facilitator address
 with `FailedPrecondition` and `FACILITATOR_ADDRESS`. Unblocking a wallet with no block in force
-changes nothing and writes no event. `stop_live` answers `FailedPrecondition` with
-`FEATURE_UNAVAILABLE` until the job that ends live placements lands. `ListWallets` takes up to 1000
-a page, 100 when `limit` is 0.
+changes nothing and writes no event, and logs only at debug level. `stop_live` also inserts a
+`wallet_stop_live` job in the block's transaction. `ListWallets` takes up to 1000 a page, 100 when
+`limit` is 0.
+
+### Ending a placement for a reason
+
+`Saga.End` ends a ready placement for one of the reasons below, and `Saga.FlagEnded` records
+abuse on one that already ended. Reconciliation and the operator's end calls use them.
+
+| Reason | `EndReason` to the edges | Refundable | Wallet action |
+| --- | --- | --- | --- |
+| `abuse` | `ABUSE` | No | Blocks every payer, start and extension, for `abuse_block_for` |
+| `control_lost` | `CONTROL_LOST` | No | One strike on every payer |
+| `provider_failed` | `PROVIDER_FAILED` | Under the daily cap | A strike on every payer past the cap |
+| `sandbox_exited` | `SANDBOX_EXITED` | No | None |
+| `wallet_blocked` | `ABUSE` | `refund_stopped_live` | None |
+| `operator` | `OPERATOR` | The operator's choice | None |
+
+An end takes the wallet lock of every payer of the placement, then the placement's row, the order
+`ExtendPlacement` takes them in. A payer that extends the placement before the row is locked
+starts the end again, so its block is never missed. A terminating placement keeps its reason,
+except that `abuse` replaces a stop in flight. A held end (the correlation guard) takes no wallet
+action, records `correlated: true` in its evidence and never counts against the daily cap.
+Every end for `abuse`, `control_lost`, `provider_failed` or `sandbox_exited` writes one
+`provider_signals` row, its `source` taken from the evidence's `source` field and its
+`held_class` from `held_class`. With `stop_live_on_abuse`, each payer an abuse end blocks gets a
+`wallet_stop_live` job in the same transaction.
+
+`FlagEnded` takes `abuse` only and a terminated or failed placement. It changes neither the
+reason nor the money, blocks every payer not already blocked for abuse, writes a `note` event for
+those that are, and answers the payers it blocked.
+
+`wallet_stop_live{payer}` (150 s) ends the payer's placements that are ready, as start or
+extension payer, with reason `wallet_blocked`, at most 5 a run, then inserts itself again. While
+one is still placing it looks again 15 s later, up to 20 times. `wallet_expiry` runs every 10
+minutes (30 s) and lifts blocks whose `blocked_until` has passed, each with an `unblock` event of
+reason `expired` and actor `router`, and `wallet.unblocked` when events are on.
 
 ## Error reasons
 
@@ -1355,7 +1403,14 @@ exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
 | `deadline` | The paid deadline, null before ready |
 | `billed_seconds` | Seconds from ready to terminated |
 | `refundable` | Whether the order should be refunded |
-| `reason` | A stable code such as `stop`, `deadline`, `no_candidate`, `wallet_busy`, `wallet_rate_limited`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+| `reason` | A stable code such as `stop`, `deadline`, `abuse`, `provider_failed`, `no_candidate`, `wallet_busy`, `wallet_rate_limited`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+| `unused_seconds` | On `placement.terminated` only, `max(0, deadline - terminated_at)` in whole seconds when refundable, else 0 |
+| `refunds` | On `placement.terminated` only, `[{order_id, refund_micros}]` when refundable, else `[]` |
+
+`refunds` takes the unused seconds from the newest order back to the start order. Each order
+refunds its share at its own price a second, `amount_micros / seconds_bought` rounded down to
+whole micros, where `amount_micros` already leaves out a start order's x402 allowance. An order
+from before `orders.seconds_bought` was kept stops the list there.
 
 With `wallets.emit_events`, `wallet.blocked` carries `{payer, until, reason, placement_id}`, with
 `until` and `placement_id` null when there is none, and `wallet.unblocked` carries `{payer}`.

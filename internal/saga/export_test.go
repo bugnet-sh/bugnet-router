@@ -48,3 +48,9 @@ func SSHSpecFor(
 ) SSHSpecFields {
 	return s.specFor(prov, ref, authorize)
 }
+
+// Refunds prices a refundable end's unused seconds over a placement's orders, newest first
+var Refunds = refunds
+
+// SetBeforeMark runs f between End's first read of a placement and its row lock
+func SetBeforeMark(s *Saga, f func()) { s.beforeMark = f }
