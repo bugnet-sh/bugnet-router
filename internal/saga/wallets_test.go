@@ -17,6 +17,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -526,4 +527,20 @@ func TestOrdersKeepTheTxClaim(t *testing.T) {
 		eq(t, err, nil)
 		eq(t, o.Tx, want)
 	}
+}
+
+// costly bills 40000 micros for the small package's 10 minutes
+type costly struct{ *local.Provider }
+
+func (costly) HourlyCostMicros(provider.Size) int64 { return 240000 }
+
+func TestMarginUsesPackageShare(t *testing.T) {
+	e := newEnv(t, costly{newLocal(t, local.Options{Name: "a"})})
+	tok := e.token(t, ordertoken.Claims{
+		OrderID: "paid", Kind: ordertoken.KindStart, PackageID: smallPkg,
+		AmountMicros: 1053000, AllowanceMicros: 1000000,
+	})
+	// 40000 against the 1053000 paid would pass the 0.5 floor, against the package it fails
+	_, _, err := e.saga.Create(t.Context(), tok, placement.Requirements{})
+	eq(t, errors.Is(err, placement.ErrNoCandidate), true)
 }
