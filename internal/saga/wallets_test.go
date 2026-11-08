@@ -355,6 +355,41 @@ func TestCreateWaitsForABlockInFlight(t *testing.T) {
 	}
 }
 
+func TestAnExtendWithoutAPayerHoldsNoLock(t *testing.T) {
+	a := newCapped(t, t.TempDir(), 0)
+	e := newEnv(t, a)
+	_, h := e.placeReady(t, "order-1")
+	a.hold.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.saga.Extend(context.WithoutCancel(t.Context()), h,
+			e.extendToken(t, "ext-1", morePkg, morePrice, h))
+		done <- err
+	}()
+	<-a.held
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, _, err := e.saga.Create(ctx, e.startToken(t, "order-2"), placement.Requirements{})
+	close(a.release)
+	eq(t, err, nil)
+	eq(t, <-done, nil)
+}
+
+func TestAnExtensionPayerIsSeen(t *testing.T) {
+	e := walletEnv(t, nil)
+	_, h := e.placeWith(t, "order-1", payerA)
+	if _, err := e.store.Wallet(t.Context(), payerB, time.Now()); !errors.Is(err,
+		store.ErrNotFound) {
+		t.Fatalf("payer B before any order: %v", err)
+	}
+	if _, err := e.saga.Extend(t.Context(), h, e.paidExtend(t, "ext-1", payerB, h)); err != nil {
+		t.Fatal(err)
+	}
+	w, err := e.store.Wallet(t.Context(), payerB, time.Now())
+	eq(t, err, nil)
+	eq(t, w.Payer, payerB)
+}
+
 // placeWith places a ready placement whose start order payer paid
 func (e *env) placeWith(t *testing.T, order, payer string) (store.Placement, string) {
 	t.Helper()

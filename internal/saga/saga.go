@@ -819,11 +819,15 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		if err != nil {
 			return err
 		}
-		if err := ts.LockWallets(ctx, payer); err != nil {
-			return err
-		}
-		if err := s.checkExtendPayer(ctx, tx, c.OrderID, payer); err != nil {
-			return err
+		// Without a payer nothing below is keyed on the wallet, so no lock is held across
+		// SetLifetime that every create without a payer would wait on
+		if payer != "" {
+			if err := ts.LockWallets(ctx, payer); err != nil {
+				return err
+			}
+			if err := s.checkExtendPayer(ctx, tx, c.OrderID, payer); err != nil {
+				return err
+			}
 		}
 		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
 			ID: c.OrderID, PlacementID: id, Payer: payer, FeePayer: c.FeePayer,
@@ -831,6 +835,11 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}, by)
 		if err != nil || !applied {
 			return err
+		}
+		if payer != "" {
+			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {
+				return err
+			}
 		}
 		edge, egress, err := s.addBudgets(ctx, ts, id, pkg)
 		if err != nil {

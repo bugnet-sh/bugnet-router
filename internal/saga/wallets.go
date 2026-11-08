@@ -194,13 +194,10 @@ func (s *Saga) checkStart(
 	return wait, nil
 }
 
-// checkExtendPayer runs CP 7.7 step 4 for an extend order not yet recorded
+// checkExtendPayer runs CP 7.7 step 4 for an extend order of a payer not yet recorded
 func (s *Saga) checkExtendPayer(
 	ctx context.Context, tx pgx.Tx, orderID, payer string,
 ) error {
-	if payer == "" {
-		return nil
-	}
 	if _, err := s.d.Store.Tx(tx).OrderByID(ctx, orderID); err == nil {
 		return nil
 	} else if !errors.Is(err, store.ErrNotFound) {
