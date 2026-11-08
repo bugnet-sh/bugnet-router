@@ -269,9 +269,12 @@ func (ps *PaymentsServer) AppendAllowanceEvent(
 	s, m := ps.s, req.Msg
 	ev := m.GetEvent()
 	kept := ev.GetPhase() == "kept"
+	start := cmp.Or(m.GetStartOrderId(), m.GetOrderId())
 	switch {
 	case m.GetOrderId() == "":
 		return nil, invalid("order_id is required")
+	case kept && m.GetOrderId() != start:
+		return nil, invalid("kept needs order_id equal to start_order_id")
 	case ev.GetPhase() != "paid" && ev.GetPhase() != "refunded" && !kept:
 		return nil, invalid("phase must be paid, refunded or kept")
 	case ev.GetAmountMicros() < 0:
@@ -285,7 +288,7 @@ func (ps *PaymentsServer) AppendAllowanceEvent(
 	case !networkShape.MatchString(ev.GetNetwork()):
 		return nil, invalid("network must be CAIP-2")
 	}
-	p, err := s.startPlacement(ctx, m.GetOrderId())
+	p, err := s.startPlacement(ctx, start)
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -300,7 +303,7 @@ func (ps *PaymentsServer) AppendAllowanceEvent(
 	}
 	f := sessions.Fields{
 		"phase": ev.GetPhase(), "amount_micros": ev.GetAmountMicros(), "asset": ev.GetAsset(),
-		"network": ev.GetNetwork(), "tx": ev.GetTx(),
+		"network": ev.GetNetwork(), "tx": ev.GetTx(), "order_id": m.GetOrderId(),
 	}
 	if kept {
 		delete(f, "tx")

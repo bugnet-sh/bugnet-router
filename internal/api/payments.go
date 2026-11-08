@@ -4,7 +4,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
+	"github.com/bugnet-sh/bugnet-router/internal/solana"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
@@ -199,3 +203,60 @@ func lowerHex32(s string) ([]byte, bool) {
 	b, err := hex.DecodeString(s)
 	return b, err == nil
 }
+
+// AppendX402Resolved stores what Payments settled for one ref, once per ref on the record
+func (ps *PaymentsServer) AppendX402Resolved(
+	ctx context.Context, req *connect.Request[routerv1.AppendX402ResolvedRequest],
+) (*connect.Response[routerv1.AppendX402ResolvedResponse], error) {
+	s, m := ps.s, req.Msg
+	paid := m.GetStatus() == "paid"
+	_, payToOK := solana.PublicKey(m.GetPayTo())
+	switch {
+	case m.GetStartOrderId() == "":
+		return nil, invalid("start_order_id is required")
+	case !x402RefShape.MatchString(m.GetRef()):
+		return nil, invalid("ref must be 16 base32 characters")
+	case !paid && m.GetStatus() != "released":
+		return nil, invalid("status must be paid or released")
+	case m.GetAmountMicros() < 0:
+		return nil, invalid("amount_micros must be 0 or more")
+	case paid != validSignature(m.GetTx()):
+		return nil, invalid("tx must be a signature for paid and empty for released")
+	case m.GetPayTo() != "" && !payToOK:
+		return nil, invalid("pay_to must be empty or a public key")
+	}
+	p, err := s.startPlacement(ctx, m.GetStartOrderId())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	rec, err := s.d.Store.SessionRecordByPlacement(ctx, p.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return connect.NewResponse(&routerv1.AppendX402ResolvedResponse{}), nil
+	case err != nil:
+		return nil, s.status(err)
+	case rec.ExpiresAt != nil && !time.Now().Before(*rec.ExpiresAt):
+		return connect.NewResponse(&routerv1.AppendX402ResolvedResponse{}), nil
+	}
+	at := time.Now()
+	if t := m.GetAt(); t.IsValid() {
+		at = t.AsTime()
+	}
+	raw, err := json.Marshal(map[string]any{
+		"at": at.UTC(), "ref": m.GetRef(), "status": m.GetStatus(),
+		"amount_micros": m.GetAmountMicros(), "tx": m.GetTx(), "pay_to": m.GetPayTo(),
+		"host":   sessions.Clean(m.GetHost(), x402HostChars),
+		"method": sessions.Clean(m.GetMethod(), 10),
+		"path":   sessions.Clean(m.GetPath(), x402PathChars),
+	})
+	if err != nil {
+		return nil, s.status(err)
+	}
+	_, _, err = s.d.Store.InsertSessionEvent(ctx, p.ID, sessions.KindX402Resolved, raw, true)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, s.status(err)
+	}
+	return connect.NewResponse(&routerv1.AppendX402ResolvedResponse{}), nil
+}
+
+var x402RefShape = regexp.MustCompile(`^[a-z2-7]{16}$`)

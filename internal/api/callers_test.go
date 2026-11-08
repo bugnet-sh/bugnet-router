@@ -154,8 +154,9 @@ type x402Call struct {
 
 // x402Served maps each built x402 RPC to what its owner's call in x402Calls answers
 var x402Served = map[string]connect.Code{
-	"LookupPlacement":  connect.CodeNotFound,
-	"AppendX402Events": connect.CodeInvalidArgument,
+	"LookupPlacement":    connect.CodeNotFound,
+	"AppendX402Events":   connect.CodeInvalidArgument,
+	"AppendX402Resolved": connect.CodeInvalidArgument,
 }
 
 var x402Calls = []x402Call{

@@ -31,6 +31,8 @@ const (
 	KindSecretHost = "secret_host"
 	KindMCP        = "mcp"
 	KindAllowance  = "allowance"
+	// KindX402Resolved is what Payments settled for a ref
+	KindX402Resolved = "x402_resolved"
 )
 
 // Placement phases
@@ -181,7 +183,7 @@ func (w *Writer) fold(ctx context.Context, placement uuid.UUID, kind string, at 
 	}
 }
 
-// Allowance stores one allowance event, once per phase of the record (SP 7.3)
+// Allowance stores one allowance event, once per order and phase of the record (SP 7.3)
 func (w *Writer) Allowance(ctx context.Context, placement uuid.UUID, f Fields) error {
 	if w == nil {
 		return nil
@@ -192,7 +194,7 @@ func (w *Writer) Allowance(ctx context.Context, placement uuid.UUID, f Fields) e
 	if err != nil {
 		return err
 	}
-	match, err := json.Marshal(Fields{"phase": f["phase"]})
+	match, err := json.Marshal(Fields{"phase": f["phase"], "order_id": f["order_id"]})
 	if err != nil {
 		return err
 	}
