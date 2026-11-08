@@ -399,7 +399,8 @@ func TestCheckEdgeLeasesOmitsEnded(t *testing.T) {
 	l := leases[live.GetPlacementId()]
 	eq(t, l.GetDeadline().AsTime().Equal(live.GetDeadline().AsTime()), true)
 	eq(t, l.GetBytesRemaining(), uint64(2<<30-1<<20))
-	eq(t, len(resp.Msg.GetRevokedPreviewIds()), 0)
+	// A preview the router never made can hold no route
+	eq(t, resp.Msg.GetRevokedPreviewIds(), []string{"abcdefghijklmnop"})
 }
 
 func TestCheckEgressLeasesOmitsEnded(t *testing.T) {

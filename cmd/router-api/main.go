@@ -194,6 +194,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Keys:                cfg.DataPlaneKeys,
 		Transfers:           cfg.Transfers,
 		TransferHost:        cfg.Names.TransferHost,
+		PreviewDomain:       cfg.Names.PreviewDomain,
+		Previews:            cfg.Previews,
 	})
 	defer srv.Close()
 

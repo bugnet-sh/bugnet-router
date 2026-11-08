@@ -237,6 +237,8 @@ bin/bugnet-dev check-extend --handle sbx_... --package dev-small-10m-more
 bin/bugnet-dev extend --handle sbx_... --package dev-small-10m-more
 bin/bugnet-dev transfer --handle sbx_... --upload data.csv --path ~/data.csv
 bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
+bin/bugnet-dev preview --handle sbx_... --port 5173
+BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -253,6 +255,10 @@ deadline `extend` would give it and the package's price, with no order and no ch
 `transfer` mints a transfer URL and prints it with its window, size, cap and the `curl` command
 that uses it: an upload of a local file to `--path`, `~/<file name>` when none is given, with an
 optional `--sha256`, or a download of a sandbox path.
+`preview` prints the preview link of one port, its id, the paid deadline and whether something
+listened on the port when the router asked. `revoke-preview` calls `OperatorService` with
+`BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else `USER`, and kills every link of that
+preview for good.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -529,15 +535,16 @@ stream reports no OOM kill, since the job row does not keep it.
 
 ## Operation limit
 
-Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer` and
-`OpenTransfer` calls spend one token from a bucket that every `router-api` replica shares,
-`ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst` tokens and gains
-`limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10 by default, and
-expires once it is full again. A call that finds it empty answers `ResourceExhausted` with reason
-`RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until the next token. Other calls spend
-nothing, nor does a request the router itself finds invalid, an unknown handle, or an `Exec` or file
-call on a placement that is not ready. A request only the provider refuses has spent its token. When
-Valkey cannot answer within 500 ms, the call goes through and the router logs a warning.
+Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer`,
+`CreatePreview` and `OpenTransfer` calls spend one token from a bucket that every `router-api`
+replica shares, `ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst`
+tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10
+by default, and expires once it is full again. A call that finds it empty answers
+`ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until
+the next token. Other calls spend nothing, nor does a request the router itself finds invalid, an
+unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
+provider refuses has spent its token. When Valkey cannot answer within 500 ms, the call goes
+through and the router logs a warning.
 `StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
 destroy already in flight instead of calling the provider again.
 
@@ -553,6 +560,9 @@ holds a handle or a job ID.
 | `NotFound` | `JOB_UNKNOWN` | `WatchJob` or `CancelJob` names a job the handle's placement lacks |
 | `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile`, `ListFiles` or a download names a path that does not exist |
 | `NotFound` | `TOKEN_UNKNOWN` | `OpenTransfer` gets a token with no record |
+| `NotFound` | `PREVIEW_UNKNOWN` | A preview id the router never made, or one that is malformed |
+| `PermissionDenied` | `TOKEN_INVALID` | A preview token that belongs to no generation of the preview |
+| `InvalidArgument` | `PORT_REFUSED` | A preview of a port outside 1 to 65535 or on the gate's deny list |
 | `InvalidArgument` | `PATH_REFUSED` | A transfer path that is empty, relative other than `~` or `~/rest`, or holds NUL or a newline |
 | `InvalidArgument` | `IS_DIRECTORY` | A download of a directory, or an upload onto one or onto a path ending in `/` |
 | `InvalidArgument` | `NOT_REGULAR` | A download of a FIFO, device or socket |
@@ -562,10 +572,13 @@ holds a handle or a job ID.
 | `FailedPrecondition` | `TOKEN_EXPIRED` | A transfer URL past its start window, also for a keyed `CreateTransfer` |
 | `FailedPrecondition` | `IN_USE` | Another stream holds the transfer |
 | `FailedPrecondition` | `FILE_CHANGED` | The file's size or modification time moved since its URL was made |
-| `FailedPrecondition` | `FEATURE_UNAVAILABLE` | `CreateTransfer` on a router without `names.transfer_host` |
+| `FailedPrecondition` | `FEATURE_UNAVAILABLE` | `CreateTransfer` on a router without `names.transfer_host`, `CreatePreview` without `names.preview_domain` or on a provider not in `previews.providers` |
+| `FailedPrecondition` | `PREVIEW_REVOKED` | An operator revoked the preview, or `CreatePreview` names its port |
 | `OutOfRange` | `OVER_CAP` | A file over the transfer cap |
 | `OutOfRange` | `RANGE` | A read outside the file |
 | `ResourceExhausted` | `TOO_MANY_TRANSFERS` | A 17th unexpired transfer URL, or a 3rd active transfer, of one placement |
+| `ResourceExhausted` | `TOO_MANY_PREVIEWS` | A preview past `previews.max_per_placement` live ones |
+| `Unavailable` | `GATE_UNAVAILABLE` | The sandbox's gate did not answer, after one repair, or its route is not prepared |
 | `ResourceExhausted` | `BUDGET_SPENT` | The placement spent its edge budget |
 | `ResourceExhausted` | `NO_SPACE` | The sandbox's disk is full |
 | `DataLoss` | `CHECKSUM_MISMATCH` | An upload's SHA-256 differs from the one its URL was made with |
@@ -591,12 +604,12 @@ the gateway.
 
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
-| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files and `CreateTransfer` |
-| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer` |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer` and `CreatePreview` |
+| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
-| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | None |
+| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
 | `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
 
 ### Budgets
@@ -630,6 +643,8 @@ deadline, even for a placement that reports nothing, and no report moves an expi
 
 `CheckEdgeLeases` and `CheckEgressLeases` answer each named placement that is still ready with its
 deadline and bytes left, and the egress check its `secrets_version`. Ended placements are absent.
+`CheckEdgeLeases` also answers, among the previews the edge holds, each one that was revoked, whose
+generation moved, or that the router never made, so a lost `PreviewRevoked` is repaired.
 
 ### Edge events
 
@@ -643,6 +658,7 @@ after the commit that causes an event, retrying a failed append 3 times before l
 | `PlacementEnded` | A stop (`STOPPED`) or the deadline (`EXPIRED`) moves a placement out of ready, before its sandbox is destroyed |
 | `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
 | `BudgetSpent` | A report first reaches a placement's edge or egress budget |
+| `PreviewRevoked` | `RevokePreview` commits, and again on each repeat of it |
 
 `WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Over Connect and
 gRPC each sends its response headers as soon as it has fixed where it starts, so the caller's open
@@ -652,6 +668,42 @@ headers. Each then sends every event after the cursor, from now when the cursor 
 the stream id to resume from. A cursor the stream does not hold, because the stream was trimmed past
 it or lost with Valkey's data, gets one `Resync` first, after which the caller re-checks every lease
 it holds. A cursor that is not a stream id answers `InvalidArgument`.
+
+### Previews
+
+`CreatePreview` answers the link to one port of a ready placement,
+`https://<id>.<names.preview_domain>/?bugnet_token=bnp_...`, with the same token for the
+`Bugnet-Token` header, the paid deadline and whether something accepted on the port when the
+router asked (DP 8.2.10).
+
+- **Ids and tokens.** A preview id is 16 lowercase base32 characters of 80 random bits, one per
+  placement and port, in the `previews` table. Its token is derived from the id and the row's
+  generation under the placement's `key_id` root, so the router stores none and a repeated call
+  answers the same link.
+- **Checks.** The provider must be in `previews.providers` and the router needs
+  `names.preview_domain` and data-plane keys (`FEATURE_UNAVAILABLE`). The port must be 1 to 65535
+  and off the gate's deny list (`PORT_REFUSED`). A placement holds at most
+  `previews.max_per_placement` live previews (`TOO_MANY_PREVIEWS`), and a revoked port gets no new
+  one (`PREVIEW_REVOKED`). A transaction holding a Postgres advisory lock per placement keeps the
+  cap across replicas.
+- **The gate.** A placement whose gate never answered at boot has start saga steps 2 and 3 run
+  again, `PrepareGate` and the health checks, under a Postgres advisory lock per placement, so
+  racing calls on every replica run them once and log `gate opened` once. Then the gate's health
+  is checked for 2 s. When that fails, the gate is repaired once and checked again for up to 5 s
+  (`GATE_UNAVAILABLE`).
+- **Repairs.** `RepairPreview`, and `CreatePreview`'s repair, run `setup --repair` through `Exec`
+  and `PrepareGate` again, storing the route's meta, at most once a minute per placement:
+  `gate:repair:<placement>` under `valkey.prefix` is set with `NX` for 60 s, and a call that finds
+  it set answers `repaired: false`.
+- **Resolving.** `ResolvePreview` recomputes the token under every listed root and compares in
+  constant time, then needs the placement ready and before its deadline (`NOT_READY`) and edge
+  budget left (`BUDGET_SPENT`). It answers the provider's route with `Bugnet-Gate` added, the edge
+  budget, `previews.interstitial`, the source label and when the sandbox became ready. It spends no
+  operation token. A token of a generation a revocation moved past answers `PREVIEW_REVOKED`, any
+  other wrong token `TOKEN_INVALID`.
+- **Revoking.** `OperatorService`'s `RevokePreview` needs an `actor` and moves the preview's
+  generation and sets `revoked_at` once, writes `PreviewRevoked`, and logs the actor, preview,
+  placement and reason. Other ports of the placement keep working.
 
 ### Transfers
 

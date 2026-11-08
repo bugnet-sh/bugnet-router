@@ -185,6 +185,10 @@ type options struct {
 	transfers config.Transfers // the transfer settings, each zero field at its default
 	// noTransferHost and noKeys leave the API server without a transfer host or root keys
 	noTransferHost, noKeys bool
+	// noPreviews leaves the provider off previews.providers
+	noPreviews bool
+	// providerName names the local provider, "local" when empty
+	providerName string
 }
 
 type env struct {
@@ -204,6 +208,7 @@ type env struct {
 	root      string
 	priv      ed25519.PrivateKey
 	handleKey []byte
+	dpKeys    dpkeys.Keys
 	proto     atomic.Value
 	orders    atomic.Int64
 }
@@ -236,20 +241,24 @@ func newEnv(t *testing.T, opts options) *env {
 	cat := loadCatalog(t, cmp.Or(opts.catalog, catalogJSON))
 
 	root := t.TempDir()
+	name := cmp.Or(opts.providerName, "local")
 	prov := local.New(local.Options{
-		Name: "local", Root: root, Sizes: []provider.Size{small}, HourlyCostMicros: 1000,
+		Name: name, Root: root, Sizes: []provider.Size{small}, HourlyCostMicros: 1000,
 		Increment: time.Second, RunnerPath: runnerPath, ReadyDelay: opts.readyDelay,
 	})
 	t.Cleanup(func() { destroyAll(t, prov) })
 	var features provider.Features
 	if opts.secrets {
-		features.Secrets = []string{"local"}
+		features.Secrets = []string{name}
 	}
 	var listed provider.Provider = faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
 	}
 	if opts.wrap != nil {
 		listed = opts.wrap(prov, root)
+	}
+	if _, gater := listed.(provider.Gater); gater && !opts.noPreviews {
+		features.Preview = []string{name}
 	}
 	reg, err := provider.NewRegistry([]provider.Provider{listed}, features)
 	if err != nil {
@@ -307,13 +316,14 @@ func newEnv(t *testing.T, opts options) *env {
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
+		PreviewDomain: previewDomain, Previews: previewSettings,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
 		api: srv, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
 		tracker: tracker, apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root,
-		priv: priv, handleKey: handleKey,
+		priv: priv, handleKey: handleKey, dpKeys: keys,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv.Servers(), allTokens)
@@ -1788,6 +1798,11 @@ func (e *env) sandboxOps(t *testing.T) map[string]func(h string) error {
 		"ListFiles": func(h string) error {
 			_, err := e.client.ListFiles(ctx, connect.NewRequest(
 				&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
+			return err
+		},
+		"CreatePreview": func(h string) error {
+			_, err := e.client.CreatePreview(ctx, connect.NewRequest(
+				&routerv1.CreatePreviewRequest{Handle: h, Port: 3000}))
 			return err
 		},
 		"CreateTransfer": func(h string) error {

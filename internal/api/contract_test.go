@@ -16,11 +16,6 @@ func unbuilt(
 ) map[string]func() error {
 	const h = "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa"
 	return map[string]func() error{
-		"CreatePreview": func() error {
-			_, err := c.CreatePreview(ctx, connect.NewRequest(
-				&routerv1.CreatePreviewRequest{Handle: h, Port: 3000}))
-			return err
-		},
 		"AddSshKey": func() error {
 			_, err := c.AddSshKey(ctx, connect.NewRequest(&routerv1.AddSshKeyRequest{Handle: h}))
 			return err
@@ -85,6 +80,7 @@ var built = []string{
 	"Estimate", "PricePackage", "CreatePlacement", "GetPlacement", "WatchPlacement",
 	"ExtendPlacement", "CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec",
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
+	"CreatePreview",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {

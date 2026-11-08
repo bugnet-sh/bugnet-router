@@ -33,7 +33,7 @@ func (e *EdgeServer) ReportEdgeUsage(
 	}), nil
 }
 
-// CheckEdgeLeases answers the deadline and edge bytes left of each placement still ready
+// CheckEdgeLeases answers each placement still ready and the held previews revoked or moved on
 func (e *EdgeServer) CheckEdgeLeases(
 	ctx context.Context, req *connect.Request[routerv1.CheckEdgeLeasesRequest],
 ) (*connect.Response[routerv1.CheckEdgeLeasesResponse], error) {
@@ -47,7 +47,13 @@ func (e *EdgeServer) CheckEdgeLeases(
 			Deadline: timestamppb.New(*p.Deadline), BytesRemaining: left[p.ID],
 		}
 	}
-	return connect.NewResponse(&routerv1.CheckEdgeLeasesResponse{Leases: leases}), nil
+	revoked, err := e.s.revokedPreviews(ctx, req.Msg.GetPreviews())
+	if err != nil {
+		return nil, e.s.status(err)
+	}
+	return connect.NewResponse(&routerv1.CheckEdgeLeasesResponse{
+		Leases: leases, RevokedPreviewIds: revoked,
+	}), nil
 }
 
 // WatchEdgeEvents streams the edge events after the cursor, from now when it is empty

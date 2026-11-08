@@ -65,6 +65,16 @@ const (
 	reasonChecksumMismatch = "CHECKSUM_MISMATCH"
 )
 
+// Preview reasons, named as DP 11.3 names them
+const (
+	reasonPortRefused     = "PORT_REFUSED"
+	reasonPreviewUnknown  = "PREVIEW_UNKNOWN"
+	reasonTokenInvalid    = "TOKEN_INVALID"
+	reasonPreviewRevoked  = "PREVIEW_REVOKED"
+	reasonTooManyPreviews = "TOO_MANY_PREVIEWS"
+	reasonGateUnavailable = "GATE_UNAVAILABLE"
+)
+
 // Codes a start package's unavailable_reason takes, never error text
 const (
 	unavailableNoCandidate = saga.ReasonNoCandidate
@@ -117,6 +127,14 @@ var codes = []struct {
 	{transfer.ErrInUse, connect.CodeFailedPrecondition, reasonInUse},
 	{transfer.ErrFileChanged, connect.CodeFailedPrecondition, reasonFileChanged},
 	{errNoHost, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errPortRefused, connect.CodeInvalidArgument, reasonPortRefused},
+	{errPreviewUnknown, connect.CodeNotFound, reasonPreviewUnknown},
+	{errTokenInvalid, connect.CodePermissionDenied, reasonTokenInvalid},
+	{store.ErrPreviewRevoked, connect.CodeFailedPrecondition, reasonPreviewRevoked},
+	{store.ErrTooManyPreviews, connect.CodeResourceExhausted, reasonTooManyPreviews},
+	{errNoPreviews, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errNoFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{saga.ErrGateUnavailable, connect.CodeUnavailable, reasonGateUnavailable},
 	{errOverCap, connect.CodeOutOfRange, reasonOverCap},
 	{errRange, connect.CodeOutOfRange, reasonRange},
 	{errBudgetSpent, connect.CodeResourceExhausted, reasonBudgetSpent},
@@ -204,8 +222,9 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 			continue
 		}
 		msg := err
-		if c.code == connect.CodeCanceled || c.code == connect.CodeDeadlineExceeded {
-			// What wraps a context error can name a job, so the answer quotes it alone
+		if c.code == connect.CodeCanceled || c.code == connect.CodeDeadlineExceeded ||
+			c.err == saga.ErrGateUnavailable {
+			// What wraps a context or gate error can name a job or the provider's words
 			msg = c.err
 		}
 		if c.reason != "" {

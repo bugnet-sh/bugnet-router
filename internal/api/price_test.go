@@ -126,8 +126,8 @@ func TestPricePackageKeepsTheMarginFloor(t *testing.T) {
 }
 
 func TestUnavailableReasonCodes(t *testing.T) {
-	e := newEnv(t, options{})
-	// The local provider offers no SSH, previews, secrets or GPU
+	e := newEnv(t, options{noPreviews: true})
+	// The local provider here offers no SSH, previews, secrets or GPU
 	for _, r := range []*routerv1.Requirements{{Ssh: true}, {Preview: true}, {Secrets: true}} {
 		eq(t, reasons(t, e.estimate(t, r)), map[string]string{
 			smallPkg: "feature_unavailable", longPkg: "feature_unavailable",

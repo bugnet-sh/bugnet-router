@@ -14,6 +14,11 @@
 // only delays a reader until its next read. The edge-side services meter usage against each
 // placement's budgets, answer lease checks and serve the edge event stream.
 //
+// CreatePreview answers the derived link of one port, opening or repairing the placement's gate
+// first, and the edge resolves it with ResolvePreview and asks for a repair with RepairPreview,
+// which runs at most once a minute per placement. OperatorService's RevokePreview moves a
+// preview's generation, so every earlier link dies and its port gets no new one.
+//
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
 // edge event reader per server fans out, or when it goes idle or reaches its hard stop. Drain
@@ -100,6 +105,10 @@ type Deps struct {
 	Transfers config.Transfers
 	// TransferHost names transfer URLs, and CreateTransfer refuses every call while it is empty
 	TransferHost string
+	// PreviewDomain names preview links, and CreatePreview refuses every call while it is empty
+	PreviewDomain string
+	// Previews are the preview settings, a zero max_per_placement taking its default
+	Previews config.Previews
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -191,7 +200,7 @@ type Servers struct {
 func (s *Server) Servers() Servers {
 	return Servers{
 		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{},
-		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{},
+		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{s: s},
 		Payments: &PaymentsServer{s: s},
 	}
 }
