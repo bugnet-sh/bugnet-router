@@ -1,12 +1,7 @@
 package sshkeys_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/rsa"
-	"encoding/base64"
 	"errors"
 	"reflect"
 	"regexp"
@@ -16,6 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/bugnet-sh/bugnet-router/internal/sshkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/sshkeys/sshkeystest"
 )
 
 func eq[T any](t *testing.T, got, want T) {
@@ -25,104 +21,17 @@ func eq[T any](t *testing.T, got, want T) {
 	}
 }
 
-// line is k's authorized_keys line with a comment
-func line(t *testing.T, k any) string {
-	t.Helper()
-	pub, err := ssh.NewPublicKey(k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " me@laptop"
-}
+func ed25519Line(t *testing.T) string { return sshkeystest.ED25519(t) + " me@laptop" }
 
-func ed25519Line(t *testing.T) string {
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return line(t, pub)
-}
+func ecdsaLine(t *testing.T, c elliptic.Curve) string { return sshkeystest.ECDSA(t, c) }
 
-func ecdsaLine(t *testing.T, c elliptic.Curve) string {
-	k, err := ecdsa.GenerateKey(c, rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return line(t, &k.PublicKey)
-}
+func rsaLine(t *testing.T, bits int) string { return sshkeystest.RSA(t, bits) }
 
-func rsaLine(t *testing.T, bits int) string {
-	k, err := rsa.GenerateKey(rand.Reader, bits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return line(t, &k.PublicKey)
-}
+func skLine(t *testing.T, ecdsaKind bool) string { return sshkeystest.SK(t, ecdsaKind) }
 
-// skLine builds a security key's public line, which no Go generator makes
-func skLine(t *testing.T, ecdsaKind bool) string {
-	t.Helper()
-	var blob []byte
-	if ecdsaKind {
-		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		point, err := k.PublicKey.Bytes()
-		if err != nil {
-			t.Fatal(err)
-		}
-		blob = ssh.Marshal(struct{ Name, Curve, Point, App string }{
-			ssh.KeyAlgoSKECDSA256, "nistp256", string(point), "ssh:"})
-	} else {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		blob = ssh.Marshal(struct{ Name, Key, App string }{
-			ssh.KeyAlgoSKED25519, string(pub), "ssh:"})
-	}
-	pub, err := ssh.ParsePublicKey(blob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " sk"
-}
+func dsaLine(*testing.T) string { return sshkeystest.DSA() }
 
-func dsaLine(t *testing.T) string {
-	t.Helper()
-	// x/crypto may no longer parse DSA at all, and either way the line must be refused
-	blob := ssh.Marshal(struct {
-		Name       string
-		P, Q, G, Y []byte
-	}{"ssh-dss", []byte{0, 0xff}, []byte{1}, []byte{2}, []byte{3}})
-	return "ssh-dss" + " " + base64.StdEncoding.EncodeToString(blob)
-}
-
-func certLine(t *testing.T) string {
-	t.Helper()
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sp, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := ssh.NewSignerFromKey(caPriv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := &ssh.Certificate{Key: sp, CertType: ssh.UserCert, ValidBefore: ssh.CertTimeInfinity}
-	if err := cert.SignCert(rand.Reader, signer); err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(cert)))
-}
+func certLine(t *testing.T) string { return sshkeystest.Cert(t) }
 
 func TestParseAcceptsTheListedKinds(t *testing.T) {
 	for name, l := range map[string]string{

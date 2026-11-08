@@ -194,9 +194,11 @@ func (g *SSHGatewayServer) OpenSshUpstream(
 		if err := s.awaitPrepared(ctx, p); err != nil {
 			return nil, s.sshStatus(p, err)
 		}
-		if p, err = s.d.Saga.OpenGate(ctx, p); err != nil {
+		opened, err := s.d.Saga.OpenGate(ctx, p)
+		if err != nil {
 			return nil, s.gateStatus(p, err)
 		}
+		p = opened
 	}
 	up, err := s.d.Saga.AuthorizeGateway(ctx, p.ID, line, fp)
 	if err != nil {
