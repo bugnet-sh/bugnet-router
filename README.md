@@ -1653,6 +1653,34 @@ under the names egress and Payments read by default: `internal-ca.pem`, `egress-
 egress's `$CREDENTIALS_DIRECTORY`. The development CA key is not kept, so each run makes a new CA
 and replaces the five files. `--dev` takes no `--state`, `--renew` or `--from`.
 
+## The x402 local run
+
+`make x402-local` runs the x402 path on this Mac with nothing mocked: the real `router-api`,
+`router-worker`, `bugnet-egress` and bugnet-payments, a fake Solana chain, the fake seller and a
+sandbox of the `local` provider. It needs Postgres, Valkey, `tsx`, Node 26 and a bugnet-payments
+checkout (`BUGNET_PAYMENTS_DIR`, default the one beside this repository).
+
+It builds `router-api`, `router-worker` and `bugnet-dev` here and `bugnet-egress` in `bugnet-edges`
+with `-tags localrun`, then runs `go test ./test/x402local/` with `BUGNET_TEST_X402_LOCAL=1`.
+Without that variable the tests skip. One subtest per mode:
+
+- `ok`: Payments takes a $0.10 allowance on a start order, a sandbox is placed with its token, two
+  services are enabled, and one call of $0.001 is paid. The reply is 200 with
+  `Bugnet-X402-Status: paid`, `Bugnet-X402-Paid-Usd: 0.001` and `Bugnet-X402-Left-Usd: 0.099`,
+  Payments confirms the payment on the fake chain, and `ListX402` counts one paid call.
+- `free`: 300 free calls pass and the 301st is 403 `unpaid_cap`.
+
+A `localrun` build differs from a normal one in four places, each of them off in a normal build:
+`secrets.providers` may list `local`, a local sandbox gets the Bugnet CA, `[localrun]
+forward_listen` and `egress_port` replace the forwarder's address and the proxy's port in the
+egress spec, and egress reads `[localrun]` `upstream_addrs` and `upstream_roots_file`. A normal
+build refuses all four.
+
+The forwarder cannot listen on 127.77.0.1 or trust the proxy's certificate on a Mac, so the run
+starts the sandbox's own `bugnet-run forward --root` on a loopback port, with the proxy's
+certificate as its `roots_file`, and the calls go to it. `BUGNET_X402_LOCAL_KEEP=1` keeps the run's
+directory and sandboxes.
+
 ## Events
 
 `router-worker` posts each outbox event to `events_url` as JSON `{id, type, created_at,

@@ -15,7 +15,8 @@ func TestLocalrunSeams(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, c.Secrets.Providers, []string{"local"})
-	reg, err := provider.NewRegistry([]provider.Provider{local.New(local.Options{Root: t.TempDir()})},
+	lp := local.New(local.Options{Root: t.TempDir()})
+	reg, err := provider.NewRegistry([]provider.Provider{lp},
 		provider.Features{Secrets: c.Secrets.Providers})
 	if err != nil {
 		t.Fatal(err)

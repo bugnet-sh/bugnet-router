@@ -10,6 +10,4 @@ type localrunFile struct {
 	EgressPort    int    `toml:"egress_port"`
 }
 
-func (f localrunFile) read() Localrun {
-	return Localrun{ForwardListen: f.ForwardListen, EgressPort: f.EgressPort}
-}
+func (f localrunFile) read() Localrun { return Localrun(f) }
