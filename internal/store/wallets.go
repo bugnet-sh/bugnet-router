@@ -268,7 +268,8 @@ func (s *Store) LiveCount(ctx context.Context, payer string) (int, error) {
 	return n, nil
 }
 
-// LivePlacementsOf returns the live placements payer paid a start or an extension of
+// LivePlacementsOf returns the live placements payer paid a start of, as decided, or claims to
+// have paid an extension of. The caller decides each such extension's payer again.
 func (s *Store) LivePlacementsOf(ctx context.Context, payer string) ([]Placement, error) {
 	rows, err := s.q.Query(ctx, `select `+placementColumns+` from placements
 		where state in `+liveStates+` and (payer = $1 or id in (
@@ -286,19 +287,22 @@ func (s *Store) LivePlacementsOf(ctx context.Context, payer string) ([]Placement
 	return out, nil
 }
 
-// ExtendPayers returns the payers of a placement's extension orders other than its start payer
-func (s *Store) ExtendPayers(ctx context.Context, id uuid.UUID) ([]string, error) {
+// ExtendClaims returns each distinct payer and fee_payer claim of a placement's extension orders
+// that claim a payer, the payer as the token named it
+func (s *Store) ExtendClaims(ctx context.Context, id uuid.UUID) ([]Order, error) {
 	rows, err := s.q.Query(ctx, `
-		select distinct o.payer from orders o join placements p on p.id = o.placement_id
-		where o.placement_id = $1 and o.kind = $2 and o.payer is not null
-			and o.payer is distinct from p.payer
-		order by o.payer`, id, OrderExtend)
+		select distinct payer, coalesce(fee_payer, '') from orders
+		where placement_id = $1 and kind = $2 and payer is not null
+		order by 1, 2`, id, OrderExtend)
 	if err != nil {
-		return nil, fmt.Errorf("select extension payers: %w", err)
+		return nil, fmt.Errorf("select extension claims: %w", err)
 	}
-	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Order, error) {
+		o := Order{Kind: OrderExtend, PlacementID: id}
+		return o, r.Scan(&o.Payer, &o.FeePayer)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("select extension payers: %w", err)
+		return nil, fmt.Errorf("select extension claims: %w", err)
 	}
 	return out, nil
 }

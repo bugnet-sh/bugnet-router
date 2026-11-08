@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"connectrpc.com/connect"
@@ -120,7 +121,7 @@ func (o *OperatorServer) GetWallet(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	live, err := s.d.Store.LivePlacementsOf(ctx, payer)
+	live, err := s.livePlacementsOf(ctx, payer)
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -240,7 +241,7 @@ func walletEventMsg(e store.WalletEvent) *routerv1.WalletEvent {
 func (s *Server) operatorPlacement(
 	ctx context.Context, p store.Placement,
 ) (*routerv1.OperatorPlacement, error) {
-	extend, err := s.d.Store.ExtendPayers(ctx, p.ID)
+	extend, err := s.extendPayers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +255,54 @@ func (s *Server) operatorPlacement(
 	}
 	if p.Deadline != nil {
 		out.Deadline = timestamppb.New(*p.Deadline)
+	}
+	return out, nil
+}
+
+// decide runs the payer decision again on an order's claims, without the logs Saga.Create writes
+func (s *Server) decide(ctx context.Context, o store.Order) (string, error) {
+	payer, _, err := wallet.Decide(s.guard, wallet.Claim{Payer: o.Payer, FeePayer: o.FeePayer},
+		func(addr string) (bool, error) { return s.d.Store.FeePayerSeen(ctx, addr) })
+	return payer, err
+}
+
+// extendPayers returns the decided payers of a placement's extensions other than its start payer
+func (s *Server) extendPayers(ctx context.Context, p store.Placement) ([]string, error) {
+	claims, err := s.d.Store.ExtendClaims(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, o := range claims {
+		payer, err := s.decide(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		if payer != "" && payer != p.Payer && !slices.Contains(out, payer) {
+			out = append(out, payer)
+		}
+	}
+	return out, nil
+}
+
+// livePlacementsOf returns the live placements payer paid a start or an extension of, as decided
+func (s *Server) livePlacementsOf(ctx context.Context, payer string) ([]store.Placement, error) {
+	ps, err := s.d.Store.LivePlacementsOf(ctx, payer)
+	if err != nil {
+		return nil, err
+	}
+	out := ps[:0]
+	for _, p := range ps {
+		if p.Payer != payer {
+			extend, err := s.extendPayers(ctx, p)
+			if err != nil {
+				return nil, err
+			}
+			if !slices.Contains(extend, payer) {
+				continue
+			}
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }

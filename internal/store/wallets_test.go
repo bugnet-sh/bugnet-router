@@ -152,7 +152,7 @@ func TestPaidMicrosSumsTheRecordedOrders(t *testing.T) {
 	ctx := t.Context()
 	p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
 		HandleSHA256: []byte("h1"), OrderID: "o1", PackageID: "p", Payer: walletA,
-		FeePayer: walletB, AmountMicros: 10000,
+		PayerClaim: walletA, FeePayer: walletB, AmountMicros: 10000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,9 +172,10 @@ func TestPaidMicrosSumsTheRecordedOrders(t *testing.T) {
 	eq(t, err, nil)
 	eq(t, applied, false)
 	eq(t, again.PaidMicros, int64(60000))
-	payers, err := s.ExtendPayers(ctx, p.ID)
+	claims, err := s.ExtendClaims(ctx, p.ID)
 	eq(t, err, nil)
-	eq(t, payers, []string{walletB})
+	eq(t, len(claims), 1)
+	eq(t, []string{claims[0].Payer, claims[0].FeePayer}, []string{walletB, ""})
 	live, err := s.LivePlacementsOf(ctx, walletB)
 	eq(t, err, nil)
 	eq(t, len(live), 1)

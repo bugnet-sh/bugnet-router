@@ -4,7 +4,8 @@
 set local lock_timeout = '5s';
 
 alter table orders
-    -- the payer as the router decided it, null when the order counts as having none
+    -- the token's payer claim once checked, kept whatever the router decided, null when the
+    -- token named none; placements.payer holds the decision
     add column payer text,
     -- the token's fee_payer claim, the facilitator's address
     add column fee_payer text,
@@ -12,7 +13,7 @@ alter table orders
     add column amount_micros bigint not null default 0;
 
 create index orders_fee_payer_idx on orders (fee_payer) where fee_payer is not null;
--- the orders a payer paid, read for each blocked payer's live placements
+-- the orders that claim a payer, read for each blocked payer's live placements
 create index orders_payer_idx on orders (payer) where payer is not null;
 create index orders_placement_id_idx on orders (placement_id);
 

@@ -175,9 +175,10 @@ func TestBlockedWalletRecordsNothing(t *testing.T) {
 	if _, err := e.saga.Extend(t.Context(), h, e.paidExtend(t, "ext-2", payerB, h)); err != nil {
 		t.Fatal(err)
 	}
-	payers, err := e.store.ExtendPayers(t.Context(), p.ID)
+	claims, err := e.store.ExtendClaims(t.Context(), p.ID)
 	eq(t, err, nil)
-	eq(t, payers, []string{payerB})
+	eq(t, len(claims), 1)
+	eq(t, claims[0].Payer, payerB)
 }
 
 func TestReplayedExtendSkipsTheBlockCheck(t *testing.T) {
@@ -253,7 +254,8 @@ func TestPayerCountsAsAbsent(t *testing.T) {
 	o, err := e.store.OrderByID(ctx, "listed")
 	eq(t, err, nil)
 	eq(t, o.FeePayer, payerB)
-	eq(t, o.Payer, "")
+	// The order keeps the claim the placement does not count under
+	eq(t, o.Payer, facilitator)
 	eq(t, o.AmountMicros, int64(smallPrice))
 	paid, _, err := e.saga.Create(ctx, e.paidToken(t, "paid", payerA, facilitator),
 		placement.Requirements{})
@@ -291,6 +293,29 @@ func TestPayerOffCountsEveryOrderAsAnonymous(t *testing.T) {
 	eq(t, p.Payer, "")
 	_, err = e.createPaid(t, "o2", payerB)
 	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
+}
+
+func TestOrdersKeepThePayerClaim(t *testing.T) {
+	e := newEnvWith(t, func(d *saga.Deps) { d.Wallets = config.Wallets{UsePayer: false} },
+		newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeWith(t, "o1", payerA)
+	eq(t, p.Payer, "")
+	if _, err := e.saga.Extend(t.Context(), h, e.paidExtend(t, "x1", payerB, h)); err != nil {
+		t.Fatal(err)
+	}
+	for order, want := range map[string]string{"o1": payerA, "x1": payerB} {
+		o, err := e.store.OrderByID(t.Context(), order)
+		eq(t, err, nil)
+		eq(t, o.Payer, want)
+	}
+	var placementPayer *string
+	err := e.pool.QueryRow(t.Context(), `select payer from placements where id = $1`, p.ID).
+		Scan(&placementPayer)
+	eq(t, err, nil)
+	eq(t, placementPayer == nil, true)
+	// No wallet row, since no order counted under a payer
+	_, err = e.store.Wallet(t.Context(), payerA, time.Now())
+	eq(t, errors.Is(err, store.ErrNotFound), true)
 }
 
 func TestPayerRequired(t *testing.T) {

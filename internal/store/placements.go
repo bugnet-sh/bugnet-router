@@ -74,6 +74,8 @@ type NewPlacement struct {
 	NeedsSecrets bool
 	// Payer is the start order's payer as the router decided it, empty for none
 	Payer string
+	// PayerClaim is the start token's payer claim, which the order keeps whatever the decision
+	PayerClaim string
 	// FeePayer is the start token's fee_payer claim
 	FeePayer string
 	// AmountMicros is the start order's package share
@@ -85,7 +87,8 @@ type Order struct {
 	ID          string
 	Kind        string // OrderStart or OrderExtend
 	PlacementID uuid.UUID
-	// Payer is the order's payer as the router decided it, empty for none
+	// Payer is the token's payer claim once ParseSolana checked it, kept whatever the router
+	// decided, empty for none. Code needing the decided payer decides it again.
 	Payer string
 	// FeePayer is the token's fee_payer claim
 	FeePayer string
@@ -235,7 +238,7 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.Tx(tx)
 		id, inserted, err := ts.InsertOrder(ctx, Order{
-			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: p.Payer,
+			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: p.PayerClaim,
 			FeePayer: p.FeePayer, AmountMicros: p.AmountMicros,
 		})
 		if err != nil {

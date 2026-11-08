@@ -305,8 +305,9 @@ func (s *Saga) record(
 		if err := ts.LockWallets(ctx, np.Payer); err != nil {
 			return err
 		}
+		// The order keeps the claim and the placement the decision (CP 7.1, 7.5)
 		id, inserted, err := ts.InsertOrder(ctx, store.Order{
-			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: np.Payer,
+			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
 			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros,
 		})
 		if err != nil {
@@ -830,7 +831,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 			}
 		}
 		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
-			ID: c.OrderID, PlacementID: id, Payer: payer, FeePayer: c.FeePayer,
+			ID: c.OrderID, PlacementID: id, Payer: c.Payer, FeePayer: c.FeePayer,
 			AmountMicros: c.PackageMicros(),
 		}, by)
 		if err != nil || !applied {

@@ -614,11 +614,12 @@ carrying it is refused. The underpaid check and `orders.amount_micros` use `amou
 the allowance. `tx` is checked and kept nowhere yet.
 
 The router decides the payer an order counts under in this order: `wallets.use_payer` false, no
-payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or
-seen as an earlier order's `fee_payer`, or no `fee_payer` with an empty facilitator list, each
-count as no payer. The last logs at error level at most once a minute and shows on `/monitor`
-for an hour, through the Valkey key `wallet:unguarded`, which a Valkey restart or flush clears
-early. Otherwise the payer counts, and the order and the placement keep it.
+payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or seen
+as an earlier order's `fee_payer`, or no `fee_payer` with an empty facilitator list, each count as
+no payer. The last logs at error level at most once a minute and shows on `/monitor` for an hour,
+through the Valkey key `wallet:unguarded`, which a Valkey restart or flush clears early. Otherwise
+the payer counts, and the placement keeps it. Every order keeps the payer claim as the token named
+it, whatever the decision, and operator calls decide an extension's payer again.
 
 `CreatePlacement` then runs these checks under the payer's transaction lock, or one lock for
 every order without a payer, in the transaction that records the order. A retried order answers

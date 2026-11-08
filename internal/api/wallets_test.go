@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 )
 
@@ -405,6 +407,68 @@ func TestOperatorCallsWriteAuditRows(t *testing.T) {
 		Payer: payerB, Actor: "bob",
 	}))
 	wantCode(t, err, connect.CodeNotFound)
+}
+
+func TestOperatorDecidesExtensionPayersAgain(t *testing.T) {
+	e := newEnv(t, options{wallets: payerWallets(nil)})
+	op := e.operator(t, operatorToken)
+	if _, err := e.blockWallet(t, &routerv1.BlockWalletRequest{
+		Payer: payerC, Actor: "ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := e.readyPaid(t, payerA)
+	sha, err := handle.Hash(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extend := func(payer, feePayer string) {
+		t.Helper()
+		_, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.ExtendPlacementRequest{Handle: h, OrderToken: e.token(t, ordertoken.Claims{
+				OrderID: fmt.Sprintf("extend-%d", e.orders.Add(1)), Kind: ordertoken.KindExtend,
+				PackageID: morePkg, AmountMicros: morePrice,
+				HandleSHA256: hex.EncodeToString(sha), Payer: payer, FeePayer: feePayer,
+			})}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	extend(payerB, facilitator)
+	// A payer equal to its fee payer counts as none, so the blocked wallet may extend
+	extend(payerC, payerC)
+	extend(payerA, facilitator)
+
+	got, err := op.GetWallet(t.Context(), connect.NewRequest(&routerv1.GetWalletRequest{
+		Payer: payerA,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(got.Msg.GetLive()), 1)
+	eq(t, got.Msg.GetLive()[0].GetExtendPayers(), []string{payerB})
+	got, err = op.GetWallet(t.Context(), connect.NewRequest(&routerv1.GetWalletRequest{
+		Payer: payerB,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(got.Msg.GetLive()), 1)
+	// The order keeps payerC's claim, which counts for no wallet
+	got, err = op.GetWallet(t.Context(), connect.NewRequest(&routerv1.GetWalletRequest{
+		Payer: payerC,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(got.Msg.GetLive()), 0)
+	var claims int
+	if err := e.pool.QueryRow(t.Context(), `select count(*) from orders where payer = $1`,
+		payerC).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, claims, 1)
+	e.stop(t, h)
 }
 
 func TestOperatorReadsAreLogged(t *testing.T) {
