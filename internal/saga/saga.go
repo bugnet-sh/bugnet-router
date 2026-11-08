@@ -26,8 +26,8 @@
 // package's create carries its egress allowlist, and only a provider with egress control takes it.
 // OpenGate runs the gate steps again for a ready placement whose gate never answered, and
 // RepairGate runs setup --repair and PrepareGate, both one replica at a time under a Postgres
-// advisory lock per placement. Both store the route's meta, and only OpenGate records when the
-// gate answered.
+// advisory lock per placement. Both store the route's meta. OpenGate records when the gate
+// answered, and RepairGate leaves the gate time to its caller.
 package saga
 
 import (

@@ -688,10 +688,11 @@ router asked (DP 8.2.10).
   holding a Postgres advisory lock per placement keeps the cap across replicas.
 - **The gate.** A placement whose gate never answered at boot has start saga steps 2 and 3 run
   again, `PrepareGate` and the health checks, under a Postgres advisory lock per placement, so
-  racing calls on every replica run them once and log `gate opened` once. Then the gate's health
-  is checked for 2 s. When the steps or that check fail, the gate is repaired once and checked
-  again for up to 5 s (`GATE_UNAVAILABLE`), and a gate that then answers gets its gate time. A
-  placement that stops meanwhile answers `NOT_READY`.
+  racing calls on every replica run them one replica at a time, and only once, logging
+  `gate opened` once, when they succeed. Then the gate's health is checked for 2 s. When the steps
+  or that check fail, the gate is repaired once and checked again for up to 5 s
+  (`GATE_UNAVAILABLE`), and a gate that then answers gets its gate time. A placement that stops
+  meanwhile answers `NOT_READY`.
 - **Repairs.** `RepairPreview`, and `CreatePreview`'s repair, run `setup --repair` through `Exec`
   and `PrepareGate` again under the same advisory lock, storing the route's meta, at most once a
   minute per placement: `gate:repair:<placement>` under `valkey.prefix` is set with `NX` for 60 s,
