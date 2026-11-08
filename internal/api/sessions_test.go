@@ -247,6 +247,8 @@ func TestNoKeyIDGivesNoLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, e.get(t, h, 0, 0).GetSessionUrl(), "")
+	eq(t, e.get(t, h, 0, 0).GetSessionUrl(), "")
+	// Every answer has no link, and the placement is logged once
 	eq(t, strings.Count(logs.String(), "no session link"), 1)
 	// A key under the current root opens nothing, as a root rotation would change it
 	key, err := e.dpKeys.SessionKey(e.dpKeys.Current().ID, id, 0)

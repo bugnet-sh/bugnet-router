@@ -74,7 +74,9 @@ func (s *Server) sessionLink(p store.Placement, rec store.SessionRecord) string 
 	}
 	if p.KeyID == "" {
 		// A key from the current root would change at the next root rotation
-		s.d.Log.Warn("api: no session link for a placement with no key_id", "placement", p.ID)
+		if _, logged := s.noKeyID.LoadOrStore(p.ID, true); !logged {
+			s.d.Log.Warn("api: no session link for a placement with no key_id", "placement", p.ID)
+		}
 		return ""
 	}
 	key, err := s.d.Keys.SessionKey(p.KeyID, rec.ID, rec.Generation)

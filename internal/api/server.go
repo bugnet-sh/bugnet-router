@@ -140,6 +140,8 @@ type Server struct {
 	life     context.Context // ends when Close is called, transfer streams run on it
 	end      context.CancelFunc
 	done     chan struct{}
+	// noKeyID holds the placements logged as having no key_id, as every answer would log them
+	noKeyID sync.Map
 }
 
 var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
