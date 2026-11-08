@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,17 +13,19 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 )
 
-// x402 runs x402 check or x402 list
+// x402 runs x402 check, enable or list
 func (c *cli) x402(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
 		case "check":
 			return c.x402Check(args[1:])
+		case "enable":
+			return c.x402Enable(args[1:])
 		case "list":
 			return c.x402List(args[1:])
 		}
 	}
-	return fmt.Errorf("%w: x402 takes check or list", errUsage)
+	return fmt.Errorf("%w: x402 takes check, enable or list", errUsage)
 }
 
 // x402Check runs CheckX402, with no handle only the checks that need no placement
@@ -51,6 +54,50 @@ func (c *cli) x402Check(args []string) error {
 		return refusal(err)
 	}
 	return c.print([][2]string{{"passed", "true"}})
+}
+
+// x402Enable runs EnableX402 and prints the placement's services, one a line
+func (c *cli) x402Enable(args []string) error {
+	fs := newFlags("x402 enable")
+	h := fs.String("handle", "", "sandbox handle")
+	wait := fs.Bool("wait", false, "wait for the added services to leave applying")
+	reqID := fs.String("request-id", "", "request id, a fresh one when empty")
+	var add, disable listFlag
+	fs.Var(&add, "service", "method,host,prefix,max_price_micros,pay_to[,paid_path], repeatable")
+	fs.Var(&disable, "disable", "service id to disable, repeatable")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	if err := required("handle", *h); err != nil {
+		return err
+	}
+	req := &routerv1.EnableX402Request{
+		Handle: *h, Disable: disable, WaitActive: *wait, RequestId: *reqID,
+	}
+	if req.RequestId == "" {
+		req.RequestId = "dev-" + rand.Text()
+	}
+	for i, v := range add {
+		spec, err := serviceFlag(v)
+		if err != nil {
+			return fmt.Errorf("%w: --service %d %w", errUsage, i+1, err)
+		}
+		req.Add = append(req.Add, spec)
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.EnableX402(c.ctx, connect.NewRequest(req))
+	if err != nil {
+		return refusal(err)
+	}
+	lines := make([]string, 0, len(res.Msg.GetServices()))
+	for _, s := range res.Msg.GetServices() {
+		lines = append(lines, serviceLine(s))
+	}
+	_, err = fmt.Fprintln(c.stdout, strings.Join(lines, "\n"))
+	return err
 }
 
 // x402List prints the placement's x402 services, one a line, then its refusals
