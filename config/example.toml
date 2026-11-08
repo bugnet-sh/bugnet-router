@@ -133,6 +133,56 @@ strike_threshold = 2                   # strikes inside strike_window that block
 strike_window = "24h"
 strike_block_for = "168h"
 
+[estimator]
+github_api = "https://api.github.com"
+github_raw = "https://raw.githubusercontent.com"
+github_git = "https://github.com"
+huggingface = "https://huggingface.co"
+fetch_budget = "1500ms"                # every upstream fetch of one estimate
+background_budget = "10s"              # a fetch may go on this long to fill the cache
+max_background = 8                     # background fetches per replica
+cache_ttl = "1h"                       # Valkey facts, Postgres keeps them longer
+ref_ttl = "60s"                        # a branch's commit
+negative_ttl = "5m"                    # 404, 401, 451, private
+max_files = 16                         # signal files read through raw without a token
+max_file_bytes = "1MiB"
+max_facts_bytes = "8KiB"
+github_reserve = 0.1                   # no new fetches below this share of the hourly limit
+github_concurrency = 4                 # GitHub requests at once per replica
+max_per_second = 5                     # Estimate calls for the whole router
+max_burst = 20
+new_sources_per_minute = 30            # quotes that must fetch a source nobody cached
+stored_per_minute = 60                 # new estimate rows
+default_context_tokens = 8192
+memory_headroom = 0.1                  # on history floors
+stats_max_bytes = "4KiB"               # a stats.json larger than this is dropped
+history_window = "2160h"               # 90 days, Go durations have no days
+history_min_observations = 5
+history_min_payers = 3
+history_lower_observations = 10        # before history may lower a rules floor
+history_lower_payers = 5
+history_may_lower = true               # false is "raise only"
+history_oom_payers = 2                 # distinct payers whose OOMs push a floor above a package
+history_payer_min_age = "168h"         # a wallet counts once first seen this long ago
+history_payer_min_placements = 3       # and once it paid for this many
+max_estimate_age = "1h"                # CreatePlacement ignores an estimate served longer ago
+estimates_keep = "168h"                # unreferenced estimates
+source_facts_keep = "168h"             # unreferenced facts, past their last use
+observations_keep = "2160h"
+
+# One table per provider, filled from live test E9: a version, "none", or "" when not measured
+[images.e2b]
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
+[images.boat]
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
+[images.boxd]
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
+[images.koyeb]
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
