@@ -132,6 +132,8 @@ func (f file) dataPlane(c *Config) error {
 		{"secrets.apply_wait", k.ApplyWait, dk.ApplyWait, &c.Secrets.ApplyWait},
 		{"bootstrap.heartbeat_stale", f.Bootstrap.HeartbeatStale, d.Bootstrap.HeartbeatStale,
 			&c.Bootstrap.HeartbeatStale},
+		{"hooks.boat_window", f.Hooks.BoatWindow, d.Hooks.BoatWindow, &c.Hooks.BoatWindow},
+		{"hooks.hint_unique", f.Hooks.HintUnique, d.Hooks.HintUnique, &c.Hooks.HintUnique},
 	} {
 		v, err := time.ParseDuration(cmp.Or(t.raw, t.def))
 		if err != nil || v <= 0 {
@@ -246,7 +248,7 @@ func checkNames(n Names) error {
 	for _, h := range []struct{ key, name string }{
 		{"names.preview_domain", n.PreviewDomain}, {"names.transfer_host", n.TransferHost},
 		{"names.secrets_host", n.SecretsHost}, {"names.ssh_host", n.SSHHost},
-		{"names.egress_host", n.EgressHost},
+		{"names.egress_host", n.EgressHost}, {"names.hooks_host", n.HooksHost},
 	} {
 		if h.name == "" {
 			continue

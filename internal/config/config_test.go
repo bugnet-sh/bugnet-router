@@ -1374,3 +1374,18 @@ func TestCommittedFilesKeepX402Off(t *testing.T) {
 		eq(t, c.X402.Enabled, false)
 	}
 }
+
+func TestLoadReadsWebhookSecrets(t *testing.T) {
+	path := writeFile(t, serving(t))
+	c, err := Load(path, env(map[string]string{
+		"E2B_WEBHOOK_SECRET": "e2b-now", "E2B_WEBHOOK_SECRET_PREVIOUS": "e2b-old",
+		"BOAT_WEBHOOK_SECRET": "whsec_now",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.HookSecrets, map[string]HookSecret{
+		"e2b":  {Current: []byte("e2b-now"), Previous: []byte("e2b-old")},
+		"boat": {Current: []byte("whsec_now"), Previous: []byte{}},
+	})
+}
