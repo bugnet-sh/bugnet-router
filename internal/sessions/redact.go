@@ -32,15 +32,13 @@ var (
 		`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemOpen  = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemClose = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	// An Authorization or Proxy-Authorization header up to its value, the quote that opens it
-	// kept, escaped or not, also as a quoted name before a comma in a list of pairs
+	// An Authorization header up to its value, the quote opening it kept, also escaped or a pair
 	authz = regexp.MustCompile(`(?i)((?:\\?["'])?)(?:proxy-)?authorization` +
 		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
 	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	userinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*):[^\s/@]+@`)
-	// The Bugnet shapes of DP 20.6.4 with bnk_, then the vendor shapes the gateway redacts, each
-	// where a word starts, after the character before it, which stays
+	// Bugnet shapes of DP 20.6.4 with bnk_, then the gateway's vendor shapes, where a word starts
 	tokens = regexp.MustCompile(`(^|[^A-Za-z0-9])(?:(?:sbx_|bnp_|bnx_|bnsl_|bnsp_|bnt_|bnf_|` +
 		`bnsec_|bxd_|e2b_|boat_|bnk_|g1\.)[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{20,}|` +
 		`sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|` +
@@ -116,8 +114,7 @@ func redactAuthz(s string) string {
 	return b.String()
 }
 
-// valueEnd is where a value starting at i ends: a line break or its closing quote, which is
-// escaped too when the name's was
+// valueEnd is where a value from i ends, at a line break or its closing quote, escaped or not
 func valueEnd(s string, i int, quote byte, escaped bool) int {
 	for ; i < len(s); i++ {
 		switch c := s[i]; {
@@ -159,8 +156,7 @@ func ordinaryWord(s string) bool {
 	return true
 }
 
-// replaceTokens redacts each token shape that starts a word, also one a longer word runs into, as
-// searching again one byte past each shape that does not start a word would, in one pass
+// replaceTokens redacts each token shape that starts a word, also one inside a shape that does not
 func replaceTokens(s string) string {
 	return tokens.ReplaceAllString(s, "${1}"+redactedToken)
 }
