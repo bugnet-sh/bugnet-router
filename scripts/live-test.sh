@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Runs live tests against the real providers named, each one of boxd, e2b, koyeb or boat.
 #
-# scripts/live-test.sh [--timeout DURATION] [--suite adapters|dataplane|control|leak|bench]
-#   [--front local|vps] [--run REGEX] [--router URL] [PROVIDER...]
+# scripts/live-test.sh [--timeout DURATION]
+#   [--suite adapters|dataplane|control|leak|sessions|bench] [--front local|vps]
+#   [--run REGEX] [--router URL] [PROVIDER...]
 #
 # adapters, the default, runs each provider's adapter live tests, 20 minutes each unless
-# --timeout says otherwise. dataplane, control and leak run TestLiveDataplane, TestLiveControl and
-# TestLiveLeak in test/live on a stack on this Mac, 90 minutes unless --timeout says otherwise,
-# behind the VPS's dev front with --front vps. --run replaces the suite's test pattern. Keys come
-# from .env and every other setting from config/dev.toml. These four suites end with bugnet-dev
+# --timeout says otherwise. dataplane, control, leak and sessions run TestLiveDataplane,
+# TestLiveControl, TestLiveLeak and TestLiveSessions in test/live on a stack on this Mac, 90
+# minutes unless --timeout says otherwise, behind the VPS's dev front with --front vps. --run replaces the suite's test pattern. Keys come
+# from .env and every other setting from config/dev.toml. These suites end with bugnet-dev
 # owned for each provider named and fail while one still holds a Bugnet sandbox. bench sources no
 # .env, checks no provider key, and drives bugnet-dev bench against --router with
 # BUGNET_OPERATOR_TOKEN from the environment. Live tests create real sandboxes and remove them
@@ -20,8 +21,8 @@ cd "$(dirname "$0")/.."
 
 usage() {
 	echo "usage: scripts/live-test.sh [--timeout DURATION]" \
-		"[--suite adapters|dataplane|control|leak|bench] [--front local|vps] [--run REGEX]" \
-		"[--router URL] [PROVIDER...]" >&2
+		"[--suite adapters|dataplane|control|leak|sessions|bench] [--front local|vps]" \
+		"[--run REGEX] [--router URL] [PROVIDER...]" >&2
 	exit 2
 }
 
@@ -52,9 +53,10 @@ while [ $# -gt 0 ]; do
 	--suite)
 		need "$1" "${2:-}"
 		case $2 in
-		adapters | dataplane | control | leak | bench) suite=$2 ;;
+		adapters | dataplane | control | leak | sessions | bench) suite=$2 ;;
 		*)
-			echo "live-test: unknown suite $2, want adapters, dataplane, control, leak or bench" >&2
+			echo "live-test: unknown suite $2, want adapters, dataplane, control, leak," \
+				"sessions or bench" >&2
 			exit 2
 			;;
 		esac
@@ -104,7 +106,7 @@ for provider in "$@"; do
 done
 
 case $suite in
-adapters | dataplane | leak)
+adapters | dataplane | leak | sessions)
 	if [ $# -eq 0 ]; then
 		echo "live-test: the $suite suite needs at least one provider" >&2
 		usage
@@ -114,7 +116,7 @@ esac
 if [ -n "$front" ]; then
 	case $suite in
 	adapters | bench)
-		echo "live-test: --front goes with the dataplane, control and leak suites" >&2
+		echo "live-test: --front goes with the dataplane, control, leak and sessions suites" >&2
 		exit 2
 		;;
 	esac
@@ -163,6 +165,7 @@ else
 	dataplane) run=TestLiveDataplane ;;
 	control) run=TestLiveControl ;;
 	leak) run=TestLiveLeak ;;
+	sessions) run=TestLiveSessions ;;
 	esac
 	list=$(
 		IFS=,
