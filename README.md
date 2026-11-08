@@ -461,7 +461,7 @@ Money is integer micro-USD and times are UTC.
 | `abuse_hold` | `"720h"` | How long an abuse or operator end keeps the record for operators |
 | `max_events` | `5000` | Events per record, 1 to 100000 |
 | `job_output` | `"64KiB"` | The newest output kept of each output of a job |
-| `placement_output` | `"4MiB"` | The output kept per record, earlier jobs keeping 8 KiB per output past it |
+| `placement_output` | `"4MiB"` | The output kept per record, earlier jobs keeping 8 KiB per output past it, up to 1 MiB of such tails |
 | `disk_budget` | `"8GiB"` | The three session tables together, `/monitor` warning at 80% |
 | `mcp_tools` | 24 names | The gateway's tool names an `mcp` event may carry |
 | `live.enabled` | `true` | The live view's kill switch, read at start, so `false` takes a restart, whose shutdown ends every open stream |
@@ -828,7 +828,8 @@ log line, since a key from the current root would change at the next root rotati
 - **The copy:** every transaction that ends a placement inserts `session_copy` on the `dataplane`
   queue. It reads each job's stream through the page's cleaner, keeps the newest
   `sessions.job_output` of each output and at most `sessions.placement_output` a record, newest
-  jobs first, then 8 KiB per output, and removes the streams with `UNLINK`: every job the
+  jobs first, then 8 KiB per output up to 1 MiB of such tails a record, earlier jobs keeping no
+  text and counting it in `cutBytes`, and removes the streams with `UNLINK`: every job the
   `jobs` table lists for the placement, also after Delete now or once the record expired. Missing
   streams set the output `expired`, some missing `partial`, and 10 minutes after the end the copy
   gives up as `expired`. At 100% of `sessions.disk_budget` a copy keeps 8 KiB per output and sets

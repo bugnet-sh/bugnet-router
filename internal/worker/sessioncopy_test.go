@@ -158,6 +158,28 @@ func TestCopyPlacementBudget(t *testing.T) {
 	eq(t, len(text[1]), 8<<10)
 }
 
+func TestCopyTailBudget(t *testing.T) {
+	e := newEnv(t, options{sessions: config.Sessions{JobOutput: 16 << 10,
+		PlacementOutput: 16 << 10}})
+	e.start(t)
+	p, rec := e.ended(t, "copy-tails", time.Second)
+	const jobs = 131
+	for i := range jobs {
+		e.job(t, p, fmt.Sprintf("j_%03d", i+1), lines(10<<10), false)
+	}
+	got, text, cut := e.copied(t, p, rec)
+	eq(t, got.CopyState, store.CopyComplete)
+	eq(t, len(text[jobs]), 10<<10)
+	// The 128 jobs before it spend the record's 1 MiB of tails, 8 KiB each
+	for seq := 3; seq < jobs; seq++ {
+		eq(t, [2]int64{int64(len(text[seq])), cut[seq]}, [2]int64{8 << 10, 2 << 10})
+	}
+	// Earlier jobs keep no text, and count it all as cut
+	for _, seq := range []int{1, 2} {
+		eq(t, [2]int64{int64(len(text[seq])), cut[seq]}, [2]int64{0, 10 << 10})
+	}
+}
+
 func TestCopyAfterStreamsExpired(t *testing.T) {
 	e := newEnv(t, options{})
 	e.start(t)

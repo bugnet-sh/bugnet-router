@@ -24,6 +24,8 @@ const (
 	copyPage   = 256
 	// tailBytes is what each output of an earlier job keeps once the record's budget is spent
 	tailBytes = 8 << 10
+	// tailBudget bounds those tails in one record, so a record stays near SP 6.5's size
+	tailBudget = 1 << 20
 	// diskEvery caches the session tables' size, since pg_total_relation_size reads the disk
 	diskEvery = 60 * time.Second
 	// copyBackoffCap keeps retries frequent enough to land inside the window
@@ -118,7 +120,7 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 	}
 	full := percent >= 100
 	red := sessions.KnownRedactor(p, w.keys)
-	left := w.d.Sessions.PlacementOutput
+	left, tails := w.d.Sessions.PlacementOutput, int64(tailBudget)
 	missing, read := 0, 0
 	// The newest jobs keep the most, so they spend the record's budget first
 	for i := len(jobs) - 1; i >= 0; i-- {
@@ -133,10 +135,14 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 			}
 			continue
 		}
-		// Once the record's budget is spent, an earlier job keeps its last 8 KiB per output
+		// Past the record's budget, earlier jobs keep 8 KiB per output while the tails last
 		limit, total := w.d.Sessions.JobOutput, left
-		if full || left < 2*tailBytes {
-			limit, total = tailBytes, 0
+		tail := full || left < 2*tailBytes
+		switch {
+		case tail && tails > 0:
+			limit, total = tailBytes, tails
+		case tail:
+			limit, total = 0, 0
 		}
 		frames, cut, kept, err := copyJob(ctx, w.bus, red, j.JobID, limit, total)
 		if err != nil {
@@ -153,7 +159,11 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 		if err := w.store.SetSessionJobFrames(ctx, rec.ID, j.Seq, raw, cut); err != nil {
 			return err
 		}
-		left -= kept
+		if tail {
+			tails -= kept
+		} else {
+			left -= kept
+		}
 		read++
 	}
 	state := store.CopyComplete
