@@ -88,6 +88,7 @@ type Config struct {
 	X402          X402
 	Hardening     Hardening
 	Wallets       Wallets
+	Stats         Stats
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
@@ -297,6 +298,7 @@ type file struct {
 	X402                x402File      `toml:"x402"`
 	Hardening           hardeningFile `toml:"hardening"`
 	Wallets             walletsFile   `toml:"wallets"`
+	Stats               statsFile     `toml:"stats"`
 }
 
 type apiFile struct {
@@ -482,6 +484,7 @@ func defaults() file {
 		},
 		Hardening: defaultHardening(),
 		Wallets:   defaultWallets(),
+		Stats:     defaultStats(),
 	}
 }
 
@@ -667,6 +670,9 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	if c.Wallets, err = f.Wallets.read(d.Wallets); err != nil {
+		return Config{}, err
+	}
+	if c.Stats, err = f.Stats.read(d.Stats); err != nil {
 		return Config{}, err
 	}
 	c.ProviderOps = map[string]int{}

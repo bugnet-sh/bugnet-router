@@ -562,6 +562,23 @@ second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
 empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
 block. With `use_payer = false` it logs once at start that every order counts as having no payer.
 
+### Stats
+
+`[stats]` holds the public stats feed (see [Public stats feed](#public-stats-feed)). It is off
+while `listen_addr` is empty, the default and `config/dev.toml`'s value. Production sets
+`"127.0.0.1:8082"`.
+
+| Key | Default | Takes |
+| --- | --- | --- |
+| `listen_addr` | `""` | A loopback IP address and port for router-api's feed listener, or empty |
+| `payments_url` | `"http://127.0.0.1:8447"` | Payments' internal API, `http://` to a loopback address and port while the feed is on |
+| `payments_timeout` | `"5s"` | 1ms to 15s for Payments' totals call |
+| `row_cache` | `"5s"` | 1ms to 1m, how long router-api serves the snapshot row before reading it again |
+| `sessions_cache` | `256` | 1 to 100000 cached session pages per router-api |
+| `max_queries` | `4` | 1 to 64 session page queries at once per router-api |
+| `per_source_per_minute`, `per_source_burst` | `60`, `20` | 1 to 1000000, a bucket per client address |
+| `max_sources` | `10000` | 1 to 1000000 per-source buckets per router-api |
+
 `CheckX402` checks a change of a placement's x402 services without making it, in this order: the
 handle, `enabled`, the state (placing or ready), the capability, each `add` entry in request
 order, the `disable` ids, then the counts. While placing, the capability is the order's

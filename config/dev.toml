@@ -37,6 +37,9 @@ emit_events = true
 anonymous_max_concurrent = 1000   # most dev tokens carry no payer
 facilitator_addresses = ["DevFaci1itatorAddress1111111111111111111111"]
 
+[stats]
+listen_addr = ""              # off, so a second dev router never fights for 8082
+
 [hardening]
 pool_list = "config/dev-mining-pools.txt"   # a stand-in, so /monitor shows no pool list line
 
