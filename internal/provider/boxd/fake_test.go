@@ -108,6 +108,12 @@ type fakeBoxd struct {
 	// noEOFChunk ends FsRead after its data without the chunk that counts the bytes
 	noEOFChunk atomic.Bool
 
+	// billing is what Whoami reports, orgBilling what GetOrgBilling reports, under mu
+	billing    *boxdpb.BillingInfo
+	orgBilling *boxdpb.GetOrgBillingResponse
+	// orgAsked is the org name of the last GetOrgBilling call
+	orgAsked string
+
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
 	nextID       int
@@ -1119,4 +1125,44 @@ func (f *fakeBoxd) lastCreate() *boxdpb.CreateVmRequest {
 		return nil
 	}
 	return f.creates[len(f.creates)-1]
+}
+
+func (f *fakeBoxd) setBilling(b *boxdpb.BillingInfo, org *boxdpb.GetOrgBillingResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.billing, f.orgBilling = b, org
+}
+
+func (f *fakeBoxd) Whoami(context.Context, *boxdpb.WhoamiRequest) (*boxdpb.WhoamiResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &boxdpb.WhoamiResponse{UserId: "u1", Billing: f.billing}, nil
+}
+
+func (f *fakeBoxd) GetOrgMachineLimit(
+	context.Context, *boxdpb.GetOrgMachineLimitRequest,
+) (*boxdpb.GetOrgMachineLimitResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := uint32(0)
+	for _, vm := range f.vms {
+		if vm.status != "destroyed" {
+			n++
+		}
+	}
+	return &boxdpb.GetOrgMachineLimitResponse{
+		OrgId: "o1", OrgName: "acme", MaxVms: 25, VmCount: n,
+	}, nil
+}
+
+func (f *fakeBoxd) GetOrgBilling(
+	_ context.Context, req *boxdpb.GetOrgBillingRequest,
+) (*boxdpb.GetOrgBillingResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.orgAsked = req.GetOrg()
+	if f.orgBilling == nil {
+		return &boxdpb.GetOrgBillingResponse{BillingMode: "stripe"}, nil
+	}
+	return f.orgBilling, nil
 }

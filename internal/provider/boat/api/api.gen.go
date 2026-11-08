@@ -680,6 +680,69 @@ func (e HostPortResponseAccess) Valid() bool {
 	}
 }
 
+// Defines values for MeResponseType.
+const (
+	UserInfo MeResponseType = "user.info"
+)
+
+// Valid indicates whether the value is a known member of the MeResponseType enum.
+func (e MeResponseType) Valid() bool {
+	switch e {
+	case UserInfo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MeResponseUserAccountStatus.
+const (
+	Active    MeResponseUserAccountStatus = "active"
+	Closed    MeResponseUserAccountStatus = "closed"
+	Suspended MeResponseUserAccountStatus = "suspended"
+)
+
+// Valid indicates whether the value is a known member of the MeResponseUserAccountStatus enum.
+func (e MeResponseUserAccountStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Closed:
+		return true
+	case Suspended:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MeResponseUserConnectionMethod.
+const (
+	Agentid MeResponseUserConnectionMethod = "agentid"
+	Email   MeResponseUserConnectionMethod = "email"
+	Github  MeResponseUserConnectionMethod = "github"
+	Google  MeResponseUserConnectionMethod = "google"
+	Service MeResponseUserConnectionMethod = "service"
+)
+
+// Valid indicates whether the value is a known member of the MeResponseUserConnectionMethod enum.
+func (e MeResponseUserConnectionMethod) Valid() bool {
+	switch e {
+	case Agentid:
+		return true
+	case Email:
+		return true
+	case Github:
+		return true
+	case Google:
+		return true
+	case Service:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SandboxAccess.
 const (
 	Owner SandboxAccess = "owner"
@@ -1610,6 +1673,58 @@ type HostPortResponse struct {
 
 // HostPortResponseAccess defines model for HostPortResponse.Access.
 type HostPortResponseAccess string
+
+// MeResponse defines model for MeResponse.
+type MeResponse struct {
+	// Ok Examples: true
+	Ok   bool           `json:"ok"`
+	Type MeResponseType `json:"type"`
+	User struct {
+		// AccountPlan Examples: user, service
+		AccountPlan   *string                      `json:"accountPlan,omitempty"`
+		AccountStatus *MeResponseUserAccountStatus `json:"accountStatus,omitempty"`
+		Closed        *bool                        `json:"closed,omitempty"`
+		ClosedAt      *time.Time                   `json:"closedAt,omitempty"`
+
+		// ClosureContactEmail Address to contact about a suspended or closed account.
+		ClosureContactEmail *string `json:"closureContactEmail,omitempty"`
+
+		// ConnectionMethod The login method the account was created with.
+		ConnectionMethod *MeResponseUserConnectionMethod `json:"connectionMethod,omitempty"`
+
+		// ConnectionMethods Every login method linked to the account.
+		ConnectionMethods *[]string `json:"connectionMethods,omitempty"`
+		DisplayName       *string   `json:"displayName,omitempty"`
+		Email             *string   `json:"email,omitempty"`
+
+		// Id Your account id.
+		Id    *string `json:"id,omitempty"`
+		Login *string `json:"login,omitempty"`
+
+		// PurgeAt When a closed account's data is scheduled for deletion.
+		PurgeAt *time.Time `json:"purgeAt,omitempty"`
+
+		// PurgedAt When a closed account's data was deleted.
+		PurgedAt        *time.Time `json:"purgedAt,omitempty"`
+		ServiceAccount  *bool      `json:"serviceAccount,omitempty"`
+		Suspended       *bool      `json:"suspended,omitempty"`
+		SuspendedAt     *time.Time `json:"suspendedAt,omitempty"`
+		SuspendedReason *string    `json:"suspendedReason,omitempty"`
+
+		// ZeroDataRetention Whether archived sandbox data is configured for deletion instead of retention.
+		ZeroDataRetention          *bool      `json:"zeroDataRetention,omitempty"`
+		ZeroDataRetentionEnabledAt *time.Time `json:"zeroDataRetentionEnabledAt,omitempty"`
+	} `json:"user"`
+}
+
+// MeResponseType defines model for MeResponse.Type.
+type MeResponseType string
+
+// MeResponseUserAccountStatus defines model for MeResponse.User.AccountStatus.
+type MeResponseUserAccountStatus string
+
+// MeResponseUserConnectionMethod The login method the account was created with.
+type MeResponseUserConnectionMethod string
 
 // PageInfo defines model for PageInfo.
 type PageInfo struct {
@@ -2595,6 +2710,13 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 
+	// Me Get current Boat user
+	//
+	// Returns GitHub identity for the authenticated Boat account.
+	//
+	// Corresponds with GET /me (the `Me` operationId).
+	Me(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// Sandboxes List sandboxes
 	//
 	// Your sandboxes. In an organization's scope (the active wallet, `org`, or `X-Boat-Org`) the list also holds every sandbox that organization pays for, whoever created it; `createdBy` and `access` say whose it is and what you may do with it.
@@ -2867,6 +2989,23 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+// Me Get current Boat user
+//
+// Returns GitHub identity for the authenticated Boat account.
+//
+// Corresponds with GET /me (the `Me` operationId).
+func (c *Client) Me(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMeRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 // Sandboxes List sandboxes
@@ -3450,6 +3589,33 @@ func (c *Client) SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSO
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewMeRequest constructs an http.Request for the Me method
+func NewMeRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/me")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
 }
 
 // NewSandboxesRequest constructs an http.Request for the Sandboxes method
@@ -4694,6 +4860,15 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 
+	// MeWithResponse Get current Boat user
+	//
+	// Returns GitHub identity for the authenticated Boat account.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /me (the `Me` operationId).
+	MeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*MeResponse2, error)
+
 	// SandboxesWithResponse List sandboxes
 	//
 	// Your sandboxes. In an organization's scope (the active wallet, `org`, or `X-Boat-Org`) the list also holds every sandbox that organization pays for, whoever created it; `createdBy` and `access` say whose it is and what you may do with it.
@@ -4984,6 +5159,54 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKeyWithResponse(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error)
+}
+
+type MeResponse2 struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *MeResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r MeResponse2) GetJSON200() *MeResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r MeResponse2) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetBody returns the raw response body bytes
+func (r MeResponse2) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r MeResponse2) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MeResponse2) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r MeResponse2) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
 }
 
 type SandboxesResponse struct {
@@ -6163,6 +6386,21 @@ func (r SshKeyResponse2) ContentType() string {
 	return ""
 }
 
+// MeWithResponse Get current Boat user
+//
+// Returns GitHub identity for the authenticated Boat account.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /me (the `Me` operationId).
+func (c *ClientWithResponses) MeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*MeResponse2, error) {
+	rsp, err := c.Me(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMeResponse2(rsp)
+}
+
 // SandboxesWithResponse List sandboxes
 //
 // Your sandboxes. In an organization's scope (the active wallet, `org`, or `X-Boat-Org`) the list also holds every sandbox that organization pays for, whoever created it; `createdBy` and `access` say whose it is and what you may do with it.
@@ -6638,6 +6876,39 @@ func (c *ClientWithResponses) SshKeyWithResponse(ctx context.Context, sandboxId 
 		return nil, err
 	}
 	return ParseSshKeyResponse2(rsp)
+}
+
+// ParseMeResponse2 parses an HTTP response from a MeWithResponse call
+func ParseMeResponse2(rsp *http.Response) (*MeResponse2, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MeResponse2{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest MeResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	}
+
+	return response, nil
 }
 
 // ParseSandboxesResponse parses an HTTP response from a SandboxesWithResponse call

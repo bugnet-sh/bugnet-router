@@ -198,3 +198,36 @@ type NativeSSHer interface {
 	// AuthorizeNativeSSH adds gatewayKey, an authorized_keys line, to the sandbox's SSH server
 	AuthorizeNativeSSH(ctx context.Context, ref Ref, gatewayKey string) (NativeSSH, error)
 }
+
+// Limits is one reading of a provider account's cap and use, a zero meaning not given
+type Limits struct {
+	MaxConcurrent int // the account's cap
+	Active        int // sandboxes running on the account now, every deployment included
+}
+
+// LimitsReader is a provider that reports its account's cap and use
+type LimitsReader interface {
+	ReadLimits(ctx context.Context) (Limits, error)
+}
+
+// Block says why a provider account cannot start sandboxes
+type Block string
+
+// Account blocks
+const (
+	BlockNone     Block = ""
+	BlockBanned   Block = "banned"   // banned, locked, suspended or closed by the provider
+	BlockUnfunded Block = "unfunded" // out of credit, past due or with no payment method
+	BlockAuth     Block = "auth"     // the key no longer works
+)
+
+// Account is one reading of a provider account's standing
+type Account struct {
+	Block  Block
+	Detail string // the provider's words, for logs and signals
+}
+
+// AccountChecker is a provider that reports whether its account may start sandboxes
+type AccountChecker interface {
+	CheckAccount(ctx context.Context) (Account, error)
+}

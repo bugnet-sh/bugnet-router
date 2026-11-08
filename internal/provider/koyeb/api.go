@@ -344,7 +344,7 @@ func apiError(status int, h http.Header, raw []byte) error {
 	case client:
 		e.Code = provider.CodeInvalid
 	}
-	return e
+	return provider.Named(e, providerName)
 }
 
 // retryAfter reads Retry-After, then Koyeb's rate limit reset, both in seconds

@@ -200,6 +200,11 @@ type fakeKoyeb struct {
 	downloads      []http.Header
 	sessions       map[string]*fakeUpload
 	nextUpload     int
+	// org is the organization fields the account route answers with, nil for an ACTIVE one
+	org map[string]any
+	// usage is the quota usage fields, quotaOrg the organization id the route was asked for
+	usage    map[string]any
+	quotaOrg string
 	// refuseBinds answers every bind_port with a 500
 	refuseBinds bool
 	// stealBind is a port another client binds right after each unbind_port
@@ -217,14 +222,16 @@ func newFake(t *testing.T) *fakeKoyeb {
 	}
 	api := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
-		"POST /v1/apps":            f.createApp,
-		"GET /v1/apps":             f.listApps,
-		"GET /v1/apps/{id}":        f.getApp,
-		"DELETE /v1/apps/{id}":     f.deleteApp,
-		"POST /v1/services":        f.createService,
-		"GET /v1/services":         f.listServices,
-		"GET /v1/services/{id}":    f.getService,
-		"GET /v1/deployments/{id}": f.getDeployment,
+		"POST /v1/apps":                           f.createApp,
+		"GET /v1/apps":                            f.listApps,
+		"GET /v1/apps/{id}":                       f.getApp,
+		"DELETE /v1/apps/{id}":                    f.deleteApp,
+		"POST /v1/services":                       f.createService,
+		"GET /v1/services":                        f.listServices,
+		"GET /v1/services/{id}":                   f.getService,
+		"GET /v1/deployments/{id}":                f.getDeployment,
+		"GET /v1/account/organization":            f.organization,
+		"GET /v1/quotas/organizations/{id}/usage": f.quotaUsage,
 	} {
 		api.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -1640,4 +1647,27 @@ func (f *fakeKoyeb) track(name string) {
 		f.cleanup = append(f.cleanup, top)
 		f.mu.Unlock()
 	}
+}
+
+func (f *fakeKoyeb) setOrg(org, usage map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.org, f.usage = org, usage
+}
+
+func (f *fakeKoyeb) organization(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	org := map[string]any{"id": "org-1", "status": "ACTIVE", "status_message": "VALID"}
+	for k, v := range f.org {
+		org[k] = v
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"organization": org})
+}
+
+func (f *fakeKoyeb) quotaUsage(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.quotaOrg = r.PathValue("id")
+	writeJSON(w, http.StatusOK, f.usage)
 }

@@ -28,3 +28,4 @@ output-options:
     - deleteFile
     - hostPort
     - sshKey
+    - me

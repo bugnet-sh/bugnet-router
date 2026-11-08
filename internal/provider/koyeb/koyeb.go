@@ -160,6 +160,8 @@ type Options struct {
 	PartBytes int64
 	// BufferTotal bounds every part buffer of the process together, 256 MiB when 0
 	BufferTotal int64
+	// OrganizationID is read from the account when empty
+	OrganizationID string
 }
 
 // Provider places sandboxes on Koyeb, keeping only the labels it already read per service
@@ -177,8 +179,10 @@ type Provider struct {
 	buffers   *semaphore.Weighted
 	// retryWait spaces out reissued reads and is the first pause between attempts of a part
 	retryWait time.Duration
-	mu        sync.Mutex
-	known     map[string]knownService // by service id, labels never change after create
+	// orgID is the organization the quota route names, read once when no setting gave it
+	orgID string
+	mu    sync.Mutex
+	known map[string]knownService // by service id, labels never change after create
 }
 
 // knownService is what ListOwned read from one deployment of a service
@@ -232,6 +236,7 @@ func New(opts Options) (*Provider, error) {
 		buffers:      semaphore.NewWeighted(total),
 		retryWait:    defaultRetryWait,
 		known:        map[string]knownService{},
+		orgID:        opts.OrganizationID,
 	}, nil
 }
 

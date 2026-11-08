@@ -44,7 +44,7 @@ func TestBoxdErrorMapping(t *testing.T) {
 		{
 			name: "machine cap", method: "CreateVm",
 			err: status.Error(codes.ResourceExhausted, "org machine limit of 50 reached"),
-			op:  create, code: provider.CodeCapacity, failOver: true,
+			op:  create, code: provider.CodeQuota, failOver: true,
 		},
 		{
 			name: "rate limit", method: "CreateVm",

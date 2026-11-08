@@ -130,6 +130,8 @@ type fakeE2B struct {
 	script   []*processpb.ProcessEvent
 	cleanup  []string
 	running  atomic.Int64
+	// noTotalRunning leaves X-Total-Running off the sandbox listing
+	noTotalRunning atomic.Bool
 	// listLimited makes envd refuse every listing as rate limited
 	listLimited atomic.Bool
 	// requests counts every request to the REST API and to envd
@@ -151,6 +153,7 @@ func newFake(t *testing.T) *fakeE2B {
 		"DELETE /sandboxes/{id}":          f.kill,
 		"POST /sandboxes/{id}/timeout":    f.timeout,
 		"POST /v2/sandboxes/{id}/connect": f.connect,
+		"GET /teams/{team}/metrics/max":   f.teamMetrics,
 	} {
 		rest.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -531,6 +534,9 @@ func (f *fakeE2B) list(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	if end < len(match) {
 		w.Header().Set("X-Next-Token", strconv.Itoa(end))
+	}
+	if !f.noTotalRunning.Load() {
+		w.Header().Set("X-Total-Running", strconv.Itoa(f.runningTotal()))
 	}
 	writeJSON(w, http.StatusOK, page)
 }
@@ -1114,4 +1120,26 @@ func (f *fakeE2B) track(name string) {
 		f.cleanup = append(f.cleanup, top)
 		f.mu.Unlock()
 	}
+}
+
+// runningTotal counts the running sandboxes of the account
+func (f *fakeE2B) runningTotal() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, box := range f.boxes {
+		if box.state == "running" {
+			n++
+		}
+	}
+	return n
+}
+
+// teamMetrics answers the team's maximum concurrent sandboxes
+func (f *fakeE2B) teamMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("metric") != "concurrent_sandboxes" {
+		writeError(w, http.StatusBadRequest, "", "unknown metric")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"value": f.runningTotal()})
 }

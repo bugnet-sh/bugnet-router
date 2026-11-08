@@ -1,14 +1,17 @@
 package boat
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -238,12 +241,18 @@ func (s *sharedStarts) counts(ctx context.Context, now time.Time) ([len(startWin
 	return counts, nil
 }
 
-// limitsReply holds the fields of GET /limits that price a start
+// limitsReply holds the fields of GET /limits that price a start and report the cap and use
 type limitsReply struct {
 	CanStart *bool `json:"canStart"`
 	// NextStartDollars is 0 inside the included starts, more past them and null when refused
-	NextStartDollars json.RawMessage `json:"nextStartDollars"`
-	MachineTypes     []struct {
+	NextStartDollars   json.RawMessage `json:"nextStartDollars"`
+	MaxActiveSandboxes *int            `json:"maxActiveSandboxes"`
+	ActiveSandboxes    *int            `json:"activeSandboxes"`
+	BlockedReason      *string         `json:"blockedReason"`
+	Wallet             *struct {
+		BalanceDollars *float64 `json:"balanceDollars"`
+	} `json:"wallet"`
+	MachineTypes []struct {
 		Type      string `json:"type"`
 		Available *bool  `json:"available"`
 	} `json:"machineTypes"`
@@ -252,7 +261,8 @@ type limitsReply struct {
 func (p *Provider) refreshLimits() {
 	ctx, cancel := context.WithTimeout(context.Background(), limitsTimeout)
 	defer cancel()
-	reply, err := p.readLimits(ctx)
+	// Another replica's reply under a minute old serves this one too
+	reply, at, err := p.limits(ctx, limitsStale)
 	f := &p.fees
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -271,7 +281,7 @@ func (p *Provider) refreshLimits() {
 		f.failing = true
 		return
 	}
-	f.fetched, f.failing = time.Now(), false
+	f.fetched, f.failing = at, false
 	f.refused = dollars == nil || (reply.CanStart != nil && !*reply.CanStart)
 	f.fee = 0
 	if dollars != nil {
@@ -285,26 +295,159 @@ func (p *Provider) refreshLimits() {
 	}
 }
 
-// readLimits calls GET /limits, which the generated client leaves out
-func (p *Provider) readLimits(ctx context.Context) (limitsReply, error) {
+// Keys and bounds of the /limits reply kept in Valkey for every replica and the worker
+const (
+	// sharedLimitsKeep outlasts every reader's age bound, so an old entry is still the last reading
+	sharedLimitsKeep = 5 * time.Minute
+	// sharedLimitsKey is the entry's key under the Valkey prefix
+	sharedLimitsKey = "limits:boat"
+	// defaultRateWindow is Boat's requests per 60 s per IP when the reply names no policy
+	defaultRateWindow = 10_000
+)
+
+// limitsEntry is one /limits reply as it lies in Valkey
+type limitsEntry struct {
+	At   int64           `json:"at"` // Unix ms
+	Body json.RawMessage `json:"body"`
+	// RateLeft is the requests left in the window the reply's RateLimit header named, -1 if none
+	RateLeft int `json:"rate_left"`
+	// RateLimit is the window's size, 0 when the reply named none
+	RateLimit int `json:"rate_limit"`
+}
+
+// sharedLimits keeps the newest /limits reply in one Valkey key
+type sharedLimits struct {
+	c   valkey.Client
+	key string
+}
+
+func (s *sharedLimits) get(ctx context.Context) (limitsEntry, error) {
+	var e limitsEntry
+	raw, err := s.c.Do(ctx, s.c.B().Get().Key(s.key).Build()).AsBytes()
+	if err != nil {
+		return e, err
+	}
+	return e, json.Unmarshal(raw, &e)
+}
+
+func (s *sharedLimits) put(ctx context.Context, e limitsEntry) error {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	return s.c.Do(ctx, s.c.B().Set().Key(s.key).Value(string(raw)).
+		PxMilliseconds(sharedLimitsKeep.Milliseconds()).Build()).Error()
+}
+
+// limits returns the /limits reply no older than maxAge, from Valkey first and from Boat if not
+func (p *Provider) limits(
+	ctx context.Context, maxAge time.Duration,
+) (limitsReply, time.Time, error) {
+	e, err := p.limitsEntry(ctx, maxAge)
+	if err != nil {
+		return limitsReply{}, time.Time{}, err
+	}
+	var reply limitsReply
+	return reply, time.UnixMilli(e.At), decode(e.Body, &reply)
+}
+
+func (p *Provider) limitsEntry(ctx context.Context, maxAge time.Duration) (limitsEntry, error) {
+	shared := p.limitsShared
+	if shared != nil {
+		sctx, cancel := context.WithTimeout(ctx, startsTimeout)
+		e, err := shared.get(sctx)
+		cancel()
+		if err == nil && time.Since(time.UnixMilli(e.At)) < maxAge {
+			return e, nil
+		}
+	}
+	e, err := p.fetchLimits(ctx)
+	if err != nil {
+		return e, err
+	}
+	if shared != nil {
+		sctx, cancel := context.WithTimeout(ctx, startsTimeout)
+		defer cancel()
+		if err := shared.put(sctx, e); err != nil {
+			slog.Warn("boat limits not kept in valkey", "err", err)
+		}
+	}
+	return e, nil
+}
+
+var (
+	rateLeftPattern  = regexp.MustCompile(`;\s*r=(\d+)`)
+	rateLimitPattern = regexp.MustCompile(`;\s*q=(\d+)`)
+)
+
+// fetchLimits calls GET /limits, which the generated client leaves out
+func (p *Provider) fetchLimits(ctx context.Context) (limitsEntry, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/limits", nil)
 	if err != nil {
-		return limitsReply{}, err
+		return limitsEntry{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.key)
 	req.Header.Set("User-Agent", "bugnet-router")
 	resp, err := p.control.Do(req)
 	if err != nil {
-		return limitsReply{}, redact(err)
+		return limitsEntry{}, redact(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReplyBytes))
 	if err != nil {
-		return limitsReply{}, err
+		return limitsEntry{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return limitsReply{}, apiError(resp.StatusCode, resp.Header, raw, noEffect)
+		return limitsEntry{}, apiError(resp.StatusCode, resp.Header, raw, noEffect)
 	}
-	var reply limitsReply
-	return reply, decode(raw, &reply)
+	if !json.Valid(raw) {
+		return limitsEntry{}, fmt.Errorf("boat limits reply is not JSON")
+	}
+	e := limitsEntry{At: time.Now().UnixMilli(), Body: raw, RateLeft: -1}
+	if m := rateLeftPattern.FindStringSubmatch(resp.Header.Get("RateLimit")); m != nil {
+		e.RateLeft, _ = strconv.Atoi(m[1])
+	}
+	if m := rateLimitPattern.FindStringSubmatch(resp.Header.Get("RateLimit-Policy")); m != nil {
+		e.RateLimit, _ = strconv.Atoi(m[1])
+	}
+	return e, nil
+}
+
+// ReadLimits reads the account's cap and use, one call to Boat serving every replica for 15 s
+func (p *Provider) ReadLimits(ctx context.Context) (provider.Limits, error) {
+	reply, _, err := p.limits(ctx, pollEvery)
+	if err != nil {
+		return provider.Limits{}, err
+	}
+	if reply.ActiveSandboxes == nil || reply.MaxActiveSandboxes == nil {
+		return provider.Limits{}, internal(errors.New("boat limits reply holds no sandbox counts"))
+	}
+	return provider.Limits{
+		MaxConcurrent: *reply.MaxActiveSandboxes, Active: *reply.ActiveSandboxes,
+	}, nil
+}
+
+// pollEvery is how often the worker reads /limits, so a younger shared reply serves it
+const pollEvery = 15 * time.Second
+
+// RateLeft is the requests Boat will still answer in its window, as the last poll read them
+type RateLeft struct {
+	Remaining, Limit int
+}
+
+// ReadRateLeft reads the RateLimit header of the last shared /limits reply, false when it had none
+func ReadRateLeft(
+	ctx context.Context, c valkey.Client, prefix string,
+) (RateLeft, bool, error) {
+	e, err := (&sharedLimits{c: c, key: prefix + sharedLimitsKey}).get(ctx)
+	if valkey.IsValkeyNil(err) {
+		return RateLeft{}, false, nil
+	}
+	if err != nil {
+		return RateLeft{}, false, fmt.Errorf("read boat rate limit: %w", err)
+	}
+	if e.RateLeft < 0 {
+		return RateLeft{}, false, nil
+	}
+	return RateLeft{Remaining: e.RateLeft, Limit: cmp.Or(e.RateLimit, defaultRateWindow)}, true, nil
 }
