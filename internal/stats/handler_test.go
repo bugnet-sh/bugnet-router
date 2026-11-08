@@ -18,25 +18,30 @@ import (
 
 // fakeSource answers like the store, counting reads, and blocks page queries while block is open
 type fakeSource struct {
-	mu      sync.Mutex
-	snap    store.StatsSnapshot
-	snapErr error
-	reads   int
-	rows    []store.StatsSessionRow
-	listErr error
-	lists   int
-	since   time.Time
-	before  time.Time
-	id      uuid.UUID
-	limit   int
-	block   chan struct{}
-	started chan struct{}
+	mu       sync.Mutex
+	snap     store.StatsSnapshot
+	snapErr  error
+	reads    int
+	deadline time.Time
+	rows     []store.StatsSessionRow
+	listErr  error
+	lists    int
+	since    time.Time
+	before   time.Time
+	id       uuid.UUID
+	limit    int
+	block    chan struct{}
+	started  chan struct{}
 }
 
-func (f *fakeSource) ReadStatsSnapshot(context.Context) (store.StatsSnapshot, error) {
+func (f *fakeSource) ReadStatsSnapshot(ctx context.Context) (store.StatsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
+	f.deadline, _ = ctx.Deadline()
+	if err := ctx.Err(); err != nil {
+		return store.StatsSnapshot{}, err
+	}
 	return f.snap, f.snapErr
 }
 
@@ -182,6 +187,24 @@ func TestRowReadOncePerRowCache(t *testing.T) {
 	eq(t, src.reads, 2)
 }
 
+func TestClientLeavingMidReadKeepsTheSummary(t *testing.T) {
+	h, src, _ := newHandler(t, `stats.row_cache = "5s"`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequestWithContext(ctx, "GET", "/api/stats", nil)
+	r.RemoteAddr = "127.0.0.1:40000"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	eq(t, src.reads, 1)
+	if left := time.Until(src.deadline); left <= 0 || left > readTimeout {
+		t.Errorf("the read had %v left, want at most %v", left, readTimeout)
+	}
+	// The next client inside row_cache gets the row read for the one that left
+	a := call(h, "GET", "/api/stats")
+	eq(t, a.status, http.StatusOK)
+	eq(t, a.body, servedBody)
+	eq(t, src.reads, 1)
+}
+
 func TestPerSourceBucket(t *testing.T) {
 	h, _, c := newHandler(t)
 	for i := range 20 {
@@ -272,6 +295,26 @@ func TestSessionsReadTheWindowAndTheCursor(t *testing.T) {
 	c.add(30 * time.Second)
 	call(h, "GET", "/api/stats/sessions")
 	eq(t, src.lists, 3)
+}
+
+func TestCursorsPostgresNeverSees(t *testing.T) {
+	h, src, _ := newHandler(t)
+	a := call(h, "GET", "/api/stats/sessions?before="+allOnes)
+	eq(t, []string{strconv.Itoa(a.status), a.body, a.header.Get("Cache-Control")},
+		[]string{"400", `{"error":"bad_cursor"}`, "no-store"})
+	far := cursorOf([]byte{0x80, 0, 0, 0, 0, 0, 0, 0})
+	eq(t, call(h, "GET", "/api/stats/sessions?before="+far).status, http.StatusBadRequest)
+
+	// No row is both inside the 30 days and older than such a cursor
+	for _, at := range []time.Time{t0.Add(-31 * 24 * time.Hour), t0.Add(-Window)} {
+		a := call(h, "GET", "/api/stats/sessions?before="+EncodeCursor(at, uuid.New()))
+		eq(t, []string{strconv.Itoa(a.status), a.body, a.header.Get("Cache-Control")},
+			[]string{"200", `{"items":[],"next":null}`, "public, max-age=30"})
+	}
+	eq(t, src.lists, 0)
+	call(h, "GET", "/api/stats/sessions?before="+
+		EncodeCursor(t0.Add(-Window).Add(time.Microsecond), uuid.New()))
+	eq(t, src.lists, 1)
 }
 
 func TestServesLastBodyWhilePostgresFails(t *testing.T) {

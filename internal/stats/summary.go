@@ -225,6 +225,33 @@ func days(f store.StatsFigures, p PaymentsPart) []Day {
 	return out
 }
 
+// paymentsLookback is how many days back Payments' days reach while the router has no order
+const paymentsLookback = 90
+
+// PaymentsFloor is the first day Payments' daily rows may fill from: the day before the router's
+// first order, or 90 days before f.At's day while it has none. It keeps one stray early day from
+// zero-filling every day since
+func PaymentsFloor(f store.StatsFigures) time.Time {
+	if f.FirstOrderAt != nil {
+		// A payment confirmed just before midnight reaches the router on the next day
+		return f.FirstOrderAt.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	}
+	return f.At.UTC().Truncate(24*time.Hour).AddDate(0, 0, -paymentsLookback)
+}
+
+// From returns p without its days before floor, and how many it left out. The totals keep them
+func (p PaymentsPart) From(floor time.Time) (PaymentsPart, int) {
+	kept := []PaymentsDay{}
+	for _, d := range p.Daily {
+		if day, err := time.Parse(dayLayout, d.Day); err == nil && !day.Before(floor) {
+			kept = append(kept, d)
+		}
+	}
+	dropped := len(p.Daily) - len(kept)
+	p.Daily = kept
+	return p, dropped
+}
+
 // Packages returns the catalog's start packages in catalog order
 func Packages(pkgs []catalog.Package) []Package {
 	out := []Package{}

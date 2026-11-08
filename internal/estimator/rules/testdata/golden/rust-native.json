@@ -42,7 +42,7 @@
 		"fits": [
 			{
 				"extension_package_id": "cpu-small-10m-more",
-				"extensions_needed": 3,
+				"extensions_needed": 2,
 				"fits": false,
 				"package_id": "cpu-small-10m",
 				"short_on": [
@@ -50,35 +50,29 @@
 					"memory",
 					"disk"
 				],
-				"total_price_micros": 74000
+				"total_price_micros": 56000
 			},
 			{
-				"extension_package_id": "cpu-std-30m-more",
-				"extensions_needed": 1,
 				"fits": false,
 				"package_id": "cpu-std-30m",
 				"short_on": [
 					"vcpu",
 					"disk"
 				],
-				"total_price_micros": 115000
+				"total_price_micros": 60000
 			},
 			{
-				"extension_package_id": "cpu-large-30m-more",
-				"extensions_needed": 1,
 				"fits": true,
 				"package_id": "cpu-large-30m",
-				"total_price_micros": 460000
+				"total_price_micros": 240000
 			},
 			{
-				"extension_package_id": "gpu-20-30m-more",
-				"extensions_needed": 1,
 				"fits": false,
 				"package_id": "gpu-20-30m",
 				"short_on": [
 					"vcpu"
 				],
-				"total_price_micros": 1150000
+				"total_price_micros": 600000
 			}
 		],
 		"floor": {
@@ -89,7 +83,7 @@
 			"gpu_count": 0,
 			"gpu_memory_gib": 0,
 			"memory_mib": 4096,
-			"minutes": 35,
+			"minutes": 30,
 			"vcpu": 8
 		},
 		"partial": false,
@@ -111,7 +105,7 @@
 				"rule_id": "build.native"
 			},
 			{
-				"message": "A pinned Rust toolchain the images may lack adds 2 minutes",
+				"message": "A pinned Rust toolchain the images may lack takes about 2 minutes to install",
 				"rule_id": "tc.pin"
 			},
 			{
@@ -127,11 +121,6 @@
 	},
 	"recommendation": {
 		"package_id": "cpu-large-30m",
-		"warnings": [
-			{
-				"code": "NEEDS_EXTENSION",
-				"message": "The run needs 1 extension"
-			}
-		]
+		"warnings": []
 	}
 }

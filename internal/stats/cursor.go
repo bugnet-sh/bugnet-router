@@ -18,6 +18,10 @@ var ErrBadCursor = errors.New("stats: bad cursor")
 
 var cursorEncoding = base64.RawURLEncoding.Strict()
 
+// cursorEnd bounds a cursor's time to 1970 through 9999. The router writes no time outside, and
+// Postgres refuses some far ones, which would answer 503 instead of 400
+var cursorEnd = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+
 // EncodeCursor writes the row's created_at in Unix microseconds and its id, both big-endian
 func EncodeCursor(createdAt time.Time, id uuid.UUID) string {
 	var b [24]byte
@@ -36,6 +40,9 @@ func DecodeCursor(s string) (time.Time, uuid.UUID, error) {
 	if err != nil || len(b) != 24 {
 		return time.Time{}, uuid.Nil, ErrBadCursor
 	}
-	at := time.UnixMicro(int64(binary.BigEndian.Uint64(b[:8]))).UTC()
-	return at, uuid.UUID(b[8:]), nil
+	micros := int64(binary.BigEndian.Uint64(b[:8]))
+	if micros < 0 || micros >= cursorEnd {
+		return time.Time{}, uuid.Nil, ErrBadCursor
+	}
+	return time.UnixMicro(micros).UTC(), uuid.UUID(b[8:]), nil
 }

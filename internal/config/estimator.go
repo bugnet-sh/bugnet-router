@@ -122,7 +122,8 @@ func defaultEstimator() estimatorFile {
 	return estimatorFile{
 		GithubAPI: "https://api.github.com", GithubRaw: "https://raw.githubusercontent.com",
 		GithubGit: "https://github.com", HuggingFace: "https://huggingface.co",
-		FetchBudget: "1500ms", BackgroundBudget: "10s", MaxBackground: 8, CacheTTL: "1h",
+		// three cold round trips to three hosts need more than 1.5s on a loaded machine
+		FetchBudget: "5s", BackgroundBudget: "10s", MaxBackground: 8, CacheTTL: "1h",
 		RefTTL: "60s", NegativeTTL: "5m", MaxFiles: 16, MaxFileBytes: "1MiB",
 		MaxFactsBytes: "8KiB", GithubReserve: 0.1, GithubConcurrency: 4, MaxPerSecond: 5,
 		MaxBurst: 20, NewSourcesPerMinute: 30, StoredPerMinute: 60, DefaultContextTokens: 8192,

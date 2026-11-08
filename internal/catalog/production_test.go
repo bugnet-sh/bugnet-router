@@ -69,3 +69,32 @@ func TestProductionCatalog(t *testing.T) {
 		}
 	}
 }
+
+// TestProductionExtensions holds every base package to one extension at its own rate
+func TestProductionExtensions(t *testing.T) {
+	c, err := Load("../../config/packages.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range c.All() {
+		if base.ExtensionOf != "" {
+			continue
+		}
+		var found []Package
+		for _, p := range c.All() {
+			if p.ExtensionOf == base.ID {
+				found = append(found, p)
+			}
+		}
+		if len(found) != 1 {
+			t.Errorf("package %s has %d extensions, want 1", base.ID, len(found))
+			continue
+		}
+		ext := found[0]
+		if ext.ID != base.ID+"-more" || ext.Resources != base.Resources ||
+			ext.PriceMicros != base.PriceMicros || ext.Minutes != base.Minutes {
+			t.Errorf("extension %s differs from %s in id, resources, price or minutes",
+				ext.ID, base.ID)
+		}
+	}
+}

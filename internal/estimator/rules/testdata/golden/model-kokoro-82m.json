@@ -76,7 +76,7 @@
 		],
 		"floor": {
 			"context_tokens": 0,
-			"disk_gib": 10,
+			"disk_gib": 8,
 			"download_bytes": 328259076,
 			"gpu": "none",
 			"gpu_count": 0,

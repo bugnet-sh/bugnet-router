@@ -1026,6 +1026,13 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 		}
 		out = append(out, Extension{Package: pkg, Refusal: err})
 	}
+	// The start package is left out when a dedicated extension offers the same minutes and price
+	out = slices.DeleteFunc(out, func(x Extension) bool {
+		return x.Package.ID == p.PackageID && slices.ContainsFunc(out, func(y Extension) bool {
+			return y.Package.ExtensionOf == p.PackageID && y.Package.Minutes == x.Package.Minutes &&
+				y.Package.PriceMicros == x.Package.PriceMicros
+		})
+	})
 	slices.SortFunc(out, byListing)
 	return out, nil
 }

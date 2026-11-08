@@ -42,8 +42,6 @@
 		"confidence": "medium",
 		"fits": [
 			{
-				"extension_package_id": "cpu-small-10m-more",
-				"extensions_needed": 1,
 				"fits": false,
 				"package_id": "cpu-small-10m",
 				"short_on": [
@@ -51,7 +49,7 @@
 					"memory",
 					"disk"
 				],
-				"total_price_micros": 38000
+				"total_price_micros": 20000
 			},
 			{
 				"fits": true,
@@ -71,13 +69,13 @@
 		],
 		"floor": {
 			"context_tokens": 0,
-			"disk_gib": 14,
+			"disk_gib": 12,
 			"download_bytes": 0,
 			"gpu": "none",
 			"gpu_count": 0,
 			"gpu_memory_gib": 0,
 			"memory_mib": 2048,
-			"minutes": 15,
+			"minutes": 10,
 			"vcpu": 2
 		},
 		"partial": false,
@@ -91,15 +89,15 @@
 				"rule_id": "deps.count"
 			},
 			{
-				"message": "A pinned Go toolchain the images may lack adds 1 minute",
+				"message": "A pinned Go toolchain the images may lack takes about 1 minute to install",
 				"rule_id": "tc.pin"
 			},
 			{
-				"message": "A pinned Go toolchain the images may lack adds 2 minutes",
+				"message": "A pinned Go toolchain the images may lack takes about 2 minutes to install",
 				"rule_id": "tc.pin"
 			},
 			{
-				"message": "A pinned Python toolchain the images may lack adds 1 minute",
+				"message": "A pinned Python toolchain the images may lack takes about 1 minute to install",
 				"rule_id": "tc.pin"
 			},
 			{

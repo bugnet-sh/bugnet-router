@@ -279,6 +279,25 @@ func TestListStatsSessionsFields(t *testing.T) {
 	eq(t, rows[1].EndedAt, at(created))
 }
 
+func TestListStatsSessionsTakesEveryCursorTime(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	created := now.Add(-time.Hour)
+	seedSession(t, pool, session{created: created, state: "terminated", terminated: at(now)})
+	// The first and the last time stats.DecodeCursor lets through
+	for before, want := range map[time.Time]int{
+		time.Unix(0, 0).UTC(): 0,
+		time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC): 1,
+	} {
+		rows, err := s.ListStatsSessions(t.Context(), now.Add(-30*24*time.Hour), before,
+			uuid.New(), 51)
+		if err != nil {
+			t.Fatalf("before %s: %v", before, err)
+		}
+		eq(t, len(rows), want)
+	}
+}
+
 // figuresAt is the time every figures test reads at
 var figuresAt = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 
@@ -376,6 +395,19 @@ func TestMedianRoundsDownAndCountsOnlyTheEnded(t *testing.T) {
 	run(t, pool, "boat", clock(8, 3, 0, 0, 0), time.Time{})
 	f := figures(t, s)
 	eq(t, f.Days[0].MedianSeconds, int64(4))
+}
+
+func TestStatsFiguresFirstOrder(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	eq(t, figures(t, s).FirstOrderAt, (*time.Time)(nil))
+	// An order after the read time is not one yet
+	seedSession(t, pool, session{created: figuresAt.Add(time.Second), state: "placing"})
+	eq(t, figures(t, s).FirstOrderAt, (*time.Time)(nil))
+	// A placement that never started still came with its paid order
+	seedSession(t, pool, session{created: clock(3, 9, 0, 0, 0), state: "failed",
+		failure: "no_candidate", terminated: at(clock(3, 9, 0, 0, 0))})
+	run(t, pool, "boat", clock(5, 10, 0, 0, 0), clock(5, 11, 0, 0, 0))
+	eq(t, figures(t, s).FirstOrderAt, at(clock(3, 9, 0, 0, 0)))
 }
 
 func TestStatsFiguresWithNoStartedPlacement(t *testing.T) {

@@ -183,6 +183,57 @@ func TestSnapshotLogsTokenProblemsAtErrorLevel(t *testing.T) {
 	eq(t, strings.Count(logs.String(), "keeping the last good part"), 1)
 }
 
+func TestSnapshotDropsPaymentsDaysBeforeTheFloor(t *testing.T) {
+	var logs syncBuffer
+	e, totals, clk := statsEnv(t, options{log: &logs})
+	today := clk.now().UTC().Truncate(24 * time.Hour)
+	back := func(n int) string { return today.AddDate(0, 0, -n).Format("2006-01-02") }
+	totals.mu.Lock()
+	totals.part.Daily = []stats.PaymentsDay{
+		{Day: "0001-01-01"}, {Day: "1970-01-01"}, {Day: back(91)}, {Day: back(90)},
+		{Day: back(12)}, {Day: back(11)}, {Day: back(0)},
+	}
+	totals.mu.Unlock()
+	daily := func() []string {
+		var body struct {
+			Daily []struct{ Day string } `json:"daily"`
+		}
+		if err := json.Unmarshal(e.snapshot(t).Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		var days []string
+		for _, d := range body.Daily {
+			days = append(days, d.Day)
+		}
+		return days
+	}
+	dropped := func() int { return strings.Count(logs.String(), "before the floor") }
+
+	// Without an order the floor is 90 days back
+	days := daily()
+	eq(t, []any{len(days), days[0], dropped()}, []any{91, back(90), 1})
+	eq(t, strings.Contains(logs.String(), "level=WARN"), true)
+	eq(t, strings.Contains(logs.String(), "count=3"), true)
+
+	// The first order moves it to the day before that order's
+	_, err := e.pool.Exec(t.Context(), `
+		insert into placements (id, handle_sha256, order_id, package_id, state, created_at,
+			failure_reason, terminated_at)
+		values ($1, $2, 'first-order', $3, 'failed', $4, 'no_candidate', $4)`,
+		uuid.New(), []byte("first-order"), smallPkg, today.AddDate(0, 0, -10).Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	days = daily()
+	eq(t, []any{len(days), days[0], dropped()}, []any{12, back(11), 2})
+	eq(t, strings.Contains(logs.String(), "count=5"), true)
+	for _, value := range []string{"0001-01-01", "1970-01-01", back(91)} {
+		if strings.Contains(logs.String(), value) {
+			t.Errorf("the log names the dropped day %s", value)
+		}
+	}
+}
+
 func TestSnapshotJobLimits(t *testing.T) {
 	eq(t, worker.StatsEvery, 30*time.Second)
 	eq(t, worker.StatsTimeout, 25*time.Second)
