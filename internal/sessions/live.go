@@ -58,7 +58,7 @@ func Snapshot(ctx context.Context, st *store.Store, bus *streams.Bus, p store.Pl
 	}
 	raw, err := json.Marshal(object{
 		{"v", Version}, {"startedAt", stamp(rec.CreatedAt)}, {"deadline", stamp(deadline)},
-		{"now", stamp(now)}, {"jobs", list},
+		{"now", stamp(now)}, {"jobs", list}, {"jobsDropped", rec.JobsDropped},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode the session snapshot: %w", err)

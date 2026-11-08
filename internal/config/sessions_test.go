@@ -9,8 +9,8 @@ import (
 )
 
 var sessionDefaults = Sessions{
-	Keep: 48 * time.Hour, AbuseHold: 720 * time.Hour, MaxEvents: 5000, JobOutput: 64 << 10,
-	PlacementOutput: 4 << 20, DiskBudget: 8 << 30, MCPTools: mcpTools,
+	Keep: 48 * time.Hour, AbuseHold: 720 * time.Hour, MaxEvents: 5000, MaxJobs: 1000,
+	JobOutput: 64 << 10, PlacementOutput: 4 << 20, DiskBudget: 8 << 30, MCPTools: mcpTools,
 	Live: SessionsLive{
 		Enabled: true, MaxReaders: 256, PlacementBytes: 256 << 20, BytesPerSecond: 1 << 20,
 		Replay: 256 << 10,
@@ -35,6 +35,7 @@ base_url = "https://sessions.example.com/"
 keep = "1h"
 abuse_hold = "24h"
 max_events = 10
+max_jobs = 3
 job_output = "1KiB"
 placement_output = "1MiB"
 disk_budget = "1GiB"
@@ -52,8 +53,8 @@ replay = "1"
 	}
 	eq(t, c.Sessions, Sessions{
 		BaseURL: "https://sessions.example.com", Keep: time.Hour, AbuseHold: 24 * time.Hour,
-		MaxEvents: 10, JobOutput: 1 << 10, PlacementOutput: 1 << 20, DiskBudget: 1 << 30,
-		MCPTools: []string{"bugnet_exec"},
+		MaxEvents: 10, MaxJobs: 3, JobOutput: 1 << 10, PlacementOutput: 1 << 20,
+		DiskBudget: 1 << 30, MCPTools: []string{"bugnet_exec"},
 		Live: SessionsLive{MaxReaders: 1, PlacementBytes: 1 << 20, BytesPerSecond: 1 << 10,
 			Replay: 1},
 	})
@@ -93,6 +94,8 @@ func TestSessionsBounds(t *testing.T) {
 			"sessions.abuse_hold must be a Go duration of at least 1h"},
 		{"sessions", "max_events", "0", "sessions.max_events must be 1 to 100000"},
 		{"sessions", "max_events", "100001", "sessions.max_events must be 1 to 100000"},
+		{"sessions", "max_jobs", "0", "sessions.max_jobs must be 1 to 10000"},
+		{"sessions", "max_jobs", "10001", "sessions.max_jobs must be 1 to 10000"},
 		{"sessions", "job_output", `"0"`, size("job_output")},
 		{"sessions", "placement_output", `"4MB"`, size("placement_output")},
 		{"sessions", "disk_budget", `"-1GiB"`, size("disk_budget")},

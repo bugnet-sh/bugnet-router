@@ -62,6 +62,8 @@ type Store struct {
 	log    *slog.Logger
 	// maxEvents caps one session record's events, DefaultSessionMaxEvents when 0
 	maxEvents int
+	// maxJobs caps one session record's jobs, DefaultSessionMaxJobs when 0
+	maxJobs int
 }
 
 // Option configures a Store

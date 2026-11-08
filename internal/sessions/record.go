@@ -263,6 +263,7 @@ func BuildRecord(ctx context.Context, st *store.Store, placement uuid.UUID) ([]b
 		{"endedBecause", EndedBecause(p.State, p.TerminationReason)},
 		{"deletesAt", stampPtr(rec.ExpiresAt)}, {"output", rec.CopyState},
 		{"events", served}, {"eventsDropped", rec.EventsDropped}, {"jobs", list},
+		{"jobsDropped", rec.JobsDropped},
 	}
 	raw, err := json.Marshal(out)
 	if err != nil {

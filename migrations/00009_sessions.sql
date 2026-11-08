@@ -10,7 +10,8 @@ create table session_records (
     hold_until timestamptz,                   -- operator-only hold (D-b), never served
     generation int not null default 0,        -- D-g (b): a new link adds 1
     copy_state text not null default 'pending', -- pending, complete, partial, expired
-    events_dropped int not null default 0
+    events_dropped int not null default 0,
+    jobs_dropped int not null default 0       -- jobs past sessions.max_jobs, given no row
 );
 
 create table session_events (

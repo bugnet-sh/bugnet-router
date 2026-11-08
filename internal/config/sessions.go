@@ -20,6 +20,8 @@ type Sessions struct {
 	AbuseHold time.Duration
 	// MaxEvents bounds one record's events, placement, payment and allowance rows aside
 	MaxEvents int
+	// MaxJobs bounds the jobs one record shows
+	MaxJobs int
 	// JobOutput is the newest output the copy keeps of each output of a job
 	JobOutput int64
 	// PlacementOutput is the output one record keeps, earlier jobs keeping 8 KiB past it
@@ -50,6 +52,7 @@ type sessionsFile struct {
 	Keep            string           `toml:"keep"`
 	AbuseHold       string           `toml:"abuse_hold"`
 	MaxEvents       int64            `toml:"max_events"`
+	MaxJobs         int64            `toml:"max_jobs"`
 	JobOutput       string           `toml:"job_output"`
 	PlacementOutput string           `toml:"placement_output"`
 	DiskBudget      string           `toml:"disk_budget"`
@@ -68,6 +71,8 @@ type sessionsLiveFile struct {
 const (
 	// maxSessionEvents keeps one record far below what its page can show
 	maxSessionEvents = 100_000
+	// maxSessionJobs keeps one record's job rows, each up to a KiB of command, near SP 6.5's size
+	maxSessionJobs = 10_000
 	// maxLiveReaders matches the live client's blocking pool
 	maxLiveReaders = 4096
 	maxMCPTools    = 64
@@ -87,7 +92,7 @@ var toolName = regexp.MustCompile(`^bugnet_[a-z0-9_]{1,48}$`)
 
 func defaultSessions() sessionsFile {
 	return sessionsFile{
-		Keep: "48h", AbuseHold: "720h", MaxEvents: 5000, JobOutput: "64KiB",
+		Keep: "48h", AbuseHold: "720h", MaxEvents: 5000, MaxJobs: 1000, JobOutput: "64KiB",
 		PlacementOutput: "4MiB", DiskBudget: "8GiB",
 		// A clone, since go-toml decodes a list into the slice it finds
 		MCPTools: slices.Clone(mcpTools),
@@ -123,6 +128,10 @@ func (f sessionsFile) read(d sessionsFile) (Sessions, error) {
 		return Sessions{}, fmt.Errorf("sessions.max_events must be 1 to %d", maxSessionEvents)
 	}
 	s.MaxEvents = int(f.MaxEvents)
+	if f.MaxJobs < 1 || f.MaxJobs > maxSessionJobs {
+		return Sessions{}, fmt.Errorf("sessions.max_jobs must be 1 to %d", maxSessionJobs)
+	}
+	s.MaxJobs = int(f.MaxJobs)
 	if f.Live.MaxReaders < 1 || f.Live.MaxReaders > maxLiveReaders {
 		return Sessions{}, fmt.Errorf("sessions.live.max_readers must be 1 to %d",
 			maxLiveReaders)

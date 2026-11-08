@@ -17,6 +17,9 @@ import (
 // DefaultSessionMaxEvents is the events one record keeps when the store is given no cap
 const DefaultSessionMaxEvents = 5000
 
+// DefaultSessionMaxJobs is the jobs one record shows when the store is given no cap
+const DefaultSessionMaxJobs = 1000
+
 // Copy states of a session record's output
 const (
 	CopyPending  = "pending"
@@ -41,6 +44,15 @@ func WithSessionMaxEvents(n int) Option {
 	}
 }
 
+// WithSessionMaxJobs caps the jobs one session record shows, the default when n is 0
+func WithSessionMaxJobs(n int) Option {
+	return func(s *Store) {
+		if n > 0 {
+			s.maxJobs = n
+		}
+	}
+}
+
 // SessionRecord is a placement's session page record
 type SessionRecord struct {
 	ID          string
@@ -55,6 +67,8 @@ type SessionRecord struct {
 	CopyState   string
 	// EventsDropped counts events the cap kept out
 	EventsDropped int
+	// JobsDropped counts jobs the cap gave no row
+	JobsDropped int
 }
 
 // Open reports whether the record's public page may still be served at now
@@ -112,13 +126,13 @@ func newSessionID() string {
 }
 
 const sessionColumns = `id, placement_id, created_at, ended_at, expires_at, closed_at,
-	coalesce(closed_by, ''), hold_until, generation, copy_state, events_dropped`
+	coalesce(closed_by, ''), hold_until, generation, copy_state, events_dropped, jobs_dropped`
 
 func scanSessionRecord(row pgx.Row) (SessionRecord, error) {
 	var r SessionRecord
 	var gen int64
 	err := row.Scan(&r.ID, &r.PlacementID, &r.CreatedAt, &r.EndedAt, &r.ExpiresAt, &r.ClosedAt,
-		&r.ClosedBy, &r.HoldUntil, &gen, &r.CopyState, &r.EventsDropped)
+		&r.ClosedBy, &r.HoldUntil, &gen, &r.CopyState, &r.EventsDropped, &r.JobsDropped)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionRecord{}, ErrNotFound
 	}
@@ -374,7 +388,7 @@ func (s *Store) SessionEvents(ctx context.Context, record string) ([]SessionEven
 
 /* Jobs */
 
-// StartSessionJob gives the job its sequence number on the placement's record, once per job
+// StartSessionJob gives the job its seq once, or past sessions.max_jobs no row and seq 0
 func (s *Store) StartSessionJob(ctx context.Context, placement uuid.UUID, jobID, command string,
 	at time.Time) (seq int, created bool, err error) {
 	err = s.WithTx(ctx, func(tx pgx.Tx) error {
@@ -386,6 +400,20 @@ func (s *Store) StartSessionJob(ctx context.Context, placement uuid.UUID, jobID,
 			id, jobID).Scan(&seq)
 		if err == nil || !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		var n int
+		err = tx.QueryRow(ctx, `select count(*) from session_jobs where record_id = $1`, id).
+			Scan(&n)
+		if err != nil {
+			return fmt.Errorf("count session jobs: %w", err)
+		}
+		if n >= s.jobCap() {
+			_, err := tx.Exec(ctx, `
+				update session_records set jobs_dropped = jobs_dropped + 1 where id = $1`, id)
+			if err != nil {
+				return fmt.Errorf("count a dropped session job: %w", err)
+			}
+			return nil
 		}
 		err = tx.QueryRow(ctx, `
 			insert into session_jobs (record_id, seq, job_id, command, started_at)
@@ -399,6 +427,13 @@ func (s *Store) StartSessionJob(ctx context.Context, placement uuid.UUID, jobID,
 		return nil
 	})
 	return seq, created, err
+}
+
+func (s *Store) jobCap() int {
+	if s.maxJobs > 0 {
+		return s.maxJobs
+	}
+	return DefaultSessionMaxJobs
 }
 
 // FinishSessionJob records a job's end on its record, answering its seq and start

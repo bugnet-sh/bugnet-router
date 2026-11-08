@@ -110,7 +110,8 @@ func redriveOutbox(ctx context.Context, log *slog.Logger) error {
 // openStore returns the store, sealing provider credentials under the data-plane keys
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
 	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
-		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents))
+		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents),
+		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs))
 }
 
 func serve(

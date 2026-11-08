@@ -460,6 +460,7 @@ Money is integer micro-USD and times are UTC.
 | `keep` | `"48h"` | How long a page lives after its sandbox ends, at least 1h |
 | `abuse_hold` | `"720h"` | How long an abuse or operator end keeps the record for operators |
 | `max_events` | `5000` | Events per record, 1 to 100000 |
+| `max_jobs` | `1000` | Jobs per record, 1 to 10000, later ones given no row and counted in `jobsDropped` |
 | `job_output` | `"64KiB"` | The newest output kept of each output of a job |
 | `placement_output` | `"4MiB"` | The output kept per record, earlier jobs keeping 8 KiB per output past it, up to 1 MiB of such tails |
 | `disk_budget` | `"8GiB"` | The three session tables together, `/monitor` warning at 80% |
@@ -824,7 +825,8 @@ log line, since a key from the current root would change at the next root rotati
   events, past which only `placement`, `payment` and `allowance` rows land and the rest are
   counted in `eventsDropped`. A record its user deleted takes no event.
 - **Commands** (D-f): each new job gets its `seq` with the first 1 KiB of its command, cleaned and
-  redacted.
+  redacted. A record shows `sessions.max_jobs` jobs; a later job gets no row, no `job` events and
+  no copy, and is counted in `jobsDropped` on the record and the snapshot.
 - **The copy:** every transaction that ends a placement inserts `session_copy` on the `dataplane`
   queue. It reads each job's stream through the page's cleaner, keeps the newest
   `sessions.job_output` of each output and at most `sessions.placement_output` a record, newest

@@ -120,6 +120,7 @@ base_url = ""                          # https://sessions.<domain>, no session l
 keep = "48h"                           # how long a page lives after its sandbox ends
 abuse_hold = "720h"                    # an abuse or operator end keeps the record for operators
 max_events = 5000                      # events per record, placement, payment and allowance aside
+max_jobs = 1000                        # jobs per record, later ones counted in jobsDropped
 job_output = "64KiB"                   # newest output kept per output of each job
 placement_output = "4MiB"              # output kept per record, then 8 KiB tails up to 1 MiB
 disk_budget = "8GiB"                   # the three session tables together, 100% keeps 8 KiB tails

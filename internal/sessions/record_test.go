@@ -220,6 +220,24 @@ func TestRecordWhilePending(t *testing.T) {
 	eq(t, rec.Jobs[0]["state"], any("lost"))
 }
 
+func TestJobsDroppedServed(t *testing.T) {
+	f := newFixture(t)
+	f.exec(t, `update session_records set jobs_dropped = 3 where id = $1`, f.rec.ID)
+	snap, err := Snapshot(t.Context(), f.st, nil, f.p, t0, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{f.build(t), snap} {
+		var got struct {
+			JobsDropped *int `json:"jobsDropped"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		eq(t, got.JobsDropped != nil && *got.JobsDropped == 3, true)
+	}
+}
+
 func TestEndedBecause(t *testing.T) {
 	for reason, want := range map[string]string{
 		"stop": "stopped", "deadline": "deadline", "": "deadline", "sandbox_exited": "exited",

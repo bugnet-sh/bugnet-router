@@ -293,6 +293,53 @@ func TestSessionJobsBySeq(t *testing.T) {
 	eq(t, errors.Is(err, store.ErrNotFound), true)
 }
 
+func jobsDropped(t *testing.T, s *store.Store, id string) int {
+	t.Helper()
+	rec, err := s.SessionRecordByID(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec.JobsDropped
+}
+
+func TestStartSessionJobCap(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	p, rec := newRecord(t, s, "jobcap-1")
+	_, err := pool.Exec(t.Context(), `
+		insert into session_jobs (record_id, seq, job_id, started_at)
+		select $1, n, 'j_' || n, now() from generate_series(1, 1000) n`, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, created, err := s.StartSessionJob(t.Context(), p.ID, "j_new", "ls", time.Now())
+	eq(t, err, nil)
+	eq(t, [2]any{seq, created}, [2]any{0, false})
+	eq(t, jobsDropped(t, s, rec.ID), 1)
+	// A job the record holds still answers its seq, and counts nothing
+	seq, created, err = s.StartSessionJob(t.Context(), p.ID, "j_7", "ls", time.Now())
+	eq(t, err, nil)
+	eq(t, [2]any{seq, created}, [2]any{7, false})
+	eq(t, jobsDropped(t, s, rec.ID), 1)
+	jobs, err := s.SessionJobs(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(jobs), 1000)
+	_, _, err = s.FinishSessionJob(t.Context(), p.ID, "j_new", time.Now(), nil)
+	eq(t, errors.Is(err, store.ErrNotFound), true)
+}
+
+func TestStartSessionJobCapSetting(t *testing.T) {
+	s, _ := newStoreWithPool(t, store.WithSessionMaxJobs(2))
+	p, rec := newRecord(t, s, "jobcap-2")
+	for i, id := range []string{"j_a", "j_b", "j_c", "j_d"} {
+		_, created, err := s.StartSessionJob(t.Context(), p.ID, id, "ls", time.Now())
+		eq(t, err, nil)
+		eq(t, created, i < 2)
+	}
+	eq(t, jobsDropped(t, s, rec.ID), 2)
+}
+
 func TestEndAndCloseSessionRecord(t *testing.T) {
 	s := newStore(t)
 	p, rec := newRecord(t, s, "end-1")
