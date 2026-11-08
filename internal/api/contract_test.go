@@ -24,8 +24,7 @@ var built = []string{
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
 	"CreatePreview", "CreateSecretLink", "CreateSecretPutGrant", "GetSecretSealingKey",
 	"PutSecret", "ListSecrets", "DeleteSecret", "AddSshKey", "RemoveSshKey", "CheckX402",
-	"ListX402", "EnableX402", "AppendSessionEvents", "RotateSessionLink",
-	"ListX402", "EnableX402", "FetchSource",
+	"ListX402", "EnableX402", "AppendSessionEvents", "RotateSessionLink", "FetchSource",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {
