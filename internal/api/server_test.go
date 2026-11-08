@@ -252,6 +252,7 @@ func newEnv(t *testing.T, opts options) *env {
 	var features provider.Features
 	if opts.secrets {
 		features.Secrets = []string{name}
+		api.SetApplyPoll(t, 10*time.Millisecond)
 	}
 	var listed provider.Provider = faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,

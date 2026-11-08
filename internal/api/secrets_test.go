@@ -44,7 +44,7 @@ func secretsOf(opts options) config.Secrets {
 	c := config.Secrets{
 		EgressIPs: []netip.Addr{netip.MustParseAddr("203.0.113.7")}, BoxPublicKeys: boxKeys,
 		LinkTTL: 10 * time.Minute, PutGrantTTL: 10 * time.Minute, CustomHosts: true,
-		MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: 300 * time.Millisecond,
+		MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: 20 * time.Millisecond,
 	}
 	if opts.secretSettings != nil {
 		opts.secretSettings(&c)
@@ -292,7 +292,8 @@ func TestEveryWriteNeedsTheCapability(t *testing.T) {
 }
 
 func TestPutSecretWaitsThenAnswersApplying(t *testing.T) {
-	e := newEnv(t, options{secrets: true})
+	e := newEnv(t, options{secrets: true,
+		secretSettings: func(c *config.Secrets) { c.ApplyWait = 300 * time.Millisecond }})
 	h, p := e.readyPlacement(t)
 	start := time.Now()
 	r := e.mustPutSecret(t, h, hf())
@@ -357,13 +358,22 @@ func TestFetchOnlyIsActiveAtOnce(t *testing.T) {
 	eq(t, e.secretsVersion(t, p), int64(1))
 	eq(t, e.changedEvents(t, p.GetPlacementId()), 1)
 	// Replacing a secret the sandbox holds with a fetch-only one takes its placeholder away
-	e.mustPutSecret(t, h, &routerv1.SecretSpec{Name: "HF_TOKEN", Hosts: []string{"huggingface.co"},
-		FetchOnly: false})
-	jobs := e.applyJobs(t, p.GetPlacementId())
-	e.markActive(t, p)
+	sum := sha256.Sum256([]byte("HF_TOKEN"))
+	if _, _, err := e.store.PutSecret(t.Context(), store.Secret{
+		ID: uuid.New(), PlacementID: uuid.MustParse(p.GetPlacementId()), Name: "HF_TOKEN",
+		Hosts: []string{"huggingface.co"}, PlaceholderSHA256: sum[:], Sealed: []byte("box"),
+		KeyID: "k2", Source: store.SourceGateway, State: store.SecretActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
 	e.mustPutSecret(t, h, &routerv1.SecretSpec{Name: "HF_TOKEN", Hosts: []string{"huggingface.co"},
 		FetchOnly: true})
-	eq(t, e.applyJobs(t, p.GetPlacementId()), jobs+1)
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("a fetch-only replacement waited for its apply")
+	}
+	eq(t, e.applyJobs(t, p.GetPlacementId()), 1)
+	eq(t, e.secretsVersion(t, p), int64(2))
 }
 
 func TestListSecretsNeverValues(t *testing.T) {
@@ -833,7 +843,7 @@ func TestPutGrantOnlyForItsPlacement(t *testing.T) {
 	mustCode(t, err, connect.CodeFailedPrecondition, "NOT_READY")
 }
 
-// each of the five writes waits on a held row lock; two writes at once, one apply sees both
+// each of the five writes waits on a held row lock, and two puts at once both commit their jobs
 func TestSecretWritesTakeTheRowLock(t *testing.T) {
 	e := newEnv(t, options{secrets: true, opsBurst: 100})
 	h, p := e.readyPlacement(t)
