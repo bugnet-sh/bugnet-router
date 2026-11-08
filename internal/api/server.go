@@ -6,14 +6,14 @@
 // PaymentsService. A service admits only its own token, and one whose token is empty admits no
 // calls. RPCs not built yet answer Unimplemented.
 //
-// Placements go through the saga, commands through the jobs service and file operations
-// straight to the placement's provider. Exec, CancelJob and each file operation first spend a
-// token of the placement's operation bucket, which every replica shares in Valkey, and of its
-// payer's and its provider account's buckets when they have one, from all of them or none. GetPlacement
-// and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
-// server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
-// only delays a reader until its next read. The edge-side services meter usage against each
-// placement's budgets, answer lease checks and serve the edge event stream.
+// Placements go through the saga, commands through the jobs service and file operations straight to
+// the placement's provider. Exec, CancelJob and each file operation first spend a token of the
+// placement's operation bucket, which every replica shares in Valkey, and of its payer's and its
+// provider account's buckets when they have one, from all of them or none. GetPlacement and
+// WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per server
+// fans out to the waiting requests. Each wake-up re-reads the store, so a lost message only delays
+// a reader until its next read. The edge-side services meter usage against each placement's
+// budgets, answer lease checks and serve the edge event stream.
 //
 // CreatePreview answers the derived link of one port, opening or repairing the placement's gate
 // first, and the edge resolves it with ResolvePreview and asks for a repair with RepairPreview,
