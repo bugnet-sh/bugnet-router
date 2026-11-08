@@ -274,12 +274,18 @@ func TestRedactURLPasswordWithAtOrSlash(t *testing.T) {
 	eq(t, r.Redact("https://me@x.com:pass@host"), "https://me@x.com:[redacted password]@host")
 	eq(t, r.Redact("GET http://localhost:3000/users/a@b.com 200"),
 		"GET http://localhost:3000/users/a@b.com 200")
-	eq(t, r.Redact("ssh://git@host:22/a@b"), "ssh://git@host:22/a@b")
 	eq(t, r.Redact("redis://:pa@ss@host:6379, x=https://u:p@host'"),
 		"redis://:[redacted password]@host:6379, x=https://u:[redacted password]@host'")
 	// A URL inside another URL's query is read on its own
 	eq(t, r.Redact("https://a/?next=http://u:secret1@b/"),
 		"https://a/?next=http://u:[redacted password]@b/")
+}
+
+func TestRedactURLPasswordOfDigitsAndASlash(t *testing.T) {
+	r := NewRedactor()
+	eq(t, r.Redact("postgres://app:2024/QJpw@db/x"), "postgres://app:[redacted password]@db/x")
+	eq(t, r.Redact("redis://u:7/QJ+q=@cache:6379"), "redis://u:[redacted password]@cache:6379")
+	eq(t, r.Redact("ssh://git@host:22/a@b"), "ssh://git@host:[redacted password]@b")
 }
 
 func TestRedactFullCarryHoldsWhatItWouldCut(t *testing.T) {

@@ -111,7 +111,7 @@ func redactPasswords(s string) string {
 		if pw <= colon {
 			pw = at
 		}
-		if pw <= colon || hostPort.MatchString(s[colon+1:pw]) {
+		if pw <= colon || isPort(s[colon+1:end]) {
 			continue
 		}
 		b.WriteString(s[last : colon+1])
@@ -123,6 +123,20 @@ func redactPasswords(s string) string {
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// isPort reports whether the text after a URL's colon starts with a host's port, digits then a
+// slash, whose next path part has no @ but at its start, so user:pass@ is read first
+func isPort(s string) bool {
+	loc := hostPort.FindStringIndex(s)
+	if loc == nil {
+		return false
+	}
+	part := s[loc[1]:]
+	if i := strings.IndexAny(part, "/?#"); i >= 0 {
+		part = part[:i]
+	}
+	return strings.IndexByte(part, '@') <= 0
 }
 
 // urlAts is where the URL whose authority starts at i ends, its last @ and its last @ not right
