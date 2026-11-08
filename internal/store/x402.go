@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -217,4 +218,87 @@ func (s *Store) SetAppliedHosts(
 	tag, err := s.q.Exec(ctx, `update placements set applied_hosts = $2 where id = $1`,
 		placement, emptyIfNil(hosts))
 	return rowChanged(tag.RowsAffected(), err, "set applied hosts", placement)
+}
+
+// X402EventData is one stored x402 row, XS 8.1's fields, in snake_case JSON
+type X402EventData struct {
+	At                  time.Time `json:"at"`
+	Ref                 string    `json:"ref"`
+	PaymentRef          string    `json:"payment_ref"`
+	Host                string    `json:"host"`
+	Method              string    `json:"method"`
+	Path                string    `json:"path"`
+	Status              string    `json:"status"`
+	Reason              string    `json:"reason"`
+	AskedMicros         int64     `json:"asked_micros"`
+	AmountMicros        int64     `json:"amount_micros"`
+	Asset               string    `json:"asset"`
+	Network             string    `json:"network"`
+	Scheme              string    `json:"scheme"`
+	X402Version         uint32    `json:"x402_version"`
+	PayTo               string    `json:"pay_to"`
+	ServiceID           string    `json:"service_id"`
+	HTTPStatus          uint32    `json:"http_status"`
+	DurationMS          uint32    `json:"duration_ms"`
+	BytesOut            uint64    `json:"bytes_out"`
+	BytesIn             uint64    `json:"bytes_in"`
+	StreamCut           bool      `json:"stream_cut"`
+	AllowanceLeftMicros int64     `json:"allowance_left_micros"`
+	Count               uint32    `json:"count"`
+}
+
+// InsertX402Event stores one row per (record, ref) and moves its counters in one transaction
+func (s *Store) InsertX402Event(ctx context.Context, placement uuid.UUID, data X402EventData,
+	alwaysLand bool) (inserted, capDropped bool, err error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return false, false, fmt.Errorf("encode x402 event: %w", err)
+	}
+	err = s.WithTx(ctx, func(tx pgx.Tx) error {
+		id, err := lockSession(ctx, tx, placement)
+		if err != nil {
+			return err
+		}
+		inserted, capDropped, err = s.insertEvent(ctx, tx, id, "x402", raw, alwaysLand)
+		if err != nil || (!inserted && !capDropped) {
+			return err
+		}
+		return moveX402Counters(ctx, tx, placement, data)
+	})
+	return inserted, capDropped, err
+}
+
+func moveX402Counters(ctx context.Context, tx pgx.Tx, placement uuid.UUID,
+	d X402EventData) error {
+	if d.ServiceID != "" {
+		var paid, uncertain int
+		switch d.Status {
+		case "paid":
+			paid = int(d.Count)
+		case "uncertain":
+			uncertain = int(d.Count)
+		}
+		_, err := tx.Exec(ctx, `
+			update x402_services set requests = requests + $3, paid = paid + $4,
+				uncertain = uncertain + $5
+			where placement_id = $1 and service_id = $2`,
+			placement, d.ServiceID, int(d.Count), paid, uncertain)
+		if err != nil {
+			return fmt.Errorf("count x402 service: %w", err)
+		}
+	}
+	key, ok := x402.RefusalKey(d.Status, d.Reason)
+	if !ok {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		insert into x402_refusals (placement_id, reason, count, last_at) values ($1, $2, $3, $4)
+		on conflict (placement_id, reason) do update set
+			count = x402_refusals.count + excluded.count,
+			last_at = greatest(x402_refusals.last_at, excluded.last_at)`,
+		placement, key, int(d.Count), d.At.UTC())
+	if err != nil {
+		return fmt.Errorf("count x402 refusal: %w", err)
+	}
+	return nil
 }
