@@ -214,7 +214,7 @@ func New(opts Options) (*Provider, error) {
 	return p, nil
 }
 
-// ipv4Ranges keeps the IPv4 ranges, since E2B sandboxes reach out over IPv4 alone
+// ipv4Ranges keeps the IPv4 ranges, the IPv6 ones are left to harden inside the VM
 func ipv4Ranges(ranges []netip.Prefix) []string {
 	var out []string
 	for _, r := range ranges {

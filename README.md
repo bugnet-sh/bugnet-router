@@ -163,8 +163,8 @@ as the router does, so they reach the gate the way the edges will.
 `TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
 `/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
 `10.0.0.1:80` stay closed while `exec`, files and the gate route work. N2, on E2B only, removes
-the rules inside the VM and checks `network.denyOut` still closes both ranges, logging whether
-port 25 opens.
+the rules inside the VM and checks `network.denyOut` still closes both IPv4 ranges, logging
+whether port 25 opens and the VM's IPv6 default route. N1 also probes `[fd00:ec2::254]:80`.
 
 | | `--front local`, the default | `--front vps`, behind the dev front |
 |---|---|---|
@@ -940,8 +940,9 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
 
-E2B's create blocks `hardening.deny_ranges` outside the VM with `network.denyOut`, IPv4 ones
-alone, since E2B sandboxes reach out over IPv4. A package with `egress.allow` is restricted: it
+E2B's create blocks the IPv4 entries of `hardening.deny_ranges` outside the VM with
+`network.denyOut`. `harden` blocks the IPv6 entries inside the VM, all but `fe80::/10`, which
+stays open for envd. A package with `egress.allow` is restricted: it
 lands only on a provider with egress control at create. On E2B it reaches the egress proxy's
 IPv4 addresses alone, through `network.allowOut` under a `0.0.0.0/0` deny. On boxd the
 machine's `egress` list holds the package's hosts, `names.egress_host` and the proxy's IPv4

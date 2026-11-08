@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"maps"
 	"math/big"
 	"net/netip"
 	"os"
@@ -44,14 +45,16 @@ type scripted struct {
 	answers map[string]answer
 	mu      *sync.Mutex
 	// ran lists each root call as its subcommand, setup with the sample flag its spec carried
-	ran  *[]string
+	ran *[]string
+	// argv lists each root call's argv as the saga sent it
+	argv *[][]string
 	caps func(provider.Capabilities) provider.Capabilities
 	reqs *[]provider.CreateRequest
 }
 
 func newScripted(p *local.Provider, answers map[string]answer) scripted {
 	return scripted{Provider: p, answers: answers, mu: &sync.Mutex{}, ran: &[]string{},
-		reqs: &[]provider.CreateRequest{}}
+		argv: &[][]string{}, reqs: &[]provider.CreateRequest{}}
 }
 
 func (s scripted) Capabilities() provider.Capabilities {
@@ -91,6 +94,7 @@ func (s scripted) Exec(
 	}
 	s.mu.Lock()
 	*s.ran = append(*s.ran, call)
+	*s.argv = append(*s.argv, slices.Clone(spec.Argv))
 	s.mu.Unlock()
 	a, ok := s.answers[sub]
 	if !ok {
@@ -105,6 +109,37 @@ func (s scripted) calls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(*s.ran)
+}
+
+func (s scripted) argvs() [][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(*s.argv)
+}
+
+// hostGate is a local provider whose route needs a gate_host entry that only PrepareGate gives
+type hostGate struct{ *local.Provider }
+
+func (h hostGate) PrepareGate(
+	ctx context.Context, ref provider.Ref, port int,
+) (map[string]string, error) {
+	meta, err := h.Provider.PrepareGate(ctx, ref, port)
+	if err != nil {
+		return nil, err
+	}
+	meta = maps.Clone(meta)
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta["gate_host"] = "x"
+	return meta, nil
+}
+
+func (h hostGate) GateRoute(ref provider.Ref, port int) (provider.GateRoute, error) {
+	if ref.Meta["gate_host"] != "x" {
+		return provider.GateRoute{}, provider.GateUnprepared(h.Name(), ref.ID, "gate_host")
+	}
+	return h.Provider.GateRoute(ref, port)
 }
 
 // closedGate is a local provider whose gate route leads to a port nothing listens on
@@ -192,6 +227,23 @@ func TestBootSetupFailureFailsOver(t *testing.T) {
 	eq(t, len(owned), 0)
 }
 
+func TestBootDropsAnErrorValueItCannotName(t *testing.T) {
+	a := newScripted(newLocal(t, local.Options{Name: "a"}),
+		map[string]answer{"setup": {`{"error":"/etc/bugnet/x: denied"}`, 1}})
+	e := newEnv(t, a, newLocal(t, local.Options{Name: "b"}))
+	p, _ := e.placeReady(t, "order-1")
+	attempts, err := e.store.Attempts(t.Context(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(attempts), 2)
+	got := attempts[0].Error
+	if !strings.Contains(got, "setup exited 1 with no reason") ||
+		strings.Contains(got, "/etc/bugnet") || strings.Contains(got, "denied") {
+		t.Fatalf("the failed attempt says %q", got)
+	}
+}
+
 func TestBootHardenRequired(t *testing.T) {
 	for _, required := range []bool{true, false} {
 		t.Run(strconv.FormatBool(required), func(t *testing.T) {
@@ -226,6 +278,55 @@ func TestBootOrderSetupHardenThenTheSampler(t *testing.T) {
 	e.placeReady(t, "order-1")
 	// ssh-up joins between harden and the second setup with Task 19
 	eq(t, boxd.calls(), []string{"setup sample=false", "harden", "setup sample=true"})
+}
+
+func TestBootRootCommandsUseSudoForANonRootUser(t *testing.T) {
+	const runner = "/tmp/bugnet/bin/bugnet-run"
+	for user, prefix := range map[string][]string{
+		"boxd": {"sudo", "-n", runner}, "": {runner}, "root": {runner},
+	} {
+		t.Run("user="+user, func(t *testing.T) {
+			boxd := newScripted(newLocal(t, local.Options{Name: "boxd"}),
+				map[string]answer{"harden": {`{"firewall":"nft"}`, 0}})
+			boxd.caps = func(c provider.Capabilities) provider.Capabilities {
+				c.ExecUser = user
+				return c
+			}
+			e := newEnvWith(t, func(d *saga.Deps) {
+				d.Boot.Harden = map[string]config.HardenRule{"boxd": {Required: true}}
+			}, boxd)
+			e.placeReady(t, "order-1")
+			want := [][]string{
+				append(slices.Clone(prefix), "setup", "--spec", "/tmp/bugnet/setup-spec.json"),
+				append(slices.Clone(prefix), "harden", "--spec", "/tmp/bugnet/harden-spec.json"),
+				append(slices.Clone(prefix), "setup", "--spec", "/tmp/bugnet/setup-spec.json"),
+			}
+			eq(t, boxd.argvs(), want)
+		})
+	}
+}
+
+func TestBootKeepsThePreparedGateMeta(t *testing.T) {
+	a := hostGate{newLocal(t, local.Options{Name: "a"})}
+	e := newEnv(t, a)
+	ref := created(t, a)
+	_, ok := ref.Meta["gate_host"]
+	eq(t, ok, false)
+	got, rep, err := e.saga.Boot(t.Context(), a, ref,
+		saga.BootPlan{Placement: uuid.New(), KeyID: e.keys.Current().ID, NeedPreview: true})
+	eq(t, err, nil)
+	eq(t, rep.GateReady, true)
+	eq(t, got.Meta["gate_host"], "x")
+	eq(t, got.Meta["gate_port"], ref.Meta["gate_port"])
+
+	// The ready transaction stores the ref with both the create's and the gate's entries
+	p, _ := e.placeReady(t, "order-1")
+	eq(t, p.GateReadyAt != nil, true)
+	m := p.ProviderRef.Meta
+	eq(t, m["gate_host"], "x")
+	if m["gate_port"] == "" || m["sshd_port"] == "" {
+		t.Fatalf("the stored ref lost the create's ports: %v", m)
+	}
 }
 
 func TestBootGateFailureWithoutNeedsIsLogged(t *testing.T) {
@@ -373,7 +474,8 @@ func TestHardenSpecPerProvider(t *testing.T) {
 		}
 		return spec
 	}
-	eq(t, hardenSpec(t, "e2b").DenyRanges, []string{})
+	// E2B blocks the IPv4 ranges at create and leaves IPv6 link-local to envd
+	eq(t, hardenSpec(t, "e2b").DenyRanges, []string{"fc00::/7", "fd00:ec2::254/128"})
 	eq(t, hardenSpec(t, "e2b").MailPorts, []int{25, 465, 587})
 	eq(t, hardenSpec(t, "e2b").Pools, []string{"203.0.113.0/24"})
 	for _, p := range []string{"boxd", "koyeb", "boat"} {

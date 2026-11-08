@@ -70,7 +70,7 @@ type profile struct {
 	ca bool
 	// caBaked says the template already holds the CA, so setup only checks its digest
 	caBaked bool
-	// rangesOutside says the deny ranges are blocked at create, outside the VM
+	// rangesOutside says the IPv4 deny ranges are blocked at create, outside the VM
 	rangesOutside bool
 }
 
@@ -172,9 +172,8 @@ func (b BootSettings) hardenSpecFor(name string) (hardenSpec, config.HardenRule,
 		V: 1, MailPorts: slices.Clone(b.MailPorts), DenyRanges: slices.Clone(b.DenyRanges),
 		Pools: slices.Clone(b.Pools), Allow: slices.Clone(rule.Allow),
 	}
-	// Blocking link-local inside an E2B VM could cut envd, so E2B blocks ranges at create
 	if profiles[name].rangesOutside {
-		spec.DenyRanges = []string{}
+		spec.DenyRanges = insideRanges(spec.DenyRanges)
 	}
 	for _, list := range []*[]string{&spec.DenyRanges, &spec.Pools, &spec.Allow} {
 		if *list == nil {
@@ -185,6 +184,22 @@ func (b BootSettings) hardenSpecFor(name string) (hardenSpec, config.HardenRule,
 		spec.MailPorts = []int{}
 	}
 	return spec, rule, true
+}
+
+// linkLocal6 stays open inside an E2B VM, since blocking it there could cut envd
+var linkLocal6 = netip.MustParsePrefix("fe80::/10")
+
+// insideRanges are the ranges an E2B create leaves open, so harden blocks them in the VM
+func insideRanges(ranges []string) []string {
+	out := []string{}
+	for _, r := range ranges {
+		p, err := netip.ParsePrefix(r)
+		if err != nil || p.Addr().Is4() || p.Overlaps(linkLocal6) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // egressAllow is what a restricted package's sandbox may reach, nil for an open package
