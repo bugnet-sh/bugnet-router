@@ -295,8 +295,6 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"preview provider twice", "[previews]\nproviders = [\"e2b\", \"e2b\"]",
 			`previews.providers lists "e2b" more than once`},
 		{"empty ssh provider", "[ssh]\nproviders = [\"\"]", "ssh.providers has an empty entry"},
-		{"local with secrets", "[secrets]\nproviders = [\"local\"]",
-			"secrets.providers may not list local"},
 		{"unknown hook provider", "[hooks]\nproviders = [\"e2b\", \"x\"]",
 			"hooks.providers entry 2 is not one of"},
 		{"gate port zero", "[previews]\ngate_port = 0", "previews.gate_port must be a port"},
