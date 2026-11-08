@@ -31,6 +31,27 @@
 			"minutes": 30,
 			"price_micros": 150000,
 			"edge": {"bytes": "4GiB"}
+		},
+		{
+			"id": "dev-small-75m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 75,
+			"price_micros": 375000
+		},
+		{
+			"id": "dev-edge-64m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 50000,
+			"edge": {"bytes": "64MiB"}
+		},
+		{
+			"id": "dev-edge-64m-more",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 10,
+			"price_micros": 45000,
+			"extension_of": "dev-edge-64m",
+			"edge": {"bytes": "64MiB"}
 		}
 	]
 }
