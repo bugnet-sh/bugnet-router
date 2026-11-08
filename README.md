@@ -1411,6 +1411,9 @@ log line, since a key from the current root would change at the next root rotati
 - `AppendSessionEvents` takes at most 50 `mcp` events and leaves out each with a tool outside
   `sessions.mcp_tools` or a malformed outcome, until 10 minutes after the end. It stores a call's
   events in one transaction, so a retried call never stores one twice.
+  `AppendX402Events` stores at most 50 `x402` events once per `ref`, leaves out each of a bad shape
+  and answers its index in `rejected`, and moves the `x402_services` and `x402_refusals` counters
+  of each stored or cap-dropped row, until 10 minutes after the end.
   `AppendAllowanceEvent` stores one event per phase of the start order's record until it
   expires: `paid` and `refunded` with their `tx`, and `kept` (an unspent amount under the refund
   minimum) with `amount_micros` 0, `kept_micros` above 0 and no `tx`. `RotateSessionLink` moves
