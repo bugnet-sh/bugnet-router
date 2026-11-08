@@ -3,9 +3,11 @@ package api_test
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,6 +377,35 @@ func TestOperatorCallsWriteAuditRows(t *testing.T) {
 		Payer: payerB, Actor: "bob",
 	}))
 	wantCode(t, err, connect.CodeNotFound)
+}
+
+func TestOperatorReadsAreLogged(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, options{
+		wallets: payerWallets(nil), log: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	op := e.operator(t, operatorToken)
+	if _, err := e.blockWallet(t, &routerv1.BlockWalletRequest{
+		Payer: payerA, Actor: "ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := op.GetWallet(t.Context(), connect.NewRequest(&routerv1.GetWalletRequest{
+		Payer: payerA,
+	}))
+	eq(t, err, nil)
+	_, err = op.ListWallets(t.Context(), connect.NewRequest(&routerv1.ListWalletsRequest{
+		BlockedOnly: true,
+	}))
+	eq(t, err, nil)
+	for _, want := range []string{
+		`level=INFO msg="operator read a wallet" actor=operator payer=` + payerA,
+		`level=INFO msg="operator listed wallets" actor=operator blocked_only=true`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("no %q in the log:\n%s", want, logs.String())
+		}
+	}
 }
 
 func TestOperatorWalletRefusals(t *testing.T) {

@@ -32,6 +32,8 @@ const (
 	walletEventsShown = 50
 	walletPageDefault = 100
 	walletPageMax     = 1000
+	// readActor is the actor logged for GetWallet and ListWallets, whose requests name none
+	readActor = "operator"
 )
 
 var errStopLive = errors.New(
@@ -113,6 +115,7 @@ func (o *OperatorServer) GetWallet(
 	if err != nil {
 		return nil, err
 	}
+	s.d.Log.Info("operator read a wallet", "actor", readActor, "payer", payer)
 	w, err := s.walletMsg(ctx, payer)
 	if err != nil {
 		return nil, s.status(err)
@@ -157,6 +160,8 @@ func (o *OperatorServer) ListWallets(
 			return nil, invalid("page_token is not one this router gave")
 		}
 	}
+	s.d.Log.Info("operator listed wallets", "actor", readActor,
+		"blocked_only", m.GetBlockedOnly(), "after", after, "limit", limit)
 	now := time.Now()
 	ws, err := s.d.Store.ListWallets(ctx, store.WalletPage{
 		BlockedOnly: m.GetBlockedOnly(), After: after, Limit: limit + 1, Now: now,
