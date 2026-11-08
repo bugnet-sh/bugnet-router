@@ -841,7 +841,9 @@ is empty, and the record is still kept.
   values, URL passwords, private key blocks, and the placement's gate key and provider
   credentials, as `[redacted <kind>]`. A token split across frames is still caught, and a line
   naming an `Authorization` header is held until its end, with at most 16 KiB held back per
-  output. Output that goes on after a
+  output. A full 16 KiB is shown up to the token, lead word or open `Authorization` value it
+  would cut, which stays held; one run of token characters that fills it is dropped with the rest
+  of its line. Output that goes on after a
   gap, a `skip` that moves it or a replay start inside a line drops the held word before it and
   its text up to the next line break, so neither part of a cut token is shown.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized

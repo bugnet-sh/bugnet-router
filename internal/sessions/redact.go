@@ -93,15 +93,7 @@ func redactAuthz(s string) string {
 		if m[0] < last {
 			continue
 		}
-		at, quote, escaped := m[1], byte(0), false
-		if open := s[m[2]:m[3]]; open != "" {
-			quote, escaped = open[len(open)-1], len(open) == 2
-			// A JSON or dict value opens a quote of its own after the name's
-			if strings.HasPrefix(s[at:], open) {
-				at += len(open)
-			}
-		}
-		end := valueEnd(s, at, quote, escaped)
+		at, end := authzValue(s, m)
 		if end == at {
 			continue
 		}
@@ -114,6 +106,19 @@ func redactAuthz(s string) string {
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// authzValue is where the value of the Authorization header authz matched at m starts and ends
+func authzValue(s string, m []int) (int, int) {
+	at, quote, escaped := m[1], byte(0), false
+	if open := s[m[2]:m[3]]; open != "" {
+		quote, escaped = open[len(open)-1], len(open) == 2
+		// A JSON or dict value opens a quote of its own after the name's
+		if strings.HasPrefix(s[at:], open) {
+			at += len(open)
+		}
+	}
+	return at, valueEnd(s, at, quote, escaped)
 }
 
 // valueEnd is where a value from i ends, at a line break or its closing quote, escaped or not
@@ -231,7 +236,18 @@ func (st *Stream) Write(data []byte) []Frame {
 		}
 		n, opensKey := st.safe()
 		if n == 0 && !opensKey {
-			return out
+			if len(st.buf) < carryMax {
+				return out
+			}
+			// A full carry of one run, a token's body maybe, goes with the rest of its line
+			n = runeFloor(st.buf, carryMax)
+			st.dropped += int64(n)
+			st.buf = slices.Delete(st.buf, 0, n)
+			st.rejoining = true
+			if !st.rejoin() {
+				return out
+			}
+			continue
 		}
 		text := string(st.buf[:n])
 		st.buf = slices.Delete(st.buf, 0, n)
@@ -322,12 +338,34 @@ func (st *Stream) safe() (int, bool) {
 	if n > 0 || len(b) < carryMax {
 		return n, false
 	}
-	// A full carry goes out as it is, and an open key block is redacted to its end
+	// An open key block in a full carry is redacted to its end
 	n = runeFloor(b, carryMax)
 	if loc := pemOpen.FindIndex(b[:n]); loc != nil && pemClose.FindIndex(b[loc[1]:n]) == nil {
 		return loc[0], true
 	}
-	return n, false
+	return fullCut(b, n), false
+}
+
+// fullCut moves a full carry's end n back before the token or Authorization value it would cut
+func fullCut(b []byte, n int) int {
+	for n > 0 && isTokenChar(b[n-1]) {
+		n--
+	}
+	n = beforeLeadWords(b, n)
+	line := bytes.LastIndexAny(b[:n], "\r\n") + 1
+	s := string(b[line:n])
+	if ms := authz.FindAllStringSubmatchIndex(s, -1); ms != nil {
+		m := ms[len(ms)-1]
+		if _, end := authzValue(s, m); end == len(s) {
+			n = line + m[0]
+		}
+	}
+	return n
+}
+
+// isTokenChar reports whether c may be part of a token, a key or a credential
+func isTokenChar(c byte) bool {
+	return isAlnum(c) || strings.IndexByte("_.+/=~-", c) >= 0
 }
 
 // cutPoint is past the last space, tab or line break, before a lead word or an Authorization line
@@ -341,6 +379,20 @@ func cutPoint(b []byte) int {
 			n = i + 1
 		}
 	}
+	n = beforeLeadWords(b, n)
+	// Any Authorization value is a secret, so the word that names it waits for its line's end
+	line := bytes.LastIndexAny(b[:n], "\r\n") + 1
+	if loc := authzAny.FindIndex(b[line:n]); loc != nil {
+		n = line + loc[0]
+		for n > line && !isSpace(b[n-1]) {
+			n--
+		}
+	}
+	return n
+}
+
+// beforeLeadWords moves n back before the lead words that end b[:n], spaces after them aside
+func beforeLeadWords(b []byte, n int) int {
 	for n > 0 {
 		end := n
 		for end > 0 && isSpace(b[end-1]) {
@@ -351,17 +403,9 @@ func cutPoint(b []byte) int {
 			start--
 		}
 		if start == end || !leadWord(b[start:end]) {
-			break
+			return n
 		}
 		n = start
-	}
-	// Any Authorization value is a secret, so the word that names it waits for its line's end
-	line := bytes.LastIndexAny(b[:n], "\r\n") + 1
-	if loc := authzAny.FindIndex(b[line:n]); loc != nil {
-		n = line + loc[0]
-		for n > line && !isSpace(b[n-1]) {
-			n--
-		}
 	}
 	return n
 }

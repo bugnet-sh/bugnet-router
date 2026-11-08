@@ -87,11 +87,18 @@ func TestRedactStreamHoldsAtMost16KiB(t *testing.T) {
 	long := strings.Repeat("x", carryMax-1)
 	eq(t, len(st.Write([]byte(long))), 0)
 	eq(t, st.Holding(), true)
-	frames := st.Write([]byte("yy"))
+	// A full carry of one run with no break goes, and so does the rest of its line
+	eq(t, len(st.Write([]byte("yy"))), 0)
+	eq(t, len(st.buf) < carryMax, true)
+	eq(t, joined(st.Write([]byte("y\nshown\n"))), "shown\n")
+	eq(t, st.Dropped(), int64(carryMax+3))
+	// A full carry shows what comes before its last run, which it holds
+	st = NewRedactor().Stream(Stderr)
+	frames := st.Write([]byte(strings.Repeat("a", carryMax-4) + ",abcdefgh"))
 	eq(t, len(frames), 1)
 	eq(t, frames[0].S, Stderr)
-	eq(t, len(frames[0].T), carryMax)
-	eq(t, joined(st.Flush()), "y")
+	eq(t, frames[0].T, strings.Repeat("a", carryMax-4)+",")
+	eq(t, joined(st.Flush()), "abcdefgh")
 	eq(t, st.Holding(), false)
 	key := NewRedactor().Stream(Stdout)
 	out := key.Write([]byte("-----BEGIN PRIVATE KEY-----\n" + strings.Repeat("k", carryMax)))
@@ -234,4 +241,27 @@ func TestRedactURLPasswordWithAtOrSlash(t *testing.T) {
 		`"https://u:[redacted password]@host/@scope/pkg"`)
 	eq(t, r.Redact("GET http://localhost:5173/@vite/client"),
 		"GET http://localhost:5173/@vite/client")
+}
+
+func TestRedactFullCarryHoldsWhatItWouldCut(t *testing.T) {
+	const known = "Kn0wnSecretQQQQ123"
+	r := NewRedactor(known)
+	pad := strings.Repeat("x", carryMax-10)
+	json := `{"a":"` + strings.Repeat("y", carryMax-40) + `","Authorization":"token `
+	for _, c := range []struct{ head, tail, want string }{
+		{pad, ",bnt_" + strings.Repeat("Q", 30) + "\n", ",[redacted token]\n"},
+		{pad, "," + known + ",x\n", ",[redacted secret],x\n"},
+		{json, strings.Repeat("Q", 20) + `"}` + "\n", `"[redacted credential]"}` + "\n"},
+	} {
+		for i := range len(c.tail) + 1 {
+			got := ""
+			for _, f := range write(r, c.head, c.tail[:i], c.tail[i:]) {
+				if strings.Contains(f.T, "Q") {
+					t.Fatalf("split %d of %q shows %q", i, c.tail, f.T[max(len(f.T)-60, 0):])
+				}
+				got += f.T
+			}
+			eq(t, strings.HasSuffix(got, c.want), true)
+		}
+	}
 }
