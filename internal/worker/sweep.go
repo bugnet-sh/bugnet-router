@@ -58,6 +58,9 @@ func (w *Worker) sweepLeftovers(ctx context.Context) {
 	} else if n > 0 {
 		w.log.Warn("sweep deleted secret leftovers", "rows", n)
 	}
+	if _, err := w.store.DeleteX402Leftovers(ctx, now); err != nil {
+		w.log.Error("sweep x402 leftovers", "err", err)
+	}
 	if _, err := w.store.DeleteTrafficLeftovers(ctx, now.Add(-trafficAfter)); err != nil {
 		w.log.Error("sweep traffic leftovers", "err", err)
 	}

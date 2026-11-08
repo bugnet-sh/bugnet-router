@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"math"
 	"slices"
 
 	"connectrpc.com/connect"
@@ -15,6 +16,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/budget"
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
 const (
@@ -110,8 +112,14 @@ func (g *EgressServer) ResolveTunnel(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	var block *routerv1.X402Config
+	if !fetch {
+		if block, err = s.x402Block(ctx, p); err != nil {
+			return nil, s.status(err)
+		}
+	}
 	return connect.NewResponse(&routerv1.ResolveTunnelResponse{
-		PlacementId: p.ID.String(), Deadline: timestamppb.New(*p.Deadline),
+		X402: block, PlacementId: p.ID.String(), Deadline: timestamppb.New(*p.Deadline),
 		CaVersion: uint32(p.EgressCAVersion), Secrets: s.egressSecrets(held, fetch),
 		BytesRemaining: left[p.ID], MaxTunnels: defaultMaxTunnels,
 		SecretsVersion: uint64(max(p.SecretsVersion, 0)),
@@ -119,6 +127,46 @@ func (g *EgressServer) ResolveTunnel(
 		RequestsInFlight: uint32(max(
 			cmp.Or(s.d.Budget.EgressRequestsInFlight, defaultRequestsInFlight), 0)),
 	}), nil
+}
+
+// x402Block is the placement's x402 services, caps and unpaid use, nil without a live row
+func (s *Server) x402Block(ctx context.Context, p store.Placement) (*routerv1.X402Config, error) {
+	rows, err := s.d.Store.X402Services(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	rows = slices.DeleteFunc(rows, func(r store.X402Service) bool {
+		return r.State == store.X402Disabled
+	})
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	unpaid, err := s.meter.X402Unpaid(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	c := &routerv1.X402Config{
+		Enabled: s.d.X402.Enabled, AccountId: p.OrderID,
+		UnpaidRequestsPerHost: s.d.X402.UnpaidRequestsPerHost,
+		UnpaidBytesPerHost:    s.d.X402.UnpaidBytesPerHost,
+		UnpaidUsed:            map[string]*routerv1.X402Unpaid{},
+	}
+	for _, r := range rows {
+		if x402.Blocked(r.Spec.Host, s.d.X402) {
+			continue
+		}
+		c.Services = append(c.Services, &routerv1.X402Service{
+			ServiceId: r.ServiceID, Host: r.Spec.Host, Prefix: r.Spec.Prefix,
+			Method: r.Spec.Method, MaxPriceMicros: r.Spec.MaxPriceMicros, PayTo: r.Spec.PayTo,
+			PaidPath: r.Spec.PaidPath,
+		})
+		if u, ok := unpaid[r.Spec.Host]; ok {
+			c.UnpaidUsed[r.Spec.Host] = &routerv1.X402Unpaid{
+				Requests: uint32(min(u.Requests, math.MaxUint32)), Bytes: u.Bytes,
+			}
+		}
+	}
+	return c, nil
 }
 
 // tunnelByToken finds the placement holding a tunnel token's digest
