@@ -867,7 +867,8 @@ log line, since a key from the current root would change at the next root rotati
   events in one transaction, so a retried call never stores one twice.
   `AppendAllowanceEvent` stores one event per phase of the start order's record until it
   expires: `paid` and `refunded` with their `tx`, and `kept` (an unspent amount under the refund
-  minimum) with `amount_micros` 0, `kept_micros` above 0 and no `tx`. `RotateSessionLink` moves the generation only when it names the current link.
+  minimum) with `amount_micros` 0, `kept_micros` above 0 and no `tx`. `RotateSessionLink` moves
+  the generation only when it names the current link.
 - The payment event's `tx` is served empty, and its amount the order's whole amount, until router
   Task 28's `Tx` and `AllowanceMicros` claims land (`paymentClaims` in
   `internal/saga/session.go`). An `allowance` event names USDC's mint as `USDC` and leaves any
