@@ -114,7 +114,7 @@ func pick(pairs ...string) serveFunc {
 	}
 }
 
-// serve holds one function per served kind, so a kind with none, such as x402, stays hidden
+// serve holds one function per served kind, so a kind with none stays hidden
 var serve = map[string]serveFunc{
 	KindPlacement: pick("phase", "phase", "package_id", "packageId", "vcpu", "vcpu",
 		"memory_mib", "memoryMib", "disk_gib", "diskGib", "minutes", "minutes", "deadline",
@@ -163,7 +163,14 @@ func str(raw json.RawMessage) string {
 // served turns stored rows into the page's flat events, leaving out every kind it cannot serve
 func served(events []store.SessionEvent) []object {
 	out := []object{}
+	x402 := joinX402(events)
 	for _, e := range events {
+		if e.Kind == "x402" || e.Kind == KindX402Resolved {
+			if o, ok := x402[e.ID]; ok {
+				out = append(out, append(object{{"at", stamp(e.At)}, {"kind", "x402"}}, o...))
+			}
+			continue
+		}
 		fn, ok := serve[e.Kind]
 		if !ok {
 			continue
