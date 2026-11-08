@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -295,6 +296,22 @@ func fromBackend(err error) bool {
 	return ok && errors.As(pe.Err, &ce)
 }
 
+// accountNoteTimeout bounds the insert of an account check, which never delays an answer longer
+const accountNoteTimeout = 2 * time.Second
+
+// noteAccount asks for an account check when a provider's answer says its account may be at fault
+func (s *Server) noteAccount(e *provider.Error) {
+	if s.d.River == nil || provider.AccountBlock(e.Code) == provider.BlockNone {
+		return
+	}
+	if e.Provider == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), accountNoteTimeout)
+	defer cancel()
+	health.NoteAccount(ctx, s.d.River, e.Provider, e.Code)
+}
+
 func (s *Server) toConnect(err error, fileOp bool) error {
 	if err == nil {
 		return nil
@@ -329,6 +346,7 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 	if e, ok := provider.AsError(err); ok {
 		// The provider's text may name the provider or its sandbox, which the gateway never sees
 		s.d.Log.Warn("api: provider error", "code", e.Code, "err", err)
+		s.noteAccount(e)
 		code, msg := connect.CodeUnavailable, "sandbox provider unavailable"
 		switch {
 		case e.Code == provider.CodeInvalid:

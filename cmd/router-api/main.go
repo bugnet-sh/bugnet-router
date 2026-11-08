@@ -42,6 +42,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
@@ -114,7 +115,8 @@ func migrateDatabase(ctx context.Context, log *slog.Logger) error {
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
 	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
 		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents),
-		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs))
+		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs),
+		store.WithReserveSlots(cfg.LimitsPoll.ReserveSlots))
 }
 
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
@@ -172,7 +174,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	st := openStore(pool, cfg, log)
 	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)
 	tracker := placement.NewTracker(time.Now)
-	engine := placement.New(reg, tracker)
+	engine := placement.New(reg, health.NewShared(st, tracker, log))
 	sg := saga.New(saga.Deps{
 		Store:        st,
 		Engine:       engine,
@@ -199,6 +201,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		SessionKeep:  cfg.Sessions.Keep,
 		// The hold of D-b (a), for abuse and operator ends
 		SessionAbuseHold: cfg.Sessions.AbuseHold,
+		CreatesPerSecond: cfg.CreatesPerSecond,
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {

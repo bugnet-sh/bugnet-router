@@ -54,3 +54,10 @@ var Refunds = refunds
 
 // SetBeforeMark runs f between End's first read of a placement and its row lock
 func SetBeforeMark(s *Saga, f func()) { s.beforeMark = f }
+
+// SetCreateWait changes how long an attempt waits for a create token in one test
+func SetCreateWait(t testing.TB, d time.Duration) {
+	old := createWait
+	createWait = d
+	t.Cleanup(func() { createWait = old })
+}

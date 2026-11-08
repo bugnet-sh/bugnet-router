@@ -14,6 +14,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
@@ -41,6 +42,7 @@ type health struct {
 	feed                   feedHealth
 	// sessions is the session tables' share of their disk budget, -1 when unread
 	sessions int64
+	limits   limitsHealth
 }
 
 // feedCheck says whether the stats snapshot job runs, and whether it lacks the Payments token
@@ -70,7 +72,7 @@ const (
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
-	poolList string, feed feedCheck, disk diskPercent,
+	poolList string, feed feedCheck, disk diskPercent, limits limitsCheck,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -83,6 +85,7 @@ func monitor(
 		wg.Go(func() { h.pools = checkPools(log, poolList) })
 		wg.Go(func() { h.feed = checkFeed(ctx, log, st, feed) })
 		wg.Go(func() { h.sessions = checkSessions(ctx, log, disk) })
+		wg.Go(func() { h.limits = checkLimits(ctx, log, st, limits) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -257,6 +260,7 @@ func (h health) problems() []string {
 	case poolsUnreadable:
 		out = append(out, "the mining pool list cannot be read")
 	}
+	out = append(out, h.limits.problems()...)
 	return append(out, h.feed.problems()...)
 }
 
@@ -279,6 +283,97 @@ func (f feedHealth) problems() []string {
 	case f.paymentsAge > paymentsStaleAfter:
 		out = append(out, fmt.Sprintf("stats: Payments part %d min old%s",
 			int(f.paymentsAge.Minutes()), why))
+	}
+	return out
+}
+
+// rateReader reads Boat's RateLimit figures from the last shared /limits reply
+type rateReader func(ctx context.Context) (boat.RateLeft, bool, error)
+
+// limitsCheck says what /monitor reads of the limit polls and the account checks
+type limitsCheck struct {
+	// every is the poll interval of each provider that polls limits
+	every map[string]time.Duration
+	// staleAfter is the missed polls before old limits are reported
+	staleAfter int
+	// rate reads Boat's RateLimit header, nil when Boat is not a provider
+	rate rateReader
+}
+
+// rateAlertPercent is the share of Boat's request window left under which /monitor reports it
+const rateAlertPercent = 20
+
+// limitsHealth is what the capacity rows and provider health rows showed
+type limitsHealth struct {
+	// stale names the polled providers whose limits are old, with their age in seconds
+	stale []staleLimits
+	// blocked names the providers whose account is blocked, with the block
+	blocked []blockedProvider
+	// rate is Boat's request window when it is under rateAlertPercent
+	rate    boat.RateLeft
+	rateLow bool
+}
+
+type staleLimits struct {
+	provider string
+	age      time.Duration
+}
+
+type blockedProvider struct{ provider, block string }
+
+// checkLimits finds old limits, blocked accounts and a Boat request window nearly spent
+func checkLimits(
+	ctx context.Context, log *slog.Logger, st *store.Store, c limitsCheck,
+) limitsHealth {
+	var h limitsHealth
+	now := time.Now()
+	rows, err := st.Capacities(ctx)
+	if err != nil {
+		log.Warn("monitor cannot read the capacity rows", "err", err)
+	}
+	for _, r := range rows {
+		every, ok := c.every[r.Provider]
+		if !ok || r.PolledAt.IsZero() {
+			continue
+		}
+		if age := now.Sub(r.PolledAt); age > every*time.Duration(c.staleAfter) {
+			h.stale = append(h.stale, staleLimits{r.Provider, age})
+		}
+	}
+	healths, err := st.ProviderHealths(ctx)
+	if err != nil {
+		log.Warn("monitor cannot read the provider health rows", "err", err)
+	}
+	for _, r := range healths {
+		if r.Blocked != "" {
+			h.blocked = append(h.blocked, blockedProvider{r.Provider, r.Blocked})
+		}
+	}
+	if c.rate == nil {
+		return h
+	}
+	left, ok, err := c.rate(ctx)
+	if err != nil {
+		log.Warn("monitor cannot read Boat's request window", "err", err)
+	}
+	if ok && left.Remaining*100 < rateAlertPercent*left.Limit {
+		h.rate, h.rateLow = left, true
+	}
+	return h
+}
+
+func (l limitsHealth) problems() []string {
+	var out []string
+	for _, b := range l.blocked {
+		out = append(out, fmt.Sprintf("provider %s is blocked: %s", b.provider, b.block))
+	}
+	for _, s := range l.stale {
+		out = append(out, fmt.Sprintf("provider %s limits not polled for %d s", s.provider,
+			int(s.age.Seconds())))
+	}
+	if l.rateLow {
+		out = append(out, fmt.Sprintf("provider boat has %d of %d requests left in its window",
+			l.rate.Remaining, l.rate.Limit))
 	}
 	return out
 }

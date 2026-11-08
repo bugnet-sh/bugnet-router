@@ -8,6 +8,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // SingleRunOpts are the insert options of the periodic sweep and outbox jobs
@@ -74,4 +75,24 @@ func GoldenSpec() []byte {
 		panic(err)
 	}
 	return b
+}
+
+// PollEvery names the limits poll and account check of each provider in ps with its interval
+func PollEvery(d Deps, ps ...provider.Provider) map[string]time.Duration {
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		panic(err)
+	}
+	out := map[string]time.Duration{}
+	for _, p := range polls(d, reg) {
+		name := p.args.Kind()
+		switch a := p.args.(type) {
+		case jobargs.LimitsPoll:
+			name += "/" + a.Provider
+		case jobargs.AccountCheck:
+			name += "/" + a.Provider
+		}
+		out[name] = p.every
+	}
+	return out
 }

@@ -28,7 +28,10 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	sharedhealth "github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
@@ -123,7 +126,8 @@ func checkPool(log *slog.Logger, maxConns int32, workers int) {
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
 	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
 		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents),
-		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs))
+		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs),
+		store.WithReserveSlots(cfg.LimitsPoll.ReserveSlots))
 }
 
 func serve(
@@ -156,7 +160,7 @@ func serve(
 	tracker := placement.NewTracker(time.Now)
 	w, err := worker.New(pool, saga.Deps{
 		Store:        st,
-		Engine:       placement.New(reg, tracker),
+		Engine:       placement.New(reg, sharedhealth.NewShared(st, tracker, log)),
 		Registry:     reg,
 		Catalog:      cat,
 		Valkey:       vk,
@@ -177,6 +181,7 @@ func serve(
 		SessionKeep:  cfg.Sessions.Keep,
 		// The hold of D-b (a), for abuse and operator ends
 		SessionAbuseHold: cfg.Sessions.AbuseHold,
+		CreatesPerSecond: cfg.CreatesPerSecond,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
@@ -185,6 +190,7 @@ func serve(
 			Listen: cfg.Localrun.ForwardListen, Port: cfg.Localrun.EgressPort,
 		},
 		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions,
+		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent,
 	})
 	if err != nil {
 		return err
@@ -202,7 +208,7 @@ func serve(
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList, feed, w.SessionDiskPercent))
+		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk)))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()
@@ -286,4 +292,22 @@ func readyz(log *slog.Logger, st *store.Store, vk valkey.Client) http.HandlerFun
 		}
 		_, _ = io.WriteString(rw, "ready\n")
 	}
+}
+
+// limitsOf lists what /monitor reads of the limit polls, from the providers that poll them
+func limitsOf(cfg config.Config, reg *provider.Registry, vk valkey.Client) limitsCheck {
+	c := limitsCheck{every: map[string]time.Duration{}, staleAfter: cfg.LimitsPoll.StaleAfter}
+	for _, p := range reg.Ordered() {
+		if _, ok := p.(provider.LimitsReader); !ok {
+			continue
+		}
+		c.every[p.Name()] = cfg.LimitsPoll.Every
+		if p.Name() == "boat" {
+			c.every["boat"] = cfg.LimitsPoll.BoatEvery
+			c.rate = func(ctx context.Context) (boat.RateLeft, bool, error) {
+				return boat.ReadRateLeft(ctx, vk, cfg.ValkeyPrefix)
+			}
+		}
+	}
+	return c
 }

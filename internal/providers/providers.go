@@ -154,7 +154,7 @@ func e2bOptions(c config.Config, key string) e2b.Options {
 	}
 	return e2b.Options{
 		APIKey: key, Domain: c.E2B.Domain, Templates: templates, MaxLifetime: c.E2B.MaxLifetime,
-		DenyOut: deny,
+		DenyOut: deny, TeamID: c.E2B.TeamID,
 	}
 }
 
@@ -186,6 +186,7 @@ func koyebOptions(cfg config.Config, token string) koyeb.Options {
 	return koyeb.Options{
 		APIToken: token, Region: cfg.Koyeb.Region, InstanceTypeBySize: cfg.Koyeb.InstanceTypes,
 		PartBytes: cfg.Transfers.KoyebPart, BufferTotal: cfg.Transfers.KoyebBufferTotal,
+		OrganizationID: cfg.Koyeb.OrganizationID,
 	}
 }
 

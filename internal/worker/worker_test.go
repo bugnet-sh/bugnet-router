@@ -192,6 +192,9 @@ type options struct {
 	now func() time.Time
 	// sessions sets Deps.Sessions, each zero size at its default
 	sessions config.Sessions
+	// limitsPoll and maxConcurrent set the limit polls and account checks
+	limitsPoll    config.LimitsPoll
+	maxConcurrent map[string]int
 }
 
 type env struct {
@@ -284,7 +287,7 @@ func newEnv(t *testing.T, o options) *env {
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
 		Egress: o.egress, DefaultWorkers: o.defaultWorkers, Stats: o.stats,
-		Sessions: o.sessions,
+		Sessions: o.sessions, LimitsPoll: o.limitsPoll, MaxConcurrent: o.maxConcurrent,
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
