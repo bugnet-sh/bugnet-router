@@ -219,11 +219,11 @@ func TestCopyDropsTheLineAGapCut(t *testing.T) {
 	e.frames(t, "j_gap",
 		frame.Frame{Kind: frame.KindStdout, Data: []byte("a export T=bnt_")},
 		frame.Frame{Kind: frame.KindSkip, Out: 100},
-		frame.Frame{Kind: frame.KindStdout, Offset: 100, Data: []byte(body + "next\n")},
-		frame.Frame{Kind: frame.KindExit, Out: 136})
+		frame.Frame{Kind: frame.KindStdout, Offset: 100, Data: []byte(body + "next line\n")},
+		frame.Frame{Kind: frame.KindExit, Out: 141})
 	_, text, cut := e.copied(t, p, rec)
 	// The held word before the gap goes too, since it may be part of a token
-	eq(t, text[1], "a export next\n")
+	eq(t, text[1], "a export next line\n")
 	eq(t, cut[1], int64(85+len("T=bnt_")+len(body)))
 }
 
@@ -389,4 +389,33 @@ func TestCopyRedactsAnAuthorizationValueAcrossFrames(t *testing.T) {
 	_, text, _ := e.copied(t, p, rec)
 	eq(t, text[1], "Authorization: [redacted credential]\n"+
 		"Proxy-Authorization: [redacted credential]\n")
+}
+
+func TestCopyStartingInsideAKeyShowsNoBody(t *testing.T) {
+	e := newEnv(t, options{})
+	e.start(t)
+	p, rec := e.ended(t, "copy-midkey", time.Second)
+	if _, _, err := e.store.CreateJob(t.Context(), store.NewJob{ID: "j_midkey",
+		PlacementID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.store.StartSessionJob(t.Context(), p.ID, "j_midkey", "cat key",
+		time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The stream was trimmed, so it starts at a body line with no BEGIN before it
+	off := int64(len("-----BEGIN PRIVATE KEY-----\n") + 65)
+	var frames []frame.Frame
+	for _, s := range []string{strings.Repeat("B", 64) + "\n", strings.Repeat("C", 64) + "\n",
+		"DDDD==\n", "-----END PRIVATE KEY-----\n", "after\n"} {
+		frames = append(frames, frame.Frame{Kind: frame.KindStdout, Offset: off,
+			Data: []byte(s)})
+		off += int64(len(s))
+	}
+	e.frames(t, "j_midkey", append(frames, frame.Frame{Kind: frame.KindExit, Out: off})...)
+	_, text, _ := e.copied(t, p, rec)
+	if strings.ContainsAny(text[1], "BCD") {
+		t.Fatalf("a key body shows in %q", text[1])
+	}
+	eq(t, text[1], "\nafter\n")
 }

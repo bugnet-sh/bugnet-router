@@ -845,7 +845,11 @@ is empty, and the record is still kept.
   would cut, which stays held; one run of token characters that fills it is dropped with the rest
   of its line. Output that goes on after a
   gap, a `skip` that moves it or a replay start inside a line drops the held word before it and
-  its text up to the next line break, so neither part of a cut token is shown.
+  its text up to the next line break, so neither part of a cut token is shown. It then drops the
+  lines a private key block it may have gone on inside could have (base64 and `=` only,
+  `Proc-Type:`, `DEK-Info:`, a blank line, and the block's `END` line) up to the first other
+  line, as a replay that starts at a line's start does too. A key block longer than 16 KiB that a
+  gap cuts stays hidden until its `END` line.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized
   for `sessions.live.max_readers`, and counts its bytes in `live:used:<placement>`, never in the
   edge budget. A first connection replays the newest `sessions.live.replay` after a `skip`. A

@@ -58,7 +58,7 @@ func TestReplayStartInsideALine(t *testing.T) {
 		frame.Frame{Kind: frame.KindStdout, Data: []byte("export T=bnt_")},
 		frame.Frame{Kind: frame.KindStdout, Offset: 13,
 			Data: []byte(strings.Repeat("Q", 30) + "\n")},
-		frame.Frame{Kind: frame.KindStdout, Offset: 44, Data: []byte("done\n")})
+		frame.Frame{Kind: frame.KindStdout, Offset: 44, Data: []byte("all done\n")})
 	r, err := ReplayStart(t.Context(), bus, id, 30)
 	eq(t, err, nil)
 	eq(t, r.Skip, true)
@@ -75,5 +75,5 @@ func TestReplayStartInsideALine(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, st.Write(e.Frame.Data)...)
 	}
-	eq(t, joined(append(got, st.Flush()...)), "done\n")
+	eq(t, joined(append(got, st.Flush()...)), "all done\n")
 }

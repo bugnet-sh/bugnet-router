@@ -224,11 +224,32 @@ func TestWatchSessionJobReplayDropsACutToken(t *testing.T) {
 	h, p := e.readyPlacement(t)
 	// The token's prefix and body are separate frames, and the replay starts at the body
 	e.exec(t, &routerv1.ExecRequest{Handle: h, Argv: []string{"sh", "-c",
-		"printf 'export T=bnt_'; sleep 0.3; printf '%030d\\n' 7; sleep 0.3; echo done"},
+		"printf 'export T=bnt_'; sleep 0.3; printf '%030d\\n' 7; sleep 0.3; echo all done"},
 		Until: &routerv1.Until{Exit: true}, WaitMs: 20000})
 	w := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil)
 	eq(t, w.err, nil)
-	eq(t, w.text(), "done\n")
+	eq(t, w.text(), "all done\n")
+	eq(t, w.end(), "exited")
+}
+
+func TestWatchSessionJobReplayStartingInsideAKeyShowsNoBody(t *testing.T) {
+	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
+		l.Replay = 100
+	})})
+	h, p := e.readyPlacement(t)
+	// Each line is its own frame, and the replay starts at a body line's start
+	e.exec(t, &routerv1.ExecRequest{Handle: h, Argv: []string{"sh", "-c",
+		"for l in '-----BEGIN PRIVATE KEY-----' " + strings.Repeat("Q", 64) +
+			" ZZZZ== '-----END PRIVATE KEY-----' 'all done'; do printf '%s\\n' \"$l\"; " +
+			"sleep 0.1; done"}, Until: &routerv1.Until{Exit: true}, WaitMs: 20000})
+	w := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil)
+	eq(t, w.err, nil)
+	skipped := false
+	for _, f := range w.frames {
+		skipped = skipped || f.GetSkip() != nil
+	}
+	eq(t, skipped, true)
+	eq(t, w.text(), "\nall done\n")
 	eq(t, w.end(), "exited")
 }
 

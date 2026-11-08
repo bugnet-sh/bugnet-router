@@ -157,7 +157,7 @@ func TestStreamResumeDropsTheCutLine(t *testing.T) {
 	st.Resume()
 	eq(t, joined(st.Write([]byte("tail"))), "")
 	eq(t, joined(st.Flush()), "")
-	eq(t, joined(st.Write([]byte("more tail\r\nshown\n"))), "shown\n")
+	eq(t, joined(st.Write([]byte("more tail\r\nshown here\n"))), "shown here\n")
 	// A key block's first line is never dropped
 	st.Resume()
 	got := joined(st.Write([]byte("cut -----BEGIN PRIVATE KEY-----\nMIIabc\n" +
@@ -174,7 +174,7 @@ func TestStreamResumeDropsAHeldPartialToken(t *testing.T) {
 	body := strings.Repeat("Z", 29)
 	eq(t, joined(st.Write([]byte("token ghp_"+body))), "token ")
 	eq(t, joined(st.Resume()), "")
-	eq(t, joined(st.Write([]byte("Z\nok\n"))), "ok\n")
+	eq(t, joined(st.Write([]byte("Z\nok then\n"))), "ok then\n")
 	st = NewRedactor().Stream(Stdout)
 	eq(t, joined(st.Write([]byte("curl -H 'Authorization: Bearer abcdefgh"))), "curl -H ")
 	eq(t, joined(st.Resume()), "'Authorization: [redacted credential]")
@@ -264,4 +264,44 @@ func TestRedactFullCarryHoldsWhatItWouldCut(t *testing.T) {
 			eq(t, strings.HasSuffix(got, c.want), true)
 		}
 	}
+}
+
+func TestStreamGapInsideAKeyShowsNoBody(t *testing.T) {
+	line := func(c string) string { return strings.Repeat(c, 64) + "\n" }
+	const begin, end = "-----BEGIN PRIVATE KEY-----\n", "-----END PRIVATE KEY-----\n"
+	noBody := func(got string) {
+		t.Helper()
+		if strings.ContainsAny(got, "ABCDEFGHJ") {
+			t.Fatalf("a key body shows in %q", got)
+		}
+	}
+	// The block is held when the gap comes, its BEGIN with it
+	st := NewRedactor().Stream(Stdout)
+	got := joined(st.Write([]byte(begin + line("A") + line("B"))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte(line("C") + line("D") + "EEEE==\n" + end + "after\n")))
+	noBody(got)
+	eq(t, got, "[redacted private key]\nafter\n")
+	// A block longer than the carry is shown redacted before the gap, and stays so after it
+	st = NewRedactor().Stream(Stdout)
+	got = joined(st.Write([]byte(begin + strings.Repeat(line("F"), 300))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte(line("G") + line("H") + end + "after\n")))
+	noBody(got)
+	eq(t, got, "[redacted private key]\nafter\n")
+	// Output read from past its start may begin inside a block, with no BEGIN
+	st = NewRedactor().Stream(Stdout)
+	st.Late()
+	got = joined(st.Write([]byte("Proc-Type: 4,ENCRYPTED\n\n" + line("J"))))
+	got += joined(st.Write([]byte(end + "after\n")))
+	noBody(got)
+	eq(t, got, "\nafter\n")
+	eq(t, st.Holding(), false)
+	// A block whose END the gap took is dropped up to the first other line
+	st = NewRedactor().Stream(Stdout)
+	got = joined(st.Write([]byte(begin + line("A"))))
+	got += joined(st.Resume())
+	got += joined(st.Write([]byte(line("B") + line("C") + "BBB=\nok then\n")))
+	noBody(got)
+	eq(t, got, "[redacted private key]ok then\n")
 }

@@ -32,6 +32,7 @@ var (
 		`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemOpen  = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemClose = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	pemEnd   = regexp.MustCompile(`^-----END [A-Z0-9 ]*PRIVATE KEY-----$`)
 	// An Authorization header up to its value, the quote opening it kept, also escaped or a pair
 	authz = regexp.MustCompile(`(?i)((?:\\?["'])?)(?:proxy-)?authorization` +
 		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
@@ -196,7 +197,9 @@ type Stream struct {
 	pendingCR bool // the last text ended on a carriage return, so the next frame replaces the line
 	// rejoining drops text up to the next line break, as the output goes on after a gap
 	rejoining bool
-	dropped   int64
+	// maybeKey drops the lines of a key block the output may have gone on inside, after a gap
+	maybeKey bool
+	dropped  int64
 }
 
 // Stream returns a Stream for the output named s, Stdout or Stderr
@@ -206,33 +209,49 @@ func (r *Redactor) Stream(s string) *Stream {
 
 // Holding reports whether output waits for a later frame
 func (st *Stream) Holding() bool {
-	return len(st.buf) > 0 || st.inKey || st.pendingCR || st.rejoining
+	return len(st.buf) > 0 || st.inKey || st.pendingCR || st.rejoining || st.maybeKey
 }
 
-// Resume shows the held text before its last word and drops the rest through the next line break
+// Resume shows the held text before its last word, then drops the cut line and key lines after it
 func (st *Stream) Resume() []Frame {
 	// The held word may be a token the gap cut, which no shape then matches
 	n := bytes.LastIndexAny(st.buf, " \t\n\r") + 1
 	st.dropped += int64(len(st.buf) - n)
 	st.buf = st.buf[:n]
-	out := st.Flush()
-	st.rejoining = true
+	out := st.flush()
+	st.rejoining, st.maybeKey = true, true
 	return out
 }
 
-// Dropped counts the bytes Resume dropped
+// Late starts output read from past its start, where a key block's body may be under way
+func (st *Stream) Late() { st.maybeKey = true }
+
+// Dropped counts the bytes a gap or a full carry made the stream drop
 func (st *Stream) Dropped() int64 { return st.dropped }
 
 // Write takes the next bytes of the output and returns the frames now safe to show
 func (st *Stream) Write(data []byte) []Frame {
 	st.buf = append(st.buf, data...)
-	if st.rejoining && !st.rejoin() {
-		return nil
-	}
 	var out []Frame
 	for {
-		if st.inKey && !st.skipKey() {
-			return out
+		switch {
+		case st.inKey:
+			if !st.skipKey() {
+				return out
+			}
+			// A gap inside the block left nothing past its end to drop
+			st.rejoining, st.maybeKey = false, false
+			continue
+		case st.rejoining:
+			if !st.rejoin() {
+				return out
+			}
+			continue
+		case st.maybeKey:
+			if !st.skipKeyLines() {
+				return out
+			}
+			continue
 		}
 		n, opensKey := st.safe()
 		if n == 0 && !opensKey {
@@ -244,9 +263,6 @@ func (st *Stream) Write(data []byte) []Frame {
 			st.dropped += int64(n)
 			st.buf = slices.Delete(st.buf, 0, n)
 			st.rejoining = true
-			if !st.rejoin() {
-				return out
-			}
 			continue
 		}
 		text := string(st.buf[:n])
@@ -260,15 +276,22 @@ func (st *Stream) Write(data []byte) []Frame {
 
 // Flush returns everything held back, at the output's end
 func (st *Stream) Flush() []Frame {
+	out := st.flush()
+	st.inKey = false
+	return out
+}
+
+// flush shows the held text, but no line a gap cut and no part of a key block
+func (st *Stream) flush() []Frame {
 	text := string(st.buf)
 	st.buf = nil
-	if st.rejoining {
+	switch {
+	case st.inKey:
+		text = ""
+	case st.rejoining || st.maybeKey:
 		// The line a gap cut stays dropped, also when its end comes after a flush
 		st.dropped += int64(len(text))
 		text = ""
-	}
-	if st.inKey {
-		text, st.inKey = "", false
 	}
 	out := st.frames(text)
 	st.pendingCR = false
@@ -289,8 +312,9 @@ func (st *Stream) rejoin() bool {
 	case i < 0 && !full:
 		return false
 	case i < 0:
-		// A line longer than the carry goes on after its last space instead
+		// A line longer than the carry goes on after its last space, which no key line has
 		i = bytes.LastIndexAny(b, " \t")
+		st.maybeKey = st.maybeKey && i < 0
 	}
 	// A full carry with no space at all goes, and the line it is part of stays dropped
 	n, still := i+1, i < 0
@@ -320,6 +344,83 @@ func (st *Stream) skipKey() bool {
 		st.buf = slices.Delete(st.buf, 0, len(st.buf)-keep)
 	}
 	return false
+}
+
+// What a line after a gap is to a key block the gap may have cut
+const (
+	keyBody    = iota // a body line, a header or a blank line
+	keyEnd            // the block's END line
+	keyOther          // any other line, which ends the block
+	keyPending        // a line still arriving that may be either
+)
+
+// skipKeyLines drops the lines a cut key block may still have, reporting false while one arrives
+func (st *Stream) skipKeyLines() bool {
+	for {
+		b := st.buf
+		i := bytes.IndexByte(b, '\n')
+		line := b
+		if i >= 0 {
+			line = b[:i]
+		}
+		line = bytes.TrimRight(line, " \t\r")
+		kind := keyLine(line, i >= 0)
+		n := i + 1
+		switch {
+		case kind == keyOther:
+			st.maybeKey = false
+			return true
+		case i < 0 && len(b) < carryMax:
+			return false
+		case i < 0:
+			n = len(b)
+		case kind == keyEnd:
+			// The END line's break stays, as it does after a whole block
+			n = len(line)
+			st.maybeKey = false
+		}
+		st.dropped += int64(n)
+		st.buf = slices.Delete(st.buf, 0, n)
+		if !st.maybeKey {
+			return true
+		}
+		if i < 0 {
+			return false
+		}
+	}
+}
+
+// keyLine says what line is to a key block, complete when its line break came
+func keyLine(line []byte, complete bool) int {
+	header := bytes.HasPrefix(line, []byte("Proc-Type:")) ||
+		bytes.HasPrefix(line, []byte("DEK-Info:"))
+	switch {
+	case complete && pemEnd.Match(line):
+		return keyEnd
+	case header || isBase64(line):
+		if complete {
+			return keyBody
+		}
+		return keyPending
+	case complete:
+		return keyOther
+	}
+	for _, start := range []string{"Proc-Type:", "DEK-Info:", "-----END "} {
+		if bytes.HasPrefix([]byte(start), line) || bytes.HasPrefix(line, []byte(start)) {
+			return keyPending
+		}
+	}
+	return keyOther
+}
+
+// isBase64 reports whether s holds base64 characters and padding alone
+func isBase64(s []byte) bool {
+	for _, c := range s {
+		if !isAlnum(c) && c != '+' && c != '/' && c != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // safe returns how many held bytes can be shown now, and whether they end in an open key block

@@ -182,13 +182,9 @@ func (ls *liveStream) run(ctx context.Context, cursor string) error {
 			return err
 		}
 		ls.outAt, ls.errAt = r.Out, r.Err
-		// A replay that starts inside a line may start inside a token, so that line is dropped
-		if r.MidOut {
-			ls.out.Resume()
-		}
-		if r.MidErr {
-			ls.err.Resume()
-		}
+		// A replay may start inside a token or a key block, so what it may have cut is dropped
+		late(ls.out, r.Out, r.MidOut)
+		late(ls.err, r.Err, r.MidErr)
 		if r.Skip {
 			ls.pos = r.Cursor
 			if err := ls.skip(r.Out, r.Err); err != nil {
@@ -311,6 +307,16 @@ func (ls *liveStream) moved(f frame.Frame) []sessions.Frame {
 	}
 	ls.outAt, ls.errAt = max(ls.outAt, f.Out), max(ls.errAt, f.Err)
 	return texts
+}
+
+// late starts an output its replay reads from offset at, mid saying inside a line
+func late(st *sessions.Stream, at int64, mid bool) {
+	switch {
+	case mid:
+		st.Resume()
+	case at > 0:
+		st.Late()
+	}
 }
 
 // write passes an output's frame through its stream, which starts anew past a gap in the offsets
