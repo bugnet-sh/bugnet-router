@@ -48,6 +48,10 @@ type Egress struct {
 	Host string
 	// IPs are secrets.egress_ips, pinned in every forwarder
 	IPs []netip.Addr
+	// Listen and Port replace the forwarder's address and the proxy's port, set only by a
+	// localrun build
+	Listen string
+	Port   int
 }
 
 // egressSpec is bugnet-run's egress Spec, its fields in the same order and with the same names
@@ -229,9 +233,10 @@ func (w *Worker) egressSpec(
 ) (egressSpec, error) {
 	caps := w.registry.Capabilities(prov)
 	spec := egressSpec{
-		V: 1, Endpoint: w.d.Egress.Host, Port: egressPort, Listen: forwardListen,
-		Env:  []egressEnv{},
-		Home: transfer.Home(prov, *p.ProviderRef, caps),
+		V: 1, Endpoint: w.d.Egress.Host, Port: cmp.Or(w.d.Egress.Port, egressPort),
+		Listen: cmp.Or(w.d.Egress.Listen, forwardListen),
+		Env:    []egressEnv{},
+		Home:   transfer.Home(prov, *p.ProviderRef, caps),
 	}
 	for _, ip := range w.d.Egress.IPs {
 		spec.IPs = append(spec.IPs, ip.String())

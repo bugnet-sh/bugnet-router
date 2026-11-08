@@ -165,7 +165,7 @@ func (f file) dataPlane(c *Config) error {
 		}
 		*l.into = names
 	}
-	if slices.Contains(c.Secrets.Providers, "local") {
+	if slices.Contains(c.Secrets.Providers, "local") && !localSecretsAllowed {
 		return errors.New("secrets.providers may not list local, " +
 			"whose sandboxes cannot run the egress forwarder")
 	}
@@ -285,6 +285,9 @@ func (s *SSH) readHostKeys(lines []string) error {
 
 // keyID is what a box key id must look like
 var keyID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// localSecretsAllowed is set only by a localrun build
+var localSecretsAllowed bool
 
 // read checks the egress addresses and box keys of the secrets table
 func (s *Secrets) read(f secretFile) error {

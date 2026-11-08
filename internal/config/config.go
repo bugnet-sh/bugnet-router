@@ -93,6 +93,8 @@ type Config struct {
 	Wallets       Wallets
 	Stats         Stats
 	Estimator     Estimator
+	// Localrun is read only by a localrun build and zero in every other
+	Localrun Localrun
 	// Images holds each listed provider's image manifest
 	Images map[string]ImageTools
 	// GithubToken and HFToken read sources for the estimator, empty for anonymous reads
@@ -293,6 +295,14 @@ type Hooks struct {
 	Providers []string `toml:"providers"`
 }
 
+// Localrun holds the settings only a localrun build reads, for the x402 local run
+type Localrun struct {
+	// ForwardListen replaces the forwarder's listen address in the egress spec
+	ForwardListen string
+	// EgressPort replaces the port forwarders dial on the egress proxy
+	EgressPort int
+}
+
 /* Settings file */
 
 // file is the settings file's schema, each struct type naming one table
@@ -330,6 +340,7 @@ type file struct {
 	Estimator           estimatorFile `toml:"estimator"`
 	Images              imagesFile    `toml:"images"`
 	Sessions            sessionsFile  `toml:"sessions"`
+	Localrun            localrunFile  `toml:"localrun"`
 }
 
 type apiFile struct {
@@ -741,6 +752,7 @@ func (f file) config() (Config, error) {
 	if c.Sessions, err = f.Sessions.read(d.Sessions); err != nil {
 		return Config{}, err
 	}
+	c.Localrun = f.Localrun.read()
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
 		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile, &c.Hardening.PoolList,

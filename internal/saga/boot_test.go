@@ -408,7 +408,7 @@ func TestEgressCAVersionStored(t *testing.T) {
 	plain := newEnvWith(t, func(d *saga.Deps) { d.Boot.CAPEM, d.Boot.CAVersion = ca, 3 },
 		newLocal(t, local.Options{Name: "local"}))
 	q, _ := plain.placeReady(t, "order-2")
-	eq(t, q.EgressCAVersion, 0)
+	eq(t, q.EgressCAVersion, localrunCA(3))
 	eq(t, q.GateReadyAt != nil, true)
 }
 
@@ -449,8 +449,8 @@ func TestSetupSpecPerProvider(t *testing.T) {
 	l := saga.SetupSpecFor(b, "local", lref, "key", false)
 	eq(t, l.GateListen, "127.0.0.1:40001")
 	eq(t, l.DenyPorts, []int{22, 2022, 29417, 40001, 40002})
-	eq(t, l.CAPEM+l.CASHA256, "")
-	eq(t, l.CAVersion, 0)
+	eq(t, l.CAPEM != "", localrunCA(1) > 0)
+	eq(t, l.CAVersion, localrunCA(2))
 
 	// No CA yet means neither field, so setup answers skipped
 	none := saga.SetupSpecFor(saga.BootSettings{GatePort: 30000}, "boxd", ref, "key", false)
