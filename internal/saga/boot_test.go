@@ -50,6 +50,8 @@ type scripted struct {
 	argv *[][]string
 	caps func(provider.Capabilities) provider.Capabilities
 	reqs *[]provider.CreateRequest
+	// onAnswer runs before a scripted subcommand answers, nil for nothing
+	onAnswer func(sub string)
 }
 
 func newScripted(p *local.Provider, answers map[string]answer) scripted {
@@ -99,6 +101,9 @@ func (s scripted) Exec(
 	a, ok := s.answers[sub]
 	if !ok {
 		return s.Provider.Exec(ctx, ref, spec)
+	}
+	if s.onAnswer != nil {
+		s.onAnswer(sub)
 	}
 	// An ssh-up answer names the first port its spec offered wherever it says $PORT
 	if sub == "ssh-up" {

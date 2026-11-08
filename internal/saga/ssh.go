@@ -229,6 +229,9 @@ func (s *Saga) AuthorizeGateway(
 		if host, err = s.sshUp(ctx, prov, ref, id, []string{line}); err != nil {
 			return fmt.Errorf("%w: ssh-up: %w", ErrSSHPreparing, err)
 		}
+		if err := lockReady(ctx, ts, id); err != nil {
+			return err
+		}
 		if err := ts.PutSSHHost(ctx, host); err != nil {
 			return err
 		}
@@ -281,10 +284,25 @@ func (s *Saga) authorizeNative(
 	if err := s.addRouteMeta(ctx, p.ID, map[string]string{metaSSHAddress: ns.Address}); err != nil {
 		return SSHUpstream{}, err
 	}
+	if err := lockReady(ctx, ts, p.ID); err != nil {
+		return SSHUpstream{}, err
+	}
 	if err := ts.AddGatewayKey(ctx, p.ID, fingerprint); err != nil {
 		return SSHUpstream{}, err
 	}
 	return SSHUpstream{Host: host, Address: ns.Address}, nil
+}
+
+// lockReady locks a placement's row while it is ready, so its ending waits for this transaction
+func lockReady(ctx context.Context, ts *store.Store, id uuid.UUID) error {
+	cur, err := ts.PlacementForUpdate(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur.State != store.PlacementReady {
+		return fmt.Errorf("%w: placement is %s", ErrNotReady, cur.State)
+	}
+	return nil
 }
 
 // addRouteMeta adds entries to a ready placement's ref under the gate lock that guards it

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sshkeys/sshkeystest"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -290,4 +292,122 @@ func countOf(calls []string, sub string) int {
 		}
 	}
 	return n
+}
+
+// badSSHUps are ssh-up answers the router must refuse, each with the error it gives
+func badSSHUps(t *testing.T) map[string]struct {
+	a    answer
+	want string
+} {
+	return map[string]struct {
+		a    answer
+		want string
+	}{
+		"port not offered": {
+			answer{`{"port":1,"host_key":"` + testHostKey + `"}`, 0}, "did not offer",
+		},
+		"garbage host key": {
+			answer{`{"port":$PORT,"host_key":"ssh-ed25519 not-base64!"}`, 0}, "no usable host key",
+		},
+		"certificate host key": {
+			answer{`{"port":$PORT,"host_key":"` + sshkeystest.Cert(t) + `"}`, 0},
+			"no usable host key",
+		},
+	}
+}
+
+func TestBootRefusesABadSSHUpAnswer(t *testing.T) {
+	for name, c := range badSSHUps(t) {
+		t.Run(name, func(t *testing.T) {
+			a := newScripted(newLocal(t, local.Options{Name: "a"}),
+				map[string]answer{"ssh-up": c.a})
+			b := newScripted(newLocal(t, local.Options{Name: "b"}),
+				map[string]answer{"ssh-up": sshUpOK})
+			e := newEnvWith(t, withSSH("a", "b"), a, b)
+			p, _ := e.placeWith(t, "order-1", placement.Requirements{SSH: true})
+			eq(t, p.Provider, "b")
+			attempts, err := e.store.Attempts(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(attempts) != 2 || attempts[0].State != "failed" ||
+				!strings.Contains(attempts[0].Error, c.want) {
+				t.Fatalf("attempts %+v, want a's to fail with %q", attempts, c.want)
+			}
+			host, err := e.store.SSHHost(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eq(t, strconv.Itoa(host.SSHDPort), p.ProviderRef.Meta["sshd_port"])
+		})
+	}
+}
+
+func TestPrepareSSHRefusesABadSSHUpAnswer(t *testing.T) {
+	for name, c := range badSSHUps(t) {
+		t.Run(name, func(t *testing.T) {
+			a := newScripted(newLocal(t, local.Options{Name: "a"}),
+				map[string]answer{"ssh-up": c.a})
+			e := newEnvWith(t, withSSH("a"), a)
+			p, _ := e.placeWith(t, "order-1", placement.Requirements{})
+			err := e.saga.PrepareSSH(t.Context(), p.ID)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("prepare ssh: %v, want %q", err, c.want)
+			}
+			_, err = e.store.SSHHost(t.Context(), p.ID)
+			eq(t, errors.Is(err, store.ErrNotFound), true)
+		})
+	}
+}
+
+func TestAuthorizeGatewayRefusesABadSSHUpAnswer(t *testing.T) {
+	for name, c := range badSSHUps(t) {
+		t.Run(name, func(t *testing.T) {
+			answers := map[string]answer{"ssh-up": sshUpOK}
+			a := newScripted(newLocal(t, local.Options{Name: "a"}), answers)
+			e := newEnvWith(t, withSSH("a"), a)
+			p, _ := e.placeWith(t, "order-1", placement.Requirements{SSH: true})
+			before, err := e.store.SSHHost(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			answers["ssh-up"] = c.a
+			_, err = e.saga.AuthorizeGateway(t.Context(), p.ID, "x", "SHA256:gw")
+			if !errors.Is(err, saga.ErrSSHPreparing) || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("authorize: %v, want preparing with %q", err, c.want)
+			}
+			has, err := e.store.HasGatewayKey(t.Context(), p.ID, "SHA256:gw")
+			eq(t, err, nil)
+			eq(t, has, false)
+			after, err := e.store.SSHHost(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eq(t, after, before)
+		})
+	}
+}
+
+func TestAuthorizeGatewayAddsNoKeyOnceThePlacementEnds(t *testing.T) {
+	a := newScripted(newLocal(t, local.Options{Name: "a"}), map[string]answer{"ssh-up": sshUpOK})
+	var hook func()
+	a.onAnswer = func(sub string) {
+		if sub == "ssh-up" && hook != nil {
+			hook()
+		}
+	}
+	e := newEnvWith(t, withSSH("a"), a)
+	p, _ := e.placeWith(t, "order-1", placement.Requirements{SSH: true})
+	ctx := t.Context()
+	// The placement starts to end while ssh-up runs
+	hook = func() {
+		if _, err := e.store.MarkPlacementTerminating(ctx, p.ID, "stop", time.Now()); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := e.saga.AuthorizeGateway(ctx, p.ID, "x", "SHA256:gw")
+	eq(t, errors.Is(err, saga.ErrNotReady), true)
+	has, err := e.store.HasGatewayKey(ctx, p.ID, "SHA256:gw")
+	eq(t, err, nil)
+	eq(t, has, false)
 }
