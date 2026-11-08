@@ -18,6 +18,13 @@
 			"minutes": 10,
 			"price_micros": 45000,
 			"extension_of": "dev-small-10m"
+		},
+		{
+			"id": "dev-xfer-30m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 30,
+			"price_micros": 150000,
+			"edge": {"bytes": "4GiB"}
 		}
 	]
 }
