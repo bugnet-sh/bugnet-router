@@ -32,6 +32,8 @@ const (
 	liveMaxTime = 30 * time.Minute
 	// liveGrace keeps the placement's live byte count past its deadline, as job streams are
 	liveGrace = 10 * time.Minute
+	// liveBurst is the most an idle stream saves up, as time at its pace (SP 7.6)
+	liveBurst = time.Second
 )
 
 // liveRecheck is how often a stream re-reads its record and placement, since pub/sub can drop
@@ -83,7 +85,9 @@ func (ss *SessionPageServer) WatchSessionJob(
 	if err != nil {
 		return s.status(err)
 	}
-	ls := &liveStream{ss: ss, rec: rec, p: p, job: job, send: stream.Send, started: time.Now()}
+	now := time.Now()
+	ls := &liveStream{ss: ss, rec: rec, p: p, job: job, send: stream.Send, started: now,
+		bucket: newPacer(lv.cfg.BytesPerSecond, now)}
 	select {
 	case lv.readers <- struct{}{}:
 		defer func() { <-lv.readers }()
@@ -118,7 +122,7 @@ type liveStream struct {
 	// outAt and errAt are how far each output was read, -1 until known
 	outAt, errAt int64
 	started      time.Time
-	sent         int64
+	bucket       *pacer
 	beat         time.Time
 	checked      time.Time
 }
@@ -364,13 +368,7 @@ func (ls *liveStream) texts(ctx context.Context, texts []sessions.Frame) (string
 
 // pace holds the stream to its bytes a second
 func (ls *liveStream) pace(ctx context.Context, n int64) error {
-	rate := ls.ss.live.cfg.BytesPerSecond
-	ls.sent += n
-	if rate <= 0 {
-		return nil
-	}
-	due := ls.started.Add(time.Duration(float64(ls.sent) / float64(rate) * float64(time.Second)))
-	wait := time.Until(due)
+	wait := ls.bucket.take(n, time.Now())
 	if wait <= 0 {
 		return nil
 	}
@@ -382,6 +380,30 @@ func (ls *liveStream) pace(ctx context.Context, n int64) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// pacer is a token bucket of bytes, filled at rate a second up to one liveBurst of them
+type pacer struct {
+	rate, tokens float64
+	at           time.Time
+}
+
+func newPacer(rate int64, now time.Time) *pacer {
+	return &pacer{rate: float64(rate), tokens: float64(rate) * liveBurst.Seconds(), at: now}
+}
+
+// take spends n bytes at now and answers how long to wait before sending them
+func (p *pacer) take(n int64, now time.Time) time.Duration {
+	if p.rate <= 0 {
+		return 0
+	}
+	idle := max(now.Sub(p.at), 0).Seconds()
+	p.tokens = min(p.tokens+idle*p.rate, p.rate*liveBurst.Seconds()) - float64(n)
+	p.at = now
+	if p.tokens >= 0 {
+		return 0
+	}
+	return time.Duration(-p.tokens / p.rate * float64(time.Second))
 }
 
 func (ls *liveStream) skip(out, errBytes int64) error {

@@ -349,7 +349,8 @@ func TestWatchSessionJobPace(t *testing.T) {
 	start := time.Now()
 	w := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil)
 	eq(t, len(w.text()), 2200)
-	if took := time.Since(start); took < 1500*time.Millisecond {
+	// The first second's 1000 bytes go at once, the other 1200 at the pace
+	if took := time.Since(start); took < 1200*time.Millisecond {
 		t.Fatalf("2200 bytes at 1000 a second took %v", took)
 	}
 }

@@ -467,7 +467,7 @@ Money is integer micro-USD and times are UTC.
 | `live.enabled` | `true` | The live view's kill switch, read at start, so `false` takes a restart, whose shutdown ends every open stream |
 | `live.max_readers` | `256` | Live streams one `router-api` serves at once, 1 to 4096 |
 | `live.placement_bytes` | `"256MiB"` | Live bytes per placement |
-| `live.bytes_per_second` | `"1MiB"` | The pace of each live stream |
+| `live.bytes_per_second` | `"1MiB"` | The pace of each live stream, an idle one saving up at most one second of it |
 | `live.replay` | `"256KiB"` | What a first connection replays of a job |
 
 `config/dev.toml` sets `base_url` to `https://sessions.dev.bugnet.sh`.

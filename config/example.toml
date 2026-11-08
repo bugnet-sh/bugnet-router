@@ -134,7 +134,7 @@ mcp_tools = ["bugnet_assess", "bugnet_quote", "bugnet_redeem", "bugnet_start", "
 enabled = true                         # the kill switch, read at start: a restart ends the streams
 max_readers = 256                      # live streams one router-api serves at once
 placement_bytes = "256MiB"             # live bytes per placement, apart from the edge budget
-bytes_per_second = "1MiB"              # the pace of each live stream
+bytes_per_second = "1MiB"              # each live stream's pace, an idle one saving one second
 replay = "256KiB"                      # a first connection's replay of a job's newest output
 
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
