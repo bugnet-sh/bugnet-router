@@ -53,6 +53,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,6 +72,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/estimator"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
@@ -151,6 +153,9 @@ type Deps struct {
 	Wallets config.Wallets
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
+	// Estimator answers Estimate and gives a placement its source, Estimate lists packages alone
+	// while it is nil
+	Estimator *estimator.Service
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -308,11 +313,16 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 
 /* Placements */
 
-// Estimate lists the start packages and whether a provider can host each one now
+// Estimate lists the start packages and whether a provider can host each one now, and with an
+// estimator also the floor, the packages that cover it and the recommendation
 func (s *Server) Estimate(
-	_ context.Context, req *connect.Request[routerv1.EstimateRequest],
+	ctx context.Context, req *connect.Request[routerv1.EstimateRequest],
 ) (*connect.Response[routerv1.EstimateResponse], error) {
-	need := requirements(req.Msg.GetRequirements())
+	m := req.Msg
+	if s.d.Estimator != nil && len(m.GetNeeds()) > maxEstimateNeeds {
+		return nil, invalid("needs holds more than %d entries", maxEstimateNeeds)
+	}
+	need := estimateNeeds(requirements(m.GetRequirements()), m.GetNeeds())
 	var opts []*routerv1.PackageOption
 	for _, pkg := range s.d.Catalog.All() {
 		if pkg.ExtensionOf != "" {
@@ -320,7 +330,23 @@ func (s *Server) Estimate(
 		}
 		opts = append(opts, s.startOption(pkg, need))
 	}
-	return connect.NewResponse(&routerv1.EstimateResponse{Options: opts}), nil
+	if s.d.Estimator == nil {
+		return connect.NewResponse(&routerv1.EstimateResponse{Options: opts}), nil
+	}
+	ans, err := s.d.Estimator.Estimate(ctx, estimator.Request{
+		Source: m.GetSource(), Workload: workloadOf(m.GetWorkload()),
+		EntryCommand: m.GetEntryCommand(), ExpectedMinutes: int(m.GetExpectedMinutes()),
+		MinutesGiven: m.ExpectedMinutes != nil, Needs: needsOf(m.GetNeeds()),
+		Available: func(id string) bool {
+			return slices.ContainsFunc(opts, func(o *routerv1.PackageOption) bool {
+				return o.GetPackageId() == id && o.GetAvailable()
+			})
+		},
+	})
+	if err != nil {
+		return nil, estimateStatus(err)
+	}
+	return connect.NewResponse(estimateResponse(ans, opts)), nil
 }
 
 // PricePackage answers with one start package as Estimate lists it, writing and spending nothing
@@ -366,8 +392,14 @@ func (s *Server) startOption(
 func (s *Server) CreatePlacement(
 	ctx context.Context, req *connect.Request[routerv1.CreatePlacementRequest],
 ) (*connect.Response[routerv1.CreatePlacementResponse], error) {
-	p, h, err := s.d.Saga.Create(ctx, req.Msg.GetOrderToken(),
-		requirements(req.Msg.GetRequirements()))
+	var src *store.PlacementSource
+	if id := req.Msg.GetEstimateId(); id != "" && s.d.Estimator != nil {
+		if ps, ok := s.d.Estimator.SourceOf(ctx, id); ok {
+			src = &ps
+		}
+	}
+	p, h, err := s.d.Saga.CreateWith(ctx, req.Msg.GetOrderToken(),
+		requirements(req.Msg.GetRequirements()), src)
 	if err != nil {
 		return nil, s.status(err)
 	}

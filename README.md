@@ -49,6 +49,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/solana` | The one base58 decoder, for Solana keys and signatures |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
+| `internal/estimator` and its packages | The resource estimator: the source parser, facts, versioned rules, canonical JSON, the GitHub and Hugging Face fetchers with their caches and budget guard, and the service `Estimate` calls |
 | `internal/wallet`, `internal/wallets` | Payer addresses and the payer decision, wallet blocks, strikes and buckets |
 | `internal/stats` | The public stats feed, its Payments totals call, its routes and the source functions of values later tasks build |
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
@@ -660,6 +661,37 @@ A capable provider can still refuse a package for its health, its sizes, the mar
 maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
 `feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
 
+## Estimator
+
+`Estimate` also reads what the agent says it will run: `source`, `workload`, `entry_command`,
+`expected_minutes` and `needs`. It answers the floor (vCPU, memory, disk, GPU, minutes and bytes
+to download), the start packages that cover it with their extensions, one recommended package, the
+reasons and the warnings, each built from typed values and never from repository text. `needs`
+merge into `requirements`. Free quotes are bounded three ways by Valkey buckets, `rl:est:all` for
+calls, `rl:est:new` for sources nobody cached and `rl:est:stored` for new estimate rows, and a
+replica uses an in-process bucket at the same rate when Valkey takes over 100 ms.
+
+A GitHub source is read at one commit. With `BUGNET_GITHUB_TOKEN` it takes one GraphQL query whose
+text is a constant, every agent value travelling as a variable, and one tree call. Without a
+token it takes the tree call and at most `estimator.max_files` files from the raw host. At start
+the router reads the token's limits, and a token that can list a private repository is never used.
+A private repository reads as not found. A Hugging Face source takes the Hub's model call, a
+second for GGUF files and `config.json` unless the model is gated. All of a quote's fetches share
+`estimator.fetch_budget`. A fetch past it goes on for `estimator.background_budget` to fill the
+cache, and the quote answers from defaults with `partial` set and a `SOURCE_UNREAD` warning.
+
+Each distinct answer is stored with its inputs, the facts they name and the catalog, and a repeated
+quote with the same inputs and availability returns the same `estimate_id`. `CreatePlacement`
+takes that id when the estimate was served within `estimator.max_estimate_age` and copies the
+source onto the placement as `source_kind`, `source_canonical`, `source_ref`, `source_revision`
+and `source_read`. A GitHub or Hugging Face source that was read also sets `source_label`, as
+`github.com/<owner>/<repo>@<7 hex>` or the model id. An unknown, stale or malformed id is ignored.
+
+`bugnet-dev estimate --replay ID` fetches the stored estimate through `OperatorService`'s
+`GetEstimate`, runs the rules locally on its inputs and catalog bytes, and compares the floor and
+the recommendation byte for byte. An estimate made under another `rules.Version` is replayed from
+that version's git tag.
+
 ## Extensions
 
 `ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
@@ -828,8 +860,11 @@ holds a handle or a job ID.
 | `NotFound` | `JOB_UNKNOWN` | `WatchJob` or `CancelJob` names a job the handle's placement lacks |
 | `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile`, `ListFiles` or a download names a path that does not exist |
 | `NotFound` | `TOKEN_UNKNOWN` | `OpenTransfer` gets a token with no record |
+| `NotFound` | `ESTIMATE_UNKNOWN` | `GetEstimate` names an estimate that is not stored |
 | `NotFound` | `PREVIEW_UNKNOWN` | A preview id the router never made, or one that is malformed |
 | `PermissionDenied` | `TOKEN_INVALID` | A preview token that belongs to no generation of the preview |
+| `InvalidArgument` | `SOURCE_INVALID` | An `Estimate` source that parses as nothing, or a URL with userinfo |
+| `InvalidArgument` | `SECRET_IN_ARGUMENT` | An `Estimate` source or command holding a value of a secret shape |
 | `InvalidArgument` | `PORT_REFUSED` | A preview of a port outside 1 to 65535 or on the gate's deny list |
 | `InvalidArgument` | `PATH_REFUSED` | A transfer path that is empty, relative other than `~` or `~/rest`, or holds NUL or a newline |
 | `InvalidArgument` | `IS_DIRECTORY` | A download of a directory, or an upload onto one or onto a path ending in `/` |
@@ -862,7 +897,7 @@ holds a handle or a job ID.
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
 | `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
-| `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty, or its link or put bucket |
+| `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty, or its link or put bucket, or one of `Estimate`'s three buckets |
 | `InvalidArgument` | `NAME_RESERVED` | A secret name that is malformed or that the sandbox's tools read, such as `PATH` or `LD_*` |
 | `InvalidArgument` | `HOST_REFUSED` | A secret host that is not one exact lowercase name, or is a public suffix, a shared-hosting name, a provider's or Bugnet's own, or repeats |
 | `InvalidArgument` | `HEADER_REFUSED` | A header name not lowercase, repeated, or one the proxy or a browser sets, such as `cookie` |
@@ -924,7 +959,7 @@ the gateway.
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | `GetSecretLink`, `SubmitSecretLink`, `GetBridgeSealingKey`, `PutBridgeSecret` |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ResolveTunnel`, `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
-| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview`, `BlockWallet`, `UnblockWallet`, `GetWallet`, `ListWallets` |
+| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview`, `BlockWallet`, `UnblockWallet`, `GetWallet`, `ListWallets`, `GetEstimate` |
 | `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder`, `CheckPayer`, `LookupPlacement` |
 
 ### Budgets

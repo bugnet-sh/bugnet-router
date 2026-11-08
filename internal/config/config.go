@@ -91,6 +91,12 @@ type Config struct {
 	Hardening     Hardening
 	Wallets       Wallets
 	Stats         Stats
+	Estimator     Estimator
+	// Images holds each listed provider's image manifest
+	Images map[string]ImageTools
+	// GithubToken and HFToken read sources for the estimator, empty for anonymous reads
+	GithubToken string
+	HFToken     string
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
@@ -301,6 +307,8 @@ type file struct {
 	Hardening           hardeningFile `toml:"hardening"`
 	Wallets             walletsFile   `toml:"wallets"`
 	Stats               statsFile     `toml:"stats"`
+	Estimator           estimatorFile `toml:"estimator"`
+	Images              imagesFile    `toml:"images"`
 }
 
 type apiFile struct {
@@ -488,6 +496,7 @@ func defaults() file {
 		Hardening: defaultHardening(),
 		Wallets:   defaultWallets(),
 		Stats:     defaultStats(),
+		Estimator: defaultEstimator(),
 	}
 }
 
@@ -678,6 +687,10 @@ func (f file) config() (Config, error) {
 	if c.Stats, err = f.Stats.read(d.Stats); err != nil {
 		return Config{}, err
 	}
+	if c.Estimator, err = f.Estimator.read(d.Estimator); err != nil {
+		return Config{}, err
+	}
+	c.Images = f.Images.images(c.Providers)
 	c.ProviderOps = map[string]int{}
 	for _, o := range []struct {
 		name string
@@ -816,6 +829,7 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 		}
 		c.EventSigningKey = ed25519.NewKeyFromSeed(seed)
 	}
+	c.GithubToken, c.HFToken = get("BUGNET_GITHUB_TOKEN"), get("BUGNET_HF_TOKEN")
 	c.ProviderKeys = map[string]string{}
 	for _, pk := range providerKeyVars {
 		if v := get(pk.env); v != "" {

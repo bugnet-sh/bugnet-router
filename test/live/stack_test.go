@@ -310,6 +310,12 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	dbURL := testenv.DatabaseURL(t)
 	_, prefix := testenv.Valkey(t)
 	s.env = append(hostEnv(), "BUGNET_DATABASE_URL="+dbURL)
+	// The estimator's source tokens are the only BUGNET_ values the stack takes from the host
+	for _, name := range []string{"BUGNET_GITHUB_TOKEN", "BUGNET_HF_TOKEN"} {
+		if v := os.Getenv(name); v != "" {
+			s.env = append(s.env, name+"="+v)
+		}
+	}
 	for k, v := range s.keys {
 		s.env = append(s.env, k+"="+v)
 	}

@@ -96,6 +96,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   wallet show PAYER                      print a wallet, its live placements and its events
   wallet list [--blocked] [--limit N] [--page TOKEN]
                                          list wallets in payer order
+  estimate --replay ID                   fetch a stored estimate and run the rules locally on its
+                                         inputs and catalog, comparing the floor and the
+                                         recommendation byte for byte
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -120,8 +123,8 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
-  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview and wallet, which call
-                            OperatorService
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet and estimate, which
+                            call OperatorService
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
 
@@ -170,7 +173,7 @@ func run(
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
-		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls,
+		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls, "estimate": c.estimate,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
