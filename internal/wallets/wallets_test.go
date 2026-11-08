@@ -318,3 +318,67 @@ func TestStrikeBlocksUnderAShorterBlock(t *testing.T) {
 	eq(t, w.BlockedUntil == nil, true)
 	eq(t, []string{w.BlockedReason, w.BlockedBy}, []string{"operator", "operator:ann"})
 }
+
+func TestLiftReportsWhetherABlockWasInForce(t *testing.T) {
+	e := newEnv(t, false)
+	ctx := t.Context()
+	if err := e.block(t, wallets.Block{
+		Payer: payer, Reason: wallets.ReasonOperator, Actor: "operator:ann",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []bool{true, false} {
+		var lifted bool
+		err := e.tx(t, func(tx pgx.Tx) error {
+			var err error
+			lifted, err = e.w.Lift(ctx, tx, payer, "operator:bob", "")
+			return err
+		})
+		eq(t, err, nil)
+		eq(t, lifted, want)
+	}
+}
+
+func TestExpireLiftsOnlyAPassedBlock(t *testing.T) {
+	e := newEnv(t, true)
+	ctx := t.Context()
+	expire := func(p string) bool {
+		t.Helper()
+		var ok bool
+		err := e.tx(t, func(tx pgx.Tx) error {
+			var err error
+			ok, err = e.w.Expire(ctx, tx, p)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	until := e.now.Add(time.Hour)
+	if err := e.block(t, wallets.Block{
+		Payer: payer, Reason: wallets.ReasonStrikes, Until: &until, Actor: "router",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.block(t, wallets.Block{
+		Payer: feePayer, Reason: wallets.ReasonAbuse, Actor: "router",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, expire(payer), false)
+	e.now = until
+	eq(t, expire(payer), true)
+	eq(t, expire(payer), false)
+	// A block until lifted never expires
+	eq(t, expire(feePayer), false)
+	eq(t, expire("NeverSeen1111111111111111111111111111111111"), false)
+	w := e.wallet(t)
+	eq(t, w.BlockedAt == nil, true)
+	evs, err := e.st.WalletEvents(ctx, payer, 50)
+	eq(t, err, nil)
+	eq(t, []string{evs[0].Kind, evs[0].Reason, evs[0].Actor},
+		[]string{"unblock", wallets.ReasonExpired, "router"})
+	out := e.outbox(t)
+	eq(t, out[len(out)-1], `wallet.unblocked {"payer": "`+payer+`"}`)
+}

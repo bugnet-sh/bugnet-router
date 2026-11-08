@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,10 @@ type Placement struct {
 	// PaidMicros sums the package share of the start order and every extension recorded, zero
 	// once the placement failed with its charge refunded
 	PaidMicros int64
+	// EndEvidence is the signal an end for a reason recorded, nil for none
+	EndEvidence json.RawMessage
+	// EndActor is router or operator:<name> for an end for a reason, empty for none
+	EndActor string
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -80,6 +85,8 @@ type NewPlacement struct {
 	FeePayer string
 	// AmountMicros is the start order's package share
 	AmountMicros int64
+	// SecondsBought is the paid time the start order buys from ready
+	SecondsBought int64
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -94,6 +101,8 @@ type Order struct {
 	FeePayer string
 	// AmountMicros is what the order paid for its package, the x402 allowance left out
 	AmountMicros int64
+	// SecondsBought is the paid time the order added, 0 for an order from before it was kept
+	SecondsBought int64
 }
 
 // Attempt is one try at creating a sandbox on a provider
@@ -116,7 +125,8 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	applied_hosts, needs_secrets, coalesce(payer, ''),
 	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
 		where o.placement_id = placements.id
-			and not (placements.state = 'failed' and placements.refundable))`
+			and not (placements.state = 'failed' and placements.refundable)),
+	end_evidence, coalesce(end_actor, '')`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -126,7 +136,8 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
 		&p.TerminationReason, &p.TerminatingAt, &p.KeyID, &p.SSHAlias, &p.SourceLabel,
 		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
-		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.PaidMicros)
+		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.PaidMicros,
+		&p.EndEvidence, &p.EndActor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -196,9 +207,10 @@ func (s *Store) PlacementsByIDs(ctx context.Context, ids []uuid.UUID) ([]Placeme
 func (s *Store) OrderByID(ctx context.Context, id string) (Order, error) {
 	o := Order{ID: id}
 	err := s.q.QueryRow(ctx, `
-		select kind, placement_id, coalesce(payer, ''), coalesce(fee_payer, ''), amount_micros
+		select kind, placement_id, coalesce(payer, ''), coalesce(fee_payer, ''), amount_micros,
+			seconds_bought
 		from orders where order_id = $1`, id).
-		Scan(&o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros)
+		Scan(&o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros, &o.SecondsBought)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Order{}, ErrNotFound
 	}
@@ -228,18 +240,20 @@ func (s *Store) PlacementForUpdate(ctx context.Context, id uuid.UUID) (Placement
 	return s.placementWhere(ctx, "id = $1 for update", id)
 }
 
-// CreatePlacement records the start order and its placement in one transaction
+// CreatePlacement records the start order and its placement in one transaction, the order
+// keeping Payer when no PayerClaim is given
 func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement, bool, error) {
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
 	}
+	claim := cmp.Or(p.PayerClaim, p.Payer)
 	var out Placement
 	var created bool
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.Tx(tx)
 		id, inserted, err := ts.InsertOrder(ctx, Order{
-			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: p.PayerClaim,
-			FeePayer: p.FeePayer, AmountMicros: p.AmountMicros,
+			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: claim,
+			FeePayer: p.FeePayer, AmountMicros: p.AmountMicros, SecondsBought: p.SecondsBought,
 		})
 		if err != nil {
 			return err
@@ -261,10 +275,11 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 // InsertOrder records an order, or reports false with the placement of the order already recorded
 func (s *Store) InsertOrder(ctx context.Context, o Order) (uuid.UUID, bool, error) {
 	tag, err := s.q.Exec(ctx, `
-		insert into orders (order_id, kind, placement_id, payer, fee_payer, amount_micros)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into orders (order_id, kind, placement_id, payer, fee_payer, amount_micros,
+			seconds_bought)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		on conflict (order_id) do nothing`, o.ID, o.Kind, o.PlacementID, nullIfEmpty(o.Payer),
-		nullIfEmpty(o.FeePayer), o.AmountMicros)
+		nullIfEmpty(o.FeePayer), o.AmountMicros, o.SecondsBought)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("insert order: %w", err)
 	}
