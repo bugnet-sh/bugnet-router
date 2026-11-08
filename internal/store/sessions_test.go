@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/migrations"
@@ -340,6 +341,34 @@ func TestStartSessionJobCapSetting(t *testing.T) {
 	eq(t, jobsDropped(t, s, rec.ID), 2)
 }
 
+func TestStartSessionJobCapConcurrent(t *testing.T) {
+	s, _ := newStoreWithPool(t, store.WithSessionMaxJobs(3))
+	p, rec := newRecord(t, s, "jobcap-3")
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	made := 0
+	for i := range 12 {
+		wg.Go(func() {
+			_, created, err := s.StartSessionJob(context.Background(), p.ID,
+				"j_"+strconv.Itoa(i), "ls", time.Now())
+			if err != nil {
+				t.Error(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if created {
+				made++
+			}
+		})
+	}
+	wg.Wait()
+	jobs, err := s.SessionJobs(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, [3]int{made, len(jobs), jobsDropped(t, s, rec.ID)}, [3]int{3, 3, 9})
+}
+
 func TestEndAndCloseSessionRecord(t *testing.T) {
 	s := newStore(t)
 	p, rec := newRecord(t, s, "end-1")
@@ -406,7 +435,8 @@ func TestLaterCloseKeepsAUserDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	hold := now.Add(720 * time.Hour)
-	for _, by := range []string{store.ClosedByAbuse, store.ClosedByOperator} {
+	for _, reason := range []string{"abuse", "wallet_blocked", "operator"} {
+		by, _ := sessions.ClosingEnd(reason)
 		if err := s.EndSessionRecord(t.Context(), p.ID, store.SessionEnd{EndedAt: now,
 			Keep: 48 * time.Hour, ClosedBy: by, HoldUntil: hold}); err != nil {
 			t.Fatal(err)
