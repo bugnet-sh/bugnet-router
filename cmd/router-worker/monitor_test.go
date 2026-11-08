@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +23,9 @@ import (
 )
 
 var healthy = fixed(vkinfo.Memory{Used: 79, Max: 100, Policy: "noeviction"})
+
+// testPools is a mining pool list of one entry, so /monitor finds nothing wrong with it
+const testPools = "testdata/mining-pools.txt"
 
 // migrated returns a pool on a fresh migrated database
 func migrated(t *testing.T) *pgxpool.Pool {
@@ -39,7 +45,8 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, read)(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+	monitor(discard, st, vk, read, testPools)(rec,
+		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
 
@@ -70,7 +77,7 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 	go func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
-		monitor(discard, store.New(pool), vk, hung)(rec, req)
+		monitor(discard, store.New(pool), vk, hung, testPools)(rec, req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -221,5 +228,33 @@ func TestMonitorReportsEachProblem(t *testing.T) {
 				t.Fatalf("monitor answered %d %q, want 503 %q", code, body, c.want)
 			}
 		})
+	}
+}
+
+func TestMonitorShowsEmptyPoolList(t *testing.T) {
+	st := store.New(migrated(t))
+	vk, _ := testenv.Valkey(t)
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.txt")
+	bad := filepath.Join(dir, "bad.txt")
+	if err := os.WriteFile(empty, []byte("# none yet\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("pool.example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(dir, "missing.txt"): "the mining pool list is empty or missing\n",
+		empty:                             "the mining pool list is empty or missing\n",
+		bad:                               "the mining pool list cannot be read\n",
+	} {
+		rec := httptest.NewRecorder()
+		monitor(discard, st, vk, healthy, path)(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
+			strings.Contains(rec.Body.String(), "pool.example.com") {
+			t.Errorf("monitor with %s answered %d %q, want 503 %q", path, rec.Code,
+				rec.Body.String(), want)
+		}
 	}
 }

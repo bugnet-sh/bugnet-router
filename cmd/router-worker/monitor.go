@@ -13,6 +13,7 @@ import (
 
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/store"
 	"github.com/oynozan/bugnet-router/internal/vkinfo"
 )
@@ -30,11 +31,21 @@ type health struct {
 	postgresDown           bool
 	overdue, ending, stuck int
 	valkey                 valkeyHealth
+	pools                  poolHealth
 }
+
+// poolHealth is what the mining pool list held when /monitor read it
+type poolHealth int
+
+const (
+	poolsListed poolHealth = iota
+	poolsEmpty
+	poolsUnreadable
+)
 
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
-	log *slog.Logger, st *store.Store, vk valkey.Client, read vkinfo.Reader,
+	log *slog.Logger, st *store.Store, vk valkey.Client, read vkinfo.Reader, poolList string,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -44,6 +55,7 @@ func monitor(
 		var wg sync.WaitGroup
 		wg.Go(func() { h.overdue, h.ending, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
 		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, read) })
+		wg.Go(func() { h.pools = checkPools(log, poolList) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -72,6 +84,19 @@ func checkPostgres(
 		return 0, 0, 0, true
 	}
 	return overdue, ending, stuck, false
+}
+
+// checkPools reads the mining pool list with the loader router-api starts with
+func checkPools(log *slog.Logger, path string) poolHealth {
+	pools, err := config.LoadPoolList(path)
+	switch {
+	case err != nil:
+		log.Warn("monitor cannot read the mining pool list", "err", err)
+		return poolsUnreadable
+	case len(pools) == 0:
+		return poolsEmpty
+	}
+	return poolsListed
 }
 
 // valkeyHealth is what /monitor learned from Valkey
@@ -145,6 +170,12 @@ func (h health) problems() []string {
 	if p := h.valkey.memory.Policy; p != "" && p != vkinfo.NoEviction {
 		out = append(out, fmt.Sprintf(
 			"valkey maxmemory-policy is %s, the router needs noeviction", p))
+	}
+	switch h.pools {
+	case poolsEmpty:
+		out = append(out, "the mining pool list is empty or missing")
+	case poolsUnreadable:
+		out = append(out, "the mining pool list cannot be read")
 	}
 	return out
 }

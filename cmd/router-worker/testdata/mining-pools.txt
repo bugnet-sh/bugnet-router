@@ -1,0 +1,2 @@
+# A documentation range standing in for real pools
+192.0.2.0/24

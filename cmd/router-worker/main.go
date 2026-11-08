@@ -173,7 +173,7 @@ func serve(
 		_, _ = io.WriteString(rw, "ok\n")
 	})
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
-	mux.HandleFunc("GET /monitor", monitor(log, st, vk, read))
+	mux.HandleFunc("GET /monitor", monitor(log, st, vk, read, cfg.Hardening.PoolList))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

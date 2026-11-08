@@ -72,12 +72,15 @@ listen_addr = "127.0.0.1:0"
 addr = %q
 prefix = %q
 
+[hardening]
+pool_list = %q
+
 [local]
 enabled = true
 root = %q
 runner = %q
 `, base64.StdEncoding.EncodeToString(pub), packages, extra, valkeyAddr, prefix,
-		t.TempDir(), filepath.Join(dir, "bugnet-run"))
+		testPools, t.TempDir(), filepath.Join(dir, "bugnet-run"))
 	path := filepath.Join(dir, "settings.toml")
 	if err := os.WriteFile(path, []byte(settings), 0o644); err != nil {
 		t.Fatal(err)
