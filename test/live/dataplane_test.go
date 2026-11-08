@@ -995,6 +995,8 @@ const (
 	listingPort = 8000
 	// closeWithin is how fast DP 16.2 P8 wants a live WebSocket closed
 	closeWithin = time.Second
+	// healWithin is how fast DP 16.2 G3 wants a repair to heal a killed gate
+	healWithin = time.Minute
 )
 
 func init() {
@@ -1221,17 +1223,17 @@ func rowG3(t *testing.T, s *stack) {
 	s.sh(t, h, killGate)
 	killed := time.Now()
 	saw502 := false
-	for time.Since(killed) < 90*time.Second {
+	for time.Since(killed) < healWithin {
 		res, body, err := s.previewTry(t, pv, "/", headerToken, pv.token)
 		switch {
 		case err != nil:
 		case res.StatusCode == http.StatusOK && body == "app /":
+			took := time.Since(killed).Round(time.Second)
 			if !saw502 {
-				t.Logf("G3 on %s: the gate was back before any request failed (%s)",
-					s.provider, time.Since(killed).Round(time.Millisecond))
+				t.Skipf("G3 on %s healed %s after the kill without the edge's 502 page, so "+
+					"the supervisor respawned the gate and no repair ran", s.provider, took)
 			}
-			t.Logf("G3 on %s: healed %s after the kill", s.provider,
-				time.Since(killed).Round(time.Second))
+			t.Logf("G3 on %s: the edge's 502, then healed %s after the kill", s.provider, took)
 			return
 		case res.StatusCode == http.StatusBadGateway:
 			if !strings.Contains(body, "preview service stopped") {
@@ -1243,7 +1245,7 @@ func rowG3(t *testing.T, s *stack) {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("the preview did not heal within 90 s of killing the gate")
+	t.Fatalf("the preview did not heal within %s of killing the gate", healWithin)
 }
 
 // rowE2B4 shows the app never receives E2B's traffic token or any Bugnet header
