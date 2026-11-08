@@ -56,7 +56,8 @@ type Placement struct {
 	NeedsSecrets bool
 	// Payer is the start order's payer as the router decided it, empty for none
 	Payer string
-	// PaidMicros sums the package share of the start order and every extension recorded
+	// PaidMicros sums the package share of the start order and every extension recorded, zero
+	// once the placement failed with its charge refunded
 	PaidMicros int64
 }
 
@@ -111,7 +112,8 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at,
 	applied_hosts, needs_secrets, coalesce(payer, ''),
 	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
-		where o.placement_id = placements.id)`
+		where o.placement_id = placements.id
+			and not (placements.state = 'failed' and placements.refundable))`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -147,6 +148,30 @@ func TestPaidMicrosSumsTheRecordedOrders(t *testing.T) {
 	n, err = s.LiveCount(ctx, "")
 	eq(t, err, nil)
 	eq(t, n, 0)
+}
+
+func TestPaidMicrosLeavesOutARefundedFailure(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	for i, refundable := range []bool{true, false} {
+		p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+			HandleSHA256: []byte{byte(i)}, OrderID: "o" + strconv.Itoa(i), PackageID: "p",
+			Payer: walletA, AmountMicros: 10000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkPlacementFailed(ctx, p.ID, "no_capacity", refundable); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.PlacementByID(ctx, p.ID)
+		eq(t, err, nil)
+		want := int64(10000)
+		if refundable {
+			want = 0
+		}
+		eq(t, got.PaidMicros, want)
+	}
 }
 
 func TestListWalletsPagesAndFilters(t *testing.T) {
