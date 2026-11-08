@@ -935,6 +935,11 @@ sandbox gets two free loopback ports at create, kept in its `meta.json`, since l
 share the host. A route whose meta is missing fails as `invalid`, wrapping
 `provider.ErrGateUnprepared`.
 
+Koyeb's executor binds one port at a time and cannot say which, so a repeat `PrepareGate`
+unbinds the live gate for a moment before binding it again. When the second bind also gets 409,
+another client bound a port in between, and `PrepareGate` fails as `internal` without failover
+so the caller retries it.
+
 Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
 running the router on `local`.
 

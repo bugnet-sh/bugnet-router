@@ -202,7 +202,9 @@ type fakeKoyeb struct {
 	nextUpload     int
 	// refuseBinds answers every bind_port with a 500
 	refuseBinds bool
-	binds       []string
+	// stealBind is a port another client binds right after each unbind_port
+	stealBind string
+	binds     []string
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -919,7 +921,7 @@ func (f *fakeKoyeb) unbindPort(w http.ResponseWriter, appID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, d := f.sandbox(appID)
-	d.bound = ""
+	d.bound = f.stealBind
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 

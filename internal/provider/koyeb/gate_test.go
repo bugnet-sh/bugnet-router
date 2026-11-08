@@ -57,6 +57,21 @@ func TestKoyebPrepareGateRebindsOn409(t *testing.T) {
 	eq(t, f.boundPort(ref.ID), "29417")
 }
 
+func TestKoyebPrepareGateFailsWhenTheRebindConflicts(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ref := ready(t, p, "key-gate-stolen")
+	f.bind(ref.ID, "8080")
+	f.stealBind = "8081"
+	_, err := p.PrepareGate(t.Context(), ref, 29417)
+	e, ok := provider.AsError(err)
+	if !ok || e.Code != provider.CodeInternal || e.CanFailOver {
+		t.Fatalf("prepare whose rebind got 409 gave %v, want internal without failover", err)
+	}
+	eq(t, gateRoutes(f), []string{"POST /bind_port", "POST /unbind_port", "POST /bind_port"})
+	eq(t, f.boundPort(ref.ID), "8081")
+}
+
 func TestKoyebPrepareGateFailsWhenTheBindFails(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeToken)

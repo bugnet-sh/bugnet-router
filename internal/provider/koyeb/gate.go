@@ -34,7 +34,11 @@ func (p *Provider) PrepareGate(
 	if err == nil && conflict {
 		// The executor binds one port at a time and answers 409 while another is bound
 		if _, err = p.portCall(ctx, ref, t, "/unbind_port", ""); err == nil {
-			_, err = p.portCall(ctx, ref, t, "/bind_port", strconv.Itoa(port))
+			conflict, err = p.portCall(ctx, ref, t, "/bind_port", strconv.Itoa(port))
+		}
+		if err == nil && conflict {
+			err = internal(fmt.Errorf(
+				"koyeb sandbox %s: another client bound a port between unbind and bind", ref.ID))
 		}
 	}
 	if err != nil {
