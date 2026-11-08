@@ -9,8 +9,9 @@
 // transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
 // public key, refusing a private key file before anything is sent. revoke-preview, wallet and
 // session hold call OperatorService with BUGNET_OPERATOR_TOKEN instead, and session rotate moves a
-// placement's session link on. deploy maps renders the VPS's HAProxy and bugnet-certs files from deploy/vps. mtls init makes the internal CA and the egress to
-// Payments certificate pairs, renews them for their existing keys, or makes a development set.
+// placement's session link on. deploy maps renders the VPS's HAProxy and bugnet-certs files from
+// deploy/vps. mtls init makes the internal CA and the egress to Payments certificate pairs, renews
+// them for their existing keys, or makes a development set.
 package main
 
 import (
