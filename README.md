@@ -323,6 +323,9 @@ indexed. `--disable ID` names a service id to disable. Without `--handle` it run
 that need no placement. It prints `passed=true`, or exits 1 with the code, the reason and the
 refused entry's `service_id` and `host`. `x402 list` prints `enabled`, then one line per service
 with its state, pins and counts, then one line per refusal reason with its count and last time.
+`x402 seller-check --names A,B` checks the mainnet test seller's two public names over public DNS
+and pays nothing (`deploy/testseller/README.md`). It prints a line per check and exits 1 at the
+first failure, naming it.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
