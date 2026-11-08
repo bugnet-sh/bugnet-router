@@ -31,7 +31,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
 | `cmd/router-worker` | Deadline, watch, sweep, outbox and `apply_secrets` jobs, `router-worker outbox-redrive` sends stuck events at once |
-| `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
+| `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands and internal certificates |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
 | `internal/vkclient` | Valkey connections at `host:port` or a `unix://` socket path |
@@ -1260,6 +1260,58 @@ with `limactl` (`brew install lima`). It needs no VPS, provider or DNS token. It
   admin user can read it.
 
 `KEEP_VM=1` keeps the VM for a look afterwards. The first run downloads Ubuntu's cloud image.
+
+### Internal mTLS for x402
+
+Egress calls Payments' x402 signer over mutual TLS 1.3 on `127.0.0.1:8449` (XS 6.10). Both sides
+trust one internal CA. `bugnet-dev mtls init` makes it, offline, with Go's `crypto/x509`, so
+renewal can sign a public key read from a certificate. Every file is plain PEM that `openssl`
+reads.
+
+```sh
+bin/bugnet-dev mtls init --out "$HOME/bugnet-mtls"
+d="$HOME/bugnet-mtls/etc/bugnet"
+bin/bugnet-dev mtls init --renew --out "$HOME/bugnet-mtls" \
+    --from "$d/egress-x402-client.pem,$d/payments/x402-server.pem"
+bin/bugnet-dev mtls init --dev --out "$TMPDIR/x402-mtls"
+```
+
+| Key | Curve | Life | Name and use |
+| --- | --- | --- | --- |
+| Internal CA | ECDSA P-256 | 10 years | CA only, its key never on the VPS |
+| Payments' server pair | ECDSA P-256 | 1 year | SAN `bugnet-payments.internal`, server auth |
+| Egress's client pair | ECDSA P-256 | 1 year | SAN `bugnet-egress.internal`, client auth |
+
+`init` keeps `internal-ca.key` (0600) and `internal-ca.pem` in `--state`, by default
+`~/.local/state/bugnet-dev/mtls` (0700). It refuses when `--state` already holds a CA and names
+the directory. Under `--out` it writes the files laid out as on the VPS:
+
+| File under `--out` | Mode | Goes to |
+| --- | --- | --- |
+| `etc/bugnet/internal-ca.pem` | 0644 | The same path, read by egress and Payments |
+| `etc/bugnet/egress-x402-client.pem` | 0644 | The same path |
+| `etc/bugnet/keys/egress-x402-client.key` | 0600 | The same path, root only, a credential |
+| `etc/bugnet/payments/x402-server.pem` | 0644 | The same path, in the Payments user's directory |
+| `payments.env.add` | 0600 | Its one line appended to `/etc/bugnet/payments.env` |
+
+The env line is `BUGNET_X402_TLS_KEY=` and the base64 of Payments' server key PEM. Egress loads
+its client key as the systemd credential `egress_x402_client_key`. `init` prints each path it
+wrote and a `delete_once_copied=` line for the two files that hold a service key. It never prints
+a key or the env line. Copy the files over the admin SSH, then delete those two files from the
+Mac.
+
+Renew a month before a certificate expires. `--renew --from CLIENT_PEM,SERVER_PEM` reads the two
+current certificates, checks the kept CA issued them for their names, and issues new 1-year
+certificates for the same public keys and names with new serials. A certificate never outlives
+the CA: with less than a year left, it ends when the CA does. It writes only the two `.pem` files
+under `--out` and prints `not_after=`. Copy them to the VPS and send both services `SIGHUP`. A new
+key pair needs a Payments restart and an egress roll instead.
+
+`--dev --out DIR` makes a separate development CA and both pairs for `make x402-local`, flat in DIR
+under the names egress and Payments read by default: `internal-ca.pem`, `egress-x402-client.pem`,
+`egress_x402_client_key` (0600), `x402-server.pem` and `payments.env.add` (0600). DIR serves as
+egress's `$CREDENTIALS_DIRECTORY`. The development CA key is not kept, so each run makes a new CA
+and replaces the five files. `--dev` takes no `--state`, `--renew` or `--from`.
 
 ## Events
 

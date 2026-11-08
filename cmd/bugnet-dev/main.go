@@ -1,7 +1,7 @@
 // Command bugnet-dev drives a Sandbox Router from the terminal during development.
 //
-// keys, pubkey, token and deploy work offline, and owned calls the provider with its key from the
-// environment. Every other command calls the API at api.listen_addr of the settings file over
+// keys, pubkey, token, deploy and mtls work offline, and owned calls the provider with its key from
+// the environment. Every other command calls the API at api.listen_addr of the settings file over
 // unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and extend sign their own
 // order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the settings file's
 // packages_file. Only commands that need a setting read the file. exec and watch write a job's
@@ -9,7 +9,8 @@
 // transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
 // public key, refusing a private key file before anything is sent. revoke-preview and wallet
 // call OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy
-// and bugnet-certs files from deploy/vps.
+// and bugnet-certs files from deploy/vps. mtls init makes the internal CA and the egress to
+// Payments certificate pairs, renews them for their existing keys, or makes a development set.
 package main
 
 import (
@@ -95,6 +96,14 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   deploy maps --names FILE --site FILE --out DIR [--front]
                                          write the VPS's HAProxy maps and config, bugnet-certs'
                                          settings and deploy.env, --front for the dev front
+  mtls init --out DIR [--state DIR]      make the internal CA, Payments' server pair and
+                                         egress's client pair, laid out under DIR as on the
+                                         VPS, the CA key kept in --state, default
+                                         ~/.local/state/bugnet-dev/mtls
+  mtls init --renew --from CLIENT_PEM,SERVER_PEM --out DIR [--state DIR]
+                                         renew both certificates for their existing keys
+  mtls init --dev --out DIR              a development CA and both pairs flat in DIR, the CA
+                                         key not kept
 
 Settings
   --config FILE             router settings file, default config/dev.toml, read only by commands
@@ -153,8 +162,7 @@ func run(
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
-		"wallet": c.wallet,
-		"x402":   c.x402,
+		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
