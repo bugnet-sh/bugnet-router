@@ -284,7 +284,7 @@ func TestWalletExpiryLiftsTimedBlock(t *testing.T) {
 func TestWalletExpiryRunsEveryTenMinutes(t *testing.T) {
 	eq(t, worker.Periodic(), map[string]time.Duration{
 		"sweep": time.Minute, "watch": 30 * time.Second, "outbox": time.Second,
-		"wallet_expiry": 10 * time.Minute,
+		"wallet_expiry": 10 * time.Minute, "session_expiry": time.Hour,
 	})
 }
 
