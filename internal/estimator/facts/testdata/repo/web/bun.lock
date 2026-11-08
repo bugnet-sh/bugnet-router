@@ -1,0 +1,8 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {"": {"name": "web"}},
+  "packages": {
+    "zod": ["zod@3.23.8", "", {}, "sha512-z"],
+    "hono": ["hono@4.6.3", "", {}, "sha512-h"],
+  },
+}

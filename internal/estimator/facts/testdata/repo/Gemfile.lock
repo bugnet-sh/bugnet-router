@@ -1,0 +1,9 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rack (3.1.8)
+    rails (7.2.2)
+      rack (>= 2.2.4)
+
+PLATFORMS
+  ruby

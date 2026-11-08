@@ -1,0 +1,4 @@
+{
+	// A second configuration with a GPU
+	"hostRequirements": {"cpus": 2, "memory": "16.5gb", "gpu": {"cores": 1000, "memory": "16gb"}}
+}

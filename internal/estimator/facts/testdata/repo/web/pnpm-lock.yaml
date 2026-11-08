@@ -1,0 +1,9 @@
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies: {}
+packages:
+  react@18.3.1:
+    resolution: {integrity: sha512-x}
+  scheduler@0.23.2:
+    resolution: {integrity: sha512-y}
