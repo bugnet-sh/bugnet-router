@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
@@ -215,9 +216,17 @@ func TestAccountErrorsAskForACheck(t *testing.T) {
 			b := newLocal(t, local.Options{Name: "b"})
 			e := newEnv(t, a, b)
 			e.placeReady(t, "order-1")
-			e.placeReady(t, "order-2")
-			if n := e.jobCount(t, "account_check", `{"provider":"a","now":true}`); n != 1 {
-				t.Fatalf("%d account_check jobs for a, want 1 within 30 s", n)
+			if n := e.jobCount(t, "account_check", `{"provider":"a","now":true}`); n < 1 {
+				t.Fatalf("%d account_check jobs for a, want a request", n)
+			}
+			// Requests within 30 s collapse into one
+			before := e.jobCount(t, "account_check", `{"provider":"b","now":true}`)
+			for range 3 {
+				health.NoteAccount(t.Context(), e.river, "b", code)
+			}
+			after := e.jobCount(t, "account_check", `{"provider":"b","now":true}`)
+			if after-before != 1 {
+				t.Fatalf("3 requests made %d jobs, want 1", after-before)
 			}
 		})
 	}
