@@ -582,26 +582,26 @@ stream reports no OOM kill, since the job row does not keep it.
 
 ## Operation limit
 
-Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer`,
-`CreatePreview` and `OpenTransfer` calls spend one token from a bucket that every `router-api`
-replica shares, `ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst`
-tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10
-by default, and expires once it is full again. A call that finds it empty answers
-`ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until
-the next token. Other calls spend nothing, nor does a request the router itself finds invalid, an
-unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
+Each placement's `Exec`, `WatchJob`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`,
+`CreateTransfer`, `CreatePreview` and `OpenTransfer` calls spend one token from a bucket that every
+`router-api` replica shares, `ops:<placement id>` under `valkey.prefix`. It holds
+`limits.sandbox_ops_burst` tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey
+server's clock, 20 and 10 by default, and expires once it is full again. A call that finds it empty
+answers `ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait
+until the next token. Other calls spend nothing, nor does a request the router itself finds invalid,
+an unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
 provider refuses has spent its token, and so has a `CreatePreview` of a refused port. When Valkey
-cannot answer within 500 ms, the call goes through and the router logs a warning.
-`StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
-destroy already in flight instead of calling the provider again.
+cannot answer within 500 ms, the call goes through and the router logs a warning. `StopPlacement`
+spends nothing, and stops that race on one placement in one process wait for the destroy already in
+flight instead of calling the provider again.
 
-The same calls also spend from the payer's bucket, `rl:wallet:ops:<payer>`, at
-`wallets.ops_per_second` with a burst of `wallets.ops_burst`, for a placement with a payer, and
-from the provider account's bucket, `rl:acct:<provider>`, at `<provider>.ops_per_second` with a
-burst of the same, when that is above 0. One script takes a token from each only when all have
-one, so a refusal takes nothing, and answers `RATE_LIMITED` with the longest wait. Control calls,
-`StopPlacement` among them, never take from these buckets, so a busy account still ends
-sandboxes.
+The same calls but `OpenTransfer`, which a stranger holding the URL can make, also spend from the
+payer's bucket, `rl:wallet:ops:<payer>`, at `wallets.ops_per_second` with a burst of
+`wallets.ops_burst`, for a placement with a payer, and from the provider account's bucket,
+`rl:acct:<provider>`, at `<provider>.ops_per_second` with a burst of the same, when that is above 0.
+One script takes a token from each only when all have one, so a refusal takes nothing, and answers
+`RATE_LIMITED` with the longest wait. Control calls, `StopPlacement` among them, never take from
+these buckets, so a busy account still ends sandboxes.
 
 ## Wallets
 
@@ -617,7 +617,8 @@ The router decides the payer an order counts under in this order: `wallets.use_p
 payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or
 seen as an earlier order's `fee_payer`, or no `fee_payer` with an empty facilitator list, each
 count as no payer. The last logs at error level at most once a minute and shows on `/monitor`
-for an hour. Otherwise the payer counts, and the order and the placement keep it.
+for an hour, through the Valkey key `wallet:unguarded`, which a Valkey restart or flush clears
+early. Otherwise the payer counts, and the order and the placement keep it.
 
 `CreatePlacement` then runs these checks under the payer's transaction lock, or one lock for
 every order without a payer, in the transaction that records the order. A retried order answers
@@ -643,12 +644,13 @@ a payer now, as `OK`, `BLOCKED` with `blocked_until`, `BUSY` or `RATE_LIMITED` w
 token. An extension is checked for a block only. A bad address answers `InvalidArgument` with
 `PAYER_INVALID`. It is advisory, and the check at `CreatePlacement` stays the binding one.
 
-`OperatorService`'s `BlockWallet`, `UnblockWallet`, `GetWallet` and `ListWallets` need an `actor`
-on every change, written as `operator:<actor>` on the wallet and its event. A block waits for any
-order of that payer in flight, never shortens a block in force, and is refused for a facilitator
-address with `FailedPrecondition` and `FACILITATOR_ADDRESS`. `stop_live` answers
-`FailedPrecondition` with `FEATURE_UNAVAILABLE` until the job that ends live placements lands.
-`ListWallets` takes up to 1000 a page, 100 when `limit` is 0.
+`OperatorService`'s `BlockWallet`, `UnblockWallet`, `GetWallet` and `ListWallets` need an `actor` on
+every change, written as `operator:<actor>` on the wallet and its event. A block waits for any order
+of that payer in flight, never shortens a block in force, and is refused for a facilitator address
+with `FailedPrecondition` and `FACILITATOR_ADDRESS`. Unblocking a wallet with no block in force
+changes nothing and writes no event. `stop_live` answers `FailedPrecondition` with
+`FEATURE_UNAVAILABLE` until the job that ends live placements lands. `ListWallets` takes up to 1000
+a page, 100 when `limit` is 0.
 
 ## Error reasons
 
