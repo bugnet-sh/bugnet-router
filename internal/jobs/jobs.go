@@ -225,7 +225,7 @@ func (s *Service) Exec(
 	}
 	nj := store.NewJob{
 		ID: newJobID(p.ID, idemKey), PlacementID: p.ID, IdempotencyKey: idemKey,
-		Limit: s.d.MaxRunning,
+		Limit: s.d.MaxRunning, Install: IsInstall(argv),
 	}
 	c := &command{argv: argv, cwd: cwd, env: env}
 	if err := s.begin(ctx, p, prov, nj, c, deadline); err != nil {
@@ -1257,7 +1257,8 @@ func (o *owner) record(f frame.Frame) bool {
 	defer cancel()
 	err := o.s.d.Store.FinishJob(ctx, o.job(), store.JobOutcome{
 		State: state, Code: deref(code), StdoutBytes: out, StderrBytes: errBytes,
-		Truncated: o.skipped,
+		Truncated: o.skipped, OOMKilled: f.Kind == frame.KindExit && f.OOM,
+		PeakMemoryMiB: int(f.PeakMiB),
 	})
 	if err != nil && !errors.Is(err, store.ErrStateConflict) {
 		o.s.d.Log.Warn("record job outcome", "job", o.job(), "err", err)

@@ -167,3 +167,88 @@ func (s *Store) LiveEstimate(
 	return scanEstimate(s.q.QueryRow(ctx, `select `+estimateColumns+` from estimates
 		where id = $1 and served_at > now() - make_interval(secs => $2)`, id, maxAge.Seconds()))
 }
+
+// Observation is one placement's checked peaks, kept for the estimator's history
+type Observation struct {
+	PlacementID uuid.UUID
+	EstimateID  uuid.UUID
+	// SourceKey, Revision, LockKey and Workload come from the estimate, empty for none
+	SourceKey, Revision, LockKey, Workload string
+	EntrySHA256                            []byte
+	PackageID, SizeName                    string
+	PeakMemoryMiB, PeakSwapMiB             int
+	PeakDiskMiB, GPUPeakMemoryMiB          int
+	CPUSeconds                             int64
+	BusyP95Millicores, ActiveSeconds       int
+	InstallSeconds, OOMKills               int
+	Extended                               bool
+	EndedBy                                string
+	// Flagged is true for an end by abuse or control loss, a flag raised after the end is added
+	// by the insert itself
+	Flagged bool
+}
+
+// InsertObservation records the observation of a placement once, and flags it when the
+// placement was flagged for abuse after its end
+func (s *Store) InsertObservation(ctx context.Context, o Observation) error {
+	_, err := s.q.Exec(ctx, `
+		insert into usage_observations (placement_id, estimate_id, source_key, revision, lock_key,
+			workload, entry_sha256, package_id, size_name, peak_memory_mib, peak_swap_mib,
+			peak_disk_mib, gpu_peak_memory_mib, cpu_seconds, busy_p95_millicores, active_seconds,
+			install_seconds, oom_kills, extended, ended_by, flagged)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+			$19, $20, $21 or exists (select 1 from provider_signals
+				where placement_id = $1 and action = 'flagged'))
+		on conflict (placement_id) do nothing`,
+		o.PlacementID, nullUUID(o.EstimateID), nullIfEmpty(o.SourceKey), nullIfEmpty(o.Revision),
+		nullIfEmpty(o.LockKey), nullIfEmpty(o.Workload), o.EntrySHA256, o.PackageID,
+		nullIfEmpty(o.SizeName), o.PeakMemoryMiB, o.PeakSwapMiB, o.PeakDiskMiB,
+		o.GPUPeakMemoryMiB, o.CPUSeconds, o.BusyP95Millicores, o.ActiveSeconds,
+		o.InstallSeconds, o.OOMKills, o.Extended, nullIfEmpty(o.EndedBy), o.Flagged)
+	if err != nil {
+		return fmt.Errorf("insert observation: %w", err)
+	}
+	return nil
+}
+
+// FlagObservation marks the placement's observation, if it has one, so history ignores it
+func (s *Store) FlagObservation(ctx context.Context, placement uuid.UUID) error {
+	_, err := s.q.Exec(ctx,
+		`update usage_observations set flagged = true where placement_id = $1`, placement)
+	if err != nil {
+		return fmt.Errorf("flag observation: %w", err)
+	}
+	return nil
+}
+
+// ObservationOf returns the observation of a placement, or ErrNotFound
+func (s *Store) ObservationOf(ctx context.Context, placement uuid.UUID) (Observation, error) {
+	var o Observation
+	err := s.q.QueryRow(ctx, `
+		select placement_id, coalesce(estimate_id, '00000000-0000-0000-0000-000000000000'),
+			coalesce(source_key, ''), coalesce(revision, ''), coalesce(lock_key, ''),
+			coalesce(workload, ''), coalesce(entry_sha256, ''::bytea), package_id,
+			coalesce(size_name, ''), coalesce(peak_memory_mib, 0), coalesce(peak_swap_mib, 0),
+			coalesce(peak_disk_mib, 0), coalesce(gpu_peak_memory_mib, 0), coalesce(cpu_seconds, 0),
+			coalesce(busy_p95_millicores, 0), coalesce(active_seconds, 0),
+			coalesce(install_seconds, 0), oom_kills, extended, coalesce(ended_by, ''), flagged
+		from usage_observations where placement_id = $1`, placement).Scan(&o.PlacementID,
+		&o.EstimateID, &o.SourceKey, &o.Revision, &o.LockKey, &o.Workload, &o.EntrySHA256,
+		&o.PackageID, &o.SizeName, &o.PeakMemoryMiB, &o.PeakSwapMiB, &o.PeakDiskMiB,
+		&o.GPUPeakMemoryMiB, &o.CPUSeconds, &o.BusyP95Millicores, &o.ActiveSeconds,
+		&o.InstallSeconds, &o.OOMKills, &o.Extended, &o.EndedBy, &o.Flagged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Observation{}, ErrNotFound
+	}
+	if err != nil {
+		return Observation{}, fmt.Errorf("select observation: %w", err)
+	}
+	return o, nil
+}
+
+func nullUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
+}

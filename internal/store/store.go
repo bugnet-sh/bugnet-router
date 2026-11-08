@@ -93,6 +93,9 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 	return s
 }
 
+// Querier is the pool or transaction the store runs its queries on
+func (s *Store) Querier() Querier { return s.q }
+
 // Tx returns a Store whose queries all run inside tx
 func (s *Store) Tx(tx pgx.Tx) *Store {
 	return &Store{q: tx, sealer: s.sealer, log: s.log, maxEvents: s.maxEvents}
