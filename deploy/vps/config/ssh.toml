@@ -1,0 +1,8 @@
+# bugnet-ssh on the production VPS, /etc/bugnet/ssh.toml (DP 9.8)
+# Its one secret comes only from /etc/bugnet/ssh.env: BUGNET_SSH_TOKEN. The host key is a credential
+
+router_url = "http://127.0.0.1:8080"
+listen_addr = "127.0.0.1:2223"
+metrics_listen_addr = "127.0.0.1:9102"
+proxy_protocol_from = ["127.0.0.1/32", "::1/128"]
+host_key_credentials = ["ssh_host_ed25519_key"]
