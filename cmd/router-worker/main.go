@@ -156,6 +156,7 @@ func serve(
 		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
+		SSH:          saga.SSHSettingsOf(cfg),
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers,

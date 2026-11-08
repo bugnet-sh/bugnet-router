@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/sshkeys"
@@ -44,6 +45,14 @@ type SSHSettings struct {
 	InstallTimeout time.Duration
 	// LocalSSHDPath is the sshd a local sandbox runs, /usr/sbin/sshd when empty
 	LocalSSHDPath string
+}
+
+// SSHSettingsOf takes the ssh-up settings from the router's settings
+func SSHSettingsOf(c config.Config) SSHSettings {
+	return SSHSettings{
+		Ports:          []int{c.SSH.SSHDPort, c.SSH.SSHDFallbackPort},
+		InstallTimeout: c.SSH.InstallTimeout, LocalSSHDPath: c.LocalSSHDPath,
+	}
 }
 
 // sshSpec is what bugnet-run ssh-up reads from sshSpecPath

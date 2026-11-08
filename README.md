@@ -241,6 +241,7 @@ bin/bugnet-dev transfer --handle sbx_... --upload data.csv --path ~/data.csv
 bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
 bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
+bin/bugnet-dev ssh-key --handle sbx_... --public-key ~/.ssh/id_ed25519.pub
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -261,6 +262,11 @@ optional `--sha256`, or a download of a sandbox path.
 listened on the port when the router asked. `revoke-preview` calls `OperatorService` with
 `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else `USER`, and kills every link of that
 preview for good.
+`ssh-key` registers the public key in `--public-key FILE` on a placement and prints its alias,
+the gateway's host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command,
+the paid deadline and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a
+private key before calling the router. `--identity-file` and `--known-hosts-file` name the paths
+the command and stanza use. `get` and `create` print the placement's `ssh_alias` once it has one.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -540,13 +546,13 @@ stream reports no OOM kill, since the job row does not keep it.
 ## Operation limit
 
 Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer`,
-`CreatePreview` and `OpenTransfer` calls spend one token from a bucket that every `router-api`
-replica shares, `ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst`
-tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10
-by default, and expires once it is full again. A call that finds it empty answers
-`ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until
-the next token. Other calls spend nothing, nor does a request the router itself finds invalid, an
-unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
+`CreatePreview`, `AddSshKey` and `OpenTransfer` calls spend one token from a bucket that every
+`router-api` replica shares, `ops:<placement id>` under `valkey.prefix`. It holds
+`limits.sandbox_ops_burst` tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey
+server's clock, 20 and 10 by default, and expires once it is full again. A call that finds it empty
+answers `ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait
+until the next token. Other calls spend nothing, nor does a request the router itself finds invalid,
+an unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
 provider refuses has spent its token, and so has a `CreatePreview` of a refused port. When Valkey
 cannot answer within 500 ms, the call goes through and the router logs a warning.
 `StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
@@ -586,6 +592,14 @@ holds a handle or a job ID.
 | `ResourceExhausted` | `NO_SPACE` | The sandbox's disk is full |
 | `DataLoss` | `CHECKSUM_MISMATCH` | An upload's SHA-256 differs from the one its URL was made with |
 | `Unavailable` | `GATE_UNAVAILABLE` | The sandbox's gate did not answer, after one repair, or its route is not prepared |
+| `InvalidArgument` | `KEY_INVALID` | `AddSshKey` gets a certificate, DSA, RSA under 3072 bits or a line with options, or `OpenSshUpstream` a gateway key that is not plain ed25519 |
+| `InvalidArgument` | `PATH_REFUSED` | An `AddSshKey` `identity_file` or `known_hosts_file` outside `^(~\|\$TMPDIR)?[A-Za-z0-9._/-]{1,200}$`, or starting with `~` but not `~/` |
+| `FailedPrecondition` | `FEATURE_UNAVAILABLE` | `AddSshKey` on a provider not in `ssh.providers`, or on a router without `names.ssh_host`, `ssh.host_keys` or data-plane keys |
+| `ResourceExhausted` | `TOO_MANY_KEYS` | A key past `ssh.max_keys_per_placement` live ones |
+| `NotFound` | `GRANT_UNKNOWN` | `AuthorizeSshKey` finds no live key on a ready placement for the alias, or a grant's key, placement or deadline no longer stands |
+| `PermissionDenied` | `GRANT_INVALID` | A grant id the router's roots never made |
+| `ResourceExhausted` | `TOO_MANY_CONNECTIONS` | A connection lease past `ssh.max_connections_per_placement` live ones |
+| `Unavailable` | `SSH_PREPARING` | `OpenSshUpstream` waited `ssh.prepare_timeout` for the sandbox's sshd, or `ssh-up` failed |
 | `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
@@ -608,10 +622,10 @@ the gateway.
 
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
-| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer` and `CreatePreview` |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer`, `CreatePreview`, `AddSshKey` and `RemoveSshKey` |
 | `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
-| `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
+| `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
 | `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
 | `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
@@ -663,6 +677,7 @@ after the commit that causes an event, retrying a failed append 3 times before l
 | `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
 | `BudgetSpent` | A report first reaches a placement's edge or egress budget |
 | `PreviewRevoked` | `RevokePreview` commits, and again on each repeat of it |
+| `SshKeyRemoved` | `RemoveSshKey` marks a live key removed |
 
 `WatchEdgeEvents`, `WatchSshEvents` and `WatchEgressEvents` serve the same stream. Over Connect and
 gRPC each sends its response headers as soon as it has fixed where it starts, so the caller's open
@@ -712,6 +727,45 @@ router asked (DP 8.2.10).
   generation and sets `revoked_at` once, writes `PreviewRevoked`, and logs the actor, preview,
   placement and reason. A refused call is logged too, with its code, the actor when valid and the
   preview only when its id is well formed. Other ports of the placement keep working.
+
+### SSH
+
+A placement whose provider is in `ssh.providers` gets an alias at ready, `bn-` and 10 lowercase
+base32 characters, in `placements.ssh_alias`, which `GetPlacement` and `WatchPlacement` answer as
+`ssh_alias`. An order that asks for SSH runs `bugnet-run ssh-up` during boot, after the gate and
+before the sampler, and a failure there fails the attempt over. The SSH user is always the
+provider's exec user, `root` when it has none, never what `ssh-up` prints (DP 9).
+
+- **Keys.** `AddSshKey` checks the handle, a ready placement, the provider's SSH and a router
+  with `names.ssh_host`, `ssh.host_keys` and data-plane keys, spends one operation token, then
+  checks the paths and the key. It keeps the key's wire bytes and SHA256 fingerprint, at most
+  `ssh.max_keys_per_placement` live ones, a repeated key changing nothing. When the sandbox's sshd
+  is not ready yet, it enqueues the `prepare_ssh` job, once per placement while one waits or runs,
+  on the `dataplane` queue with a 150 s timeout and 3 attempts. The answer carries the `ssh`
+  command, one `known_hosts` line per host key (`[host]:port` when `names.ssh_port` is not 22, and
+  then `-p` in the command) and an `ssh_config` stanza whose multiplexing lines,
+  `ControlMaster auto`, `ControlPath` beside the identity file and `ControlPersist 60`, the gateway
+  drops for Windows. `$TMPDIR` in a path is written `${TMPDIR}` in the stanza, the form ssh_config
+  expands. `RemoveSshKey` marks a key removed and writes `SshKeyRemoved`, and spends nothing.
+- **Grants.** `AuthorizeSshKey` answers a `g1.` grant id derived from the placement and the key's
+  fingerprint, the deadline and the per-connection caps of 10 sessions and 32 forwards. It writes
+  and counts nothing, since bugnet-ssh runs it for key queries before any signature. Every denial
+  is the same `GRANT_UNKNOWN`. No SSH RPC spends an operation token.
+- **Leases.** `AcquireSshConnection` refuses a spent edge budget (`BUDGET_SPENT`), then adds a
+  lease to the sorted set `ssh:conns:<placement>` under `valkey.prefix`, scored by its expiry
+  `ssh.connection_lease` ahead, at most `ssh.max_connections_per_placement` live ones, in one
+  Valkey function that first drops lapsed leases. `RenewSshConnection` moves a lease's expiry, or
+  takes it again after a lapse while there is room, and `ReleaseSshConnection` removes it, also
+  after the placement ended. The set expires an hour after the deadline.
+- **Upstream.** `OpenSshUpstream` waits up to `ssh.prepare_timeout` for the sshd record, asking
+  for `prepare_ssh` again, then answers `SSH_PREPARING`. It runs `ssh-up` once per gateway key,
+  under a Postgres advisory lock per placement, with the key in `authorize` behind
+  `restrict,pty,port-forwarding` and loopback `permitopen` options, and records it in
+  `ssh_gateway_keys`, which the transaction ending the placement empties. The answer is a
+  WebSocket to the gate's `/__bugnet/ssh` with the route's headers, cookies and `Bugnet-Gate`, or,
+  with `boat.ssh_path = "native"`, a TCP address from Boat's `POST /sshkey`, sent once per key.
+- **Checks.** `CheckSshGrants` answers the deadline of each grant whose placement is ready and in
+  its paid time and whose key is still live, and leaves the rest out.
 
 ### Transfers
 

@@ -172,6 +172,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
 		Boot:         boot,
+		SSH:          saga.SSHSettingsOf(cfg),
 	})
 	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
 	var scanner sync.WaitGroup
@@ -196,6 +197,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		TransferHost:        cfg.Names.TransferHost,
 		PreviewDomain:       cfg.Names.PreviewDomain,
 		Previews:            cfg.Previews,
+		SSH:                 cfg.SSH,
+		SSHHost:             cfg.Names.SSHHost,
+		SSHPort:             cfg.Names.SSHPort,
 	})
 	defer srv.Close()
 
