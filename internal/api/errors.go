@@ -186,6 +186,7 @@ var codes = []struct {
 	{errNoX402Feature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{errTooManyServices, connect.CodeResourceExhausted, reasonTooManyServices},
 	{errTooManyHosts, connect.CodeResourceExhausted, reasonTooManySecrets},
+	{errTunnelUnknown, connect.CodeNotFound, reasonTokenUnknown},
 	{errLinkUnknown, connect.CodeNotFound, reasonLinkUnknown},
 	{errLinkLocked, connect.CodeFailedPrecondition, reasonLinkLocked},
 	{errLinkUsed, connect.CodeFailedPrecondition, reasonTokenUsed},
