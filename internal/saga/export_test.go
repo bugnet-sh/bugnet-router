@@ -48,3 +48,6 @@ func SSHSpecFor(
 ) SSHSpecFields {
 	return s.specFor(prov, ref, authorize)
 }
+
+// Refunds prices a refundable end's unused seconds over a placement's orders, newest first
+var Refunds = refunds

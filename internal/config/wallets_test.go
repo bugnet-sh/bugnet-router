@@ -14,6 +14,7 @@ var walletDefaults = Wallets{
 	MaxConcurrent: 5, StartsPerHour: 30, StartsBurst: 5, StartsPerDay: 200, RefusalsPerHour: 10,
 	AnonymousMaxConcurrent: 20, OpsPerSecond: 20, OpsBurst: 40, RefusalBlockFor: time.Hour,
 	StrikeThreshold: 2, StrikeWindow: 24 * time.Hour, StrikeBlockFor: 168 * time.Hour,
+	StopLiveOnAbuse: true, FailedRefundsPerDay: 2, AnonymousFailedRefundsPerDay: 20,
 }
 
 func TestWalletsDefaults(t *testing.T) {
@@ -23,8 +24,13 @@ func TestWalletsDefaults(t *testing.T) {
 	}
 	eq(t, c.Wallets, walletDefaults)
 	eq(t, c.ProviderOps, map[string]int{"boat": 50})
-	eq(t, Wallets{}.OrDefaults(), walletDefaults)
+	// The switches stay as given, since a zero switch is a choice
+	limits := walletDefaults
+	limits.StopLiveOnAbuse = false
+	eq(t, Wallets{}.OrDefaults(), limits)
 	eq(t, Wallets{UsePayer: true, MaxConcurrent: 1}.OrDefaults().MaxConcurrent, 1)
+	eq(t, Wallets{StopLiveOnAbuse: true}.OrDefaults().StopLiveOnAbuse, true)
+	eq(t, c.Wallets.AbuseBlockFor, time.Duration(0))
 }
 
 func TestWalletsSettings(t *testing.T) {
@@ -45,6 +51,11 @@ emit_events = true
 strike_threshold = 3
 strike_window = "1h"
 strike_block_for = "1m"
+abuse_block_for = "720h"
+stop_live_on_abuse = false
+refund_stopped_live = true
+failed_refunds_per_day = 9
+anonymous_failed_refunds_per_day = 10
 
 [e2b]
 ops_per_second = 7
@@ -60,7 +71,8 @@ ops_per_second = 0
 		StartsPerDay: 4, AnonymousMaxConcurrent: 5, OpsPerSecond: 6, OpsBurst: 7,
 		RefusalsPerHour: 8, RefusalBlockFor: 2 * time.Hour,
 		FacilitatorAddresses: []string{facilitatorAddr}, EmitEvents: true, StrikeThreshold: 3,
-		StrikeWindow: time.Hour, StrikeBlockFor: time.Minute,
+		StrikeWindow: time.Hour, StrikeBlockFor: time.Minute, AbuseBlockFor: 720 * time.Hour,
+		RefundStoppedLive: true, FailedRefundsPerDay: 9, AnonymousFailedRefundsPerDay: 10,
 	})
 	eq(t, c.ProviderOps, map[string]int{"e2b": 7})
 }
@@ -81,6 +93,12 @@ func TestWalletsBounds(t *testing.T) {
 		{"[boat]\nops_per_second = -1", "boat.ops_per_second must be 0 to 1000000"},
 		{"[wallets]\nuse_payer = 1", "line 4: wallets.use_payer must be true or false"},
 		{"[wallets]\nbytes_per_day = \"50GiB\"", "line 4: wallets.bytes_per_day is not a setting"},
+		{"[wallets]\nfailed_refunds_per_day = 0",
+			"wallets.failed_refunds_per_day must be 1 to 1000000"},
+		{"[wallets]\nanonymous_failed_refunds_per_day = 0",
+			"wallets.anonymous_failed_refunds_per_day must be 1 to 1000000"},
+		{"[wallets]\nabuse_block_for = \"0s\"",
+			"wallets.abuse_block_for must be empty or a positive Go duration such as 720h"},
 		{"[wallets]\nrequire_payer = true",
 			"wallets.require_payer = true needs wallets.use_payer = true"},
 	}

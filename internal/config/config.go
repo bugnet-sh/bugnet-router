@@ -75,6 +75,8 @@ type Config struct {
 	Boat            Boat
 	// DataplaneWorkers is how many River workers run the dataplane queue
 	DataplaneWorkers int
+	// DefaultWorkers is how many River workers run the default queue
+	DefaultWorkers int
 	// LocalSSHDPath is the host's sshd, which the local provider's ssh-up never installs
 	LocalSSHDPath string
 	Names         Names
@@ -307,6 +309,7 @@ type apiFile struct {
 type workerFile struct {
 	ListenAddr       string `toml:"listen_addr"`
 	DataplaneWorkers int64  `toml:"dataplane_workers"`
+	DefaultWorkers   int64  `toml:"default_workers"`
 }
 
 type valkeyFile struct {
@@ -437,7 +440,7 @@ func defaults() file {
 		MarginFloor:  0.5,
 		DeploymentID: "main",
 		API:          apiFile{ListenAddr: ":8080"},
-		Worker:       workerFile{ListenAddr: ":8081", DataplaneWorkers: 8},
+		Worker:       workerFile{ListenAddr: ":8081", DataplaneWorkers: 8, DefaultWorkers: 20},
 		Valkey:       valkeyFile{Addr: "127.0.0.1:6379", Prefix: "bn:"},
 		Limits: limitsFile{
 			JobOutputBudget: "8MiB", PlacementOutputBudget: "32MiB",
