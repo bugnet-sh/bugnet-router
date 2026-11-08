@@ -20,7 +20,7 @@ type Registry struct {
 }
 
 // flags are the data-plane features the registry computed for one provider at start
-type flags struct{ preview, ssh, secrets bool }
+type flags struct{ preview, ssh, secrets, native bool }
 
 // NewRegistry refuses two providers with one name and a listed provider lacking what it needs
 func NewRegistry(order []Provider, f Features) (*Registry, error) {
@@ -64,6 +64,7 @@ func features(p Provider, f Features) (flags, error) {
 				return flags{}, fmt.Errorf("provider: %s is listed for ssh on its native path "+
 					"but has no SSH server of its own", name)
 			}
+			fl.native = true
 		case !gater:
 			return flags{}, fmt.Errorf("provider: %s is listed for ssh but has no gate route", name)
 		}
@@ -89,4 +90,9 @@ func (r *Registry) Capabilities(p Provider) Capabilities {
 	fl := r.flags[p.Name()]
 	c.SSH, c.Preview, c.Secrets = fl.ssh, fl.preview, fl.secrets
 	return c
+}
+
+// NativeSSH reports whether p's SSH runs through its own server instead of the gate
+func (r *Registry) NativeSSH(p Provider) bool {
+	return r.flags[p.Name()].native
 }

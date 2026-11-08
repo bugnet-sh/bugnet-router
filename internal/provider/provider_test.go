@@ -209,6 +209,18 @@ func TestRegistryComputesFeatures(t *testing.T) {
 	if got := reg.Capabilities(boat); !got.SSH || got.Preview {
 		t.Errorf("boat on its native path got %+v, want ssh alone", got)
 	}
+	if !reg.NativeSSH(boat) {
+		t.Error("boat on its native path is not reached natively")
+	}
+	gatedBoat := gated{reporting{native{newNamed(t, "boat")}}}
+	reg, err = provider.NewRegistry([]provider.Provider{gatedBoat},
+		provider.Features{SSH: []string{"boat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.NativeSSH(gatedBoat) || reg.NativeSSH(listed) {
+		t.Error("a provider on the gate path is reached natively")
+	}
 }
 
 func TestRegistryRefusesListedProviderWithoutGater(t *testing.T) {
