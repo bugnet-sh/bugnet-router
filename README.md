@@ -1252,7 +1252,7 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   by /64. An empty bucket answers 429 `rate_limited`.
 - A session's `wallet` is its start order's payer only after the payer guard's steps 2 to 4, and
   only when it decodes to 32 bytes. Its `tx` must decode to 64 bytes. Raw reasons go out as one
-  word each, and abuse and blocks as `stopped_by_bugnet`.
+  word each, and abuse, blocks, lost control and an operator's end as `stopped_by_bugnet`.
 - `/monitor` on `router-worker` shows `stats snapshot N s old` past 2 minutes, and the Payments
   part's age past 5 minutes, naming an empty token as the cause.
 
@@ -1263,7 +1263,6 @@ one function:
 | --- | --- | --- | --- |
 | `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | `null` | `statsStartSamples` in `internal/store/stats.go` |
 | `spentMicros` in the totals and each day | Task 35's cost meter | `null` | `statsSpent` in `internal/store/stats.go` |
-| `wallet_blocked`, `control_lost`, `sandbox_exited`, `operator`, and `wallet.failed_refunds_per_day` | Task 28B | `other`, and the key left out | `walletEnds` in `internal/stats/sources.go` |
 | `wallet.bytes_per_day` | Task 29's byte cap | Left out | `walletBytesPerDay` in `internal/stats/sources.go` |
 
 ## Deployment

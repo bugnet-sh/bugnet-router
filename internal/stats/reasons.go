@@ -28,9 +28,9 @@ var endWords = map[string]string{
 // Ends turns raw end reasons into public words
 type Ends struct{ extra map[string]string }
 
-// NewEnds reads the reasons a later task adds from its source
+// NewEnds reads Task 28B's reasons from their source
 func NewEnds(c *config.Config) Ends {
-	words, _, _ := walletEnds(c)
+	words, _ := walletEnds(c)
 	return Ends{extra: words}
 }
 

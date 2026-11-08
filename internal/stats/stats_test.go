@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -472,15 +473,15 @@ func TestRouterLimits(t *testing.T) {
 	lim := RouterLimits(cfg(t, "wallets.use_payer = true", `ssh.providers = ["e2b"]`))
 	eq(t, lim, map[string]int64{
 		"wallet.max_concurrent": 5, "wallet.starts_per_hour": 30, "wallet.starts_per_day": 200,
-		"sandbox.max_running_jobs": 16, "transfer.max_file_bytes": 1 << 30,
-		"sandbox.max_ssh_connections": 8,
+		"wallet.failed_refunds_per_day": 2, "sandbox.max_running_jobs": 16,
+		"transfer.max_file_bytes": 1 << 30, "sandbox.max_ssh_connections": 8,
 	})
-	// Tasks 29 and 28B add their keys at their switch points
-	for _, unknown := range []string{"wallet.bytes_per_day", "wallet.failed_refunds_per_day"} {
-		if _, ok := lim[unknown]; ok {
-			t.Errorf("%s sent before its source exists", unknown)
-		}
+	// Task 29 adds its key at its switch point
+	if _, ok := lim["wallet.bytes_per_day"]; ok {
+		t.Error("wallet.bytes_per_day sent before its source exists")
 	}
+	lim = RouterLimits(cfg(t, "wallets.use_payer = true", "wallets.failed_refunds_per_day = 7"))
+	eq(t, lim["wallet.failed_refunds_per_day"], int64(7))
 	for k := range lim {
 		if slices.Contains(paymentsLimits, k) {
 			t.Errorf("the router sends Payments' key %s", k)
@@ -522,11 +523,11 @@ func TestEndReasonWords(t *testing.T) {
 		{"terminated", "a_new_reason", "", "other"},
 		{"terminated", "", "", "other"},
 		{"failed", "stop", "", "stop"},
-		// Task 28B's reasons go out as other until its switch point knows them
-		{"terminated", "wallet_blocked", "", "other"},
-		{"terminated", "control_lost", "", "other"},
-		{"terminated", "sandbox_exited", "", "other"},
-		{"terminated", "operator", "", "other"},
+		// Task 28B's reasons, abuse and blocks unnamed until the founder answers CP 20.12
+		{"terminated", "wallet_blocked", "", "stopped_by_bugnet"},
+		{"terminating", "control_lost", "", "stopped_by_bugnet"},
+		{"terminated", "sandbox_exited", "", "sandbox_exited"},
+		{"terminated", "operator", "", "stopped_by_bugnet"},
 	} {
 		got := e.EndReason(c.state, c.term, c.fail)
 		if got == nil || *got != c.want {
@@ -534,6 +535,14 @@ func TestEndReasonWords(t *testing.T) {
 		}
 	}
 	eq(t, e.EndReason("ready", "", ""), (*string)(nil))
+	// The reasons as the saga writes them into termination_reason
+	for reason, want := range map[string]string{
+		saga.ReasonAbuse: "stopped_by_bugnet", saga.ReasonControlLost: "stopped_by_bugnet",
+		saga.ReasonProviderFailed: "provider_failed", saga.ReasonSandboxExited: "sandbox_exited",
+		saga.ReasonWalletBlocked: "stopped_by_bugnet", saga.ReasonOperator: "stopped_by_bugnet",
+	} {
+		eq(t, *e.EndReason("terminated", reason, ""), want)
+	}
 }
 
 func TestCursorRoundTripAndRefusals(t *testing.T) {
