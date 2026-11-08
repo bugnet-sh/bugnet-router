@@ -17,6 +17,10 @@ func init() {
 	controlRows = append(controlRows,
 		row{id: "N1", run: rowN1},
 		row{id: "N2", providers: []string{"e2b"}, run: rowN2},
+		row{id: "E1", run: rowE1},
+		row{id: "E2", run: rowE2},
+		row{id: "E3", run: rowE3},
+		row{id: "E4", run: rowE4},
 	)
 }
 
@@ -106,4 +110,7 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
+	for _, id := range []string{"E1", "E2", "E3", "E4"} {
+		eq(t, slices.Contains(ids, id), true)
+	}
 }
