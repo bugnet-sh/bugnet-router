@@ -202,6 +202,45 @@ func TestSessionKey(t *testing.T) {
 	eq(t, pv[4:] == key[4:], false)
 }
 
+func TestSessionCursor(t *testing.T) {
+	k := twoRoots(t)
+	const id, pos = "abcdefghijklmnop", "1731000000000-3.12.0"
+	c, err := k.SessionCursor("k1", id, 2, 5, pos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, strings.HasPrefix(c, pos+"."), true)
+	eq(t, len(c), len(pos)+1+22)
+	got, ok := k.OpenSessionCursor("k1", id, 2, 5, c)
+	eq(t, ok, true)
+	eq(t, got, pos)
+	refused := []struct {
+		keyID      string
+		id         string
+		gen, seq   uint32
+		cursor     string
+		forTheCase string
+	}{
+		{"k1", id, 2, 5, "1731000000000-3", "a bare entry id"},
+		{"k1", id, 2, 5, "1731000000000-2.12.0" + c[len(pos):], "another position"},
+		{"k1", id, 3, 5, c, "another generation"},
+		{"k1", id, 2, 6, c, "another job"},
+		{"k1", "bcdefghijklmnopq", 2, 5, c, "another record"},
+		{"k2", id, 2, 5, c, "another root"},
+		{"k9", id, 2, 5, c, "an unknown root"},
+		{"k1", id, 2, 5, c[:len(c)-1], "a cut seal"},
+		{"k1", id, 2, 5, "", "nothing"},
+		{"k1", id, 2, 5, "." + c[len(pos)+1:], "an empty position"},
+	}
+	for _, r := range refused {
+		if _, ok := k.OpenSessionCursor(r.keyID, r.id, r.gen, r.seq, r.cursor); ok {
+			t.Errorf("%s opened", r.forTheCase)
+		}
+	}
+	_, err = k.SessionCursor("k1", id, 2, 5, "")
+	eq(t, err != nil, true)
+}
+
 func TestUnknownKeyIDRefused(t *testing.T) {
 	k := twoRoots(t)
 	_, err1 := k.PreviewToken("k9", "abcdefghijklmnop", 0)

@@ -89,8 +89,7 @@ func schemeValue(m string) string {
 	return m[:at] + redactedCredential
 }
 
-// ordinaryWord is a short run of lower case letters after an optional capital, as in "Basic
-// configuration"
+// ordinaryWord is a short run of lower case letters after an optional capital, as in "Basic setup"
 func ordinaryWord(s string) bool {
 	if len(s) > maxOrdinary {
 		return false
@@ -166,9 +165,12 @@ func (st *Stream) Holding() bool {
 	return len(st.buf) > 0 || st.inKey || st.pendingCR || st.rejoining
 }
 
-// Resume returns what the output held, then drops its next text up to a line break, since
-// output that goes on after a gap may finish a token whose prefix was left out
+// Resume shows the held text before its last word and drops the rest through the next line break
 func (st *Stream) Resume() []Frame {
+	// The held word may be a token the gap cut, which no shape then matches
+	n := bytes.LastIndexAny(st.buf, " \t\n\r") + 1
+	st.dropped += int64(len(st.buf) - n)
+	st.buf = st.buf[:n]
 	out := st.Flush()
 	st.rejoining = true
 	return out
@@ -317,8 +319,7 @@ func cutPoint(b []byte) int {
 	return n
 }
 
-// leadWord reports whether a word ends in a lead word, quotes, brackets and flags around it aside,
-// as in {"Authorization": "Bearer or --header="Authorization:
+// leadWord reports whether a word ends in a lead word, quotes, brackets and flags around it aside
 func leadWord(w []byte) bool {
 	notWord := func(r rune) bool { return r >= utf8.RuneSelf || !isAlnum(byte(r)) }
 	w = bytes.TrimRightFunc(w, notWord)

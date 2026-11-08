@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -81,10 +83,7 @@ func (ss *SessionPageServer) WatchSessionJob(
 	if err != nil {
 		return s.status(err)
 	}
-	ls := &liveStream{
-		ss: ss, rec: rec, p: p, job: job, cursor: m.GetCursor(), send: stream.Send,
-		started: time.Now(),
-	}
+	ls := &liveStream{ss: ss, rec: rec, p: p, job: job, send: stream.Send, started: time.Now()}
 	select {
 	case lv.readers <- struct{}{}:
 		defer func() { <-lv.readers }()
@@ -94,7 +93,7 @@ func (ss *SessionPageServer) WatchSessionJob(
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(s.ctx, cancel)()
-	err = ls.run(wctx)
+	err = ls.run(wctx, m.GetCursor())
 	switch {
 	case err == nil:
 		return nil
@@ -108,11 +107,12 @@ func (ss *SessionPageServer) WatchSessionJob(
 
 // liveStream is one page's live view of one job
 type liveStream struct {
-	ss       *SessionPageServer
-	rec      store.SessionRecord
-	p        store.Placement
-	job      store.SessionJob
-	cursor   string
+	ss  *SessionPageServer
+	rec store.SessionRecord
+	p   store.Placement
+	job store.SessionJob
+	// pos is the stream entry read last, empty to read from the stream's start
+	pos      string
 	send     func(*routerv1.WatchSessionJobResponse) error
 	out, err *sessions.Stream
 	// outAt and errAt are how far each output was read, -1 until known
@@ -134,22 +134,49 @@ func (ls *liveStream) held() bool { return ls.out.Holding() || ls.err.Holding() 
 
 // at is the cursor a frame carries, empty while text is held back
 func (ls *liveStream) at() string {
-	if ls.held() {
+	if ls.held() || ls.pos == "" {
 		return ""
 	}
-	return ls.cursor
+	s := ls.ss.s
+	pos := ls.pos + "." + strconv.FormatInt(ls.outAt, 10) + "." + strconv.FormatInt(ls.errAt, 10)
+	c, err := s.d.Keys.SessionCursor(s.sessionKeyID(ls.p), ls.rec.ID, ls.rec.Generation,
+		uint32(ls.job.Seq), pos)
+	if err != nil {
+		return ""
+	}
+	return c
 }
 
-func (ls *liveStream) run(ctx context.Context) error {
+// resume takes the position a cursor of this record's job seals, false for any other cursor
+func (ls *liveStream) resume(cursor string) bool {
+	s := ls.ss.s
+	pos, ok := s.d.Keys.OpenSessionCursor(s.sessionKeyID(ls.p), ls.rec.ID, ls.rec.Generation,
+		uint32(ls.job.Seq), cursor)
+	parts := strings.Split(pos, ".")
+	if !ok || len(parts) != 3 {
+		return false
+	}
+	out, err1 := strconv.ParseInt(parts[1], 10, 64)
+	errAt, err2 := strconv.ParseInt(parts[2], 10, 64)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	ls.pos, ls.outAt, ls.errAt = parts[0], out, errAt
+	return true
+}
+
+func (ls *liveStream) run(ctx context.Context, cursor string) error {
 	s, lv := ls.ss.s, ls.ss.live
 	red := sessions.KnownRedactor(ls.p, s.d.Keys)
 	ls.out, ls.err = red.Stream(sessions.Stdout), red.Stream(sessions.Stderr)
+	ls.outAt, ls.errAt = -1, -1
+	// A cursor the page made up could resume inside a token, so it replays as a first connection
+	resumed := cursor != "" && ls.resume(cursor)
 	// The first frame tells the sessions role the key was taken
 	if err := ls.heartbeat(); err != nil {
 		return err
 	}
-	ls.outAt, ls.errAt = -1, -1
-	if ls.cursor == "" {
+	if !resumed {
 		r, err := sessions.ReplayStart(ctx, lv.bus, ls.job.JobID, lv.cfg.Replay)
 		if err != nil {
 			return err
@@ -163,7 +190,7 @@ func (ls *liveStream) run(ctx context.Context) error {
 			ls.err.Resume()
 		}
 		if r.Skip {
-			ls.cursor = r.Cursor
+			ls.pos = r.Cursor
 			if err := ls.skip(r.Out, r.Err); err != nil {
 				return err
 			}
@@ -184,7 +211,7 @@ func (ls *liveStream) run(ctx context.Context) error {
 			}
 		}
 		block := min(liveRecheck-time.Since(ls.checked), time.Until(*ls.p.Deadline))
-		entries, err := lv.bus.Read(ctx, ls.job.JobID, ls.cursor, max(block, time.Millisecond))
+		entries, err := lv.bus.Read(ctx, ls.job.JobID, ls.pos, max(block, time.Millisecond))
 		if err != nil {
 			return err
 		}
@@ -239,22 +266,18 @@ func (ls *liveStream) entry(ctx context.Context, e streams.Entry) (string, bool,
 		texts = write(ls.out, &ls.outAt, f)
 	case frame.KindStderr:
 		texts = write(ls.err, &ls.errAt, f)
-	case frame.KindSkip, frame.KindExit, frame.KindError:
+	case frame.KindSkip:
+		texts = ls.moved(f)
+	case frame.KindExit:
+		texts = append(ls.moved(f), append(ls.out.Flush(), ls.err.Flush()...)...)
+	case frame.KindError:
 		texts = append(ls.out.Flush(), ls.err.Flush()...)
 	}
-	ls.cursor = e.ID
+	ls.pos = e.ID
 	if reason, done, err := ls.texts(ctx, texts); err != nil || done {
 		return reason, done, err
 	}
 	if f.Kind == frame.KindSkip {
-		// Text past a skip may finish a token, so each output it moved starts anew
-		if ls.outAt < 0 || f.Out > ls.outAt {
-			ls.out.Resume()
-		}
-		if ls.errAt < 0 || f.Err > ls.errAt {
-			ls.err.Resume()
-		}
-		ls.outAt, ls.errAt = max(ls.outAt, f.Out), max(ls.errAt, f.Err)
 		return "", false, ls.skip(f.Out, f.Err)
 	}
 	if !streams.Terminal(f) {
@@ -275,6 +298,19 @@ func (ls *liveStream) entry(ctx context.Context, e streams.Entry) (string, bool,
 		return reason, true, err
 	}
 	return liveExited, true, nil
+}
+
+// moved starts each output a skip or exit frame moves past what was read anew, as after a gap
+func (ls *liveStream) moved(f frame.Frame) []sessions.Frame {
+	var texts []sessions.Frame
+	if ls.outAt < 0 || f.Out > ls.outAt {
+		texts = append(texts, ls.out.Resume()...)
+	}
+	if ls.errAt < 0 || f.Err > ls.errAt {
+		texts = append(texts, ls.err.Resume()...)
+	}
+	ls.outAt, ls.errAt = max(ls.outAt, f.Out), max(ls.errAt, f.Err)
+	return texts
 }
 
 // write passes an output's frame through its stream, which starts anew past a gap in the offsets

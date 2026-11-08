@@ -138,12 +138,12 @@ func TestStreamResumeDropsTheCutLine(t *testing.T) {
 	st := NewRedactor().Stream(Stdout)
 	eq(t, joined(st.Write([]byte("export T=bnt_"))), "export ")
 	// The token's body comes after a gap, without the prefix that marks it
-	eq(t, joined(st.Resume()), "T=bnt_")
+	eq(t, joined(st.Resume()), "")
 	eq(t, st.Holding(), true)
 	eq(t, joined(st.Write([]byte(strings.Repeat("Q", 20)))), "")
 	eq(t, joined(st.Write([]byte(strings.Repeat("Q", 10)+" more\nnext line\n"))),
 		"next line\n")
-	eq(t, st.Dropped(), int64(36))
+	eq(t, st.Dropped(), int64(42))
 	eq(t, st.Holding(), false)
 	// A flush keeps the cut line dropped, so its end after the flush is not shown either
 	st.Resume()
@@ -159,4 +159,15 @@ func TestStreamResumeDropsTheCutLine(t *testing.T) {
 	st.Resume()
 	eq(t, joined(st.Write([]byte(strings.Repeat("y", carryMax)+" word"))), "")
 	eq(t, joined(st.Write([]byte("s\n"))), "words\n")
+}
+
+func TestStreamResumeDropsAHeldPartialToken(t *testing.T) {
+	st := NewRedactor().Stream(Stdout)
+	body := strings.Repeat("Z", 29)
+	eq(t, joined(st.Write([]byte("token ghp_"+body))), "token ")
+	eq(t, joined(st.Resume()), "")
+	eq(t, joined(st.Write([]byte("Z\nok\n"))), "ok\n")
+	st = NewRedactor().Stream(Stdout)
+	eq(t, joined(st.Write([]byte("curl -H 'Authorization: Bearer abcdefgh"))), "curl -H ")
+	eq(t, joined(st.Resume()), "'Authorization: [redacted credential]")
 }

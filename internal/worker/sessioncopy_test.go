@@ -222,8 +222,42 @@ func TestCopyDropsTheLineAGapCut(t *testing.T) {
 		frame.Frame{Kind: frame.KindStdout, Offset: 100, Data: []byte(body + "next\n")},
 		frame.Frame{Kind: frame.KindExit, Out: 136})
 	_, text, cut := e.copied(t, p, rec)
-	eq(t, text[1], "a export T=bnt_next\n")
-	eq(t, cut[1], int64(85+len(body)))
+	// The held word before the gap goes too, since it may be part of a token
+	eq(t, text[1], "a export next\n")
+	eq(t, cut[1], int64(85+len("T=bnt_")+len(body)))
+}
+
+func TestCopyKeepsAnOutputASkipLeftAlone(t *testing.T) {
+	e := newEnv(t, options{})
+	e.start(t)
+	p, rec := e.ended(t, "copy-skip", time.Second)
+	for i, id := range []string{"j_skip", "j_none"} {
+		if _, _, err := e.store.CreateJob(t.Context(), store.NewJob{ID: id,
+			PlacementID: p.ID}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := e.store.StartSessionJob(t.Context(), p.ID, id, "make",
+			time.Now().Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The skip moves stderr only, so stdout's token goes on whole across it
+	e.frames(t, "j_skip",
+		frame.Frame{Kind: frame.KindStdout, Data: []byte("x T=bnt_")},
+		frame.Frame{Kind: frame.KindSkip, Out: 8, Err: 50},
+		frame.Frame{Kind: frame.KindStdout, Offset: 8, Data: []byte(strings.Repeat("Q", 30) +
+			"\n")},
+		frame.Frame{Kind: frame.KindExit, Out: 39, Err: 50})
+	e.frames(t, "j_none", frame.Frame{Kind: frame.KindExit})
+	_, text, cut := e.copied(t, p, rec)
+	eq(t, text[1], "x T=[redacted token]\n")
+	eq(t, cut[1], int64(50))
+	jobs, err := e.store.SessionJobs(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A job with no output keeps an empty list, as null reads as not copied yet
+	eq(t, string(jobs[1].Frames), "[]")
 }
 
 func TestCopyDiskBudget(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/api"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
 )
 
 // liveWatch is what one WatchSessionJob call sent, in order
@@ -231,6 +232,53 @@ func TestWatchSessionJobReplayDropsACutToken(t *testing.T) {
 	eq(t, w.end(), "exited")
 }
 
+func TestWatchSessionJobRefusesAMadeUpCursor(t *testing.T) {
+	e := newEnv(t, options{})
+	h, p := e.readyPlacement(t)
+	e.exec(t, &routerv1.ExecRequest{Handle: h, Argv: []string{"sh", "-c",
+		"printf 'export T=bnt_'; sleep 0.3; printf '%030d\\n' 7; sleep 0.3; echo done"},
+		Until: &routerv1.Until{Exit: true}, WaitMs: 20000})
+	const view = "export T=[redacted token]\ndone\n"
+	first := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, "", nil)
+	eq(t, first.err, nil)
+	eq(t, first.text(), view)
+	job, err := e.store.SessionJobBySeq(t.Context(), e.sessionRecord(t, p).ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := streams.NewBus(e.vk, e.prefix).After(t.Context(), job.JobID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := ""
+	for _, en := range entries {
+		if string(en.Frame.Data) == "export T=bnt_" {
+			prefix = en.ID
+		}
+	}
+	eq(t, prefix != "", true)
+	// The entry that ends inside the token, which the router never gives as a cursor
+	forged := []string{prefix, prefix + ".13.0", prefix + ".13.0." + strings.Repeat("A", 22)}
+	for _, cursor := range forged {
+		w := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, cursor, nil)
+		eq(t, w.err, nil)
+		eq(t, w.text(), view)
+	}
+	// A cursor the router gave resumes after its text
+	var given string
+	for _, f := range first.frames {
+		if f.GetCursor() != "" && f.GetText() != nil {
+			given = f.GetCursor()
+			break
+		}
+	}
+	eq(t, given != "", true)
+	again := e.watchSession(timeout(t), t, p.GetSessionUrl(), 1, given, nil)
+	eq(t, again.err, nil)
+	eq(t, strings.HasSuffix(view, again.text()), true)
+	eq(t, len(again.text()) < len(view), true)
+}
+
 func TestWatchSessionJobLimits(t *testing.T) {
 	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
 		l.MaxReaders = 1
@@ -285,8 +333,7 @@ func TestWatchSessionJobPace(t *testing.T) {
 	}
 }
 
-// The settings are read at start, so turning the live view off takes a restart, whose shutdown
-// ends every open stream
+// Settings are read at start, so turning the live view off takes a restart that ends the streams
 func TestLiveKillSwitch(t *testing.T) {
 	e := newEnv(t, options{sessions: liveSettings(func(l *config.SessionsLive) {
 		l.Enabled = false

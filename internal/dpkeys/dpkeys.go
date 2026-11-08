@@ -265,6 +265,35 @@ func (k Keys) CheckSessionKey(keyID, id string, generation uint32, key string) b
 	return hmac.Equal([]byte(want), []byte(key))
 }
 
+// SessionCursor seals a live view's position in job seq of the record, so only issued ones resume
+func (k Keys) SessionCursor(keyID, id string, generation, seq uint32, pos string) (string, error) {
+	if id == "" || pos == "" {
+		return "", errors.New("dpkeys: empty session id or position")
+	}
+	r, err := k.find(keyID)
+	if err != nil {
+		return "", err
+	}
+	parts := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, generation), seq)
+	sum := r.mac(purposeSessions, []byte("cursor"), []byte(id), parts, []byte(pos))[:macBytes]
+	return pos + "." + url64.EncodeToString(sum), nil
+}
+
+// OpenSessionCursor returns the position a cursor seals, false for one SessionCursor did not make
+func (k Keys) OpenSessionCursor(
+	keyID, id string, generation, seq uint32, cursor string,
+) (string, bool) {
+	i := strings.LastIndexByte(cursor, '.')
+	if i <= 0 {
+		return "", false
+	}
+	want, err := k.SessionCursor(keyID, id, generation, seq, cursor[:i])
+	if err != nil || !hmac.Equal([]byte(want), []byte(cursor)) {
+		return "", false
+	}
+	return cursor[:i], true
+}
+
 /* SSH grants */
 
 // GrantID derives the g1. id of an SSH key's grant on a placement under the newest root

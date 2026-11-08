@@ -75,8 +75,7 @@ func (w *Worker) SessionDiskPercent(ctx context.Context) (int64, error) {
 
 // copySession copies an ended placement's job output into its record, then removes the streams
 func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
-	// The jobs table lists every stream, a job started after Delete now or a record already
-	// expired included, since the record's own rows may be gone (F8)
+	// The jobs table lists every stream even when the record's own rows are gone (F8)
 	streamIDs, err := w.store.PlacementJobIDs(ctx, id)
 	if err != nil {
 		return err
@@ -143,6 +142,10 @@ func (w *Worker) copySession(ctx context.Context, id uuid.UUID) error {
 		if err != nil {
 			return err
 		}
+		if frames == nil {
+			// A job with nothing kept shows no output, where null reads as not copied yet
+			frames = []sessions.Frame{}
+		}
 		raw, err := json.Marshal(frames)
 		if err != nil {
 			return err
@@ -182,8 +185,7 @@ func (w *Worker) unlink(ctx context.Context, placement uuid.UUID, streamIDs []st
 	}
 }
 
-// copyJob reads a job's stream through the page's cleaner, keeping limit bytes of each output and
-// total across both, 0 for no total
+// copyJob cleans a job's stream, keeping limit bytes per output and total in all, 0 for no total
 func copyJob(ctx context.Context, bus *streams.Bus, red *sessions.Redactor, jobID string,
 	limit, total int64) (frames []sessions.Frame, cut, kept int64, err error) {
 	k := sessions.NewKeeper(limit, total)
@@ -223,10 +225,13 @@ func copyJob(ctx context.Context, bus *streams.Bus, red *sessions.Redactor, jobI
 				}
 				next[f.Kind] = max(next[f.Kind], f.Offset+int64(len(f.Data)))
 				k.Add(outs[f.Kind].Write(data)...)
-			case frame.KindSkip, frame.KindExit:
-				flush()
+			case frame.KindSkip:
 				gap(frame.KindStdout, f.Out)
 				gap(frame.KindStderr, f.Err)
+			case frame.KindExit:
+				gap(frame.KindStdout, f.Out)
+				gap(frame.KindStderr, f.Err)
+				flush()
 			}
 		}
 		if len(page) < copyPage {
