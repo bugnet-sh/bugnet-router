@@ -1,0 +1,33 @@
+# The SSH gateway, behind HAProxy's frontend ssh (DP 15.3). Its old process keeps sessions up to
+# their deadline, at most 2 hours, on deploy
+[Unit]
+Description=Bugnet SSH gateway %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bugnet-ssh
+Group=bugnet-ssh
+ExecStart=/opt/bugnet/ssh/%i/bugnet-ssh -config /etc/bugnet/ssh.toml
+EnvironmentFile=/etc/bugnet/ssh.env
+LoadCredential=ssh_host_ed25519_key:/etc/bugnet/keys/ssh_host_ed25519_key
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=65536
+LimitCORE=0
+TimeoutStopSec=2h5min
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

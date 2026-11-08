@@ -1,0 +1,32 @@
+# The session page, bugnet-edge --role sessions (SP 7.1)
+[Unit]
+Description=Bugnet session page %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bugnet-sessions
+Group=bugnet-sessions
+ExecStart=/opt/bugnet/edge/%i/bugnet-edge --role sessions -config /etc/bugnet/sessions.toml
+EnvironmentFile=/etc/bugnet/sessions.env
+StateDirectory=bugnet-sessions
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=65536
+LimitCORE=0
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
