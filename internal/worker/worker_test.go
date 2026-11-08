@@ -1512,3 +1512,117 @@ func TestDataplaneQueueRunsJobsOnTheWorkersAskedFor(t *testing.T) {
 		t.Fatalf("%d sweeps running on the dataplane queue, want its 2 workers' worth", n)
 	}
 }
+
+// held gives a placement a secret, a link and a tunnel token, a preview, an SSH key and an SSH host
+func (e *env) held(t *testing.T, id uuid.UUID) {
+	t.Helper()
+	ctx := t.Context()
+	sum := []byte(id.String())
+	_, _, err := e.store.PutSecret(ctx, store.Secret{
+		ID: uuid.New(), PlacementID: id, Name: "HF_TOKEN", Hosts: []string{"huggingface.co"},
+		PlaceholderSHA256: sum, Sealed: []byte("box"), KeyID: "k1",
+		Source: store.SourceBridge, State: store.SecretActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.store.InsertSecretLink(ctx, store.SecretLink{
+		ID: uuid.New(), PlacementID: id, TokenSHA256: sum, PairingCode: "abc",
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.store.MintEgressToken(ctx, id, sum); err != nil || !ok {
+		t.Fatalf("mint token: %v %v", ok, err)
+	}
+	if _, err := e.store.UpsertPreview(ctx, id, 3000, 5, id.String()[:16]); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.AddSSHKey(ctx, id, "SHA256:k", []byte("wire"), 5); err != nil {
+		t.Fatal(err)
+	}
+	err = e.store.PutSSHHost(ctx, store.SSHHost{PlacementID: id, Transport: "gate", SSHDPort: 22,
+		SSHUser: "root", HostKey: "ssh-ed25519 AAAA"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rowsOf counts a placement's secrets, links, previews, ssh_keys and ssh_hosts rows
+func (e *env) rowsOf(t *testing.T, id uuid.UUID) (secrets, links, traffic int, token bool) {
+	t.Helper()
+	count := func(table string) int {
+		var n int
+		err := e.pool.QueryRow(t.Context(),
+			`select count(*) from `+table+` where placement_id = $1`, id).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	has, err := e.store.HasEgressToken(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count("secrets"), count("secret_links"),
+		count("previews") + count("ssh_keys") + count("ssh_hosts"), has
+}
+
+// overdue records a ready placement without a sandbox whose deadline passed ago
+func (e *env) overdue(t *testing.T, ago time.Duration) uuid.UUID {
+	t.Helper()
+	p := e.placing(t)
+	now := time.Now()
+	ref := provider.Ref{Provider: "local", ID: "gone-" + p.ID.String()}
+	if err := e.store.MarkPlacementReady(t.Context(), p.ID, ref, small.Name,
+		now.Add(-ago-time.Hour), now.Add(-ago)); err != nil {
+		t.Fatal(err)
+	}
+	e.held(t, p.ID)
+	return p.ID
+}
+
+// endedAgo records a terminated placement that ended ago, its rows left behind
+func (e *env) endedAgo(t *testing.T, ago time.Duration) uuid.UUID {
+	t.Helper()
+	ctx := t.Context()
+	p := e.placing(t)
+	at := time.Now().Add(-ago)
+	ref := provider.Ref{Provider: "local", ID: "gone-" + p.ID.String()}
+	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, at.Add(-time.Hour),
+		at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	e.held(t, p.ID)
+	if _, err := e.store.MarkPlacementTerminating(ctx, p.ID, "stop", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.MarkPlacementTerminated(ctx, p.ID, at); err != nil {
+		t.Fatal(err)
+	}
+	return p.ID
+}
+
+func TestSweepDeletesLeftovers(t *testing.T) {
+	e := newEnv(t, options{})
+	e.start(t)
+	pastHour := e.overdue(t, 2*time.Hour)
+	justPast := e.overdue(t, 30*time.Minute)
+	eightDays := e.endedAgo(t, 8*24*time.Hour)
+	sixDays := e.endedAgo(t, 6*24*time.Hour)
+	e.run(t, jobargs.Sweep{})
+
+	type rows struct {
+		secrets, links, traffic int
+		token                   bool
+	}
+	got := func(id uuid.UUID) rows {
+		s, l, tr, tok := e.rowsOf(t, id)
+		return rows{s, l, tr, tok}
+	}
+	eq(t, got(pastHour), rows{0, 0, 3, false})
+	eq(t, got(justPast), rows{1, 1, 3, true})
+	// An ended placement's secrets go at once, its previews and SSH records after 7 days
+	eq(t, got(eightDays), rows{0, 0, 0, false})
+	eq(t, got(sixDays), rows{0, 0, 3, false})
+}

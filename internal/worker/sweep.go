@@ -20,6 +20,10 @@ const (
 	expiredAfter = 60 * time.Second
 	// unlabelledAfter is how old a router sandbox without a placement label may get
 	unlabelledAfter = 10 * time.Minute
+	// secretsAfter is how long secrets may outlive their placement's deadline
+	secretsAfter = time.Hour
+	// trafficAfter is how long previews and SSH records outlive their placement's end
+	trafficAfter = 7 * 24 * time.Hour
 )
 
 type sweepWorker struct {
@@ -33,6 +37,7 @@ func (*sweepWorker) Timeout(*river.Job[jobargs.Sweep]) time.Duration { return sw
 // Work logs every failure and goes on, the next sweep a minute later retries what was missed
 func (sw *sweepWorker) Work(ctx context.Context, _ *river.Job[jobargs.Sweep]) error {
 	sw.w.sweepSandboxes(ctx)
+	sw.w.sweepLeftovers(ctx)
 	return nil
 }
 
@@ -43,6 +48,19 @@ func (w *Worker) sweepSandboxes(ctx context.Context) {
 		wg.Go(func() { w.sweepProvider(ctx, prov) })
 	}
 	wg.Wait()
+}
+
+// sweepLeftovers deletes the rows an ending left behind, logging a failure for the next sweep
+func (w *Worker) sweepLeftovers(ctx context.Context) {
+	now := w.now()
+	if n, err := w.store.DeleteSecretLeftovers(ctx, now.Add(-secretsAfter)); err != nil {
+		w.log.Error("sweep secret leftovers", "err", err)
+	} else if n > 0 {
+		w.log.Warn("sweep deleted secret leftovers", "rows", n)
+	}
+	if _, err := w.store.DeleteTrafficLeftovers(ctx, now.Add(-trafficAfter)); err != nil {
+		w.log.Error("sweep traffic leftovers", "err", err)
+	}
 }
 
 // sweepProvider destroys every sandbox of this deployment on prov that no placement needs
