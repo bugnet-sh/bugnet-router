@@ -637,6 +637,9 @@ func (s *Saga) commitReady(
 		if err != nil {
 			return err
 		}
+		if err := s.x402AtReady(tctx, tx, p.ID, s.d.Registry.Capabilities(prov)); err != nil {
+			return err
+		}
 		var gateAt *time.Time
 		if boot.GateReady {
 			gateAt = &boot.GateReadyAt
