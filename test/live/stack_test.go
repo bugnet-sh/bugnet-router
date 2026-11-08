@@ -808,6 +808,24 @@ func TestStackStartsOnTheLocalProvider(t *testing.T) {
 		t.Fatalf("the edge's TLS for %s: %v", f.Names.TransferHost, err)
 	}
 	_ = conn.Close()
+
+	// The URL carries the file through the edge and back, byte for byte
+	got := s.curlRetry(t, "-fsS", "-T", file, minted["url"])
+	if !strings.Contains(got, `"size":3`) {
+		t.Fatalf("the upload answered %s", got)
+	}
+	back := filepath.Join(t.TempDir(), "back.txt")
+	s.download(t, created["handle"], "~/f.txt", back)
+	raw, err := os.ReadFile(back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, string(raw), "abc")
+	code, body := s.curlStatus(t, "-sS", "-T", file, minted["url"])
+	eq(t, code, "410")
+	if !strings.Contains(body, "token_used") {
+		t.Fatalf("a used URL answered %s", body)
+	}
 }
 
 // kv reads bugnet-dev's key=value lines

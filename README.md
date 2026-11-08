@@ -90,6 +90,9 @@ builds five binaries, `bugnet-edge` among them from `../bugnet-edges`:
 BUGNET_TEST_STACK=1 go test ./test/live/ -run TestStackStartsOnTheLocalProvider -v
 ```
 
+That test also sends a 3-byte file through the edge with `curl -T`, fetches it back, and sees the
+used URL answer 410.
+
 `make test`, `make lint` and `make build` wrap the usual commands.
 
 ## Live provider tests
@@ -127,6 +130,20 @@ prefix, with fresh secrets from `bugnet-dev keys` and the router's settings from
 `config/dev.toml` on that provider alone. Each row is a subtest named by its id and provider, such
 as `TestLiveDataplane/T1/e2b`. Rows that need the VPS fail at once in the local mode, naming
 `--front vps`.
+
+The transfer rows each make their own sandbox and stop it at the end. They drive `bugnet-dev
+create`, `exec`, `transfer` and `stop`, and move files with `curl` as a user would.
+
+| Row | What it does |
+|---|---|
+| T1 | 0 B, 1 B, 1 MiB + 1, 5 MiB + 1 and 101 MiB up and back, checked by SHA-256 on both ends |
+| T2 | 1 GiB up and down on `dev-xfer-30m` (30 minutes, a 4 GiB edge budget), timed |
+| T3 | A 20 MiB download cut at half, then finished with `curl -C -` |
+| T4 | An upload cut at half, then one with a wrong `--sha256` (422), the old file unchanged |
+| T5 | `/dev/urandom` and a FIFO refused at `transfer` as not regular files |
+| T6 | `/opt/bugnet-test` and a root-owned 0600 file in `/tmp`, both ways |
+| T7 | Logs the filesystems of `/tmp` and the home directory, which must not be RAM |
+| BOAT5 | Boat only: an upload the exec user cannot write and a download it cannot read |
 
 | | `--front local`, the default | `--front vps`, behind the dev front |
 |---|---|---|
