@@ -148,16 +148,21 @@ func (e *eval) fit(p catalog.Package, pa path, f Floor) Fit {
 	if gpuMemShort {
 		short(DimensionGPUMemory)
 	}
+	capped := false
 	if f.Minutes > p.Minutes {
-		ext, n, ok := e.extension(p, f.Minutes)
+		ext, n, ok, pastLifetime := e.extension(p, f.Minutes)
 		if ok {
 			fit.ExtensionsNeeded, fit.ExtensionPackageID = n, ext.ID
 			fit.TotalPriceMicros += int64(n) * ext.PriceMicros
 		} else {
 			short(DimensionMinutes)
+			capped = pastLifetime
 		}
 	}
 	fit.Fits = len(fit.ShortOn) == 0
+	if capped && len(fit.ShortOn) == 1 {
+		e.lifetimeCapped = true
+	}
 	return fit
 }
 
@@ -183,9 +188,10 @@ func (e *eval) contextFit(p catalog.Package, pa path, memShort, gpuMemShort bool
 	return int(ctx), true
 }
 
-// extension is the cheapest extension of p and how many cover the minutes, within the longest
-// lifetime on sale
-func (e *eval) extension(p catalog.Package, minutes int) (catalog.Package, int, bool) {
+// extension is the cheapest extension of p and how many cover the minutes, with pastLifetime
+// set when they exist but pass the longest lifetime on sale
+func (e *eval) extension(p catalog.Package, minutes int) (q catalog.Package, n int, ok,
+	pastLifetime bool) {
 	var exts []catalog.Package
 	for _, q := range e.in.Catalog {
 		if q.ExtensionOf == p.ID && q.Minutes > 0 {
@@ -193,17 +199,17 @@ func (e *eval) extension(p catalog.Package, minutes int) (catalog.Package, int, 
 		}
 	}
 	if len(exts) == 0 {
-		return catalog.Package{}, 0, false
+		return catalog.Package{}, 0, false, false
 	}
 	slices.SortFunc(exts, func(a, b catalog.Package) int {
 		return cmp.Or(cmp.Compare(a.PriceMicros, b.PriceMicros), cmp.Compare(a.ID, b.ID))
 	})
-	q := exts[0]
-	n := int(ceilDiv(int64(minutes-p.Minutes), int64(q.Minutes)))
+	q = exts[0]
+	n = int(ceilDiv(int64(minutes-p.Minutes), int64(q.Minutes)))
 	if limit := e.in.MaxLifetimeMinutes; limit > 0 && p.Minutes+n*q.Minutes > limit {
-		return catalog.Package{}, 0, false
+		return catalog.Package{}, 0, false, true
 	}
-	return q, n, true
+	return q, n, true, false
 }
 
 /* Gates */
@@ -276,15 +282,20 @@ func (e *eval) gates(f Floor, fits []Fit) []Warning {
 	if slices.Contains(e.in.Request.Needs, NeedSecrets) {
 		add(WarningSecrets, "Pass secrets by the secret link or the bridge, never in arguments")
 	}
-	if s := e.in.Request.Source; s.Kind != "" && s.Kind != "none" && !s.Read {
-		add(WarningSourceUnread, "Defaults used, %s", unreadText[s.Unread])
+	if s := e.in.Request.Source; e.in.Request.Partial || s.Kind != "" && s.Kind != "none" &&
+		!s.Read {
+		add(WarningSourceUnread, "Defaults used, %s", e.unreadText())
 	}
 	if e.docker && !e.imagesHaveDocker() {
 		add(WarningNeedsDocker, "Docker is not installed in the sandbox image")
 	}
-	if limit := e.in.MaxLifetimeMinutes; limit > 0 && f.Minutes > limit {
+	switch limit := e.in.MaxLifetimeMinutes; {
+	case limit > 0 && f.Minutes > limit:
 		add(WarningPastMaxLifetime, "Needs %d minutes, the longest run on sale is %d minutes",
 			f.Minutes, limit)
+	case e.lifetimeCapped:
+		add(WarningPastMaxLifetime, "Needs %d minutes, whole extensions on some packages pass "+
+			"the longest run on sale, %d minutes", f.Minutes, limit)
 	}
 	if mf := e.model; mf != nil && mf.kvPerToken > 0 {
 		add(WarningContextAssumed, "%s", e.contextText(fits))
@@ -296,7 +307,19 @@ func (e *eval) gates(f Floor, fits []Fit) []Warning {
 	return w
 }
 
-var unreadText = map[UnreadReason]string{
+// unreadText says why the source went unread, a cut-short fetch with no reason a timeout
+func (e *eval) unreadText() string {
+	reason := e.in.Request.Source.Unread
+	if reason == "" && e.in.Request.Partial {
+		reason = UnreadTimeout
+	}
+	if s, ok := unreadTexts[reason]; ok {
+		return s
+	}
+	return unreadTexts[""]
+}
+
+var unreadTexts = map[UnreadReason]string{
 	"":                  "the source was not read",
 	UnreadNotFound:      "the source was not found or is private",
 	UnreadLegal:         "the source is unavailable for legal reasons",

@@ -311,6 +311,49 @@ func TestSourceAndBasis(t *testing.T) {
 	eq(t, hasWarning(s, WarningSecrets), true)
 }
 
+func TestPartialFetchWarnsOnce(t *testing.T) {
+	timeout := Warning{WarningSourceUnread, "Defaults used, the source took too long to read"}
+	unread := func(o Output) []Warning {
+		return slices.DeleteFunc(slices.Clone(o.Warnings), func(w Warning) bool {
+			return w.Code != WarningSourceUnread
+		})
+	}
+	read := Run(input(t, Request{Partial: true, Source: ResolvedSource{Kind: "github",
+		Canonical: "github.com/a/b", Read: true}}, facts.Facts{}))
+	eq(t, unread(read), []Warning{timeout})
+	cut := Run(input(t, Request{Partial: true, Source: ResolvedSource{Kind: "github",
+		Canonical: "github.com/a/b", Unread: UnreadTimeout}}, facts.Facts{}))
+	eq(t, unread(cut), []Warning{timeout})
+	full := Run(input(t, Request{Source: ResolvedSource{Kind: "github",
+		Canonical: "github.com/a/b", Read: true}}, facts.Facts{}))
+	eq(t, len(unread(full)), 0)
+}
+
+func TestUnknownUnreadReasonReadsWhole(t *testing.T) {
+	o := Run(input(t, Request{Source: ResolvedSource{Kind: "github", Canonical: "github.com/a/b",
+		Unread: UnreadReason("UNREAD_REASON_NEW")}}, facts.Facts{}))
+	eq(t, o.Warnings, []Warning{{WarningSourceUnread, "Defaults used, the source was not read"}})
+}
+
+func TestPastMaxLifetimeFromWholeExtensions(t *testing.T) {
+	in := input(t, Request{Workload: WorkloadTests, Minutes: 1430}, facts.Facts{})
+	in.MaxLifetimeMinutes = 1435
+	o := Run(in)
+	byID := func(id string) Fit {
+		return o.Fits[slices.IndexFunc(o.Fits, func(f Fit) bool { return f.PackageID == id })]
+	}
+	eq(t, byID("cpu-small-10m").ExtensionsNeeded, 142)
+	eq(t, byID("cpu-std-30m").ShortOn, []Dimension{DimensionMinutes})
+	i := slices.IndexFunc(o.Warnings, func(w Warning) bool {
+		return w.Code == WarningPastMaxLifetime
+	})
+	eq(t, i >= 0, true)
+	eq(t, o.Warnings[i].Message, "Needs 1430 minutes, whole extensions on some packages "+
+		"pass the longest run on sale, 1435 minutes")
+	in.MaxLifetimeMinutes = 1440
+	eq(t, hasWarning(Run(in), WarningPastMaxLifetime), false)
+}
+
 func TestWarningCodeNames(t *testing.T) {
 	b, err := json.Marshal(Warning{Code: WarningContextAssumed})
 	eq(t, [2]any{string(b), err}, [2]any{`{"code":"CONTEXT_ASSUMED","message":""}`, error(nil)})

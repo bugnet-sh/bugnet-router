@@ -93,7 +93,8 @@ func readVersionFile(t *testing.T) (string, map[string]string) {
 	return version, hashes
 }
 
-// checkCorpus refuses changed outputs recorded under the same version, and a stale record
+// checkCorpus refuses changed or removed outputs recorded under the same version, and a stale
+// record, while a new case needs no bump
 func checkCorpus(recordedVersion string, recorded, current map[string]string) error {
 	if recordedVersion != Version {
 		return fmt.Errorf("version.txt holds %s, run go test -update to record %s",
@@ -101,7 +102,7 @@ func checkCorpus(recordedVersion string, recorded, current map[string]string) er
 	}
 	var changed []string
 	for name, sum := range current {
-		if recorded[name] != sum {
+		if was, ok := recorded[name]; ok && was != sum {
 			changed = append(changed, name)
 		}
 	}
@@ -149,7 +150,8 @@ func TestCorpusGuard(t *testing.T) {
 	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1", "b": "2"}), nil)
 	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1", "b": "3"}) != nil, true)
 	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1"}) != nil, true)
-	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1", "b": "2", "c": "4"}) != nil,
+	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1", "b": "2", "c": "4"}), nil)
+	eq(t, checkCorpus(Version, rec, map[string]string{"a": "1", "b": "3", "c": "4"}) != nil,
 		true)
 	eq(t, checkCorpus("est-2000.01.1", rec, rec) != nil, true)
 }

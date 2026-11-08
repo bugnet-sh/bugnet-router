@@ -1,0 +1,96 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"read": true
+		},
+		"workload": "tests",
+		"entry_hints": {},
+		"partial": true
+	},
+	"facts": {
+		"repo": {
+			"lockfiles": [
+				{
+					"kind": "npm",
+					"packages": 40
+				}
+			],
+			"tree": {
+				"bytes": 0,
+				"blobs": 0
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "low",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 11,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 11,
+			"vcpu": 2
+		},
+		"partial": true,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The lockfiles hold 40 packages",
+				"rule_id": "deps.count"
+			}
+		],
+		"warnings": [
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source took too long to read"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": [
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source took too long to read"
+			}
+		]
+	}
+}

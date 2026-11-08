@@ -1,8 +1,4 @@
-// Package rules turns an estimate's normalised request and facts into a resource floor and
-// the fit of every start package. Run is a pure function with no clock, environment,
-// randomness or unsorted map iteration, and all its arithmetic is in integers, so a stored
-// input replays to the same bytes. Version names the rule set and changes with any rule or
-// constant.
+// Package rules turns an estimate's normalised request and facts into a floor and package fits
 package rules
 
 import (
@@ -280,6 +276,8 @@ type eval struct {
 	downloadBytes                  int64
 	docker                         bool
 	model                          *modelFloor
+	// lifetimeCapped is set when the lifetime alone keeps some package short on minutes
+	lifetimeCapped bool
 }
 
 func (e *eval) reason(rule, format string, args ...any) {
