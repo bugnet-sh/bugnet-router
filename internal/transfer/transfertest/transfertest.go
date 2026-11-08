@@ -141,6 +141,9 @@ func (s *Sandbox) OpenWriter(
 	return s.l.OpenWriter(ctx, ref, p, spec)
 }
 
+// transferCommands are the runner subcommands the fake answers itself
+var transferCommands = map[string]bool{"stat": true, "stage-out": true, "place": true}
+
 // Exec runs the transfer package's commands itself and the rest on the host
 func (s *Sandbox) Exec(
 	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
@@ -166,8 +169,11 @@ func (s *Sandbox) Exec(
 		return s.digest(ref, argv[2], argv[2], root), nil
 	case len(argv) == 5 && argv[0] == "sh" && strings.HasPrefix(argv[2], "sha256sum <"):
 		return s.digest(ref, argv[4], "-", root), nil
-	case len(argv) > 1 && argv[0] == transfer.RunnerPath:
+	case len(argv) > 1 && argv[0] == transfer.RunnerPath && transferCommands[argv[1]]:
 		return s.runner(ref, argv[1], argv[2:], root), nil
+	case len(argv) > 1 && argv[0] == transfer.RunnerPath:
+		// The boot's own commands, such as setup, run the real runner under the sandbox's root
+		return s.l.Exec(ctx, ref, spec)
 	}
 	mapped := append([]string(nil), argv...)
 	for i, a := range mapped {
