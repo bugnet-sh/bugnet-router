@@ -150,7 +150,8 @@ func (h *Handler) summary(ctx context.Context) []byte {
 	if !h.rowRead.IsZero() && now.Sub(h.rowRead) < h.settings.RowCache {
 		return h.row
 	}
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	// The row serves every client for row_cache, so the one that leaves mid-read must not fail it
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
 	defer cancel()
 	snap, err := h.src.ReadStatsSnapshot(ctx)
 	switch {

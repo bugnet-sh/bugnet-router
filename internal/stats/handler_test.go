@@ -18,25 +18,30 @@ import (
 
 // fakeSource answers like the store, counting reads, and blocks page queries while block is open
 type fakeSource struct {
-	mu      sync.Mutex
-	snap    store.StatsSnapshot
-	snapErr error
-	reads   int
-	rows    []store.StatsSessionRow
-	listErr error
-	lists   int
-	since   time.Time
-	before  time.Time
-	id      uuid.UUID
-	limit   int
-	block   chan struct{}
-	started chan struct{}
+	mu       sync.Mutex
+	snap     store.StatsSnapshot
+	snapErr  error
+	reads    int
+	deadline time.Time
+	rows     []store.StatsSessionRow
+	listErr  error
+	lists    int
+	since    time.Time
+	before   time.Time
+	id       uuid.UUID
+	limit    int
+	block    chan struct{}
+	started  chan struct{}
 }
 
-func (f *fakeSource) ReadStatsSnapshot(context.Context) (store.StatsSnapshot, error) {
+func (f *fakeSource) ReadStatsSnapshot(ctx context.Context) (store.StatsSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
+	f.deadline, _ = ctx.Deadline()
+	if err := ctx.Err(); err != nil {
+		return store.StatsSnapshot{}, err
+	}
 	return f.snap, f.snapErr
 }
 
@@ -180,6 +185,24 @@ func TestRowReadOncePerRowCache(t *testing.T) {
 	c.add(time.Second)
 	eq(t, call(h, "GET", "/api/stats").body, `{"version":1,"n":2}`)
 	eq(t, src.reads, 2)
+}
+
+func TestClientLeavingMidReadKeepsTheSummary(t *testing.T) {
+	h, src, _ := newHandler(t, `stats.row_cache = "5s"`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequestWithContext(ctx, "GET", "/api/stats", nil)
+	r.RemoteAddr = "127.0.0.1:40000"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	eq(t, src.reads, 1)
+	if left := time.Until(src.deadline); left <= 0 || left > readTimeout {
+		t.Errorf("the read had %v left, want at most %v", left, readTimeout)
+	}
+	// The next client inside row_cache gets the row read for the one that left
+	a := call(h, "GET", "/api/stats")
+	eq(t, a.status, http.StatusOK)
+	eq(t, a.body, servedBody)
+	eq(t, src.reads, 1)
 }
 
 func TestPerSourceBucket(t *testing.T) {
