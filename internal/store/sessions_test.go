@@ -351,6 +351,40 @@ func TestDeleteSessionRecordNow(t *testing.T) {
 	eq(t, len(events), 1)
 }
 
+func TestLaterCloseKeepsAUserDelete(t *testing.T) {
+	s := newStore(t)
+	p, rec := newRecord(t, s, "del-3")
+	now := time.Now()
+	if err := s.DeleteSessionRecordNow(t.Context(), rec.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	hold := now.Add(720 * time.Hour)
+	for _, by := range []string{store.ClosedByAbuse, store.ClosedByOperator} {
+		if err := s.EndSessionRecord(t.Context(), p.ID, store.SessionEnd{EndedAt: now,
+			Keep: 48 * time.Hour, ClosedBy: by, HoldUntil: hold}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CloseSessionRecord(t.Context(), p.ID, by, hold); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.SessionRecordByID(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, got.ClosedBy, store.ClosedByUser)
+	eq(t, got.HoldUntil == nil, true)
+	eq(t, *got.EndedAt, now.UTC().Truncate(time.Microsecond))
+	// The record stays shut to events, so nothing refills what the user deleted
+	_, _, err = s.InsertSessionEvent(t.Context(), p.ID, "file", []byte(`{}`), false)
+	eq(t, errors.Is(err, store.ErrNotFound), true)
+	n, err := s.ExpireSessionRecords(t.Context(), time.Now(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, n, 1)
+}
+
 func TestRotateSessionGeneration(t *testing.T) {
 	s := newStore(t)
 	_, rec := newRecord(t, s, "rot-1")

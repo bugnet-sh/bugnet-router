@@ -479,15 +479,16 @@ func (s *Store) EndSessionRecord(ctx context.Context, placement uuid.UUID, e Ses
 	if e.ClosedBy != "" {
 		closedBy, hold = e.ClosedBy, utc(e.HoldUntil)
 	}
+	// A record its user deleted keeps that close, so no hold reopens it to events
 	_, err := s.q.Exec(ctx, `
 		update session_records set ended_at = coalesce(ended_at, $2),
 			expires_at = coalesce(expires_at, $2 + make_interval(secs => $3)),
 			closed_at = case when $4::text is null then closed_at else coalesce(closed_at, $2) end,
-			closed_by = case when $4::text is null then closed_by else $4 end,
-			hold_until = case when $4::text is null then hold_until
+			closed_by = case when $4::text is null or closed_by = $6 then closed_by else $4 end,
+			hold_until = case when $4::text is null or closed_by = $6 then hold_until
 				else greatest(hold_until, $5) end
 		where placement_id = $1`,
-		placement, utc(e.EndedAt), e.Keep.Seconds(), closedBy, hold)
+		placement, utc(e.EndedAt), e.Keep.Seconds(), closedBy, hold, ClosedByUser)
 	if err != nil {
 		return fmt.Errorf("end session record: %w", err)
 	}
@@ -499,9 +500,10 @@ func (s *Store) CloseSessionRecord(
 	ctx context.Context, placement uuid.UUID, by string, holdUntil time.Time,
 ) error {
 	tag, err := s.q.Exec(ctx, `
-		update session_records set closed_at = coalesce(closed_at, now()), closed_by = $2,
-			hold_until = greatest(hold_until, $3)
-		where placement_id = $1`, placement, by, utc(holdUntil))
+		update session_records set closed_at = coalesce(closed_at, now()),
+			closed_by = case when closed_by = $4 then closed_by else $2 end,
+			hold_until = case when closed_by = $4 then hold_until else greatest(hold_until, $3) end
+		where placement_id = $1`, placement, by, utc(holdUntil), ClosedByUser)
 	if err != nil {
 		return fmt.Errorf("close session record: %w", err)
 	}
