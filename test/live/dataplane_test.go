@@ -30,17 +30,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"golang.org/x/net/websocket"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
 // row is one live row, run as the subtest <id>/<provider> on each provider it names
@@ -1871,4 +1875,87 @@ func TestRowAppScripts(t *testing.T) {
 			t.Fatalf("the Vite project script lacks %q", want)
 		}
 	}
+}
+
+const (
+	x402LiveHost   = "agent402.tools"
+	x402LivePrefix = "/api/"
+	// x402LivePayTo is the System Program address, a valid base58 key that holds no funds
+	x402LivePayTo = "11111111111111111111111111111111"
+)
+
+func init() {
+	dataplaneRows = append(dataplaneRows, row{id: "X402A", run: rowX402A})
+}
+
+// x402Change stores or disables the row of the placement behind h and queues apply_secrets
+func (s *stack) x402Change(t *testing.T, h string, disable bool) {
+	t.Helper()
+	cfg, err := config.Load(s.settings, s.lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(t.Context(), cfg.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sha, err := handle.Hash(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys))
+	p, err := st.PlacementByHandle(t.Context(), sha)
+	if err != nil {
+		t.Fatalf("live: the placement of %s: %v", h, err)
+	}
+	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := x402.ServiceID("GET", x402LiveHost, x402LivePrefix)
+	if disable {
+		if err = st.DisableX402Service(t.Context(), p.ID, id); err == nil {
+			err = st.BumpSecretsVersion(t.Context(), p.ID, false)
+		}
+	} else {
+		err = st.PutX402Service(t.Context(), store.X402Service{
+			PlacementID: p.ID, ServiceID: id,
+			Spec: x402.Spec{Host: x402LiveHost, Prefix: x402LivePrefix, Method: "GET",
+				MaxPriceMicros: 10_000, PayTo: x402LivePayTo, Indexed: true},
+		})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Insert(t.Context(), jobargs.ApplySecrets{PlacementID: p.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitScript reruns a shell script in the sandbox until it prints want, for up to a minute
+func (s *stack) waitScript(t *testing.T, h, script, want string) string {
+	t.Helper()
+	var out string
+	for range 30 {
+		if out = strings.TrimSpace(s.sh(t, h, script)); out == want {
+			return out
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("live: %q printed %q, want %q", script, out, want)
+	return out
+}
+
+// rowX402A maps an x402 host to the forwarder with the two env lines, and a disable removes both
+func rowX402A(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	hosts := `grep -c '^127.77.0.1[[:space:]].*` + x402LiveHost + `' /etc/hosts`
+	env := `printenv BUGNET_X402 BUGNET_X402_HOSTS | tr '\n' ' '`
+	s.x402Change(t, h, false)
+	s.waitScript(t, h, hosts, "1")
+	s.waitScript(t, h, env, "1 "+x402LiveHost+" ")
+	s.x402Change(t, h, true)
+	s.waitScript(t, h, hosts+" || true", "0")
+	s.waitScript(t, h, env+" || true", "")
 }
