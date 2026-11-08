@@ -1,0 +1,11 @@
+{
+    "name": "x402-test-seller-facilitator",
+    "private": true,
+    "type": "module",
+    "description": "The mainnet test seller's x402 facilitator, on loopback only",
+    "dependencies": {
+        "@solana/kit": "8.6.0",
+        "@x402/core": "2.30.0",
+        "@x402/svm": "2.30.0"
+    }
+}

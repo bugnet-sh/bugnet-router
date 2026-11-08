@@ -1,0 +1,36 @@
+{
+    "x402Version": 2,
+    "paymentPayload": {
+        "x402Version": 2,
+        "resource": {
+            "url": "https://seller.test/ok/x",
+            "description": "",
+            "mimeType": ""
+        },
+        "accepted": {
+            "scheme": "exact",
+            "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "amount": "1000",
+            "payTo": "ApP993TBkpkUVFtYibkjmKGr1EsipdJwfxyFQg26wrxg",
+            "maxTimeoutSeconds": 60,
+            "extra": {
+                "feePayer": "JB67Seyj69RCgKvbFZyYjXUrhx9AgGZ4gCBknUrFYcXq"
+            }
+        },
+        "payload": {
+            "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABf5NMAat9LSGvj4RVODw5Y6DEfolvSlTFw6a0OAliT9glodtC/gM6MzitVopfLOEN4oaPDyk7U27gAC/cQAfUIgAIBBAj/LEPTtU3u1ph8uuaPahbRy00Z2a+OkIh4GSwjUE88gFtX0TFn+3SeNXJUbDWKqxe7vUgfm9lt3ZQUzn7sv/MxAdfmA+fCPujljNddJPgYav9OApZgdiKii8U+tVTW8o+hG9U/HqTCmswFd8UIoEtT4YNANWRit/aZNn4Z294GNgMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAAxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCp1VeqjDtasxJ5SePXh1W5Bpoh6kTLndiOeUNulFIMm9oEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAIFAwEKDOgDAAAAAAAABgYAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmAA=="
+        }
+    },
+    "paymentRequirements": {
+        "scheme": "exact",
+        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "amount": "1000",
+        "payTo": "ApP993TBkpkUVFtYibkjmKGr1EsipdJwfxyFQg26wrxg",
+        "maxTimeoutSeconds": 60,
+        "extra": {
+            "feePayer": "JB67Seyj69RCgKvbFZyYjXUrhx9AgGZ4gCBknUrFYcXq"
+        }
+    }
+}

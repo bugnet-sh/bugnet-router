@@ -1,0 +1,25 @@
+# x402-test-seller's settings (XS 6.17, 11.3), read with -config FILE
+# The two secrets live in env files outside every repository, never here
+
+env_file = "~/.config/bugnet/testseller.env"           # TESTSELLER_FEE_PAYER_KEY, mode 0600
+tailscale_env_file = "~/.config/bugnet/tailscale.env"  # TS_AUTHKEY, mode 0600
+
+pay_to = ""                  # required, the seller's wallet, from keys testseller
+pay_to_token_account = ""    # required, pay_to's USDC account
+fee_payer = ""               # required, extra.feePayer in every 402
+bugnet_fee_payer = ""        # required, the Bugnet address /feepayer-bugnet/ names
+
+facilitator_cmd = ["node", "facilitator/server.mjs"]   # runs in this file's directory
+facilitator_addr = "127.0.0.1:8402"                    # loopback only
+rpc_url = "https://api.mainnet-beta.solana.com"        # a Solana mainnet RPC URL, no key in it
+
+keepalive_pings = false      # true adds HTTP/2 pings while an answer is silent
+check_ssh = ""               # the test VPS's admin SSH destination, where the check runs
+
+[[node]]
+name = "x402-seller-a"
+state_dir = "~/.local/share/bugnet/tsnet/x402-seller-a"
+
+[[node]]
+name = "x402-seller-b"
+state_dir = "~/.local/share/bugnet/tsnet/x402-seller-b"

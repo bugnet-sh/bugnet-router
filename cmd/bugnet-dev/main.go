@@ -79,6 +79,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   x402 enable --handle H [--service ...]... [--disable ID]... [--wait] [--request-id R]
                                          make an x402 change and print every service
   x402 list --handle H                   list a placement's x402 services and refusals
+  x402 seller-check --names A,B [--resolvers HOST:PORT,...]
+                                         check the mainnet test seller's two public names
+                                         over public DNS, paying nothing, in about 5 minutes
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
@@ -152,6 +155,8 @@ type cli struct {
 	getenv     func(string) string
 	configPath string
 	settings   *config.Config // read on first use
+	// seller replaces the seller check's resolver and dialer in tests
+	seller *sellerCheck
 }
 
 // run executes one command and returns the process exit code, 2 for bad usage

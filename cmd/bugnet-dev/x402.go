@@ -23,9 +23,11 @@ func (c *cli) x402(args []string) error {
 			return c.x402Enable(args[1:])
 		case "list":
 			return c.x402List(args[1:])
+		case "seller-check":
+			return c.x402SellerCheck(args[1:])
 		}
 	}
-	return fmt.Errorf("%w: x402 takes check, enable or list", errUsage)
+	return fmt.Errorf("%w: x402 takes check, enable, list or seller-check", errUsage)
 }
 
 // x402Check runs CheckX402, with no handle only the checks that need no placement
