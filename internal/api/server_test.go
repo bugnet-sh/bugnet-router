@@ -32,6 +32,7 @@ import (
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -218,6 +219,8 @@ type options struct {
 	x402 func(*config.X402)
 	// egressControl has the provider report EgressControl, so restricted packages place
 	egressControl bool
+	// tracer sees every query of the test's pool
+	tracer pgx.QueryTracer
 }
 
 type env struct {
@@ -249,7 +252,12 @@ func newEnv(t *testing.T, opts options) *env {
 	if err := store.Migrate(ctx, dbURL); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, dbURL)
+	pcfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcfg.ConnConfig.Tracer = opts.tracer
+	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {
 		t.Fatal(err)
 	}

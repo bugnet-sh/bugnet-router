@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -20,4 +21,28 @@ func ApplyTimeout() time.Duration { return (*applySecretsWorker).Timeout(nil, ni
 // PrepareSSHTimeout is how long one prepare_ssh run may take
 func PrepareSSHTimeout() time.Duration {
 	return (&prepareSSHWorker{}).Timeout(&river.Job[jobargs.PrepareSSH]{})
+}
+
+// StopLive runs one wallet_stop_live job's work
+func (w *Worker) StopLive(ctx context.Context, args jobargs.WalletStopLive) error {
+	return w.stopLive(ctx, args)
+}
+
+// StopLiveTimeout is how long one wallet_stop_live run may take
+func StopLiveTimeout() time.Duration {
+	return (&walletStopLiveWorker{}).Timeout(&river.Job[jobargs.WalletStopLive]{})
+}
+
+// ExpiryTimeout is how long one wallet_expiry run may take
+func ExpiryTimeout() time.Duration {
+	return (&walletExpiryWorker{}).Timeout(&river.Job[jobargs.WalletExpiry]{})
+}
+
+// Periodic names each periodic job kind with its interval
+func Periodic() map[string]time.Duration {
+	out := map[string]time.Duration{}
+	for _, p := range periodic() {
+		out[p.args.Kind()] = p.every
+	}
+	return out
 }

@@ -512,8 +512,6 @@ func TestOperatorWalletRefusals(t *testing.T) {
 		{&routerv1.BlockWalletRequest{Payer: payerA}, connect.CodeInvalidArgument, ""},
 		{&routerv1.BlockWalletRequest{Payer: "0x12", Actor: "ann"},
 			connect.CodeInvalidArgument, "PAYER_INVALID"},
-		{&routerv1.BlockWalletRequest{Payer: payerA, Actor: "ann", StopLive: true},
-			connect.CodeFailedPrecondition, "FEATURE_UNAVAILABLE"},
 		{&routerv1.BlockWalletRequest{
 			Payer: payerA, Actor: "ann", Until: timestamppb.New(time.Now().Add(-time.Minute)),
 		}, connect.CodeInvalidArgument, ""},
