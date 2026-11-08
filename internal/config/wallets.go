@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -87,6 +88,10 @@ func (w Wallets) OrDefaults() Wallets {
 
 // read checks the wallets table against its bounds, d holding the defaults
 func (f walletsFile) read(d walletsFile) (Wallets, error) {
+	if f.RequirePayer && !f.UsePayer {
+		// Every start would count as having no payer and be refused after Payments charged it
+		return Wallets{}, errors.New("wallets.require_payer = true needs wallets.use_payer = true")
+	}
 	w := Wallets{UsePayer: f.UsePayer, RequirePayer: f.RequirePayer, EmitEvents: f.EmitEvents}
 	for _, n := range []struct {
 		key  string

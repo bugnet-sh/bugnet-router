@@ -492,7 +492,7 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 | Key | Default | Takes |
 | --- | --- | --- |
 | `use_payer` | `false` | `false` counts every order as having no payer. `true` needs `BUGNET_PAYMENTS_ROUTER_TOKEN` and `emit_events` |
-| `require_payer` | `false` | `true` refuses start orders that count as having no payer |
+| `require_payer` | `false` | `true` refuses start orders that count as having no payer, and needs `use_payer` |
 | `max_concurrent` | `5` | Placements placing, ready or terminating per wallet |
 | `starts_per_hour`, `starts_burst` | `30`, `5` | A start bucket per wallet |
 | `starts_per_day` | `200` | A second start bucket per wallet, its burst the same |

@@ -81,6 +81,8 @@ func TestWalletsBounds(t *testing.T) {
 		{"[boat]\nops_per_second = -1", "boat.ops_per_second must be 0 to 1000000"},
 		{"[wallets]\nuse_payer = 1", "line 4: wallets.use_payer must be true or false"},
 		{"[wallets]\nbytes_per_day = \"50GiB\"", "line 4: wallets.bytes_per_day is not a setting"},
+		{"[wallets]\nrequire_payer = true",
+			"wallets.require_payer = true needs wallets.use_payer = true"},
 	}
 	for _, c := range cases {
 		msg := problem(t, c.toml+"\n")
