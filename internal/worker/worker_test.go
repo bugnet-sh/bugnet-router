@@ -60,15 +60,25 @@ var small = provider.Size{
 	Name: "small", Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
 }
 
+// newLocal boots with the built bugnet-run and destroys its sandboxes when the test ends
 func newLocal(t *testing.T, name string) *local.Provider {
 	t.Helper()
-	return local.New(local.Options{
+	p := local.New(local.Options{
 		Name:             name,
 		Root:             t.TempDir(),
 		Sizes:            []provider.Size{small},
 		HourlyCostMicros: 1000,
 		Increment:        time.Second,
+		RunnerPath:       runnerBin,
 	})
+	// Each boot starts a gate and a sampler on the host, which only a destroy stops
+	t.Cleanup(func() {
+		owned, _ := p.ListOwned(context.Background(), nil)
+		for _, o := range owned {
+			_ = p.Destroy(context.Background(), o.Ref)
+		}
+	})
+	return p
 }
 
 // flaky is a local provider whose listing and destroys fail on demand
