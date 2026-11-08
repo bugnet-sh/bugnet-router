@@ -133,22 +133,23 @@ var serve = map[string]serveFunc{
 	KindAllowance:  serveAllowance,
 }
 
+// servePayment serves tx always, empty until the order token carries it, as the page needs it
 func servePayment(data map[string]json.RawMessage) (object, bool) {
 	o := fields(data, "pay_kind", "payKind", "amount_micros", "amountMicros")
-	if tx := str(data["tx"]); tx != "" {
-		o = o.with("tx", tx)
-	}
-	return o, true
+	return o.with("tx", str(data["tx"])), true
 }
 
 func serveAllowance(data map[string]json.RawMessage) (object, bool) {
 	o := fields(data, "phase", "phase", "amount_micros", "amountMicros")
-	if str(data["asset"]) == usdcMint {
-		o = o.with("asset", "USDC")
+	asset := str(data["asset"])
+	if asset == usdcMint {
+		asset = "USDC"
 	}
+	o = o.with("asset", asset)
 	o = append(o, fields(data, "network", "network")...)
-	if tx := str(data["tx"]); tx != "" {
-		o = o.with("tx", tx)
+	// Only a kept amount never moved, so every other phase names its transaction
+	if str(data["phase"]) != "kept" {
+		o = o.with("tx", str(data["tx"]))
 	}
 	return o, true
 }

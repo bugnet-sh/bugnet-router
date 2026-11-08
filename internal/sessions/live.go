@@ -22,7 +22,7 @@ const recentEntries = 64
 
 // Snapshot builds live_json, the running page's metadata, with no output text
 func Snapshot(ctx context.Context, st *store.Store, bus *streams.Bus, p store.Placement,
-	now time.Time) ([]byte, error) {
+	deadline, now time.Time) ([]byte, error) {
 	rec, err := st.SessionRecordByPlacement(ctx, p.ID)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func Snapshot(ctx context.Context, st *store.Store, bus *streams.Bus, p store.Pl
 		list = append(list, o)
 	}
 	raw, err := json.Marshal(object{
-		{"v", Version}, {"startedAt", stamp(rec.CreatedAt)}, {"deadline", stampPtr(p.Deadline)},
+		{"v", Version}, {"startedAt", stamp(rec.CreatedAt)}, {"deadline", stamp(deadline)},
 		{"now", stamp(now)}, {"jobs", list},
 	})
 	if err != nil {
@@ -94,8 +94,12 @@ func ends(f frame.Frame) (out, errBytes int64) {
 
 /* Replay */
 
-// replayLookback bounds the entries before the replay read to place each output's start
-const replayLookback = 4 * recentEntries
+const (
+	// replayLookback bounds the entries before the replay read to place each output's start
+	replayLookback = 4 * recentEntries
+	// replayPageMax bounds a page that doubles each read, so many tiny frames take few reads
+	replayPageMax = 4096
+)
 
 // Replay is where a first live connection starts reading a job's stream
 type Replay struct {
@@ -109,15 +113,14 @@ type Replay struct {
 	Skip bool
 }
 
-// ReplayStart finds where a first live connection starts so it sees about the newest replay
-// bytes, from the start of the entry that reaches them
+// ReplayStart finds the entry a first connection starts at to see about the newest replay bytes
 func ReplayStart(ctx context.Context, bus *streams.Bus, jobID string,
 	replay int64) (Replay, error) {
 	outs := [2]replayOutput{{at: -1}, {at: -1}}
 	var seen int64
-	start, end, back := "", "+", 0
+	start, end, back, size := "", "+", 0, int64(recentEntries)
 	for {
-		page, err := bus.Before(ctx, jobID, end, recentEntries)
+		page, err := bus.Before(ctx, jobID, end, size)
 		if err != nil {
 			return Replay{}, err
 		}
@@ -141,13 +144,17 @@ func ReplayStart(ctx context.Context, bus *streams.Bus, jobID string,
 				return replayFrom(start, outs), nil
 			}
 		}
-		if len(page) < recentEntries || (start != "" && back >= replayLookback) {
+		if int64(len(page)) < size || (start != "" && back >= replayLookback) {
 			if start == "" {
 				return Replay{}, nil
 			}
 			return replayFrom(start, outs), nil
 		}
 		end = "(" + page[len(page)-1].ID
+		size = recentEntries
+		if start == "" {
+			size = min(2*int64(len(page)), replayPageMax)
+		}
 	}
 }
 
@@ -173,8 +180,7 @@ func replayed(outs *[2]replayOutput, f frame.Frame) {
 	}
 }
 
-// before reads an entry older than the replay, newest first, data true for the output's own
-// frame and pos the offset a skip, heartbeat or exit names for it
+// before reads an entry older than the replay, pos being the offset a skip or heartbeat names
 func (o *replayOutput) before(f frame.Frame, data bool, pos int64) {
 	if o.settled {
 		return
@@ -210,8 +216,7 @@ func (o *replayOutput) before(f frame.Frame, data bool, pos int64) {
 // placed reports whether the output's start is known, as it is for one that starts at 0
 func (o *replayOutput) placed() bool { return o.settled || o.at == 0 }
 
-// replayFrom answers a replay from start, an output whose text before it was not read being
-// taken as starting inside a line
+// replayFrom answers a replay from start, an output with unread text before it starting mid-line
 func replayFrom(start string, outs [2]replayOutput) Replay {
 	for i := range outs {
 		if !outs[i].placed() {

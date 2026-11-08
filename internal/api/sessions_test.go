@@ -128,6 +128,33 @@ func TestCreateMakesTheRecord(t *testing.T) {
 	eq(t, got["payment"][0]["pay_kind"], "start")
 }
 
+func TestSnapshotWhilePlacing(t *testing.T) {
+	hold := make(chan struct{})
+	e := newEnv(t, options{holdReady: hold})
+	defer close(hold)
+	_, p := e.create(t)
+	before := time.Now().Truncate(time.Second)
+	res, err := e.record(t, p.GetSessionUrl())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	eq(t, res.GetState(), "running")
+	var snap map[string]any
+	if err := json.Unmarshal(res.GetLiveJson(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	// The page refuses a snapshot without a deadline, so placing serves the paid minutes from now
+	raw, _ := snap["deadline"].(string)
+	deadline, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("deadline %v: %v", snap["deadline"], err)
+	}
+	if deadline.Before(before.Add(10*time.Minute)) || deadline.After(after.Add(10*time.Minute)) {
+		t.Fatalf("deadline %s, want 10 minutes after %s", deadline, before)
+	}
+}
+
 func TestSessionURLShape(t *testing.T) {
 	e := newEnv(t, options{})
 	h, p := e.readyPlacement(t)

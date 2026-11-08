@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"reflect"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +23,6 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/migrations"
 )
-
-// sessionsVersion is the goose version of the migration that adds the session tables
-const sessionsVersion = 9
 
 var sessionTables = []string{"session_records", "session_events", "session_jobs"}
 
@@ -104,6 +104,58 @@ func TestInsertSessionEventCapSetting(t *testing.T) {
 	_, dropped := insert(t, s, p.ID, "file", false)
 	eq(t, dropped, true)
 	eq(t, eventsDropped(t, s, rec.ID), 1)
+}
+
+func TestRepeatAtTheCapIsNotDropped(t *testing.T) {
+	s, pool := newStoreWithPool(t, store.WithSessionMaxEvents(2))
+	p, rec := newRecord(t, s, "cap-4")
+	// x402 plan X16 adds this index, so egress can send an event again under its ref
+	_, err := pool.Exec(t.Context(), `create unique index session_events_ref_test
+		on session_events (record_id, (data ->> 'ref')) where data ? 'ref'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(data string) (bool, bool) {
+		inserted, dropped, err := s.InsertSessionEvent(t.Context(), p.ID, "x402", []byte(data),
+			false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inserted, dropped
+	}
+	inserted, _ := put(`{"ref":"a"}`)
+	eq(t, inserted, true)
+	inserted, _ = put(`{"n":1}`)
+	eq(t, inserted, true)
+	inserted, dropped := put(`{"ref":"a"}`)
+	eq(t, [2]bool{inserted, dropped}, [2]bool{false, false})
+	eq(t, eventsDropped(t, s, rec.ID), 0)
+	inserted, dropped = put(`{"ref":"b"}`)
+	eq(t, [2]bool{inserted, dropped}, [2]bool{false, true})
+	eq(t, eventsDropped(t, s, rec.ID), 1)
+	events, err := s.SessionEvents(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(events), 2)
+}
+
+func TestInsertSessionEventsStoresAllOrNone(t *testing.T) {
+	s := newStore(t)
+	p, rec := newRecord(t, s, "batch-1")
+	err := s.InsertSessionEvents(t.Context(), p.ID, "mcp",
+		[][]byte{[]byte(`{"n":1}`), []byte(`not json`)}, false)
+	eq(t, err != nil, true)
+	err = s.InsertSessionEvents(t.Context(), p.ID, "mcp",
+		[][]byte{[]byte(`{"n":1}`), []byte(`{"n":2}`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.SessionEvents(t.Context(), rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(events), 2)
 }
 
 func TestInsertsAtOnceNeverPassTheCap(t *testing.T) {
@@ -353,7 +405,22 @@ func TestExpireSessionRecordsKeepsHeldOnes(t *testing.T) {
 	eq(t, size > 0, true)
 }
 
+// sessionsVersion is the goose version of the migration that adds the session tables
+func sessionsVersion(t *testing.T) int64 {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "*_sessions.sql")
+	if err != nil || len(names) != 1 {
+		t.Fatalf("the sessions migration: %v %v", names, err)
+	}
+	v, err := strconv.ParseInt(strings.SplitN(names[0], "_", 2)[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 func TestMigrationSessionsUpDownUp(t *testing.T) {
+	version := sessionsVersion(t)
 	url := testenv.DatabaseURL(t)
 	ctx := context.Background()
 	cfg, err := pgx.ParseConfig(url)
@@ -378,8 +445,8 @@ func TestMigrationSessionsUpDownUp(t *testing.T) {
 		return n
 	}
 	up := func() {
-		if _, err := gp.UpTo(ctx, sessionsVersion); err != nil {
-			t.Fatalf("up to %d: %v", sessionsVersion, err)
+		if _, err := gp.UpTo(ctx, version); err != nil {
+			t.Fatalf("up to %d: %v", version, err)
 		}
 	}
 	up()
@@ -392,7 +459,7 @@ func TestMigrationSessionsUpDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, compression.String, "l")
-	if _, err := gp.DownTo(ctx, sessionsVersion-1); err != nil {
+	if _, err := gp.DownTo(ctx, version-1); err != nil {
 		t.Fatal(err)
 	}
 	eq(t, count(), 0)

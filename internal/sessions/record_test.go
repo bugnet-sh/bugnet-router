@@ -20,6 +20,9 @@ import (
 
 var t0 = time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
 
+const allowanceTx = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8u" +
+	"irBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"
+
 var smallPkg = catalog.Package{
 	ID: "dev-small-10m", Minutes: 10,
 	Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
@@ -135,7 +138,7 @@ func filled(t *testing.T) *fixture {
 	f.at(t, 5*time.Minute, func(ctx context.Context) {
 		if err := f.w.Allowance(ctx, id, Fields{
 			"phase": "paid", "amount_micros": 1000000, "asset": usdcMint,
-			"network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "tx": "",
+			"network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "tx": allowanceTx,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -304,4 +307,28 @@ func TestKeeper(t *testing.T) {
 	eq(t, both.Frames(), []Frame{{S: Stdout, T: "456789"}, {S: Stderr, T: "abcdef"}})
 	eq(t, both.Kept(), int64(12))
 	eq(t, both.Cut(), int64(4))
+}
+
+func TestServedPaymentAndAllowanceKeys(t *testing.T) {
+	served := func(fn serveFunc, data string) string {
+		t.Helper()
+		var d map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(data), &d); err != nil {
+			t.Fatal(err)
+		}
+		o, ok := fn(d)
+		eq(t, ok, true)
+		raw, err := json.Marshal(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	// The page reads tx on every payment, so it is served empty until the order token has one
+	eq(t, served(servePayment, `{"pay_kind":"start","amount_micros":50000}`),
+		`{"payKind":"start","amountMicros":50000,"tx":""}`)
+	const mint = "So11111111111111111111111111111111111111112"
+	eq(t, served(serveAllowance, `{"phase":"refunded","amount_micros":5,"asset":"`+mint+
+		`","network":"solana:x","tx":"sig"}`),
+		`{"phase":"refunded","amountMicros":5,"asset":"`+mint+`","network":"solana:x","tx":"sig"}`)
 }

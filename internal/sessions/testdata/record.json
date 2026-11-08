@@ -20,7 +20,8 @@
       "at": "2026-11-06T10:00:02Z",
       "kind": "payment",
       "payKind": "start",
-      "amountMicros": 50000
+      "amountMicros": 50000,
+      "tx": ""
     },
     {
       "at": "2026-11-06T10:00:30Z",
@@ -71,7 +72,8 @@
       "phase": "paid",
       "amountMicros": 1000000,
       "asset": "USDC",
-      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "tx": "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"
     },
     {
       "at": "2026-11-06T10:10:00Z",

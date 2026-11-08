@@ -166,8 +166,7 @@ func (s *Store) SessionRecordByPlacement(
 	return s.sessionWhere(ctx, "placement_id = $1", placement)
 }
 
-// lockSession locks the placement's record row until the transaction ends, a record its user
-// deleted reading as absent so nothing lands on it again
+// lockSession locks the record row, a user-deleted one reading as absent so nothing lands again
 func lockSession(ctx context.Context, tx pgx.Tx, placement uuid.UUID) (string, error) {
 	var id string
 	err := tx.QueryRow(ctx, `
@@ -197,6 +196,23 @@ func (s *Store) InsertSessionEvent(ctx context.Context, placement uuid.UUID, kin
 	return inserted, capDropped, err
 }
 
+// InsertSessionEvents stores rows of one kind on the placement's record in one transaction
+func (s *Store) InsertSessionEvents(ctx context.Context, placement uuid.UUID, kind string,
+	data [][]byte, alwaysLand bool) error {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		id, err := lockSession(ctx, tx, placement)
+		if err != nil {
+			return err
+		}
+		for _, d := range data {
+			if _, _, err := s.insertEvent(ctx, tx, id, kind, d, alwaysLand); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // insertEvent counts the record's rows and inserts under its lock, at taken from data when set
 func (s *Store) insertEvent(ctx context.Context, tx pgx.Tx, record, kind string, data []byte,
 	alwaysLand bool) (inserted, capDropped bool, err error) {
@@ -208,23 +224,45 @@ func (s *Store) insertEvent(ctx context.Context, tx pgx.Tx, record, kind string,
 			return false, false, fmt.Errorf("count session events: %w", err)
 		}
 		if n >= s.sessionCap() {
-			_, err := tx.Exec(ctx, `
-				update session_records set events_dropped = events_dropped + 1 where id = $1`,
-				record)
-			if err != nil {
-				return false, false, fmt.Errorf("count a dropped session event: %w", err)
-			}
-			return false, true, nil
+			return s.dropEvent(ctx, tx, record, kind, data)
 		}
 	}
-	tag, err := tx.Exec(ctx, `
-		insert into session_events (record_id, at, kind, data)
-		values ($1, coalesce(($3::jsonb ->> 'at')::timestamptz, now()), $2, $3)
-		on conflict do nothing`, record, kind, data)
+	tag, err := tx.Exec(ctx, insertEventSQL, record, kind, data)
 	if err != nil {
 		return false, false, fmt.Errorf("insert session event: %w", err)
 	}
 	return tag.RowsAffected() == 1, false, nil
+}
+
+const insertEventSQL = `
+	insert into session_events (record_id, at, kind, data)
+	values ($1, coalesce(($3::jsonb ->> 'at')::timestamptz, now()), $2, $3)
+	on conflict do nothing`
+
+// dropEvent counts a row past the cap as dropped, unless it repeats a stored one
+func (s *Store) dropEvent(ctx context.Context, tx pgx.Tx, record, kind string,
+	data []byte) (inserted, capDropped bool, err error) {
+	// The insert runs in a savepoint it never keeps, so any unique index decides a repeat
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, false, fmt.Errorf("probe a session event: %w", err)
+	}
+	tag, err := sp.Exec(ctx, insertEventSQL, record, kind, data)
+	if rerr := sp.Rollback(ctx); err == nil {
+		err = rerr
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("probe a session event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, false, nil
+	}
+	_, err = tx.Exec(ctx, `
+		update session_records set events_dropped = events_dropped + 1 where id = $1`, record)
+	if err != nil {
+		return false, false, fmt.Errorf("count a dropped session event: %w", err)
+	}
+	return false, true, nil
 }
 
 func (s *Store) sessionCap() int {

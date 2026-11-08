@@ -111,6 +111,30 @@ func (w *Writer) Store(
 	return inserted, err
 }
 
+// StoreAll writes events of one kind in one transaction, so a failure stores none of them
+func (w *Writer) StoreAll(
+	ctx context.Context, placement uuid.UUID, kind string, events []Fields,
+) error {
+	if w == nil || len(events) == 0 {
+		return nil
+	}
+	data := make([][]byte, 0, len(events))
+	for _, f := range events {
+		f = maps.Clone(f)
+		f.clean()
+		raw, err := json.Marshal(f)
+		if err != nil {
+			return fmt.Errorf("encode %s event: %w", kind, err)
+		}
+		data = append(data, raw)
+	}
+	err := w.st.InsertSessionEvents(ctx, placement, kind, data, alwaysLand[kind])
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // Write stores one event and logs a failure, which never fails the call that caused it
 func (w *Writer) Write(ctx context.Context, placement uuid.UUID, kind string, f Fields) {
 	if _, err := w.Store(ctx, placement, kind, f); err != nil {

@@ -123,6 +123,7 @@ func (s *Server) AppendSessionEvents(
 	if end := cmp.Or(rec.EndedAt, p.TerminatedAt); end != nil && now.After(end.Add(appendWindow)) {
 		return connect.NewResponse(out), nil
 	}
+	var events []sessions.Fields
 	for i, ev := range m.GetEvents() {
 		if !slices.Contains(s.d.Sessions.MCPTools, ev.GetTool()) ||
 			!outcomeShape.MatchString(ev.GetOutcome()) {
@@ -134,13 +135,14 @@ func (s *Server) AppendSessionEvents(
 			t.AsTime().Before(now.Add(eventSkew)) {
 			at = t.AsTime()
 		}
-		_, err := s.d.SessionWriter.Store(ctx, p.ID, sessions.KindMCP, sessions.Fields{
+		events = append(events, sessions.Fields{
 			"at": at.UTC().Format(time.RFC3339Nano), "tool": ev.GetTool(),
 			"outcome": ev.GetOutcome(), "duration_ms": ev.GetDurationMs(),
 		})
-		if err != nil {
-			return nil, s.status(err)
-		}
+	}
+	// One transaction, so the gateway's retry of a failed call stores no event twice
+	if err := s.d.SessionWriter.StoreAll(ctx, p.ID, sessions.KindMCP, events); err != nil {
+		return nil, s.status(err)
 	}
 	return connect.NewResponse(out), nil
 }
@@ -182,6 +184,9 @@ func (s *Server) sessionFor(
 	}
 	rec, err := s.d.Store.SessionRecordByID(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
+		// The same read and HMAC as a wrong key, so the time taken never tells a live id
+		_, _ = s.d.Store.PlacementByID(ctx, uuid.Nil)
+		s.d.Keys.CheckSessionKey(s.sessionKeyID(store.Placement{}), id, 0, key)
 		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
 	if err != nil {
@@ -211,8 +216,9 @@ func (ss *SessionPageServer) GetSessionRecord(
 	case !rec.Open(time.Now()):
 	case !ended(p.State):
 		out.State = sessionRunning
+		now := time.Now()
 		if out.LiveJson, err = sessions.Snapshot(ctx, s.d.Store, ss.live.bus, p,
-			time.Now()); err != nil {
+			s.snapshotDeadline(p, now), now); err != nil {
 			return nil, s.status(err)
 		}
 	default:
@@ -222,6 +228,15 @@ func (ss *SessionPageServer) GetSessionRecord(
 		}
 	}
 	return connect.NewResponse(out), nil
+}
+
+// snapshotDeadline is the deadline, or while placing the earliest one the paid minutes allow
+func (s *Server) snapshotDeadline(p store.Placement, now time.Time) time.Time {
+	if p.Deadline != nil {
+		return *p.Deadline
+	}
+	pkg, _ := s.d.Catalog.Get(p.PackageID)
+	return now.Add(time.Duration(pkg.Minutes) * time.Minute)
 }
 
 // DeleteSessionRecord closes the page now and deletes the record's rows unless a hold keeps them
