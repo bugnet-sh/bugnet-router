@@ -53,9 +53,6 @@ func (s *Server) CreatePreview(
 	ctx context.Context, req *connect.Request[routerv1.CreatePreviewRequest],
 ) (*connect.Response[routerv1.CreatePreviewResponse], error) {
 	port := req.Msg.GetPort()
-	if port < 1 || port > 65535 {
-		return nil, s.status(errPortRefused)
-	}
 	p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
@@ -96,44 +93,64 @@ func (s *Server) CreatePreview(
 	}), nil
 }
 
-// gateUp opens a gate that never answered, checks it, and repairs it once when it fails
+// gateUp opens a gate that never answered, checks it, and repairs it once when either fails
 func (s *Server) gateUp(ctx context.Context, p store.Placement) (store.Placement, error) {
-	p, err := s.openGate(ctx, p)
-	if err != nil {
+	opened, err := s.d.Saga.OpenGate(ctx, p)
+	switch {
+	case err == nil:
+		if err := s.health(ctx, opened, healthWait); err == nil {
+			return opened, nil
+		}
+		p = opened
+	case errors.Is(err, saga.ErrGateUnavailable):
+		s.d.Log.Warn("api: gate opening", "placement", p.ID, "err", err)
+		p = opened
+	default:
 		return p, err
 	}
-	if err := s.health(ctx, p, healthWait); err == nil {
-		return p, nil
-	}
-	if _, fixed, err := s.repairGate(ctx, p); err != nil {
+	_, fixed, err := s.repairGate(ctx, p)
+	switch {
+	case errors.Is(err, saga.ErrNotReady):
+		return p, err
+	case err != nil:
 		s.d.Log.Warn("api: gate repair", "placement", p.ID, "err", err)
-	} else {
+	default:
 		p = fixed
 	}
+	if err := s.recheck(ctx, p); err != nil {
+		return p, err
+	}
+	if p.GateReadyAt == nil {
+		at := time.Now()
+		err := s.d.Store.MarkGateReady(ctx, p.ID, at)
+		if errors.Is(err, store.ErrStateConflict) {
+			return p, errNotReady
+		}
+		if err != nil {
+			return p, err
+		}
+		p.GateReadyAt = &at
+	}
+	return p, nil
+}
+
+// recheck asks the gate for its health until it answers or recheckWait passes
+func (s *Server) recheck(ctx context.Context, p store.Placement) error {
 	until := time.Now().Add(recheckWait)
 	for {
 		err := s.health(ctx, p, min(healthWait, time.Until(until)))
 		if err == nil {
-			return p, nil
+			return nil
 		}
 		if time.Until(until) < recheckGap {
-			return p, err
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return p, ctx.Err()
+			return ctx.Err()
 		case <-time.After(recheckGap):
 		}
 	}
-}
-
-// openGate runs the gate steps when the gate never answered, keeping p when they fail
-func (s *Server) openGate(ctx context.Context, p store.Placement) (store.Placement, error) {
-	opened, err := s.d.Saga.OpenGate(ctx, p)
-	if err != nil {
-		return p, err
-	}
-	return opened, nil
 }
 
 // health asks the placement's gate for its health, waiting at most wait
@@ -247,8 +264,11 @@ func (e *EdgeServer) RepairPreview(
 		return nil, s.status(err)
 	}
 	ran, _, err := s.repairGate(ctx, p)
+	if err != nil && !errors.Is(err, saga.ErrNotReady) {
+		err = errors.Join(saga.ErrGateUnavailable, err)
+	}
 	if err != nil {
-		return nil, s.gateStatus(p, errors.Join(saga.ErrGateUnavailable, err))
+		return nil, s.gateStatus(p, err)
 	}
 	return connect.NewResponse(&routerv1.RepairPreviewResponse{Repaired: ran}), nil
 }
@@ -325,11 +345,16 @@ func (s *Server) revokedPreviews(
 		byID[r.ID] = r
 	}
 	var out []string
+	seen := make(map[string]struct{}, len(held))
 	for _, h := range held {
-		r, ok := byID[h.GetPreviewId()]
-		stale := !ok || r.RevokedAt != nil || r.Generation != h.GetGeneration()
-		if stale && !slices.Contains(out, h.GetPreviewId()) {
-			out = append(out, h.GetPreviewId())
+		id := h.GetPreviewId()
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		r, ok := byID[id]
+		if !ok || r.RevokedAt != nil || r.Generation != h.GetGeneration() {
+			seen[id] = struct{}{}
+			out = append(out, id)
 		}
 	}
 	return out, nil
@@ -342,20 +367,9 @@ func (o *OperatorServer) RevokePreview(
 	ctx context.Context, req *connect.Request[routerv1.RevokePreviewRequest],
 ) (*connect.Response[routerv1.RevokePreviewResponse], error) {
 	s, m := o.s, req.Msg
-	switch {
-	case m.GetActor() == "" || len(m.GetActor()) > maxActor:
-		return nil, invalid("actor must be 1 to %d bytes", maxActor)
-	case len(m.GetReason()) > maxNote:
-		return nil, invalid("reason must be at most %d bytes", maxNote)
-	case !preview.ValidID(m.GetPreviewId()):
-		return nil, s.status(errPreviewUnknown)
-	}
-	pv, err := s.d.Store.RevokePreview(ctx, m.GetPreviewId())
-	if errors.Is(err, store.ErrNotFound) {
-		err = errPreviewUnknown
-	}
+	pv, err := s.revokePreview(ctx, m)
 	if err != nil {
-		return nil, s.status(err)
+		return nil, s.revokeRefused(m, err)
 	}
 	s.events.Publish(ctx, &routerv1.EdgeEvent{Event: &routerv1.EdgeEvent_PreviewRevoked{
 		PreviewRevoked: &routerv1.PreviewRevoked{
@@ -365,4 +379,47 @@ func (o *OperatorServer) RevokePreview(
 	s.d.Log.Info("api: preview revoked", "actor", m.GetActor(), "preview", pv.ID,
 		"placement", pv.PlacementID, "reason", m.GetReason())
 	return connect.NewResponse(&routerv1.RevokePreviewResponse{}), nil
+}
+
+// revokePreview checks an operator's revoke and revokes the preview it names
+func (s *Server) revokePreview(
+	ctx context.Context, m *routerv1.RevokePreviewRequest,
+) (store.Preview, error) {
+	switch {
+	case !validActor(m.GetActor()):
+		return store.Preview{}, invalid("actor must be 1 to %d bytes", maxActor)
+	case len(m.GetReason()) > maxNote:
+		return store.Preview{}, invalid("reason must be at most %d bytes", maxNote)
+	case !preview.ValidID(m.GetPreviewId()):
+		return store.Preview{}, s.status(errPreviewUnknown)
+	}
+	pv, err := s.d.Store.RevokePreview(ctx, m.GetPreviewId())
+	if errors.Is(err, store.ErrNotFound) {
+		err = errPreviewUnknown
+	}
+	if err != nil {
+		return store.Preview{}, s.status(err)
+	}
+	return pv, nil
+}
+
+// revokeRefused logs a refused revoke, naming the preview only by a well-formed id
+func (s *Server) revokeRefused(m *routerv1.RevokePreviewRequest, err error) error {
+	args := []any{"code", connect.CodeOf(err)}
+	if validActor(m.GetActor()) {
+		args = append(args, "actor", m.GetActor())
+	}
+	// What an operator pastes as the id may be a whole link with its token
+	if preview.ValidID(m.GetPreviewId()) {
+		args = append(args, "preview", m.GetPreviewId())
+	} else {
+		args = append(args, "preview_malformed", true)
+	}
+	s.d.Log.Info("api: preview revoke refused", args...)
+	return err
+}
+
+// validActor reports whether an operator call's actor is 1 to maxActor bytes
+func validActor(actor string) bool {
+	return actor != "" && len(actor) <= maxActor
 }

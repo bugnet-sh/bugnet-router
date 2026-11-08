@@ -1,6 +1,9 @@
 package api_test
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -8,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +22,8 @@ import (
 
 	"github.com/oynozan/bugnet-router/internal/config"
 	"github.com/oynozan/bugnet-router/internal/handle"
+	"github.com/oynozan/bugnet-router/internal/provider"
+	"github.com/oynozan/bugnet-router/internal/provider/local"
 	"github.com/oynozan/bugnet-router/internal/store"
 )
 
@@ -162,12 +168,17 @@ func TestCreatePreview(t *testing.T) {
 		mustCode(t, err, connect.CodeInvalidArgument, "PORT_REFUSED")
 	}
 
+	// The port is checked after the placement, as DP 8.2.10 orders the checks
 	unknown, _ := handle.New()
-	_, err = e.createPreview(t, unknown, 80)
-	mustCode(t, err, connect.CodeNotFound, "HANDLE_UNKNOWN")
+	for _, port := range []uint32{80, 0} {
+		_, err = e.createPreview(t, unknown, port)
+		mustCode(t, err, connect.CodeNotFound, "HANDLE_UNKNOWN")
+	}
 	e.stop(t, h)
-	_, err = e.createPreview(t, h, 5173)
-	mustCode(t, err, connect.CodeFailedPrecondition, "NOT_READY")
+	for _, port := range []uint32{5173, 0} {
+		_, err = e.createPreview(t, h, port)
+		mustCode(t, err, connect.CodeFailedPrecondition, "NOT_READY")
+	}
 }
 
 func TestCreatePreviewRefusesE2BsEnvdPort(t *testing.T) {
@@ -373,12 +384,114 @@ func TestCreatePreviewRepairsAGateThatStoppedAnswering(t *testing.T) {
 		t.Fatalf("CreatePreview through a route the repair fixes: %v", err)
 	}
 	// The repair ran in the last minute, so a broken route now stays broken
-	e.routeTo(t, p, freePort(t))
+	dead := freePort(t)
+	e.routeTo(t, p, dead)
 	start := time.Now()
 	_, err := e.createPreview(t, h, 3000)
 	mustCode(t, err, connect.CodeUnavailable, "GATE_UNAVAILABLE")
+	quotesNone(t, err, strconv.Itoa(dead), "127.0.0.1", "gateclient")
 	if took := time.Since(start); took < 4*time.Second || took > 20*time.Second {
 		t.Fatalf("the refusal took %v, want about the 5 s check", took)
+	}
+}
+
+// gateFaults is the local provider whose PrepareGate can lead to a dead port or fail
+type gateFaults struct {
+	*local.Provider
+	dead   *atomic.Int32 // PrepareGate calls left that answer a port nothing listens on
+	broken *atomic.Bool  // PrepareGate fails while set
+	port   int
+}
+
+func (g gateFaults) PrepareGate(
+	ctx context.Context, ref provider.Ref, port int,
+) (map[string]string, error) {
+	if g.broken.Load() {
+		return nil, errors.New("injected by provider local for sbx-gate-fault")
+	}
+	meta, err := g.Provider.PrepareGate(ctx, ref, port)
+	if err != nil || g.dead.Add(-1) < 0 {
+		return meta, err
+	}
+	out := map[string]string{}
+	for k, v := range meta {
+		out[k] = v
+	}
+	out["gate_port"] = strconv.Itoa(g.port)
+	return out, nil
+}
+
+func faultyGates(t *testing.T) (*env, gateFaults) {
+	g := gateFaults{dead: &atomic.Int32{}, broken: &atomic.Bool{}, port: freePort(t)}
+	e := newEnv(t, options{wrap: func(l *local.Provider, _ string) provider.Provider {
+		g.Provider = l
+		return g
+	}})
+	return e, g
+}
+
+func TestCreatePreviewRepairsAGateThatNeverAnswered(t *testing.T) {
+	e, g := faultyGates(t)
+	h, p := e.readyPlacement(t)
+	if _, err := e.pool.Exec(t.Context(), `update placements set gate_ready_at = null
+		where id = $1`, p.GetPlacementId()); err != nil {
+		t.Fatal(err)
+	}
+	// The gate steps find the gate dead, and only the repair's PrepareGate leads to it
+	g.dead.Store(1)
+	r, err := e.createPreview(t, h, 5173)
+	if err != nil {
+		t.Fatalf("CreatePreview on a placement whose gate never answered: %v", err)
+	}
+	eq(t, g.dead.Load() < 0, true)
+	sp := e.placementOf(t, p)
+	if sp.GateReadyAt == nil {
+		t.Fatal("the gate time is still unset after the repair")
+	}
+	eq(t, sp.ProviderRef.Meta["gate_port"] != strconv.Itoa(g.port), true)
+	if _, err := e.resolve(t, r.GetPreviewId(), r.GetToken()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRepairPreviewFailureKeepsTheGuard(t *testing.T) {
+	e, g := faultyGates(t)
+	h, _ := e.readyPlacement(t)
+	r := e.mustCreatePreview(t, h, 5173)
+	g.broken.Store(true)
+	_, err := e.repair(t, r.GetPreviewId(), r.GetToken())
+	mustCode(t, err, connect.CodeUnavailable, "GATE_UNAVAILABLE")
+	quotesNone(t, err, "injected", "sbx-gate-fault", "prepare")
+	if again, err := e.repair(t, r.GetPreviewId(), r.GetToken()); err != nil || again {
+		t.Fatalf("a repair within the minute of a failed one: %v, %v", again, err)
+	}
+}
+
+func TestRevokePreviewLogsRefusals(t *testing.T) {
+	var logs syncBuffer
+	e := newEnv(t, options{log: slog.New(slog.NewTextHandler(&logs, nil))})
+	h, _ := e.readyPlacement(t)
+	r := e.mustCreatePreview(t, h, 5173)
+	op := e.operator(t, operatorToken)
+	for _, req := range []*routerv1.RevokePreviewRequest{
+		{PreviewId: "aaaaaaaaaaaaaaaa", Reason: "x", Actor: "ops-unknown"},
+		{PreviewId: r.GetUrl(), Reason: "x", Actor: "ops-pasted"},
+		{PreviewId: r.GetPreviewId(), Reason: "x"},
+	} {
+		if _, err := op.RevokePreview(t.Context(), connect.NewRequest(req)); err == nil {
+			t.Fatalf("RevokePreview %+v went through", req)
+		}
+	}
+	out := logs.String()
+	eq(t, strings.Count(out, `level=INFO msg="api: preview revoke refused"`), 3)
+	for _, want := range []string{"actor=ops-unknown", "preview=aaaaaaaaaaaaaaaa",
+		"actor=ops-pasted", "preview=" + r.GetPreviewId()} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, r.GetToken()) {
+		t.Fatalf("the log holds a preview token:\n%s", out)
 	}
 }
 

@@ -543,8 +543,8 @@ by default, and expires once it is full again. A call that finds it empty answer
 `ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until
 the next token. Other calls spend nothing, nor does a request the router itself finds invalid, an
 unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
-provider refuses has spent its token. When Valkey cannot answer within 500 ms, the call goes
-through and the router logs a warning.
+provider refuses has spent its token, and so has a `CreatePreview` of a refused port. When Valkey
+cannot answer within 500 ms, the call goes through and the router logs a warning.
 `StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
 destroy already in flight instead of calling the provider again.
 
@@ -578,10 +578,10 @@ holds a handle or a job ID.
 | `OutOfRange` | `RANGE` | A read outside the file |
 | `ResourceExhausted` | `TOO_MANY_TRANSFERS` | A 17th unexpired transfer URL, or a 3rd active transfer, of one placement |
 | `ResourceExhausted` | `TOO_MANY_PREVIEWS` | A preview past `previews.max_per_placement` live ones |
-| `Unavailable` | `GATE_UNAVAILABLE` | The sandbox's gate did not answer, after one repair, or its route is not prepared |
 | `ResourceExhausted` | `BUDGET_SPENT` | The placement spent its edge budget |
 | `ResourceExhausted` | `NO_SPACE` | The sandbox's disk is full |
 | `DataLoss` | `CHECKSUM_MISMATCH` | An upload's SHA-256 differs from the one its URL was made with |
+| `Unavailable` | `GATE_UNAVAILABLE` | The sandbox's gate did not answer, after one repair, or its route is not prepared |
 | `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
@@ -680,21 +680,23 @@ router asked (DP 8.2.10).
   placement and port, in the `previews` table. Its token is derived from the id and the row's
   generation under the placement's `key_id` root, so the router stores none and a repeated call
   answers the same link.
-- **Checks.** The provider must be in `previews.providers` and the router needs
-  `names.preview_domain` and data-plane keys (`FEATURE_UNAVAILABLE`). The port must be 1 to 65535
-  and off the gate's deny list (`PORT_REFUSED`). A placement holds at most
-  `previews.max_per_placement` live previews (`TOO_MANY_PREVIEWS`), and a revoked port gets no new
-  one (`PREVIEW_REVOKED`). A transaction holding a Postgres advisory lock per placement keeps the
-  cap across replicas.
+- **Checks.** In order: the handle (`HANDLE_UNKNOWN`), a ready placement (`NOT_READY`), the
+  provider in `previews.providers` and a router with `names.preview_domain` and data-plane keys
+  (`FEATURE_UNAVAILABLE`), one operation token, then a port of 1 to 65535 off the gate's deny list
+  (`PORT_REFUSED`). A placement holds at most `previews.max_per_placement` live previews
+  (`TOO_MANY_PREVIEWS`), and a revoked port gets no new one (`PREVIEW_REVOKED`). A transaction
+  holding a Postgres advisory lock per placement keeps the cap across replicas.
 - **The gate.** A placement whose gate never answered at boot has start saga steps 2 and 3 run
   again, `PrepareGate` and the health checks, under a Postgres advisory lock per placement, so
   racing calls on every replica run them once and log `gate opened` once. Then the gate's health
-  is checked for 2 s. When that fails, the gate is repaired once and checked again for up to 5 s
-  (`GATE_UNAVAILABLE`).
+  is checked for 2 s. When the steps or that check fail, the gate is repaired once and checked
+  again for up to 5 s (`GATE_UNAVAILABLE`), and a gate that then answers gets its gate time. A
+  placement that stops meanwhile answers `NOT_READY`.
 - **Repairs.** `RepairPreview`, and `CreatePreview`'s repair, run `setup --repair` through `Exec`
-  and `PrepareGate` again, storing the route's meta, at most once a minute per placement:
-  `gate:repair:<placement>` under `valkey.prefix` is set with `NX` for 60 s, and a call that finds
-  it set answers `repaired: false`.
+  and `PrepareGate` again under the same advisory lock, storing the route's meta, at most once a
+  minute per placement: `gate:repair:<placement>` under `valkey.prefix` is set with `NX` for 60 s,
+  and a call that finds it set answers `repaired: false`. A failed repair answers
+  `GATE_UNAVAILABLE` and keeps that guard for its minute.
 - **Resolving.** `ResolvePreview` recomputes the token under every listed root and compares in
   constant time, then needs the placement ready and before its deadline (`NOT_READY`) and edge
   budget left (`BUDGET_SPENT`). It answers the provider's route with `Bugnet-Gate` added, the edge
@@ -703,7 +705,8 @@ router asked (DP 8.2.10).
   other wrong token `TOKEN_INVALID`.
 - **Revoking.** `OperatorService`'s `RevokePreview` needs an `actor` and moves the preview's
   generation and sets `revoked_at` once, writes `PreviewRevoked`, and logs the actor, preview,
-  placement and reason. Other ports of the placement keep working.
+  placement and reason. A refused call is logged too, with its code, the actor when valid and the
+  preview only when its id is well formed. Other ports of the placement keep working.
 
 ### Transfers
 
