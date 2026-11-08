@@ -1,5 +1,5 @@
-// Package secrets holds DP 10.3's rules for sealed secrets: validation, the presets, what a link
-// may suggest and how a stored put is compared and shown.
+// Package secrets holds DP 10.3's rules for sealed secrets, which are validation, the presets,
+// what a link may suggest and how a stored put is compared and shown.
 //
 // The router never sees a value, so Validate checks the spec alone and CheckValue only the sealed
 // box's size and key id. Hosts and header names must already be canonical, and are refused
