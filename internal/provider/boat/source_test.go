@@ -28,7 +28,8 @@ func readSource(t *testing.T, c sourceCase, state string) (provider.EgressSource
 	}
 	size, _ := p.SizeFor(provider.Resources{})
 	ref, err := p.Create(context.Background(), provider.CreateRequest{
-		IdempotencyKey: "k", Size: size, Lifetime: time.Hour, Labels: map[string]string{"bugnet": "1"},
+		IdempotencyKey: "k", Size: size, Lifetime: time.Hour,
+		Labels: map[string]string{"bugnet": "1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +44,8 @@ func readSource(t *testing.T, c sourceCase, state string) (provider.EgressSource
 var allFamilies = []string{FamilyIPv6, FamilyIPv4}
 
 func TestBoatEgressSource(t *testing.T) {
-	src, ok, err := readSource(t, sourceCase{ip: "2001:db8::5", bits: 128, families: allFamilies}, "")
+	src, ok, err := readSource(
+		t, sourceCase{ip: "2001:db8::5", bits: 128, families: allFamilies}, "")
 	eq(t, err == nil && ok, true)
 	eq(t, src.Prefix.String(), "2001:db8::5/128")
 	eq(t, src.Bind.String(), "2001:db8::5")
@@ -92,7 +94,8 @@ func TestBoatEgressSourceStates(t *testing.T) {
 func TestBoatEgressSourceNotFound(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
-	_, ok, err := p.EgressSource(context.Background(), provider.Ref{Provider: "boat", ID: "sbx0000000"})
+	_, ok, err := p.EgressSource(
+		context.Background(), provider.Ref{Provider: "boat", ID: "sbx0000000"})
 	e, isErr := provider.AsError(err)
 	eq(t, ok, false)
 	eq(t, isErr && e.Code == provider.CodeNotFound, true)
