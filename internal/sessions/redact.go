@@ -199,7 +199,9 @@ type Stream struct {
 	rejoining bool
 	// maybeKey drops the lines of a key block the output may have gone on inside, after a gap
 	maybeKey bool
-	dropped  int64
+	// wholeLine drops the line through its break, also past a space, as a credential may go on
+	wholeLine bool
+	dropped   int64
 }
 
 // Stream returns a Stream for the output named s, Stdout or Stderr
@@ -216,6 +218,8 @@ func (st *Stream) Holding() bool {
 func (st *Stream) Resume() []Frame {
 	// The held word may be a token the gap cut, which no shape then matches
 	n := bytes.LastIndexAny(st.buf, " \t\n\r") + 1
+	line := bytes.LastIndexAny(st.buf, "\n\r") + 1
+	st.wholeLine = st.wholeLine || authzAny.Match(st.buf[line:])
 	st.dropped += int64(len(st.buf) - n)
 	st.buf = st.buf[:n]
 	out := st.flush()
@@ -240,7 +244,7 @@ func (st *Stream) Write(data []byte) []Frame {
 				return out
 			}
 			// A gap inside the block left nothing past its end to drop
-			st.rejoining, st.maybeKey = false, false
+			st.rejoining, st.maybeKey, st.wholeLine = false, false, false
 			continue
 		case st.rejoining:
 			if !st.rejoin() {
@@ -262,7 +266,7 @@ func (st *Stream) Write(data []byte) []Frame {
 			n = runeFloor(st.buf, carryMax)
 			st.dropped += int64(n)
 			st.buf = slices.Delete(st.buf, 0, n)
-			st.rejoining = true
+			st.rejoining, st.wholeLine = true, true
 			continue
 		}
 		text := string(st.buf[:n])
@@ -312,8 +316,12 @@ func (st *Stream) rejoin() bool {
 	case i < 0 && !full:
 		return false
 	case i < 0:
-		// A line longer than the carry goes on after its last space, which no key line has
+		// A line longer than the carry goes on after its last space, which no key line has,
+		// unless the space may fall inside an Authorization value or a run a full carry cut
 		i = bytes.LastIndexAny(b, " \t")
+		if st.wholeLine || i >= 0 && authzAny.Match(b[:i]) {
+			i, st.wholeLine = -1, true
+		}
 		st.maybeKey = st.maybeKey && i < 0
 	}
 	// A full carry with no space at all goes, and the line it is part of stays dropped
@@ -327,7 +335,7 @@ func (st *Stream) rejoin() bool {
 	}
 	st.dropped += int64(n)
 	st.buf = slices.Delete(st.buf, 0, n)
-	st.rejoining = still
+	st.rejoining, st.wholeLine = still, st.wholeLine && still
 	return !still
 }
 

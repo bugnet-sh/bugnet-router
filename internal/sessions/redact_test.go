@@ -305,3 +305,56 @@ func TestStreamGapInsideAKeyShowsNoBody(t *testing.T) {
 	noBody(got)
 	eq(t, got, "[redacted private key]ok then\n")
 }
+
+// chunks cuts s into frames of size bytes
+func chunks(s string, size int) []string {
+	var out []string
+	for i := 0; i < len(s); i += size {
+		out = append(out, s[i:min(i+size, len(s))])
+	}
+	return out
+}
+
+// hidden fails when a frame shows a secret written with Q, J or bob, or the next line is lost
+func hidden(t *testing.T, got []Frame, next string) {
+	t.Helper()
+	for _, f := range got {
+		if strings.ContainsAny(f.T, "QJ") || strings.Contains(f.T, "bob") {
+			t.Fatalf("shows %q", f.T[max(len(f.T)-80, 0):])
+		}
+	}
+	if all := joined(got); !strings.HasSuffix(all, next) {
+		t.Fatalf("lost the next line: %q", all[max(len(all)-80, 0):])
+	}
+}
+
+func TestStreamLongLineKeepsAnAuthorizationValueWhole(t *testing.T) {
+	r := NewRedactor()
+	// After a gap, a line longer than the carry does not go on after a space inside the value
+	st := r.Stream(Stdout)
+	st.Resume()
+	got := st.Write([]byte(strings.Repeat("a ", 8190) +
+		`Authorization: Digest username="bob", resp`))
+	got = append(got, st.Write([]byte(`onse="QJQJ98" x`+"\nafter text\n"))...)
+	hidden(t, got, "after text\n")
+	// The same when the gap falls inside the value
+	st = r.Stream(Stdout)
+	got = st.Write([]byte(`Authorization: Digest username="bob", `))
+	got = append(got, st.Resume()...)
+	for _, c := range chunks(strings.Repeat(`k="QJ", `, 3000)+"\nafter text\n", 4096) {
+		got = append(got, st.Write([]byte(c))...)
+	}
+	hidden(t, got, "after text\n")
+	// A value with spaces longer than two carries, after the full carry it filled was dropped
+	for _, whole := range []string{
+		"Authorization: Digest " + strings.Repeat("k=QJQJ, ", 6000) + "\nafter text\n",
+		"curl -H 'Proxy-Authorization: Token " + strings.Repeat("QJ ", 16000) +
+			"' x\nafter text\n",
+		`{"Authorization": "Digest ` + strings.Repeat(`a=\"QJ\", `, 6000) + `"}` +
+			"\nafter text\n",
+	} {
+		for _, size := range []int{100, 4096, carryMax} {
+			hidden(t, write(r, chunks(whole, size)...), "after text\n")
+		}
+	}
+}
