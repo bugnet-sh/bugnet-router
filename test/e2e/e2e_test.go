@@ -39,6 +39,7 @@ import (
 	"github.com/oynozan/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 
 	"github.com/oynozan/bugnet-router/internal/ordertoken"
+	"github.com/oynozan/bugnet-router/internal/provider/local"
 	"github.com/oynozan/bugnet-router/internal/testenv"
 )
 
@@ -666,6 +667,7 @@ func (s *stack) stop(t *testing.T) {
 		wg.Go(func() { p.stop(t) })
 	}
 	wg.Wait()
+	s.destroyLeft(t)
 	s.checkRunners(t)
 	if !t.Failed() {
 		return
@@ -675,6 +677,20 @@ func (s *stack) stop(t *testing.T) {
 		lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 		t.Logf("last lines of %s:\n%s", p.name,
 			strings.Join(lines[max(len(lines)-logTail, 0):], "\n"))
+	}
+}
+
+// destroyLeft destroys the sandboxes still ready when the stack stopped, and so their gates
+func (s *stack) destroyLeft(t *testing.T) {
+	p := local.New(local.Options{Name: "local", Root: s.root})
+	owned, err := p.ListOwned(context.Background(), nil)
+	if err != nil {
+		t.Errorf("list the sandboxes left under %s: %v", s.root, err)
+	}
+	for _, o := range owned {
+		if err := p.Destroy(context.Background(), o.Ref); err != nil {
+			t.Errorf("destroy a sandbox left under %s: %v", s.root, err)
+		}
 	}
 }
 
