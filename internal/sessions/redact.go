@@ -36,11 +36,11 @@ var (
 	// An Authorization header up to its value, the quote opening it kept, also escaped or a pair
 	authz = regexp.MustCompile(`(?i)((?:\\?["'])?)(?:proxy-)?authorization` +
 		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
-	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
-	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
-	// A URL password runs to the last @ before the host, an @ right after a slash starting a path
-	userinfo = regexp.MustCompile("([A-Za-z][A-Za-z0-9+.-]*://[^\\s/:@]*):" +
-		"[^\\s\"'<>`]*[^\\s\"'<>`/]@")
+	authzAny  = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
+	scheme    = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
+	urlScheme = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://`)
+	// A host's port before a path, as in localhost:5173/@vite, where no password is
+	hostPort = regexp.MustCompile(`^[0-9]+/`)
 	// Bugnet shapes of DP 20.6.4 with bnk_, then the gateway's vendor shapes, where a word starts
 	tokens = regexp.MustCompile(`(^|[^A-Za-z0-9])(?:(?:sbx_|bnp_|bnx_|bnsl_|bnsp_|bnt_|bnf_|` +
 		`bnsec_|bxd_|e2b_|boat_|bnk_|g1\.)[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{20,}|` +
@@ -84,8 +84,66 @@ func (r *Redactor) Redact(s string) string {
 	}
 	s = redactAuthz(s)
 	s = scheme.ReplaceAllStringFunc(s, schemeValue)
-	s = userinfo.ReplaceAllString(s, "${1}:"+redactedPassword+"@")
+	s = redactPasswords(s)
 	return replaceTokens(s)
+}
+
+// redactPasswords redacts the password of each URL with user info
+func redactPasswords(s string) string {
+	var b strings.Builder
+	last, end, at, hostAt := 0, -1, -1, -1
+	for _, loc := range urlScheme.FindAllStringIndex(s, -1) {
+		i := loc[1]
+		if loc[0] < last {
+			continue
+		}
+		// A URL holding another, as in a query, ends where the outer one does
+		if i > end {
+			end, at, hostAt = urlAts(s, i)
+		}
+		c := strings.IndexAny(s[i:end], ":/")
+		if c < 0 || s[i+c] != ':' {
+			continue
+		}
+		colon, pw := i+c, hostAt
+		// With no @ but right after a slash, which starts a path, the last @ ends the password
+		if pw <= colon {
+			pw = at
+		}
+		if pw <= colon || hostPort.MatchString(s[colon+1:pw]) {
+			continue
+		}
+		b.WriteString(s[last : colon+1])
+		b.WriteString(redactedPassword)
+		last = pw
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// urlAts is where the URL whose authority starts at i ends, its last @ and its last @ not right
+// after a slash, or -1
+func urlAts(s string, i int) (end, at, hostAt int) {
+	end, at, hostAt = len(s), -1, -1
+	if e := strings.IndexAny(s[i:], " \t\n\v\f\r\"'<>`"); e >= 0 {
+		end = i + e
+	}
+	for j := end - 1; j >= i; j-- {
+		if s[j] != '@' {
+			continue
+		}
+		if at < 0 {
+			at = j
+		}
+		if s[j-1] != '/' {
+			hostAt = j
+			break
+		}
+	}
+	return end, at, hostAt
 }
 
 // redactAuthz redacts each Authorization value, any scheme, to its line's end or closing quote
