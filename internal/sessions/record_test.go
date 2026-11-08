@@ -143,9 +143,9 @@ func filled(t *testing.T) *fixture {
 			t.Fatal(err)
 		}
 	})
-	// A kind with no serve function, such as egress's x402 rows, is stored and never served
+	// A kind with no serve function is stored and never served
 	f.at(t, 6*time.Minute, func(ctx context.Context) {
-		if _, _, err := f.st.InsertSessionEvent(ctx, id, "x402",
+		if _, _, err := f.st.InsertSessionEvent(ctx, id, "unknown_kind",
 			[]byte(`{"ref":"aaaaaaaaaaaaaaaa","pay_to":"11111111111111111111111111111111"}`),
 			true); err != nil {
 			t.Fatal(err)
@@ -191,7 +191,7 @@ func TestRecordGolden(t *testing.T) {
 
 func TestUnservedKindStaysHidden(t *testing.T) {
 	raw := string(filled(t).build(t))
-	for _, s := range []string{"x402", "aaaaaaaaaaaaaaaa", "1111111111111111", "pay_to"} {
+	for _, s := range []string{"unknown_kind", "aaaaaaaaaaaaaaaa", "1111111111111111", "pay_to"} {
 		if strings.Contains(raw, s) {
 			t.Errorf("record_json holds %q: %s", s, raw)
 		}
