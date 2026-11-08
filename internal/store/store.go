@@ -48,7 +48,8 @@ var (
 	ErrStateConflict = errors.New("store: state conflict")
 )
 
-type querier interface {
+// Querier runs queries, a pool or one transaction
+type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -57,7 +58,7 @@ type querier interface {
 
 // Store runs queries on a pool or on a single transaction
 type Store struct {
-	q      querier
+	q      Querier
 	sealer RefSealer
 	log    *slog.Logger
 }

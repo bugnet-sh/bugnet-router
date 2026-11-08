@@ -54,6 +54,11 @@ type Placement struct {
 	AppliedHosts []string
 	// NeedsSecrets says the order asked for secrets, so x402 may be enabled while placing
 	NeedsSecrets bool
+	// Payer is the start order's payer as the router decided it, empty for none
+	Payer string
+	// PaidMicros sums the package share of the start order and every extension recorded, zero
+	// once the placement failed with its charge refunded
+	PaidMicros int64
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -67,6 +72,14 @@ type NewPlacement struct {
 	KeyID string
 	// NeedsSecrets records that the order's requirements asked for secrets
 	NeedsSecrets bool
+	// Payer is the start order's payer as the router decided it, empty for none
+	Payer string
+	// PayerClaim is the start token's payer claim, which the order keeps whatever the decision
+	PayerClaim string
+	// FeePayer is the start token's fee_payer claim
+	FeePayer string
+	// AmountMicros is the start order's package share
+	AmountMicros int64
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -74,6 +87,13 @@ type Order struct {
 	ID          string
 	Kind        string // OrderStart or OrderExtend
 	PlacementID uuid.UUID
+	// Payer is the token's payer claim once ParseSolana checked it, kept whatever the router
+	// decided, empty for none. Code needing the decided payer decides it again.
+	Payer string
+	// FeePayer is the token's fee_payer claim
+	FeePayer string
+	// AmountMicros is what the order paid for its package, the x402 allowance left out
+	AmountMicros int64
 }
 
 // Attempt is one try at creating a sandbox on a provider
@@ -93,7 +113,10 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at,
 	coalesce(key_id, ''), coalesce(ssh_alias, ''), coalesce(source_label, ''), edge_budget_bytes,
 	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at,
-	applied_hosts, needs_secrets`
+	applied_hosts, needs_secrets, coalesce(payer, ''),
+	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
+		where o.placement_id = placements.id
+			and not (placements.state = 'failed' and placements.refundable))`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -103,7 +126,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
 		&p.TerminationReason, &p.TerminatingAt, &p.KeyID, &p.SSHAlias, &p.SourceLabel,
 		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
-		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets)
+		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.PaidMicros)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -172,8 +195,10 @@ func (s *Store) PlacementsByIDs(ctx context.Context, ids []uuid.UUID) ([]Placeme
 // OrderByID returns the order the router took under this id, or ErrNotFound
 func (s *Store) OrderByID(ctx context.Context, id string) (Order, error) {
 	o := Order{ID: id}
-	err := s.q.QueryRow(ctx, `select kind, placement_id from orders where order_id = $1`, id).
-		Scan(&o.Kind, &o.PlacementID)
+	err := s.q.QueryRow(ctx, `
+		select kind, placement_id, coalesce(payer, ''), coalesce(fee_payer, ''), amount_micros
+		from orders where order_id = $1`, id).
+		Scan(&o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Order{}, ErrNotFound
 	}
@@ -212,38 +237,18 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 	var created bool
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.Tx(tx)
-		tag, err := tx.Exec(ctx, `
-			insert into orders (order_id, kind, placement_id) values ($1, $2, $3)
-			on conflict (order_id) do nothing`, p.OrderID, OrderStart, p.ID)
+		id, inserted, err := ts.InsertOrder(ctx, Order{
+			ID: p.OrderID, Kind: OrderStart, PlacementID: p.ID, Payer: p.PayerClaim,
+			FeePayer: p.FeePayer, AmountMicros: p.AmountMicros,
+		})
 		if err != nil {
-			return fmt.Errorf("insert order: %w", err)
+			return err
 		}
-		if tag.RowsAffected() == 0 {
-			var id uuid.UUID
-			err := tx.QueryRow(ctx,
-				`select placement_id from orders where order_id = $1`, p.OrderID).Scan(&id)
-			if err != nil {
-				return fmt.Errorf("select order: %w", err)
-			}
+		if !inserted {
 			out, err = ts.PlacementByID(ctx, id)
 			return err
 		}
-		failed := p.FailureReason != ""
-		state := PlacementPlacing
-		if failed {
-			state = PlacementFailed
-		}
-		// now() is the transaction's start, so a placement created failed ends at its created_at
-		_, err = tx.Exec(ctx, `
-			insert into placements (id, handle_sha256, order_id, package_id, state,
-				failure_reason, refundable, terminated_at, key_id, needs_secrets)
-			values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9)`,
-			p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
-			failed, nullIfEmpty(p.KeyID), p.NeedsSecrets)
-		if err != nil {
-			return fmt.Errorf("insert placement: %w", err)
-		}
-		out, err = ts.PlacementByID(ctx, p.ID)
+		out, err = ts.InsertPlacement(ctx, p)
 		created = true
 		return err
 	})
@@ -251,6 +256,47 @@ func (s *Store) CreatePlacement(ctx context.Context, p NewPlacement) (Placement,
 		return Placement{}, false, err
 	}
 	return out, created, nil
+}
+
+// InsertOrder records an order, or reports false with the placement of the order already recorded
+func (s *Store) InsertOrder(ctx context.Context, o Order) (uuid.UUID, bool, error) {
+	tag, err := s.q.Exec(ctx, `
+		insert into orders (order_id, kind, placement_id, payer, fee_payer, amount_micros)
+		values ($1, $2, $3, $4, $5, $6)
+		on conflict (order_id) do nothing`, o.ID, o.Kind, o.PlacementID, nullIfEmpty(o.Payer),
+		nullIfEmpty(o.FeePayer), o.AmountMicros)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("insert order: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return o.PlacementID, true, nil
+	}
+	var id uuid.UUID
+	err = s.q.QueryRow(ctx, `select placement_id from orders where order_id = $1`, o.ID).Scan(&id)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("select order: %w", err)
+	}
+	return id, false, nil
+}
+
+// InsertPlacement records a placement whose start order is already recorded, with its ID set
+func (s *Store) InsertPlacement(ctx context.Context, p NewPlacement) (Placement, error) {
+	failed := p.FailureReason != ""
+	state := PlacementPlacing
+	if failed {
+		state = PlacementFailed
+	}
+	// now() is the transaction's start, so a placement created failed ends at its created_at
+	_, err := s.q.Exec(ctx, `
+		insert into placements (id, handle_sha256, order_id, package_id, state,
+			failure_reason, refundable, terminated_at, key_id, needs_secrets, payer)
+		values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9, $10)`,
+		p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
+		failed, nullIfEmpty(p.KeyID), p.NeedsSecrets, nullIfEmpty(p.Payer))
+	if err != nil {
+		return Placement{}, fmt.Errorf("insert placement: %w", err)
+	}
+	return s.PlacementByID(ctx, p.ID)
 }
 
 // RecordAttempt stores an attempt, replacing an earlier record of the same attempt number
@@ -496,6 +542,15 @@ func (s *Store) HasExtendOrder(
 func (s *Store) ExtendDeadline(
 	ctx context.Context, orderID string, placementID uuid.UUID, by time.Duration,
 ) (Placement, bool, error) {
+	return s.ExtendWithOrder(ctx, Order{ID: orderID, PlacementID: placementID}, by)
+}
+
+// ExtendWithOrder is ExtendDeadline recording the extend order's payer and package share
+func (s *Store) ExtendWithOrder(
+	ctx context.Context, o Order, by time.Duration,
+) (Placement, bool, error) {
+	o.Kind = OrderExtend
+	placementID := o.PlacementID
 	var out Placement
 	var applied bool
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
@@ -505,29 +560,25 @@ func (s *Store) ExtendDeadline(
 			return err
 		}
 		out = cur
-		tag, err := tx.Exec(ctx, `
-			insert into orders (order_id, kind, placement_id) values ($1, $2, $3)
-			on conflict (order_id) do nothing`, orderID, OrderExtend, placementID)
+		owner, inserted, err := ts.InsertOrder(ctx, o)
 		if err != nil {
 			return fmt.Errorf("insert extend order: %w", err)
 		}
-		if tag.RowsAffected() == 0 {
-			var kind string
-			var owner uuid.UUID
-			err := tx.QueryRow(ctx,
-				`select kind, placement_id from orders where order_id = $1`,
-				orderID).Scan(&kind, &owner)
+		if !inserted {
+			kind := ""
+			err := tx.QueryRow(ctx, `select kind from orders where order_id = $1`, o.ID).
+				Scan(&kind)
 			if err != nil {
 				return fmt.Errorf("select order: %w", err)
 			}
 			if kind != OrderExtend || owner != placementID {
 				return fmt.Errorf("order %s already used as %s for %s: %w",
-					orderID, kind, owner, ErrStateConflict)
+					o.ID, kind, owner, ErrStateConflict)
 			}
 			out, err = ts.PlacementByID(ctx, placementID)
 			return err
 		}
-		tag, err = tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			update placements set deadline = deadline + make_interval(secs => $2)
 			where id = $1 and state = $3`, placementID, by.Seconds(), PlacementReady)
 		if err != nil {

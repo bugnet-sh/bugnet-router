@@ -36,6 +36,11 @@
 // key for a placement in its sshd once per key, through ssh-up or, for Boat's own sshd, through
 // the provider, both one replica at a time under an advisory lock per placement. The end of a
 // placement forgets its gateway keys.
+//
+// Create and Extend first decide the payer an order counts under, then check it under that
+// payer's transaction lock in the transaction that records the order. A blocked payer is refused
+// with nothing recorded, and a start over the wallet's cap or start buckets is recorded failed and
+// refundable, as CP 7.7 and 7.9 say.
 package saga
 
 import (
@@ -52,6 +57,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
@@ -72,7 +78,10 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
+	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
 // Errors the API maps to status codes
@@ -165,6 +174,8 @@ type Deps struct {
 	Boot BootSettings
 	// SSH holds what each sandbox's ssh-up spec carries
 	SSH SSHSettings
+	// Wallets are the payer and wallet settings, a zero limit taking its default
+	Wallets config.Wallets
 }
 
 // Saga runs placements from order to teardown
@@ -175,6 +186,12 @@ type Saga struct {
 	gates    singleflight.Group // keyed by placement, so racing gate openings share one run
 	meter    *budget.Meter
 	keyID    string // the newest data-plane root's id, empty without keys
+	w        config.Wallets
+	guard    wallet.Guard
+	limits   *ratelimit.Limiter
+	wallets  *wallets.Store
+	// unguardedAt is when step 4 of the payer decision was last logged, in Unix nanoseconds
+	unguardedAt atomic.Int64
 }
 
 var errNoKeys = errors.New("saga: no data-plane keys to create a placement under")
@@ -193,7 +210,17 @@ func New(deps Deps) *Saga {
 	if deps.DeploymentID == "" {
 		deps.DeploymentID = defaultDeployment
 	}
-	s := &Saga{d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget)}
+	w := deps.Wallets.OrDefaults()
+	s := &Saga{
+		d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget), w: w,
+		guard:  wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
+		limits: ratelimit.New(deps.Valkey, deps.Prefix, 0, 0),
+		wallets: wallets.New(deps.Store, wallets.Settings{
+			Facilitators: w.FacilitatorAddresses, StrikeThreshold: w.StrikeThreshold,
+			StrikeWindow: w.StrikeWindow, StrikeBlockFor: w.StrikeBlockFor,
+			EmitEvents: w.EmitEvents, Now: deps.Now,
+		}),
+	}
 	if roots := deps.Keys.Roots(); len(roots) > 0 {
 		s.keyID = roots[0].ID
 	}
@@ -224,8 +251,8 @@ func (s *Saga) Create(
 	}
 	h, sha := handle.Derive(s.d.HandleKey, c.OrderID)
 	np := store.NewPlacement{
-		HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
-		NeedsSecrets: req.Secrets,
+		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
+		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
@@ -234,7 +261,7 @@ func (s *Saga) Create(
 	case err != nil:
 		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
 	}
-	p, created, err := s.record(ctx, np)
+	p, created, wait, err := s.record(ctx, c, np)
 	if err != nil {
 		return store.Placement{}, "", fmt.Errorf("record placement: %w", err)
 	}
@@ -242,11 +269,25 @@ func (s *Saga) Create(
 		return store.Placement{}, "", fmt.Errorf(
 			"%w: order %s belongs to another placement", ErrBadToken, c.OrderID)
 	}
-	if p.State == store.PlacementFailed && p.FailureReason == ReasonNoCandidate {
-		if created {
-			s.publish(ctx, newEvent(p, ReasonNoCandidate))
+	if p.State == store.PlacementFailed {
+		var refusal error
+		switch p.FailureReason {
+		case ReasonNoCandidate:
+			refusal = fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
+		case ReasonWalletBusy:
+			refusal = ErrWalletBusy
+		case ReasonWalletRateLimited:
+			if !created {
+				wait = s.startWait(ctx, p.Payer)
+			}
+			refusal = &WaitError{Wait: wait}
 		}
-		return p, h, fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
+		if refusal != nil {
+			if created {
+				s.publish(ctx, newEvent(p, p.FailureReason))
+			}
+			return p, h, refusal
+		}
 	}
 	if created {
 		s.wg.Add(1)
@@ -258,19 +299,53 @@ func (s *Saga) Create(
 	return p, h, nil
 }
 
-// record stores the order and its placement, with the failed event when it starts out failed
-func (s *Saga) record(ctx context.Context, np store.NewPlacement) (store.Placement, bool, error) {
+// record stores the order and its placement under the payer's lock, as CP 7.7 says
+func (s *Saga) record(
+	ctx context.Context, c ordertoken.Claims, np store.NewPlacement,
+) (store.Placement, bool, time.Duration, error) {
 	var p store.Placement
 	var created bool
+	var wait time.Duration
 	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := s.d.Store.Tx(tx)
 		var err error
-		p, created, err = s.d.Store.Tx(tx).CreatePlacement(ctx, np)
-		if err != nil || !created || np.FailureReason == "" {
+		if np.Payer, err = s.payer(ctx, ts, c); err != nil {
 			return err
+		}
+		if err := ts.LockWallets(ctx, np.Payer); err != nil {
+			return err
+		}
+		// The order keeps the claim and the placement the decision (CP 7.1, 7.5)
+		id, inserted, err := ts.InsertOrder(ctx, store.Order{
+			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
+			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros,
+		})
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			// A retried order answers as it did, with no check run again
+			p, err = ts.PlacementByID(ctx, id)
+			return err
+		}
+		if wait, err = s.checkStart(ctx, tx, &np); err != nil {
+			return err
+		}
+		if np.Payer != "" {
+			if err := ts.SeeWallet(ctx, np.Payer, s.now()); err != nil {
+				return err
+			}
+		}
+		if p, err = ts.InsertPlacement(ctx, np); err != nil {
+			return err
+		}
+		created = true
+		if np.FailureReason == "" {
+			return nil
 		}
 		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, newEvent(p, np.FailureReason))
 	})
-	return p, created, err
+	return p, created, wait, err
 }
 
 func (s *Saga) inputs(
@@ -299,8 +374,9 @@ func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
 	if err != nil {
 		return pkg, err
 	}
-	if c.AmountMicros < pkg.PriceMicros {
-		return pkg, fmt.Errorf("%w: paid %d, %s costs %d", ErrUnderpaid, c.AmountMicros, pkg.ID,
+	// The x402 allowance rides along in a start's amount and never pays for the package
+	if paid := c.PackageMicros(); paid < pkg.PriceMicros {
+		return pkg, fmt.Errorf("%w: paid %d, %s costs %d", ErrUnderpaid, paid, pkg.ID,
 			pkg.PriceMicros)
 	}
 	return pkg, nil
@@ -757,11 +833,32 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	id := p.ID
 	// The lifetime is set inside the transaction so a refusal also takes back the extension
 	err = s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
-		var err error
 		ts := s.d.Store.Tx(tx)
-		p, applied, err = ts.ExtendDeadline(ctx, c.OrderID, id, by)
+		payer, err := s.payer(ctx, ts, c)
+		if err != nil {
+			return err
+		}
+		// Without a payer nothing below is keyed on the wallet, so no lock is held across
+		// SetLifetime that every create without a payer would wait on
+		if payer != "" {
+			if err := ts.LockWallets(ctx, payer); err != nil {
+				return err
+			}
+			if err := s.checkExtendPayer(ctx, tx, c.OrderID, payer); err != nil {
+				return err
+			}
+		}
+		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
+			ID: c.OrderID, PlacementID: id, Payer: c.Payer, FeePayer: c.FeePayer,
+			AmountMicros: c.PackageMicros(),
+		}, by)
 		if err != nil || !applied {
 			return err
+		}
+		if payer != "" {
+			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {
+				return err
+			}
 		}
 		edge, egress, err := s.addBudgets(ctx, ts, id, pkg)
 		if err != nil {

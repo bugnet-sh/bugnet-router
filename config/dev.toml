@@ -31,6 +31,12 @@ egress_host = "egress.dev.bugnet.sh"
 [x402]
 enabled = false               # the kill switch, off here until the x402 switch-on
 
+[wallets]                     # the payer path on, so bugnet-dev create --payer exercises it
+use_payer = true              # dev-up.sh's .env.keys holds BUGNET_PAYMENTS_ROUTER_TOKEN
+emit_events = true
+anonymous_max_concurrent = 1000   # most dev tokens carry no payer
+facilitator_addresses = ["DevFaci1itatorAddress1111111111111111111111"]
+
 [hardening]
 pool_list = "config/dev-mining-pools.txt"   # a stand-in, so /monitor shows no pool list line
 

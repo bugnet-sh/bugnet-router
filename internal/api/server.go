@@ -6,18 +6,21 @@
 // PaymentsService. A service admits only its own token, and one whose token is empty admits no
 // calls. RPCs not built yet answer Unimplemented.
 //
-// Placements go through the saga, commands through the jobs service and file operations
-// straight to the placement's provider. Exec, CancelJob and each file operation first spend a
-// token of the placement's operation bucket, which every replica shares in Valkey. GetPlacement
-// and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
-// server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
-// only delays a reader until its next read. The edge-side services meter usage against each
-// placement's budgets, answer lease checks and serve the edge event stream.
+// Placements go through the saga, commands through the jobs service and file operations straight to
+// the placement's provider. Exec, CancelJob and each file operation first spend a token of the
+// placement's operation bucket, which every replica shares in Valkey, and of its payer's and its
+// provider account's buckets when they have one, from all of them or none. GetPlacement and
+// WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per server
+// fans out to the waiting requests. Each wake-up re-reads the store, so a lost message only delays
+// a reader until its next read. The edge-side services meter usage against each placement's
+// budgets, answer lease checks and serve the edge event stream.
 //
 // CreatePreview answers the derived link of one port, opening or repairing the placement's gate
 // first, and the edge resolves it with ResolvePreview and asks for a repair with RepairPreview,
 // which runs at most once a minute per placement. OperatorService's RevokePreview moves a
 // preview's generation, so every earlier link dies and its port gets no new one.
+// OperatorService also blocks, lifts and lists wallets, and PaymentsService's CheckPayer answers
+// what an order of a payer would meet now, writing nothing.
 //
 // The secret writes check a placement's host rules and counts under its row lock, store the
 // sealed value and insert one apply_secrets job in that transaction, then wait up to
@@ -75,6 +78,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
+	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
 const (
@@ -137,6 +142,10 @@ type Deps struct {
 	// SSHHost and SSHPort name the gateway, and AddSshKey refuses every call while it is empty
 	SSHHost string
 	SSHPort int
+	// Wallets are the payer and wallet settings, a zero limit taking its default
+	Wallets config.Wallets
+	// ProviderOps is each provider account's user operations a second, absent for no bucket
+	ProviderOps map[string]int
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -156,6 +165,9 @@ type Server struct {
 	life   context.Context // ends when Close is called, transfer streams run on it
 	end    context.CancelFunc
 	done   chan struct{}
+	w      config.Wallets
+	guard  wallet.Guard
+	wl     *wallets.Store
 }
 
 var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
@@ -170,7 +182,15 @@ func New(deps Deps) *Server {
 	ctx, cancel := context.WithCancel(life)
 	x := transferSettings(deps.Transfers)
 	events := edgeevents.New(deps.Valkey, deps.Prefix, deps.Log)
+	w := deps.Wallets.OrDefaults()
 	s := &Server{
+		w:     w,
+		guard: wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
+		wl: wallets.New(deps.Store, wallets.Settings{
+			Facilitators: w.FacilitatorAddresses, StrikeThreshold: w.StrikeThreshold,
+			StrikeWindow: w.StrikeWindow, StrikeBlockFor: w.StrikeBlockFor,
+			EmitEvents: w.EmitEvents,
+		}),
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
 		ops:    ops,
@@ -536,11 +556,29 @@ func (s *Server) home(p store.Placement) (provider.Provider, error) {
 	return prov, nil
 }
 
-// spend takes one of the placement's operation tokens, refusing the operation when none is left
+// spend takes a token from the placement's, payer's and provider account's buckets, or from none
 func (s *Server) spend(ctx context.Context, p store.Placement) error {
+	buckets := []ratelimit.Bucket{s.ops.Ops(p.ID)}
+	if p.Payer != "" {
+		buckets = append(buckets, wallets.OpsBucket(s.w, p.Payer))
+	}
+	if rate := s.d.ProviderOps[p.Provider]; rate > 0 {
+		buckets = append(buckets, wallets.AccountBucket(p.Provider, rate))
+	}
+	return s.take(ctx, buckets)
+}
+
+// spendPlacement takes a token from the placement's bucket alone, for a call a stranger holding
+// a transfer URL can make, so it never drains the payer's or the account's buckets
+func (s *Server) spendPlacement(ctx context.Context, p store.Placement) error {
+	return s.take(ctx, []ratelimit.Bucket{s.ops.Ops(p.ID)})
+}
+
+// take spends one token from every bucket or from none
+func (s *Server) take(ctx context.Context, buckets []ratelimit.Bucket) error {
 	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
 	defer cancel()
-	ok, wait, err := s.ops.Take(tctx, p.ID)
+	ok, wait, err := s.ops.TakeAll(tctx, buckets)
 	switch {
 	case err != nil && gaveUp(ctx):
 		return cmp.Or(ctx.Err(), context.DeadlineExceeded)
@@ -614,7 +652,15 @@ func (s *Server) WatchJob(
 	if err != nil {
 		return err
 	}
-	job, err := s.job(ctx, m.GetHandle(), m.GetJobId())
+	// An attach takes an operation token, so a reconnect loop runs into the same limits (CP 7.6)
+	p, err := s.placement(ctx, m.GetHandle())
+	if err == nil {
+		err = s.spend(ctx, p)
+	}
+	var job store.Job
+	if err == nil {
+		job, err = s.jobOf(ctx, p, m.GetJobId())
+	}
 	if err != nil {
 		return s.status(err)
 	}
@@ -685,12 +731,8 @@ func (s *Server) CancelJob(
 	return connect.NewResponse(&routerv1.CancelJobResponse{State: jobState(state)}), nil
 }
 
-// job returns a job of the handle's placement, a job of any other placement being not found
-func (s *Server) job(ctx context.Context, h, jobID string) (store.Job, error) {
-	p, err := s.placement(ctx, h)
-	if err != nil {
-		return store.Job{}, err
-	}
+// jobOf returns a job of the placement, a job of any other placement being not found
+func (s *Server) jobOf(ctx context.Context, p store.Placement, jobID string) (store.Job, error) {
 	job, err := s.d.Store.JobByID(ctx, jobID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && job.PlacementID != p.ID) {
 		return store.Job{}, jobs.ErrNotFound
@@ -829,6 +871,7 @@ func placementMsg(p store.Placement) *routerv1.Placement {
 		FailureReason: p.FailureReason,
 		Refundable:    p.Refundable,
 		SshAlias:      p.SSHAlias,
+		PaidMicros:    p.PaidMicros,
 	}
 	if p.Deadline != nil {
 		out.Deadline = timestamppb.New(*p.Deadline)

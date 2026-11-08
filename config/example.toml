@@ -115,6 +115,24 @@ shared_hosting_suffixes = ["workers.dev", "onrender.com", "vercel.app", "netlify
 allowed_shared_hosts = []              # filled at deploy from the reviewed index, never by hand
 blocked_hosts = []                     # refused at enable and dropped from ResolveTunnel
 
+[wallets]
+use_payer = false                      # needs BUGNET_PAYMENTS_ROUTER_TOKEN and emit_events
+require_payer = false                  # true refuses start orders without a payer
+max_concurrent = 5                     # placements placing, ready or terminating per wallet
+starts_per_hour = 30                   # a token bucket per wallet, with starts_burst
+starts_burst = 5
+starts_per_day = 200                   # a second bucket per wallet
+anonymous_max_concurrent = 20          # every placement without a payer, together
+ops_per_second = 20                    # user operations per wallet, beside each sandbox's own
+ops_burst = 40
+refusals_per_hour = 10                 # refused orders per wallet before a block
+refusal_block_for = "1h"
+facilitator_addresses = []             # base58, a payer equal to one of these counts as absent
+emit_events = false                    # wallet.blocked and wallet.unblocked to Payments
+strike_threshold = 2                   # strikes inside strike_window that block a wallet
+strike_window = "24h"
+strike_block_for = "168h"
+
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",
@@ -134,12 +152,14 @@ endpoint = ""                 # overrides the region's endpoint
 gate_route = "default"        # the pinned default proxy, or "subdomain" for a bn proxy to the gate
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
+ops_per_second = 0            # user operations on the account a second, 0 for no bucket
 
 [e2b]
 domain = ""                   # e2b.app when empty
 max_lifetime = ""             # Go duration, empty = adapter default (1h Hobby), "24h" on Pro
 harden_required = true
 harden_allow = []
+ops_per_second = 0
 
 # No templates by default, and E2B is never chosen without one. These two tables are the builds
 # deploy/e2b makes, one per size, keep them once they are built on the E2B account.
@@ -161,6 +181,7 @@ disk_gib = 10
 region = "fra"                # region every Koyeb sandbox runs in
 harden_required = true
 harden_allow = []
+ops_per_second = 0
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
 
@@ -168,5 +189,6 @@ harden_allow = []
 ssh_path = "gate"             # or "native", only if the gate path fails on Boat
 harden_required = true
 harden_allow = []
+ops_per_second = 50           # 3,000 a minute, inside Boat's 10,000 per 60 s per IP with previews
 
 [boat.types]                  # size = machine type, every type when empty

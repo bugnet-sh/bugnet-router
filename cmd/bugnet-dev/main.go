@@ -7,9 +7,9 @@
 // packages_file. Only commands that need a setting read the file. exec and watch write a job's
 // output to stdout and stderr as it arrives and exit with the job's code. transfer prints a
 // transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
-// public key, refusing a private key file before anything is sent. revoke-preview calls
-// OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy and
-// bugnet-certs files from deploy/vps.
+// public key, refusing a private key file before anything is sent. revoke-preview and wallet
+// call OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy
+// and bugnet-certs files from deploy/vps.
 package main
 
 import (
@@ -42,6 +42,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
 
 const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
@@ -49,9 +50,10 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   keys                                   print fresh secrets as KEY=value lines
   pubkey [--priv K]                      print the order token public key of a private key
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
-        [--priv K]                       print a signed order token
-  create --package P [--order O] [--token T]
-                                         create a placement and wait until it is ready
+        [--priv K] [--payer A] [--fee-payer A] [--allowance-micros N]
+                                         print a signed order token
+  create --package P [--order O] [--token T] [--payer A] [--fee-payer A]
+         [--allowance-micros N]          create a placement and wait until it is ready
   get --handle H                         print a placement
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
@@ -74,6 +76,14 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   ssh-key --handle H --public-key FILE [--identity-file P] [--known-hosts-file P]
                                          register a public key on a placement and print the
                                          ssh command, known_hosts lines and an ssh_config stanza
+  wallet block PAYER --reason R [--until T] [--stop-live] [--actor A]
+                                         block a payer's new orders, until a time or a
+                                         duration from now, or until lifted
+  wallet unblock PAYER [--note N] [--actor A]
+                                         lift a payer's block
+  wallet show PAYER                      print a wallet, its live placements and its events
+  wallet list [--blocked] [--limit N] [--page TOKEN]
+                                         list wallets in payer order
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -90,7 +100,8 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
-  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, which calls OperatorService
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview and wallet, which call
+                            OperatorService
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
 
@@ -137,6 +148,7 @@ func run(
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
+		"wallet": c.wallet,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -297,6 +309,17 @@ type order struct {
 	priced bool // amount was given, so the catalog is not read
 	ttl    time.Duration
 	priv   string // BUGNET_ORDER_PRIVATE_KEY when empty
+	// payer, feePayer and allowance are the payment claims, each left out when empty or 0
+	payer     string
+	feePayer  string
+	allowance int64
+}
+
+// paymentFlags adds --payer, --fee-payer and --allowance-micros to fs
+func paymentFlags(fs *flag.FlagSet, o *order) {
+	fs.StringVar(&o.payer, "payer", "", "base58 Solana address that paid")
+	fs.StringVar(&o.feePayer, "fee-payer", "", "base58 address of the facilitator's fee payer")
+	fs.Int64Var(&o.allowance, "allowance-micros", 0, "x402 allowance inside the amount, start only")
 }
 
 func (c *cli) token(args []string) error {
@@ -309,6 +332,7 @@ func (c *cli) token(args []string) error {
 	fs.Int64Var(&o.amount, "amount", 0, "paid micro-USD")
 	fs.DurationVar(&o.ttl, "ttl", defaultTTL, "token lifetime")
 	fs.StringVar(&o.priv, "priv", "", "base64 Ed25519 private key")
+	paymentFlags(fs, &o)
 	if err := parse(fs, args, false); err != nil {
 		return err
 	}
@@ -331,9 +355,13 @@ func (c *cli) sign(o order) (string, error) {
 	if o.ttl <= 0 {
 		return "", fmt.Errorf("%w: --ttl must be positive", errUsage)
 	}
+	if err := o.checkPayment(); err != nil {
+		return "", err
+	}
 	claims := ordertoken.Claims{
 		OrderID: o.id, Kind: o.kind, PackageID: o.pkg, AmountMicros: o.amount,
-		ExpiresAt: time.Now().UTC().Add(o.ttl),
+		ExpiresAt: time.Now().UTC().Add(o.ttl), Payer: o.payer, FeePayer: o.feePayer,
+		AllowanceMicros: o.allowance,
 	}
 	if claims.OrderID == "" {
 		claims.OrderID = "dev-" + strings.ToLower(rand.Text())
@@ -356,13 +384,32 @@ func (c *cli) sign(o order) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		claims.AmountMicros = price
+		// The allowance rides inside the amount, so the package keeps its full price
+		claims.AmountMicros = price + o.allowance
 	}
 	key, err := c.privateKey(o.priv)
 	if err != nil {
 		return "", err
 	}
 	return ordertoken.Sign(key, claims)
+}
+
+// checkPayment refuses payment claims the router would refuse
+func (o order) checkPayment() error {
+	for _, f := range [][2]string{{"payer", o.payer}, {"fee-payer", o.feePayer}} {
+		if _, err := wallet.ParseSolana(f[1]); f[1] != "" && err != nil {
+			return fmt.Errorf("%w: --%s must be a canonical base58 Solana address", errUsage, f[0])
+		}
+	}
+	switch {
+	case o.allowance < 0:
+		return fmt.Errorf("%w: --allowance-micros must not be negative", errUsage)
+	case o.allowance > 0 && o.kind != ordertoken.KindStart:
+		return fmt.Errorf("%w: --allowance-micros is only for start tokens", errUsage)
+	case o.allowance > 0 && o.priced && o.allowance > o.amount:
+		return fmt.Errorf("%w: --allowance-micros must not be over --amount", errUsage)
+	}
+	return nil
 }
 
 func (c *cli) price(pkg string) (int64, error) {
@@ -425,6 +472,7 @@ func (c *cli) create(args []string) error {
 	fs.StringVar(&o.pkg, "package", "", "package id")
 	fs.StringVar(&o.id, "order", "", "order id")
 	given := fs.String("token", "", "order token")
+	paymentFlags(fs, &o)
 	if err := parse(fs, args, false); err != nil {
 		return err
 	}
@@ -842,6 +890,9 @@ func (c *cli) printPlacement(p *routerv1.Placement) error {
 	if p.GetFailureReason() != "" {
 		kv = append(kv, [2]string{"failure_reason", p.GetFailureReason()},
 			[2]string{"refundable", strconv.FormatBool(p.GetRefundable())})
+	}
+	if p.GetPaidMicros() != 0 {
+		kv = append(kv, [2]string{"paid_micros", strconv.FormatInt(p.GetPaidMicros(), 10)})
 	}
 	return c.print(kv)
 }

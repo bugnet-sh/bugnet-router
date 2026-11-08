@@ -19,6 +19,33 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
+func TestStartRefusesThePayerClaimWithoutPayments(t *testing.T) {
+	for _, c := range []struct {
+		name, token string
+		events      bool
+		want        string
+	}{
+		{"no token", "", true, "BUGNET_PAYMENTS_ROUTER_TOKEN"},
+		{"no events", "payments-token-0123456789abcdef0123456789", false, "wallets.emit_events"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Config{DatabaseURL: "postgres://localhost:1/unused",
+				PaymentsToken: c.token}
+			cfg.Wallets.UsePayer, cfg.Wallets.EmitEvents = true, c.events
+			err := serve(t.Context(), discard, cfg, nil)
+			if err == nil || !strings.Contains(err.Error(), "wallets.use_payer") ||
+				!strings.Contains(err.Error(), c.want) {
+				t.Fatalf("serve gave %v, want wallets.use_payer and %s named", err, c.want)
+			}
+		})
+	}
+	cfg := config.Config{PaymentsToken: "payments-token-0123456789abcdef0123456789"}
+	cfg.Wallets.UsePayer, cfg.Wallets.EmitEvents = true, true
+	if err := checkWallets(discard, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStartRefusesSecretsWithoutCA(t *testing.T) {
 	cfg := config.Config{DatabaseURL: "postgres://localhost:1/unused"}
 	cfg.Secrets.Providers = []string{"e2b"}

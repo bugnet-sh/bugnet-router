@@ -9,6 +9,9 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/bugnet-sh/bugnet-router/internal/solana"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
 
 // Kind says whether a token starts a sandbox or extends one
@@ -43,7 +46,18 @@ type Claims struct {
 	AmountMicros int64     `json:"amount_micros"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	HandleSHA256 string    `json:"handle_sha256,omitempty"` // hex, extend tokens only
+	// Payer is the base58 Solana address that paid, empty when Payments sent none
+	Payer string `json:"payer,omitempty"`
+	// FeePayer is the payment requirements' extra.feePayer, the facilitator's address
+	FeePayer string `json:"fee_payer,omitempty"`
+	// Tx is the base58 signature of the payment's transaction
+	Tx string `json:"tx,omitempty"`
+	// AllowanceMicros is the x402 allowance inside AmountMicros, start tokens only
+	AllowanceMicros int64 `json:"allowance_micros,omitempty"`
 }
+
+// PackageMicros is what the order paid for its package, the x402 allowance left out
+func (c Claims) PackageMicros() int64 { return c.AmountMicros - c.AllowanceMicros }
 
 // Sign encodes and signs claims
 func Sign(priv ed25519.PrivateKey, c Claims) (string, error) {
@@ -86,11 +100,28 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 	if c.Kind != KindStart && c.Kind != KindExtend {
 		return Claims{}, ErrBadKind
 	}
-	if c.Kind == KindExtend && c.HandleSHA256 == "" {
+	if c.Kind == KindExtend && c.HandleSHA256 == "" || !payment(c) {
 		return Claims{}, ErrMalformed
 	}
 	if !now.Before(c.ExpiresAt) {
 		return Claims{}, ErrExpired
 	}
 	return c, nil
+}
+
+// payment reports whether the payment claims are well formed, each one optional
+func payment(c Claims) bool {
+	for _, addr := range []string{c.Payer, c.FeePayer} {
+		if _, err := wallet.ParseSolana(addr); addr != "" && err != nil {
+			return false
+		}
+	}
+	// A signature is checked by decoding, since one of 64 bytes may be 86 to 88 characters
+	if _, ok := solana.Signature(c.Tx); c.Tx != "" && !ok {
+		return false
+	}
+	if c.AllowanceMicros != 0 && c.Kind != KindStart {
+		return false
+	}
+	return c.AllowanceMicros >= 0 && c.AllowanceMicros <= c.AmountMicros
 }

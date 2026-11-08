@@ -208,6 +208,10 @@ type options struct {
 	noSSHHost bool
 	// ssh are the SSH settings, sshDefaults' fields where zero
 	ssh config.SSH
+	// wallets are the saga's and API server's wallet settings, each zero limit at its default
+	wallets config.Wallets
+	// providerOps is each provider account's operations a second
+	providerOps map[string]int
 }
 
 type env struct {
@@ -296,7 +300,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
-		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath},
+		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
@@ -347,6 +351,7 @@ func newEnv(t *testing.T, opts options) *env {
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
 		HostRules: hostRules(), SSH: sshSettings(opts.ssh), SSHHost: apiSSHHost, SSHPort: 22,
+		Wallets: opts.wallets, ProviderOps: opts.providerOps,
 	})
 	t.Cleanup(srv.Close)
 
@@ -1830,6 +1835,10 @@ func (e *env) sandboxOps(t *testing.T) map[string]func(h string) error {
 				&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
 			return err
 		},
+		"WatchJob": func(h string) error {
+			_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
+			return err
+		},
 		"CreatePreview": func(h string) error {
 			_, err := e.client.CreatePreview(ctx, connect.NewRequest(
 				&routerv1.CreatePreviewRequest{Handle: h, Port: 3000}))
@@ -1941,21 +1950,21 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		if err := e.watchFirst(t, busy); err != nil {
 			t.Fatalf("WatchPlacement %s: %v", when, err)
 		}
-		if err := watchErr(busy, job); err != nil {
-			t.Fatalf("WatchJob %s: %v", when, err)
-		}
-		wantCode(t, watchErr(busy, "j_nope"), connect.CodeNotFound)
 	}
 	for range burst + 1 {
 		uncounted("before the burst")
 	}
 
-	spend := []string{"WriteFile", "ReadFile", "ListFiles"}
-	for _, name := range spend[:burst] {
+	// An attach to a real job spends a token like the calls that touch the sandbox
+	if err := watchErr(busy, job); err != nil {
+		t.Fatalf("WatchJob within the burst: %v", err)
+	}
+	for _, name := range []string{"WriteFile", "ReadFile"} {
 		if err := ops[name](busy); err != nil {
 			t.Fatalf("%s within the burst: %v", name, err)
 		}
 	}
+	wantCode(t, watchErr(busy, job), connect.CodeResourceExhausted)
 	// A loaded machine may refill a token between calls, so each refusal starts on an empty bucket
 	drain := func() {
 		t.Helper()
@@ -2013,7 +2022,7 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 	}))
 	wantCode(t, err, connect.CodeInvalidArgument)
 
-	for _, name := range spend[:burst] {
+	for _, name := range []string{"WriteFile", "ReadFile", "ListFiles"} {
 		if err := ops[name](calm); err != nil {
 			t.Fatalf("%s on another placement: %v", name, err)
 		}

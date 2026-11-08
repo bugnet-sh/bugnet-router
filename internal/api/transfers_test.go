@@ -632,6 +632,32 @@ func TestTransferRPCsSpendOneOperation(t *testing.T) {
 	mustCode(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
 }
 
+func TestOpenTransferSpendsOnlyThePlacementBucket(t *testing.T) {
+	e := newEnv(t, options{
+		wallets:     payerWallets(func(w *config.Wallets) { w.OpsPerSecond, w.OpsBurst = 1, 2 }),
+		providerOps: map[string]int{"local": 1}, opsPerSecond: 1, opsBurst: 2,
+	})
+	h := e.readyPaid(t, payerA)
+	id := e.get(t, h, 0, 0).GetPlacementId()
+	m := e.mintOK(t, upload(h, "/root/f", 1))
+	ops, others := "ops:"+id, []string{"rl:wallet:ops:" + payerA, "rl:acct:local"}
+	// A missing key is a full bucket, and a take leaves the key for a second
+	for _, k := range append([]string{ops}, others...) {
+		if err := e.vk.Do(t.Context(), e.vk.B().Del().Key(e.prefix+k).Build()).Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.open(t, m, toSandbox)
+	if e.bucketTokens(t, ops) == "" {
+		t.Fatal("the open took nothing from the placement's bucket")
+	}
+	for _, k := range others {
+		if v := e.bucketTokens(t, k); v != "" {
+			t.Fatalf("the open took from %s, left %s", k, v)
+		}
+	}
+}
+
 func TestOpenTransferRefusesSpentBudget(t *testing.T) {
 	e := newEnv(t, options{})
 	h, p := e.readyPlacement(t)

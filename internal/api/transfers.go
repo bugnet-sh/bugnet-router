@@ -301,7 +301,7 @@ func (e *EdgeServer) OpenTransfer(
 	}
 	prov, err := s.home(p)
 	if err == nil {
-		err = s.spend(ctx, p)
+		err = s.spendPlacement(ctx, p)
 	}
 	if err != nil {
 		return nil, s.status(err)

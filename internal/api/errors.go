@@ -21,6 +21,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
+	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
 const (
@@ -65,6 +67,16 @@ const (
 	reasonBudgetSpent      = "BUDGET_SPENT"
 	reasonTooManyTransfers = "TOO_MANY_TRANSFERS"
 	reasonChecksumMismatch = "CHECKSUM_MISMATCH"
+)
+
+// Wallet reasons, named as CP 13.1 names them
+const (
+	reasonPayerInvalid       = "PAYER_INVALID"
+	reasonPayerRequired      = "PAYER_REQUIRED"
+	reasonWalletBlocked      = "WALLET_BLOCKED"
+	reasonWalletBusy         = "WALLET_BUSY"
+	reasonWalletRateLimited  = "WALLET_RATE_LIMITED"
+	reasonFacilitatorAddress = "FACILITATOR_ADDRESS"
 )
 
 // Preview reasons, named as DP 11.3 names them
@@ -113,6 +125,11 @@ var codes = []struct {
 	code   connect.Code
 	reason string
 }{
+	{saga.ErrPayerRequired, connect.CodePermissionDenied, reasonPayerRequired},
+	{saga.ErrWalletBlocked, connect.CodePermissionDenied, reasonWalletBlocked},
+	{saga.ErrWalletBusy, connect.CodeResourceExhausted, reasonWalletBusy},
+	{wallets.ErrFacilitator, connect.CodeFailedPrecondition, reasonFacilitatorAddress},
+	{wallet.ErrBadAddress, connect.CodeInvalidArgument, reasonPayerInvalid},
 	{saga.ErrBadToken, connect.CodePermissionDenied, ""},
 	{saga.ErrUnderpaid, connect.CodePermissionDenied, ""},
 	{saga.ErrHandleMismatch, connect.CodePermissionDenied, ""},
@@ -213,8 +230,12 @@ func withInfo(ce *connect.Error, reason string) *connect.Error {
 
 // rateLimited refuses a sandbox operation, saying how long until the placement may make another
 func rateLimited(wait time.Duration) error {
-	ce := withInfo(connect.NewError(connect.CodeResourceExhausted,
-		errors.New("too many sandbox operations, slow down")), reasonRateLimited)
+	return withRetry(withInfo(connect.NewError(connect.CodeResourceExhausted,
+		errors.New("too many sandbox operations, slow down")), reasonRateLimited), wait)
+}
+
+// withRetry attaches a google.rpc.RetryInfo holding wait to ce
+func withRetry(ce *connect.Error, wait time.Duration) *connect.Error {
 	d, err := connect.NewErrorDetail(&errdetails.RetryInfo{RetryDelay: durationpb.New(wait)})
 	if err == nil {
 		ce.AddDetail(d)
@@ -250,6 +271,10 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 	var refused *secrets.Refusal
 	if errors.As(err, &refused) {
 		return withInfo(connect.NewError(refused.Code, refused), refused.Reason)
+	}
+	if we, ok := errors.AsType[*saga.WaitError](err); ok {
+		return withRetry(withInfo(connect.NewError(connect.CodeResourceExhausted,
+			saga.ErrWalletRateLimited), reasonWalletRateLimited), we.Wait)
 	}
 	for _, c := range codes {
 		if !errors.Is(err, c.err) {

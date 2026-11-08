@@ -22,6 +22,9 @@ is unset before. A placement that fails at once, with no provider for its order,
 A terminating or terminated placement's `termination_reason` is a stable code such as `stop` or
 `deadline`. It is empty in every other state. A failed placement says why in `failure_reason` alone.
 
+A `Placement`'s `paid_micros` sums what the start order and every applied extension paid for the
+package, the x402 allowance left out. It is on every answer, from the first.
+
 ## Layout
 
 | Path | What it holds |
@@ -46,6 +49,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | `internal/solana` | The one base58 decoder, for Solana keys and signatures |
 | `internal/bytesize` | Byte sizes such as `8MiB` in settings and the catalog |
 | `internal/ordertoken`, `internal/handle` | Order tokens and sandbox handles |
+| `internal/wallet`, `internal/wallets` | Payer addresses and the payer decision, wallet blocks, strikes and buckets |
 | `internal/dpkeys` | Data-plane tokens, keys and grants derived from the root keys, and sealed provider credentials |
 | `internal/budget`, `internal/edgeevents` | Edge and egress budgets in Valkey, and the edge event stream |
 | `internal/transfer` | Transfer records and claims in Valkey, path resolution and staging through `bugnet-run` |
@@ -270,6 +274,12 @@ BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'p
 printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN --host huggingface.co
 bin/bugnet-dev ssh-key --handle sbx_... --public-key ~/.ssh/id_ed25519.pub
 bin/bugnet-dev stop --handle sbx_...
+bin/bugnet-dev create --package dev-small-10m --payer <base58> \
+    --fee-payer DevFaci1itatorAddress1111111111111111111111
+bin/bugnet-dev wallet show <base58>
+bin/bugnet-dev wallet block <base58> --reason 'test' --until 1h
+bin/bugnet-dev wallet unblock <base58> --note 'done'
+bin/bugnet-dev wallet list --blocked
 ```
 
 `bugnet-dev` reads `config/dev.toml`, or the file given with `--config FILE` before the command,
@@ -288,16 +298,22 @@ optional `--sha256`, or a download of a sandbox path.
 `preview` prints the preview link of one port, its id, the paid deadline and whether something
 listened on the port when the router asked. `revoke-preview` calls `OperatorService` with
 `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else `USER`, and kills every link of that
-preview for good. `secret` reads a value from stdin, seals it locally with
-`crypto_box_seal` to the newest key `GetSecretSealingKey` lists, bound to the placement, name,
-hosts and header names as DP 10.2 says, and puts it with `PutSecret`. It prints the secret's state,
-never the value. It trusts the router's key list, as a dev tool may, where the page and the bridge
-pin their keys.
-`ssh-key` registers the public key in `--public-key FILE` on a placement and prints its alias,
-the gateway's host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command,
-the paid deadline and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a
-private key before calling the router. `--identity-file` and `--known-hosts-file` name the paths
-the command and stanza use. `get` and `create` print the placement's `ssh_alias` once it has one.
+preview for good. `secret` reads a value from stdin, seals it locally with `crypto_box_seal` to the
+newest key `GetSecretSealingKey` lists, bound to the placement, name, hosts and header names as DP
+10.2 says, and puts it with `PutSecret`. It prints the secret's state, never the value. It trusts
+the router's key list, as a dev tool may, where the page and the bridge pin their keys. `ssh-key`
+registers the public key in `--public-key FILE` on a placement and prints its alias, the gateway's
+host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command, the paid deadline
+and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a private key before
+calling the router. `--identity-file` and `--known-hosts-file` name the paths the command and stanza
+use. `get` and `create` print the placement's `ssh_alias` once it has one. `token` and `create` take
+`--payer`, `--fee-payer` and `--allowance-micros`, which set those claims. Without `--amount` the
+allowance is added to the catalog price, so the package stays paid. `config/dev.toml` turns the
+payer claim on with one test facilitator address, so `create --payer` takes the wallet path, and
+raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`, `show`
+and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else
+`USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts until
+an operator lifts it.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -505,6 +521,33 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 `allowed_shared_hosts`, which the deploy writes from the reviewed hosts of the gateway's
 `index.json`, never by hand. `blocked_hosts` is the operator's list.
 
+### Wallets
+
+`[wallets]` holds the payer claim, the per-wallet limits, blocks and strikes (see
+[Wallets](#wallets-1)). Counts and rates take 1 to 1000000, durations a positive Go duration.
+
+| Key | Default | Takes |
+| --- | --- | --- |
+| `use_payer` | `false` | `false` counts every order as having no payer. `true` needs `BUGNET_PAYMENTS_ROUTER_TOKEN` and `emit_events` |
+| `require_payer` | `false` | `true` refuses start orders that count as having no payer, and needs `use_payer` |
+| `max_concurrent` | `5` | Placements placing, ready or terminating per wallet |
+| `starts_per_hour`, `starts_burst` | `30`, `5` | A start bucket per wallet |
+| `starts_per_day` | `200` | A second start bucket per wallet, its burst the same |
+| `anonymous_max_concurrent` | `20` | Every placement without a payer, together |
+| `ops_per_second`, `ops_burst` | `20`, `40` | User operations per wallet |
+| `refusals_per_hour` | `10` | Refused orders per wallet before a block |
+| `refusal_block_for` | `"1h"` | How long that block lasts |
+| `facilitator_addresses` | `[]` | Canonical base58 addresses that count as no payer and are never blocked |
+| `emit_events` | `false` | `wallet.blocked` and `wallet.unblocked` to Payments |
+| `strike_threshold`, `strike_window`, `strike_block_for` | `2`, `"24h"`, `"168h"` | Strikes inside the window that block a wallet, and for how long |
+
+`[boat]`, `[e2b]`, `[boxd]` and `[koyeb]` each take `ops_per_second`, the user operations a
+second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
+
+`router-api` refuses to start with `use_payer = true` while `BUGNET_PAYMENTS_ROUTER_TOKEN` is
+empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
+block. With `use_payer = false` it logs once at start that every order counts as having no payer.
+
 ## Prices and availability
 
 `Estimate` lists every start package by price, each with `available` where a provider could host
@@ -576,19 +619,77 @@ stream reports no OOM kill, since the job row does not keep it.
 
 ## Operation limit
 
-Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer`,
-`CreatePreview`, `AddSshKey`, `OpenTransfer`, `CreateSecretLink`, `CreateSecretPutGrant`,
-`PutSecret` and `PutBridgeSecret` calls spend one token from a bucket that every `router-api`
-replica shares, `ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst`
-tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10
-by default, and expires once it is full again. A call that finds it empty answers
-`ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait until
-the next token. Other calls spend nothing, nor does a request the router itself finds invalid, an
-unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
+Each placement's `Exec`, `WatchJob`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`,
+`CreateTransfer`, `CreatePreview`, `AddSshKey`, `OpenTransfer`, `CreateSecretLink`,
+`CreateSecretPutGrant`, `PutSecret` and `PutBridgeSecret` calls spend one token from a bucket that
+every `router-api` replica shares, `ops:<placement id>` under `valkey.prefix`. It holds
+`limits.sandbox_ops_burst` tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey
+server's clock, 20 and 10 by default, and expires once it is full again. A call that finds it empty
+answers `ResourceExhausted` with reason `RATE_LIMITED` and a `google.rpc.RetryInfo` holding the wait
+until the next token. Other calls spend nothing, nor does a request the router itself finds invalid,
+an unknown handle, or an `Exec` or file call on a placement that is not ready. A request only the
 provider refuses has spent its token, and so has a `CreatePreview` of a refused port. When Valkey
-cannot answer within 500 ms, the call goes through and the router logs a warning.
-`StopPlacement` spends nothing, and stops that race on one placement in one process wait for the
-destroy already in flight instead of calling the provider again.
+cannot answer within 500 ms, the call goes through and the router logs a warning. `StopPlacement`
+spends nothing, and stops that race on one placement in one process wait for the destroy already in
+flight instead of calling the provider again.
+
+The same calls but `OpenTransfer`, which a stranger holding the URL can make, also spend from the
+payer's bucket, `rl:wallet:ops:<payer>`, at `wallets.ops_per_second` with a burst of
+`wallets.ops_burst`, for a placement with a payer, and from the provider account's bucket,
+`rl:acct:<provider>`, at `<provider>.ops_per_second` with a burst of the same, when that is above 0.
+One script takes a token from each only when all have one, so a refusal takes nothing, and answers
+`RATE_LIMITED` with the longest wait. Control calls, `StopPlacement` among them, never take from
+these buckets, so a busy account still ends sandboxes.
+
+## Wallets
+
+An order token may carry `payer`, the base58 Solana address that paid, `fee_payer`, the payment
+requirements' `extra.feePayer`, `tx`, the payment's transaction signature, and on a start token
+`allowance_micros`, the x402 allowance inside `amount_micros`. A set address must be the one
+canonical base58 text of 32 bytes, and `tx` must decode to 64 bytes, else the token is refused
+with `PermissionDenied`. `allowance_micros` runs from 0 to `amount_micros`, and an extend token
+carrying it is refused. The underpaid check and `orders.amount_micros` use `amount_micros` less
+the allowance. `tx` is checked and kept nowhere yet.
+
+The router decides the payer an order counts under in this order: `wallets.use_payer` false, no
+payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or seen
+as an earlier order's `fee_payer`, or no `fee_payer` with an empty facilitator list, each count as
+no payer. The last logs at error level at most once a minute and shows on `/monitor` for an hour,
+through the Valkey key `wallet:unguarded`, which a Valkey restart or flush clears early. Otherwise
+the payer counts, and the placement keeps it. Every order keeps the payer claim as the token named
+it, whatever the decision, and operator calls decide an extension's payer again.
+
+`CreatePlacement` then runs these checks under the payer's transaction lock, or one lock for
+every order without a payer, in the transaction that records the order. A retried order answers
+as it did, with no check run again.
+
+| Check | Answer | Recorded |
+| --- | --- | --- |
+| No payer with `require_payer` | `PermissionDenied`, `PAYER_REQUIRED` | Nothing |
+| A blocked payer | `PermissionDenied`, `WALLET_BLOCKED` | Nothing |
+| `max_concurrent` live placements, or `anonymous_max_concurrent` without a payer | `ResourceExhausted`, `WALLET_BUSY` | A failed, refundable placement and `placement.failed` |
+| An empty start bucket, a payer only | `ResourceExhausted`, `WALLET_RATE_LIMITED` with `RetryInfo` | The same |
+
+Each `WALLET_BUSY` or `WALLET_RATE_LIMITED` of a payer takes a token from
+`rl:wallet:refusals:<payer>`, and the one that finds it empty also blocks the payer for
+`refusal_block_for` with reason `refusals`. When Valkey does not answer within 500 ms, the start
+buckets and the refusal bucket go unchecked with a warning, and the concurrency cap still holds.
+`ExtendPlacement` refuses a blocked payer's new extension with `WALLET_BLOCKED` and records
+nothing. Extensions count against no bucket.
+
+`PaymentsService.CheckPayer` answers what `CreatePlacement` or `ExtendPlacement` would say about
+a payer now, as `OK`, `BLOCKED` with `blocked_until`, `BUSY` or `RATE_LIMITED` with
+`retry_after`, under no lock, writing nothing and reading the start buckets without taking a
+token. An extension is checked for a block only. A bad address answers `InvalidArgument` with
+`PAYER_INVALID`. It is advisory, and the check at `CreatePlacement` stays the binding one.
+
+`OperatorService`'s `BlockWallet`, `UnblockWallet`, `GetWallet` and `ListWallets` need an `actor` on
+every change, written as `operator:<actor>` on the wallet and its event. A block waits for any order
+of that payer in flight, never shortens a block in force, and is refused for a facilitator address
+with `FailedPrecondition` and `FACILITATOR_ADDRESS`. Unblocking a wallet with no block in force
+changes nothing and writes no event. `stop_live` answers `FailedPrecondition` with
+`FEATURE_UNAVAILABLE` until the job that ends live placements lands. `ListWallets` takes up to 1000
+a page, 100 when `limit` is 0.
 
 ## Error reasons
 
@@ -647,6 +748,13 @@ holds a handle or a job ID.
 | `NotFound` | `LINK_UNKNOWN` | A secret link that is unknown, used or expired, or whose placement left ready |
 | `PermissionDenied` | `PUT_GRANT_INVALID` | A put grant that is expired, forged or names another placement |
 | `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all, an 11th host or a 9th header name of one secret |
+| `ResourceExhausted` | `RATE_LIMITED` | The placement's, the payer's or the provider account's operation bucket is empty |
+| `InvalidArgument` | `PAYER_INVALID` | `CheckPayer` or an operator call names an address that is not canonical base58 of 32 bytes |
+| `PermissionDenied` | `PAYER_REQUIRED` | A start order without a payer while `wallets.require_payer` is set |
+| `PermissionDenied` | `WALLET_BLOCKED` | An order of a blocked payer |
+| `ResourceExhausted` | `WALLET_BUSY` | A start at the wallet's cap on live placements, or the anonymous cap |
+| `ResourceExhausted` | `WALLET_RATE_LIMITED` | A start while one of the payer's start buckets is empty, with `RetryInfo` |
+| `FailedPrecondition` | `FACILITATOR_ADDRESS` | A block of a facilitator address |
 
 A provider failure carries the provider's code in lowercase instead, such as `rate_limited`. A
 call that its caller cancels or lets run out of time answers `Canceled` or `DeadlineExceeded`,
@@ -669,8 +777,8 @@ the gateway.
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | `GetSecretLink`, `SubmitSecretLink`, `GetBridgeSealingKey`, `PutBridgeSecret` |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
-| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
-| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
+| `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview`, `BlockWallet`, `UnblockWallet`, `GetWallet`, `ListWallets` |
+| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder`, `CheckPayer` |
 
 ### Budgets
 
@@ -909,7 +1017,7 @@ other answers `redeemed` true with the order's `kind` (`start` or `extend`), its
 state now, and the placement's `failure_reason`, `termination_reason` and `ended_at` as
 `Placement` carries them. `refundable` is the placement's, for a start order only, since the
 router records an extension only once it applied it. An empty `order_id` answers
-`InvalidArgument`. `CheckPayer` answers `Unimplemented` until the wallet checks land.
+`InvalidArgument`. `CheckPayer` is in [Wallets](#wallets-1).
 
 ## Deployment
 
@@ -943,7 +1051,9 @@ expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeo
 Valkey unreachable, placements ready or terminating over 3 minutes past their deadline and stops
 still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
 outbox events, Valkey memory at 80% of `maxmemory` or more, a `maxmemory-policy` other than
-`noeviction`, and a mining pool list that is empty, missing or unreadable. A failed connection
+`noeviction`, a mining pool list that is empty, missing or unreadable, and a payer claim counted
+as absent in the last hour because no `fee_payer` came and `wallets.facilitator_addresses` is
+empty. A failed connection
 means the worker is down. When `INFO memory` fails or times out while Valkey answers,
 `/monitor` reports `valkey memory is unknown`. When an ACL or `rename-command` refuses `INFO`,
 it reports `valkey refuses INFO, so its memory and policy go unchecked`, since that also leaves
@@ -1101,7 +1211,10 @@ exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
 | `deadline` | The paid deadline, null before ready |
 | `billed_seconds` | Seconds from ready to terminated |
 | `refundable` | Whether the order should be refunded |
-| `reason` | A stable code such as `stop`, `deadline`, `no_candidate`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+| `reason` | A stable code such as `stop`, `deadline`, `no_candidate`, `wallet_busy`, `wallet_rate_limited`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+
+With `wallets.emit_events`, `wallet.blocked` carries `{payer, until, reason, placement_id}`, with
+`until` and `placement_id` null when there is none, and `wallet.unblocked` carries `{payer}`.
 
 An event is retried until it is delivered, 2^n seconds after its nth failure and at most every
 5 minutes. An event that failed 10 times or more is stuck. The worker logs `outbox event keeps
