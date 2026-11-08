@@ -19,6 +19,11 @@
 // which runs at most once a minute per placement. OperatorService's RevokePreview moves a
 // preview's generation, so every earlier link dies and its port gets no new one.
 //
+// The secret writes check a placement's host rules and counts under its row lock, store the
+// sealed value and insert one apply_secrets job in that transaction, then wait up to
+// secrets.apply_wait for the worker to apply it. A link's page reaches the router through
+// SecretsRouteService, which reads a link without using it and uses it on the first good submit.
+//
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
 // edge event reader per server fans out, or when it goes idle or reaches its hard stop. Drain
@@ -44,6 +49,8 @@ import (
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"github.com/bugnet-sh/bugnet-run/frame"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 	"github.com/valkey-io/valkey-go"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -54,6 +61,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -109,6 +117,16 @@ type Deps struct {
 	PreviewDomain string
 	// Previews are the preview settings, a zero max_per_placement taking its default
 	Previews config.Previews
+	// River inserts apply_secrets jobs, and the secret writes refuse every call while it is nil
+	River *river.Client[pgx.Tx]
+	// Secrets are the secret settings, a zero limit taking its default
+	Secrets config.Secrets
+	// SecretsHost names secret links, CreateSecretLink refusing every call while it is empty
+	SecretsHost string
+	// EgressHost is the proxy's name, the secret writes refusing every call while it is empty
+	EgressHost string
+	// HostRules are the secret form of the host rules
+	HostRules hostrules.Rules
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -199,7 +217,7 @@ type Servers struct {
 // Servers returns s and one server per other caller service, all sharing s's deps and Close
 func (s *Server) Servers() Servers {
 	return Servers{
-		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{},
+		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{s: s},
 		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{s: s},
 		Payments: &PaymentsServer{s: s},
 	}

@@ -39,6 +39,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -196,6 +197,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		TransferHost:        cfg.Names.TransferHost,
 		PreviewDomain:       cfg.Names.PreviewDomain,
 		Previews:            cfg.Previews,
+		River:               rc,
+		Secrets:             cfg.Secrets,
+		SecretsHost:         cfg.Names.SecretsHost,
+		EgressHost:          cfg.Names.EgressHost,
+		HostRules:           hostrules.New(cfg.X402, cfg.Names, cfg.E2B.Domain).ForSecrets(),
 	})
 	defer srv.Close()
 

@@ -189,6 +189,8 @@ type options struct {
 	noPreviews bool
 	// providerName names the local provider, "local" when empty
 	providerName string
+	// secretSettings changes the API server's [secrets] settings from secretDefaults
+	secretSettings func(*config.Secrets)
 }
 
 type env struct {
@@ -316,7 +318,9 @@ func newEnv(t *testing.T, opts options) *env {
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
-		PreviewDomain: previewDomain, Previews: previewSettings,
+		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
+		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
+		HostRules: hostRules(),
 	})
 	t.Cleanup(srv.Close)
 
