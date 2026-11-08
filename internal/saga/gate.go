@@ -70,6 +70,7 @@ func (s *Saga) OpenGate(ctx context.Context, p store.Placement) (store.Placement
 	if err != nil && !errors.Is(err, ErrGateUnavailable) {
 		return store.Placement{}, err
 	}
+	// A gate that did not answer still gives the row holding the route its steps stored
 	return v.(store.Placement), err
 }
 
