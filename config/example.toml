@@ -242,6 +242,14 @@ runner = ""                   # required when providers has "local"
 hourly_micros = 0             # >= 0
 sshd_path = "/usr/sbin/sshd"  # the host's sshd, which ssh-up never installs
 
+[limits_poll]
+every = "60s"                 # E2B, boxd and Koyeb limits
+boat_every = "15s"
+account_every = "5m"          # account standing checks
+account_every_blocked = "1m"  # while a provider is blocked
+reserve_slots = 1             # placements leave this many slots free for probes
+stale_after = 5               # missed polls before /monitor reports old limits
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
@@ -249,6 +257,8 @@ gate_route = "default"        # the pinned default proxy, or "subdomain" for a b
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
 ops_per_second = 0            # user operations on the account a second, 0 for no bucket
+max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
+creates_per_second = 0        # creates a second on the account, 0 for no bucket
 
 [e2b]
 domain = ""                   # e2b.app when empty
@@ -256,6 +266,9 @@ max_lifetime = ""             # Go duration, empty = adapter default (1h Hobby),
 harden_required = true
 harden_allow = []
 ops_per_second = 0
+team_id = ""                  # printed by bugnet-dev hooks register e2b, the account check reads it
+max_concurrent = 20           # not readable with an API key, 20 on Hobby and 100 on Pro
+creates_per_second = 1        # 1 on Hobby and 5 on Pro
 
 # No templates by default, and E2B is never chosen without one. These two tables are the builds
 # deploy/e2b makes, one per size, keep them once they are built on the E2B account.
@@ -278,6 +291,9 @@ region = "fra"                # region every Koyeb sandbox runs in
 harden_required = true
 harden_allow = []
 ops_per_second = 0
+organization_id = ""          # read from the account when empty
+max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
+creates_per_second = 0        # creates a second on the account, 0 for no bucket
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
 
@@ -286,5 +302,7 @@ ssh_path = "gate"             # or "native", only if the gate path fails on Boat
 harden_required = true
 harden_allow = []
 ops_per_second = 50           # 3,000 a minute, inside Boat's 10,000 per 60 s per IP with previews
+max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
+creates_per_second = 0        # creates a second on the account, 0 for no bucket
 
 [boat.types]                  # size = machine type, every type when empty
