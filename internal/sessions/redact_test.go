@@ -243,6 +243,13 @@ func TestRedactAuthorizationAfterAClosedName(t *testing.T) {
 	}
 }
 
+func TestStreamKeepsALeadWordBeforeAnAuthorizationWord(t *testing.T) {
+	st := NewRedactor().Stream(Stdout)
+	got := st.Write([]byte(`{"h":"Bearer QJQJ98765abcdefgh","authorization": "token `))
+	got = append(got, st.Write([]byte(`abc"}`+"\n"))...)
+	hidden(t, got, `"authorization": "[redacted credential]"}`+"\n")
+}
+
 func TestRedactTokenAfterASkippedMatch(t *testing.T) {
 	r := NewRedactor()
 	body := strings.Repeat("Ab3_", 10)

@@ -619,6 +619,8 @@ func cutPoint(b []byte) int {
 		for n > line && !isSpace(b[n-1]) {
 			n--
 		}
+		// The word glued to it may follow a Bearer or Basic
+		n = beforeLeadWords(b, n)
 	}
 	return n
 }
