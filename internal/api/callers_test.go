@@ -1,7 +1,9 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/bugnet-sh/bugnet-router/internal/api"
+	"github.com/bugnet-sh/bugnet-router/internal/budget"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
@@ -322,6 +325,69 @@ func TestReportAnswersZeroOnceSpentAndNothingOnceEnded(t *testing.T) {
 	eq(t, len(a.GetBytesRemaining()), 0)
 	eq(t, len(a.GetBytesPerSecond()), 0)
 	eq(t, len(e.reportEgress(t, usage(id, 1, 0)).GetBytesRemaining()), 0)
+}
+
+// unpaidReport is one placement's unpaid x402 use by host, as egress sends it
+func unpaidReport(
+	id string, hosts map[string]*routerv1.X402Unpaid,
+) map[string]*routerv1.X402UnpaidByHost {
+	return map[string]*routerv1.X402UnpaidByHost{id: {Hosts: hosts}}
+}
+
+func TestReportEgressUsageCarriesX402Unpaid(t *testing.T) {
+	var logs bytes.Buffer
+	e := newEnv(t, options{log: slog.New(slog.NewTextHandler(&logs, nil))})
+	_, p := e.readyPlacement(t)
+	id := p.GetPlacementId()
+	unknown := uuid.NewString()
+	x := unpaidReport(id, map[string]*routerv1.X402Unpaid{
+		"agent402.tools": {Requests: 3, Bytes: 1000},
+	})
+	x[unknown] = &routerv1.X402UnpaidByHost{Hosts: map[string]*routerv1.X402Unpaid{
+		"agent402.tools": {Requests: 1, Bytes: 1},
+	}}
+	x["not-a-uuid"] = x[unknown]
+	resp, err := e.egress(t).ReportEgressUsage(t.Context(), connect.NewRequest(
+		&routerv1.ReportEgressUsageRequest{
+			ReporterId: "egress-1", Usage: usage(id, 3<<20, 0), X402Unpaid: x,
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, resp.Msg.GetBytesRemaining(), map[string]uint64{id: 1<<30 - 3<<20})
+
+	// Unpaid deltas come in their own call, with no usage
+	resp, err = e.egress(t).ReportEgressUsage(t.Context(), connect.NewRequest(
+		&routerv1.ReportEgressUsageRequest{
+			ReporterId: "egress-1", X402Unpaid: unpaidReport(id, map[string]*routerv1.X402Unpaid{
+				"agent402.tools": {Requests: 2, Bytes: 500},
+			}),
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(resp.Msg.GetBytesRemaining()), 0)
+	m := budget.New(e.vk, e.prefix, budgetDefaults)
+	got, err := m.X402Unpaid(t.Context(), uuid.MustParse(id))
+	eq(t, err, nil)
+	eq(t, got, map[string]budget.X402Unpaid{"agent402.tools": {Requests: 5, Bytes: 1500}})
+	got, err = m.X402Unpaid(t.Context(), uuid.MustParse(unknown))
+	eq(t, err == nil && len(got) == 0, true)
+	eq(t, e.reportEgress(t, usage(id, 0, 0)).GetBytesRemaining()[id], uint64(1<<30-3<<20))
+
+	// A report that takes the hash past 64 fields logs the placement and the count, never a host
+	hosts := map[string]*routerv1.X402Unpaid{}
+	for i := range 32 {
+		hosts["h"+strconv.Itoa(100+i)+".example.com"] = &routerv1.X402Unpaid{Requests: 1}
+	}
+	if _, err := e.egress(t).ReportEgressUsage(t.Context(), connect.NewRequest(
+		&routerv1.ReportEgressUsageRequest{X402Unpaid: unpaidReport(id, hosts)})); err != nil {
+		t.Fatal(err)
+	}
+	line := logs.String()
+	eq(t, strings.Count(line, "x402 unpaid fields dropped"), 1)
+	eq(t, strings.Contains(line, "placement="+id) && strings.Contains(line, "count=2"), true)
+	eq(t, strings.Contains(line, "example.com"), false)
 }
 
 // replica serves a second API server over the same store, saga, Valkey and prefix
