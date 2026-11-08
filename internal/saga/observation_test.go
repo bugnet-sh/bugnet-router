@@ -149,7 +149,8 @@ func TestBadStatsRecordNothing(t *testing.T) {
 			if err != nil || got.State != store.PlacementTerminated {
 				t.Fatalf("stop %+v, %v", got, err)
 			}
-			if _, err := e.store.ObservationOf(t.Context(), p.ID); !errors.Is(err, store.ErrNotFound) {
+			_, err = e.store.ObservationOf(t.Context(), p.ID)
+			if !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("observation: %v", err)
 			}
 		})
@@ -200,7 +201,8 @@ func TestAbuseFlagsTheObservation(t *testing.T) {
 		t.Fatalf("observation %+v, %v", o, err)
 	}
 	// Flagged after the end, the observation stops counting
-	if _, _, err := e.saga.FlagEnded(t.Context(), p.ID, saga.End{Reason: saga.ReasonAbuse}); err != nil {
+	abuse := saga.End{Reason: saga.ReasonAbuse}
+	if _, _, err := e.saga.FlagEnded(t.Context(), p.ID, abuse); err != nil {
 		t.Fatal(err)
 	}
 	if o, err = e.store.ObservationOf(t.Context(), p.ID); err != nil || !o.Flagged {

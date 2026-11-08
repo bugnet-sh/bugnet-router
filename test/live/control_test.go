@@ -280,7 +280,8 @@ func rowE5(t *testing.T, s *stack) {
 	st := s.sandboxStats(t, h)
 	mem, _ := st["mem_peak_mib"].(float64)
 	if mem < 100 {
-		t.Errorf("E5: the sampler's mem_peak_mib is %v after a job held 150 MiB", st["mem_peak_mib"])
+		t.Errorf("E5: the sampler's mem_peak_mib is %v after a job held 150 MiB",
+			st["mem_peak_mib"])
 	}
 	t.Logf("E5 on %s: stats %v", s.provider, st)
 }

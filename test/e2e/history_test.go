@@ -111,7 +111,8 @@ history_payer_min_placements = 1
 	}
 	first := quote()
 	if first.GetBasis() == routerv1.EstimateBasis_ESTIMATE_BASIS_HISTORY ||
-		first.GetFloor().GetResources().GetMemoryMib() != 2048 || first.GetRecommendedPackageId() != "hist-2g-10m" {
+		first.GetFloor().GetResources().GetMemoryMib() != 2048 ||
+		first.GetRecommendedPackageId() != "hist-2g-10m" {
 		t.Fatalf("first quote %v", first)
 	}
 	// Five placements from three payers, each ending with a peak above the floor and in the size
@@ -150,7 +151,8 @@ history_payer_min_placements = 1
 	// 3000 MiB with 10% headroom is 3300, rounded to 3328, inside the one step up to 4096
 	last := quote()
 	if last.GetBasis() != routerv1.EstimateBasis_ESTIMATE_BASIS_HISTORY ||
-		last.GetFloor().GetResources().GetMemoryMib() != 3328 || last.GetRecommendedPackageId() != "hist-4g-10m" {
+		last.GetFloor().GetResources().GetMemoryMib() != 3328 ||
+		last.GetRecommendedPackageId() != "hist-4g-10m" {
 		t.Fatalf("quote after five runs: basis %v floor %v package %s", last.GetBasis(),
 			last.GetFloor(), last.GetRecommendedPackageId())
 	}

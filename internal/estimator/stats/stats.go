@@ -87,6 +87,7 @@ func CheckMax(raw []byte, maxBytes int, size provider.Size, paid time.Duration) 
 	}
 	r := size.Resources
 	memory := int64(r.MemoryMiB)
+	gpuMiB := satMul(satMul(int64(r.GPUMemoryGiB), int64(r.GPUCount)), 1<<10)
 	bounds := []struct {
 		name     string
 		v, limit int64
@@ -94,7 +95,7 @@ func CheckMax(raw []byte, maxBytes int, size provider.Size, paid time.Duration) 
 		{"mem_peak_mib", f.MemPeakMiB, memory},
 		{"swap_peak_mib", f.SwapPeakMiB, memory},
 		{"disk_peak_mib", f.DiskPeakMiB, int64(r.DiskGiB) << 10},
-		{"gpu_mem_peak_mib", f.GPUMemPeakMiB, satMul(satMul(int64(r.GPUMemoryGiB), int64(r.GPUCount)), 1<<10)},
+		{"gpu_mem_peak_mib", f.GPUMemPeakMiB, gpuMiB},
 		{"cpu_seconds", f.CPUSeconds, satMul(int64(r.VCPU), int64(paid/time.Second))},
 		{"busy_p95_millicores", f.BusyP95Millicores, int64(r.VCPU) * 1000},
 		{"oom_kills", f.OOMKills, maxCount},
