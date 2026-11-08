@@ -22,7 +22,8 @@ func TestHardeningDefaults(t *testing.T) {
 			})
 			eq(t, c.Hardening.PoolList, "/etc/bugnet/mining-pools.txt")
 			eq(t, c.Hardening.Rules, map[string]HardenRule{
-				"e2b": {Required: true, Allow: []string{}}, "boxd": {Required: true, Allow: []string{}},
+				"e2b":   {Required: true, Allow: []string{}},
+				"boxd":  {Required: true, Allow: []string{}},
 				"koyeb": {Required: true, Allow: []string{}},
 				"boat":  {Required: true, Allow: []string{}},
 			})
