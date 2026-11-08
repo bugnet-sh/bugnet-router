@@ -434,9 +434,12 @@ providers = ["e2b", "boat"]
 	cfg = load(t, "providers = [\"e2b\", \"boat\"]\n[ssh]\nproviders = [\"boat\"]\n"+
 		"[boat]\nssh_path = \"native\"\n"+e2bTemplates,
 		map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
-	_, err = providers.Build(cfg, nil)
-	if want := "boat is listed for ssh on its native path"; err == nil ||
-		!strings.Contains(err.Error(), want) {
-		t.Errorf("boat's native path gave %v, want an error with %q", err, want)
+	reg, err = providers.Build(cfg, nil)
+	if err != nil {
+		t.Fatalf("boat's native path gave %v", err)
+	}
+	if p, _ := reg.Get("boat"); !reg.Capabilities(p).SSH || !reg.NativeSSH(p) {
+		t.Errorf("boat on its native path got ssh %v and native %v, want both",
+			reg.Capabilities(p).SSH, reg.NativeSSH(p))
 	}
 }
