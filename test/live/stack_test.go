@@ -1,10 +1,11 @@
 // Package live runs the data-plane and control-plane live rows against a stack on this Mac.
 //
-// scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker
-// and bugnet-edge, each built from the workspace, on a fresh database and Valkey prefix with
-// fresh secrets from bugnet-dev keys, and one provider. The local mode listens on free loopback
-// ports with a fresh self-signed pair for the dev names, and tests reach the edge with curl
-// --resolve through a loopback front that adds the PROXY v2 header HAProxy adds on the VPS.
+// scripts/live-test.sh runs it with -providers and -front. A stack is router-api, router-worker,
+// bugnet-edge and its secrets role, each built from the workspace, on a fresh database and
+// Valkey prefix with fresh secrets from bugnet-dev keys, and one provider. The local mode
+// listens on free loopback ports with a fresh self-signed pair for the dev names, and tests
+// reach the edge with curl --resolve through a loopback front that adds the PROXY v2 header
+// HAProxy adds on the VPS.
 // The vps mode listens on the fixed ports the VPS's tunnel lands on (config/dev-front.toml), gets
 // the exact names from Let's Encrypt over the tunnel with its caches kept in
 // ~/.local/state/bugnet-dev/acme, serves the wildcard make dev-certs copied, and checks that
@@ -261,7 +262,7 @@ func binaries(t *testing.T) string {
 
 /* The stack */
 
-// stack is one provider's router-api, router-worker and bugnet-edge
+// stack is one provider's router-api, router-worker, bugnet-edge and its secrets role
 type stack struct {
 	provider string
 	mode     string
@@ -274,9 +275,12 @@ type stack struct {
 	settings string   // router settings file
 	apiURL   string
 	edgeAddr string // where TLS to the edge connects, 127.0.0.1 and a port
-	procs    []*proc
-	front    net.Listener // the local mode's PROXY v2 front, nil in the vps mode
-	stopOnce sync.Once
+	// secretsAddr is where TLS to the secrets role connects
+	secretsAddr string
+	tlsDir      string // the local mode's TLS pair, made once
+	procs       []*proc
+	fronts      []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
+	stopOnce    sync.Once
 	// previews is the preview rows' client, made once per stack
 	previews    *http.Client
 	previewOnce sync.Once
@@ -328,9 +332,18 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	}
 	s.start(t, "bugnet-edge", "-config", s.edgeSettings(t, edge, metrics))
 	s.waitReady(t, "http://"+metrics+"/readyz")
-	s.edgeAddr = edge
+	secrets, secretsMetrics := net.JoinHostPort("127.0.0.1", strconv.Itoa(f.Ports.Secrets)),
+		freeAddr(t)
+	if mode == "local" {
+		secrets = freeAddr(t)
+	}
+	s.start(t, "bugnet-edge", "-config", s.secretsSettings(t, secrets, secretsMetrics),
+		"--role", "secrets")
+	s.waitReady(t, "http://"+secretsMetrics+"/readyz")
+	s.edgeAddr, s.secretsAddr = edge, secrets
 	if mode == "local" {
 		s.edgeAddr = s.proxyFront(t, edge)
+		s.secretsAddr = s.proxyFront(t, secrets)
 	}
 	if mode == "vps" {
 		if err := s.reaches(); err != nil {
@@ -448,9 +461,41 @@ abuse_contact = %q
 	return s.write(t, "edge.toml", []byte(content))
 }
 
+// secretsSettings is the secrets role's file and its page bundle, on the dev front's secrets host
+func (s *stack) secretsSettings(t *testing.T, listen, metrics string) string {
+	t.Helper()
+	page := filepath.Join(s.dir, "secrets-page")
+	if err := os.MkdirAll(filepath.Join(page, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	index := []byte("<!doctype html><title>Bugnet secrets</title>")
+	if err := os.WriteFile(filepath.Join(page, "index.html"), index, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acme := fmt.Sprintf("acme_enabled = true\nacme_directory = %q\nacme_email = %q\n"+
+		"acme_dir = %q\n", s.f.ACME.Directory, s.f.ACME.Email,
+		filepath.Join(s.f.ACME.StateDir, "secrets"))
+	if s.mode == "local" {
+		acme = fmt.Sprintf("acme_enabled = false\nstatic_dir = %q\n", s.selfSigned(t))
+	} else if err := os.MkdirAll(filepath.Join(s.f.ACME.StateDir, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf(`router_url = %q
+tls_listen_addr = %q
+metrics_listen_addr = %q
+proxy_protocol_from = ["127.0.0.1/32"]
+host = %q
+page_dir = %q
+%s`, s.apiURL, listen, metrics, s.f.Names.SecretsHost, page, acme)
+	return s.write(t, "secrets.toml", []byte(content))
+}
+
 // selfSigned writes a fresh pair for every dev name the edge serves and answers its directory
 func (s *stack) selfSigned(t *testing.T) string {
 	t.Helper()
+	if s.tlsDir != "" {
+		return s.tlsDir
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -459,7 +504,7 @@ func (s *stack) selfSigned(t *testing.T) string {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: n.TransferHost},
-		DNSNames: []string{n.TransferHost, n.HooksHost, n.PreviewDomain,
+		DNSNames: []string{n.TransferHost, n.HooksHost, n.SecretsHost, n.PreviewDomain,
 			"*." + n.PreviewDomain},
 		NotBefore:   time.Now().Add(-time.Hour),
 		NotAfter:    time.Now().Add(24 * time.Hour),
@@ -487,6 +532,7 @@ func (s *stack) selfSigned(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	s.tlsDir = dir
 	return dir
 }
 
@@ -497,7 +543,7 @@ func (s *stack) proxyFront(t *testing.T, edge string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.front = ln
+	s.fronts = append(s.fronts, ln)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -661,8 +707,8 @@ func (s *stack) fail(t *testing.T, format string, args ...any) {
 // stop ends every process with SIGTERM, then SIGKILL, and logs their tails when t failed
 func (s *stack) stop(t testing.TB) {
 	s.stopOnce.Do(func() {
-		if s.front != nil {
-			_ = s.front.Close()
+		for _, ln := range s.fronts {
+			_ = ln.Close()
 		}
 		var wg sync.WaitGroup
 		for _, p := range s.procs {
@@ -823,6 +869,13 @@ func TestStackStartsOnTheLocalProvider(t *testing.T) {
 		t.Fatalf("the edge's TLS for %s: %v", f.Names.TransferHost, err)
 	}
 	_ = conn.Close()
+	secrets, err := tls.Dial("tcp", s.secretsAddr, &tls.Config{
+		RootCAs: roots, ServerName: f.Names.SecretsHost, NextProtos: []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatalf("the secrets route's TLS for %s: %v", f.Names.SecretsHost, err)
+	}
+	_ = secrets.Close()
 
 	// The URL carries the file through the edge and back, byte for byte
 	got := s.curlRetry(t, "-fsS", "-T", file, minted["url"])
