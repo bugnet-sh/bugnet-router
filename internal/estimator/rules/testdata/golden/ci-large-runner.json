@@ -1,0 +1,110 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "build",
+		"entry_hints": {}
+	},
+	"facts": {
+		"repo": {
+			"ci": {
+				"jobs": 1,
+				"largest_cores": 16,
+				"gpu_runner": true
+			},
+			"tree": {
+				"bytes": 52428800,
+				"blobs": 420
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"vcpu",
+					"disk"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"short_on": [
+					"vcpu"
+				],
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 21,
+			"download_bytes": 0,
+			"gpu": "recommended",
+			"gpu_count": 1,
+			"gpu_memory_gib": 0,
+			"memory_mib": 4096,
+			"minutes": 20,
+			"vcpu": 8
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for build work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "CI tests on a runner with 16 cores",
+				"rule_id": "ci.runner"
+			},
+			{
+				"message": "CI tests on a GPU runner",
+				"rule_id": "ci.runner"
+			},
+			{
+				"message": "The checkout takes 0.05 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			}
+		],
+		"warnings": [
+			{
+				"code": "GPU_RECOMMENDED",
+				"message": "Runs on CPU, slower than on a GPU"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "cpu-large-30m",
+		"warnings": [
+			{
+				"code": "GPU_RECOMMENDED",
+				"message": "Runs on CPU, slower than on a GPU"
+			}
+		]
+	}
+}

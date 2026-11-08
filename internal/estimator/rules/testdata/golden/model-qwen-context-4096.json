@@ -1,0 +1,201 @@
+{
+	"request": {
+		"source": {
+			"kind": "huggingface",
+			"canonical": "huggingface.co/Qwen/Qwen2.5-7B-Instruct",
+			"revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {
+			"context_tokens": 4096,
+			"dtype": "bf16",
+			"tools": [
+				"vllm"
+			]
+		}
+	},
+	"facts": {
+		"model": {
+			"id": "Qwen/Qwen2.5-7B-Instruct",
+			"revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+			"library": "transformers",
+			"pipeline": "text-generation",
+			"model_type": "qwen2",
+			"parameters": [
+				{
+					"dtype": "BF16",
+					"count": 7615616512
+				}
+			],
+			"files": [
+				{
+					"path": ".gitattributes",
+					"size": 1519
+				},
+				{
+					"path": "LICENSE",
+					"size": 11343
+				},
+				{
+					"path": "README.md",
+					"size": 6131
+				},
+				{
+					"path": "config.json",
+					"size": 663
+				},
+				{
+					"path": "generation_config.json",
+					"size": 243
+				},
+				{
+					"path": "merges.txt",
+					"size": 1671839
+				},
+				{
+					"path": "model-00001-of-00004.safetensors",
+					"size": 3945441440
+				},
+				{
+					"path": "model-00002-of-00004.safetensors",
+					"size": 3864726320
+				},
+				{
+					"path": "model-00003-of-00004.safetensors",
+					"size": 3864726424
+				},
+				{
+					"path": "model-00004-of-00004.safetensors",
+					"size": 3556377672
+				},
+				{
+					"path": "model.safetensors.index.json",
+					"size": 27752
+				},
+				{
+					"path": "tokenizer.json",
+					"size": 7031645
+				},
+				{
+					"path": "tokenizer_config.json",
+					"size": 7305
+				},
+				{
+					"path": "vocab.json",
+					"size": 2776833
+				}
+			],
+			"config": {
+				"layers": 28,
+				"kv_heads": 4,
+				"hidden_size": 3584,
+				"attention_heads": 28,
+				"max_position": 32768,
+				"dtype": "bfloat16"
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 2,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk",
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 56000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"memory",
+					"disk",
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-large-30m",
+				"short_on": [
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 240000
+			},
+			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 4096,
+			"disk_gib": 23,
+			"download_bytes": 15231271856,
+			"gpu": "required",
+			"gpu_count": 1,
+			"gpu_memory_gib": 18,
+			"memory_mib": 5888,
+			"minutes": 25,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The command runs a GPU server or asks for CUDA",
+				"rule_id": "cmd.gpu"
+			},
+			{
+				"message": "The weights take 14.19 GiB",
+				"rule_id": "hf.weights"
+			},
+			{
+				"message": "The KV cache takes 56 KiB a token from the model's config, 0.22 GiB at 4096 tokens",
+				"rule_id": "hf.kv"
+			},
+			{
+				"message": "A text generation model above 3 billion parameters runs best on a GPU",
+				"rule_id": "hf.gpu"
+			},
+			{
+				"message": "Needs 17.74 GiB of GPU memory and 5.55 GiB of memory to load it",
+				"rule_id": "hf.memory"
+			},
+			{
+				"message": "Downloads 14.19 GiB of model files",
+				"rule_id": "hf.disk"
+			}
+		],
+		"warnings": [
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Uses the command's context of 4096 tokens, --max-model-len sets it"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "gpu-20-30m",
+		"warnings": [
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Uses the command's context of 4096 tokens, --max-model-len sets it"
+			}
+		]
+	}
+}

@@ -1,0 +1,12 @@
+{
+	"packages": [
+		{"id": "cpu-small-10m", "resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5}, "minutes": 10, "price_micros": 20000},
+		{"id": "cpu-small-10m-more", "resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5}, "minutes": 10, "price_micros": 18000, "extension_of": "cpu-small-10m"},
+		{"id": "cpu-std-30m", "resources": {"vcpu": 2, "memory_mib": 4096, "disk_gib": 20}, "minutes": 30, "price_micros": 60000},
+		{"id": "cpu-std-30m-more", "resources": {"vcpu": 2, "memory_mib": 4096, "disk_gib": 20}, "minutes": 30, "price_micros": 55000, "extension_of": "cpu-std-30m"},
+		{"id": "cpu-large-30m", "resources": {"vcpu": 8, "memory_mib": 32768, "disk_gib": 50}, "minutes": 30, "price_micros": 240000},
+		{"id": "cpu-large-30m-more", "resources": {"vcpu": 8, "memory_mib": 32768, "disk_gib": 50}, "minutes": 30, "price_micros": 220000, "extension_of": "cpu-large-30m"},
+		{"id": "gpu-20-30m", "resources": {"vcpu": 6, "memory_mib": 45056, "disk_gib": 240, "gpu_count": 1, "gpu_memory_gib": 20}, "minutes": 30, "price_micros": 600000},
+		{"id": "gpu-20-30m-more", "resources": {"vcpu": 6, "memory_mib": 45056, "disk_gib": 240, "gpu_count": 1, "gpu_memory_gib": 20}, "minutes": 30, "price_micros": 550000, "extension_of": "gpu-20-30m"}
+	]
+}

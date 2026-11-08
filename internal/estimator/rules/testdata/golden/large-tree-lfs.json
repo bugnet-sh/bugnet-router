@@ -1,0 +1,88 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "tests",
+		"entry_hints": {}
+	},
+	"facts": {
+		"repo": {
+			"tree": {
+				"bytes": 3221225472,
+				"blobs": 12000,
+				"submodules": 2,
+				"lfs": true
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 20000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 16,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 10,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The checkout takes 3.00 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			},
+			{
+				"message": "Git LFS files may make the checkout larger",
+				"rule_id": "tree.lfs"
+			},
+			{
+				"message": "2 submodules may make the checkout larger",
+				"rule_id": "tree.submodules"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": []
+	}
+}

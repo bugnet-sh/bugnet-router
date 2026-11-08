@@ -1,0 +1,137 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "build",
+		"entry_hints": {
+			"jobs": 8,
+			"tools": [
+				"cargo"
+			]
+		}
+	},
+	"facts": {
+		"repo": {
+			"lockfiles": [
+				{
+					"kind": "cargo",
+					"packages": 350
+				}
+			],
+			"cargo_crates": 350,
+			"native_build": true,
+			"pins": [
+				{
+					"tool": "rust",
+					"version": "nightly"
+				}
+			],
+			"tree": {
+				"bytes": 52428800,
+				"blobs": 420
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 3,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 74000
+			},
+			{
+				"extension_package_id": "cpu-std-30m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"vcpu",
+					"disk"
+				],
+				"total_price_micros": 115000
+			},
+			{
+				"extension_package_id": "cpu-large-30m-more",
+				"extensions_needed": 1,
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 460000
+			},
+			{
+				"extension_package_id": "gpu-20-30m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"short_on": [
+					"vcpu"
+				],
+				"total_price_micros": 1150000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 23,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 4096,
+			"minutes": 35,
+			"vcpu": 8
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for build work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The lockfiles hold 350 packages",
+				"rule_id": "deps.count"
+			},
+			{
+				"message": "350 Rust crates to compile",
+				"rule_id": "build.native"
+			},
+			{
+				"message": "C or C++ build files",
+				"rule_id": "build.native"
+			},
+			{
+				"message": "A pinned Rust toolchain the images may lack adds 2 minutes",
+				"rule_id": "tc.pin"
+			},
+			{
+				"message": "The checkout takes 0.05 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			},
+			{
+				"message": "The command builds with 8 jobs",
+				"rule_id": "cmd.jobs"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-large-30m",
+		"warnings": [
+			{
+				"code": "NEEDS_EXTENSION",
+				"message": "The run needs 1 extension"
+			}
+		]
+	}
+}

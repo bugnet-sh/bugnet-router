@@ -1,0 +1,20 @@
+{"model": {
+	"id": "meta-llama/Llama-3.1-8B-Instruct", "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+	"library": "transformers", "pipeline": "text-generation", "gated": "manual", "model_type": "llama",
+	"parameters": [{"dtype": "BF16", "count": 8030261248}],
+	"files": [
+		{"path": ".gitattributes", "size": 1519}, {"path": "LICENSE", "size": 7627},
+		{"path": "README.md", "size": 44034}, {"path": "USE_POLICY.md", "size": 4691},
+		{"path": "config.json", "size": 855}, {"path": "generation_config.json", "size": 184},
+		{"path": "model-00001-of-00004.safetensors", "size": 4976698672},
+		{"path": "model-00002-of-00004.safetensors", "size": 4999802720},
+		{"path": "model-00003-of-00004.safetensors", "size": 4915916176},
+		{"path": "model-00004-of-00004.safetensors", "size": 1168138808},
+		{"path": "model.safetensors.index.json", "size": 23950},
+		{"path": "original/consolidated.00.pth", "size": 16060617592},
+		{"path": "original/params.json", "size": 199},
+		{"path": "original/tokenizer.model", "size": 2183982},
+		{"path": "special_tokens_map.json", "size": 296}, {"path": "tokenizer.json", "size": 9085657},
+		{"path": "tokenizer_config.json", "size": 55351}
+	]
+}}

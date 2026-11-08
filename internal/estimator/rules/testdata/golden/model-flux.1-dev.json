@@ -1,0 +1,227 @@
+{
+	"request": {
+		"source": {
+			"kind": "huggingface",
+			"canonical": "huggingface.co/black-forest-labs/FLUX.1-dev",
+			"revision": "0ef5fff789c832c5c7f4e127f94c8b54bbcced44",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {}
+	},
+	"facts": {
+		"model": {
+			"id": "black-forest-labs/FLUX.1-dev",
+			"revision": "0ef5fff789c832c5c7f4e127f94c8b54bbcced44",
+			"library": "diffusers",
+			"pipeline": "text-to-image",
+			"gated": "auto",
+			"parameters": [
+				{
+					"dtype": "BF16",
+					"count": 11901408320
+				}
+			],
+			"files": [
+				{
+					"path": ".gitattributes",
+					"size": 1655
+				},
+				{
+					"path": "LICENSE.md",
+					"size": 18621
+				},
+				{
+					"path": "README.md",
+					"size": 3270
+				},
+				{
+					"path": "ae.safetensors",
+					"size": 335304388
+				},
+				{
+					"path": "flux1-dev.safetensors",
+					"size": 23802932552
+				},
+				{
+					"path": "model_index.json",
+					"size": 536
+				},
+				{
+					"path": "scheduler/scheduler_config.json",
+					"size": 273
+				},
+				{
+					"path": "text_encoder/config.json",
+					"size": 613
+				},
+				{
+					"path": "text_encoder/model.safetensors",
+					"size": 246144352
+				},
+				{
+					"path": "text_encoder_2/config.json",
+					"size": 782
+				},
+				{
+					"path": "text_encoder_2/model-00001-of-00002.safetensors",
+					"size": 4994582224
+				},
+				{
+					"path": "text_encoder_2/model-00002-of-00002.safetensors",
+					"size": 4530066360
+				},
+				{
+					"path": "text_encoder_2/model.safetensors.index.json",
+					"size": 19885
+				},
+				{
+					"path": "tokenizer/vocab.json",
+					"size": 1059962
+				},
+				{
+					"path": "transformer/config.json",
+					"size": 378
+				},
+				{
+					"path": "transformer/diffusion_pytorch_model-00001-of-00003.safetensors",
+					"size": 9983079616
+				},
+				{
+					"path": "transformer/diffusion_pytorch_model-00002-of-00003.safetensors",
+					"size": 9949494464
+				},
+				{
+					"path": "transformer/diffusion_pytorch_model-00003-of-00003.safetensors",
+					"size": 3870584832
+				},
+				{
+					"path": "vae/config.json",
+					"size": 820
+				},
+				{
+					"path": "vae/diffusion_pytorch_model.safetensors",
+					"size": 167666902
+				}
+			]
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 3,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk",
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 74000
+			},
+			{
+				"extension_package_id": "cpu-std-30m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"memory",
+					"disk",
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 115000
+			},
+			{
+				"extension_package_id": "cpu-large-30m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-large-30m",
+				"short_on": [
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 460000
+			},
+			{
+				"extension_package_id": "gpu-20-30m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"short_on": [
+					"gpu_memory"
+				],
+				"total_price_micros": 1150000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 43,
+			"download_bytes": 33741618750,
+			"gpu": "required",
+			"gpu_count": 1,
+			"gpu_memory_gib": 39,
+			"memory_mib": 10240,
+			"minutes": 31,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "Every component together holds 31.42 GiB of weights",
+				"rule_id": "hf.weights"
+			},
+			{
+				"message": "An image or video generation model needs a GPU",
+				"rule_id": "hf.gpu"
+			},
+			{
+				"message": "Needs 38.21 GiB of GPU memory and 9.86 GiB of memory to load it",
+				"rule_id": "hf.memory"
+			},
+			{
+				"message": "Downloads 31.42 GiB of model files",
+				"rule_id": "hf.disk"
+			}
+		],
+		"warnings": [
+			{
+				"code": "TOO_LARGE",
+				"message": "Needs 39 GiB of GPU memory, the largest GPU on sale has 20 GiB"
+			},
+			{
+				"code": "TRY_QUANTIZED",
+				"message": "At 8 bits a weight it needs about 21 GiB of GPU memory, at 4 bits about 13 GiB, a rough guide for image models"
+			},
+			{
+				"code": "GATED_MODEL",
+				"message": "The model is gated, accept its terms and add HF_TOKEN by secret link"
+			}
+		]
+	},
+	"recommendation": {
+		"warnings": [
+			{
+				"code": "TOO_LARGE",
+				"message": "Needs 39 GiB of GPU memory, the largest GPU on sale has 20 GiB"
+			},
+			{
+				"code": "TRY_QUANTIZED",
+				"message": "At 8 bits a weight it needs about 21 GiB of GPU memory, at 4 bits about 13 GiB, a rough guide for image models"
+			},
+			{
+				"code": "GATED_MODEL",
+				"message": "The model is gated, accept its terms and add HF_TOKEN by secret link"
+			}
+		]
+	}
+}

@@ -1,0 +1,113 @@
+{
+	"request": {
+		"source": {
+			"kind": "huggingface",
+			"canonical": "huggingface.co/hexgrad/Kokoro-82M",
+			"revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {}
+	},
+	"facts": {
+		"model": {
+			"id": "hexgrad/Kokoro-82M",
+			"revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+			"pipeline": "text-to-speech",
+			"files": [
+				{
+					"path": ".gitattributes",
+					"size": 1519
+				},
+				{
+					"path": "README.md",
+					"size": 8216
+				},
+				{
+					"path": "config.json",
+					"size": 2351
+				},
+				{
+					"path": "kokoro-v1_0.pth",
+					"size": 327212226
+				},
+				{
+					"path": "voices/af_heart.pt",
+					"size": 523425
+				},
+				{
+					"path": "voices/am_adam.pt",
+					"size": 523425
+				}
+			]
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 2,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 56000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 10,
+			"download_bytes": 328259076,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 21,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The weights take 0.31 GiB",
+				"rule_id": "hf.weights"
+			},
+			{
+				"message": "Needs 1.37 GiB of memory on CPU",
+				"rule_id": "hf.memory"
+			},
+			{
+				"message": "Downloads 0.31 GiB of model files",
+				"rule_id": "hf.disk"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": []
+	}
+}

@@ -1,0 +1,77 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/gone",
+			"read": false,
+			"unread": "not_found"
+		},
+		"workload": "tests",
+		"entry_hints": {}
+	},
+	"facts": {},
+	"output": {
+		"basis": "defaults",
+		"confidence": "low",
+		"fits": [
+			{
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 20000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 10,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 10,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work",
+				"rule_id": "workload.default"
+			}
+		],
+		"warnings": [
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source was not found or is private"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": [
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source was not found or is private"
+			}
+		]
+	}
+}
