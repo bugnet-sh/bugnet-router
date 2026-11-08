@@ -65,10 +65,12 @@ type fault struct {
 
 type fakeSandbox struct {
 	id, templateID, token string
-	metadata              map[string]string
-	started, endAt        time.Time
-	state                 string
-	envdDown              int
+	// traffic is the traffic access token, empty for a sandbox open to public traffic
+	traffic        string
+	metadata       map[string]string
+	started, endAt time.Time
+	state          string
+	envdDown       int
 }
 
 type createCall struct {
@@ -130,6 +132,9 @@ type fakeE2B struct {
 	running  atomic.Int64
 	// listLimited makes envd refuse every listing as rate limited
 	listLimited atomic.Bool
+	// requests counts every request to the REST API and to envd
+	requests atomic.Int64
+	connects []string
 }
 
 func newFake(t *testing.T) *fakeE2B {
@@ -140,15 +145,16 @@ func newFake(t *testing.T) *fakeE2B {
 	}
 	rest := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
-		"POST /v2/sandboxes":           f.create,
-		"GET /v2/sandboxes":            f.list,
-		"GET /sandboxes/{id}":          f.get,
-		"DELETE /sandboxes/{id}":       f.kill,
-		"POST /sandboxes/{id}/timeout": f.timeout,
+		"POST /v2/sandboxes":              f.create,
+		"GET /v2/sandboxes":               f.list,
+		"GET /sandboxes/{id}":             f.get,
+		"DELETE /sandboxes/{id}":          f.kill,
+		"POST /sandboxes/{id}/timeout":    f.timeout,
+		"POST /v2/sandboxes/{id}/connect": f.connect,
 	} {
 		rest.HandleFunc(pattern, f.gate(pattern, h))
 	}
-	f.rest = httptest.NewServer(rest)
+	f.rest = httptest.NewServer(f.counted(rest))
 
 	envd := http.NewServeMux()
 	envd.Handle(processconnect.NewProcessHandler(fakeProcess{f: f}))
@@ -158,7 +164,7 @@ func newFake(t *testing.T) *fakeE2B {
 	envd.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	f.envd = httptest.NewServer(f.proxy(envd))
+	f.envd = httptest.NewServer(f.counted(f.proxy(envd)))
 
 	t.Cleanup(func() {
 		f.rest.Close()
@@ -184,6 +190,14 @@ func (f *fakeE2B) provider(t *testing.T, key string) *Provider {
 	p.pollInterval = 10 * time.Millisecond
 	p.retryBase = time.Millisecond
 	return p
+}
+
+// counted counts every request before next serves it
+func (f *fakeE2B) counted(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (f *fakeE2B) inject(pattern string, ft fault) {
@@ -286,6 +300,7 @@ func (f *fakeE2B) place(templateID string, metadata map[string]string, timeout i
 		id:         fmt.Sprintf("ifake%016d", f.nextID),
 		templateID: templateID,
 		token:      fmt.Sprintf("tok-%d", f.nextID),
+		traffic:    fmt.Sprintf("tt-%d", f.nextID),
 		metadata:   metadata,
 		started:    now,
 		endAt:      now.Add(time.Duration(timeout) * time.Second),
@@ -367,17 +382,67 @@ func (f *fakeE2B) create(w http.ResponseWriter, r *http.Request) {
 		metadata = maps.Clone(*req.Metadata)
 	}
 	box := f.place(req.TemplateID, metadata, timeout)
-	domain := fakeDomain
-	reply, _ := json.Marshal(api.Sandbox{
-		SandboxID: box.id, TemplateID: box.templateID, ClientID: "6532622b",
-		EnvdVersion: fakeEnvd, EnvdAccessToken: &box.token, Domain: &domain,
-	})
+	if req.Network == nil || req.Network.AllowPublicTraffic == nil ||
+		*req.Network.AllowPublicTraffic {
+		box.traffic = ""
+	}
+	reply, _ := json.Marshal(sandboxReply(box))
 	if keyed {
 		f.idem[key] = &idemEntry{request: raw, reply: reply}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(reply)
+}
+
+// sandboxReply is the Sandbox E2B answers a create or a connect with
+func sandboxReply(box *fakeSandbox) api.Sandbox {
+	domain := fakeDomain
+	sb := api.Sandbox{
+		SandboxID: box.id, TemplateID: box.templateID, ClientID: "6532622b",
+		EnvdVersion: fakeEnvd, EnvdAccessToken: &box.token, Domain: &domain,
+	}
+	if box.traffic != "" {
+		sb.TrafficAccessToken = &box.traffic
+	}
+	return sb
+}
+
+// connect only ever extends the deadline, as E2B's connect does
+func (f *fakeE2B) connect(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return
+	}
+	var req api.ConnectSandboxV2
+	if len(raw) > 0 && json.Unmarshal(raw, &req) != nil {
+		writeError(w, http.StatusBadRequest, "", "request body is not JSON")
+		return
+	}
+	timeout := 300
+	if req.Timeout != nil {
+		timeout = int(*req.Timeout)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.connects = append(f.connects, string(bytes.TrimSpace(raw)))
+	id := r.PathValue("id")
+	box, ok := f.boxes[id]
+	if !ok {
+		writeError(w, http.StatusNotFound, "", "sandbox \""+id+"\" not found")
+		return
+	}
+	if end := time.Now().UTC().Add(time.Duration(timeout) * time.Second); end.After(box.endAt) {
+		box.endAt = end
+	}
+	writeJSON(w, http.StatusOK, sandboxReply(box))
+}
+
+// connectBodies lists the body of every connect call, oldest first
+func (f *fakeE2B) connectBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.connects)
 }
 
 func (f *fakeE2B) lastCreate() createCall {

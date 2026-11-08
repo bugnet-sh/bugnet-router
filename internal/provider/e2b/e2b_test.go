@@ -79,7 +79,7 @@ func TestE2BSendsHardeningFlags(t *testing.T) {
 	}
 	meta := map[string]string{
 		"arch": "amd64", "domain": fakeDomain, "envd_token": box.token,
-		"created_at": ref.Meta["created_at"],
+		"traffic_token": box.traffic, "created_at": ref.Meta["created_at"],
 	}
 	if ref.Provider != "e2b" || !maps.Equal(ref.Meta, meta) {
 		t.Errorf("ref %+v, want meta %v", ref, meta)

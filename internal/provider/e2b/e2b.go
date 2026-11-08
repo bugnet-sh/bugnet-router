@@ -3,13 +3,14 @@
 // E2B fixes vCPU and memory per template, so every size is a template the account has built.
 // Create sends the labels as metadata, the lifetime as the timeout, public traffic and auto
 // pause off, and an Idempotency-Key derived from the request's key, and it keeps the envd access
-// token from the reply and the creation time in the ref, so SetLifetime can hold the plan's
-// lifetime cap. Calls to envd go through E2B's sandbox proxy, routed by headers, and run as root.
-// Commands go over envd's Connect Process service, file contents over its /files endpoint and
-// listings over its Filesystem service. An upload cannot carry a mode, so WriteFile runs chmod
-// when the mode is not the one envd gives new files. File streams use their own HTTP/1.1 client
-// that never asks for compression. A streamed upload fills a hidden temporary file beside the
-// target, since envd truncates in place, and Commit chmods it and moves it over the target.
+// token, the traffic access token and the creation time in the ref, so SetLifetime can hold the
+// plan's lifetime cap and the edges can reach the gate through E2B's proxy. Calls to envd go
+// through E2B's sandbox proxy, routed by headers, and run as root. Commands go over envd's
+// Connect Process service, file contents over its /files endpoint and listings over its
+// Filesystem service. An upload cannot carry a mode, so WriteFile runs chmod when the mode is not
+// the one envd gives new files. File streams use their own HTTP/1.1 client that never asks for
+// compression. A streamed upload fills a hidden temporary file beside the target, since envd
+// truncates in place, and Commit chmods it and moves it over the target.
 package e2b
 
 import (
@@ -300,6 +301,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	}
 	if sb.EnvdAccessToken != nil && *sb.EnvdAccessToken != "" {
 		ref.Meta["envd_token"] = *sb.EnvdAccessToken
+	}
+	if sb.TrafficAccessToken != nil && *sb.TrafficAccessToken != "" {
+		ref.Meta[metaTraffic] = *sb.TrafficAccessToken
 	}
 	return ref, nil
 }

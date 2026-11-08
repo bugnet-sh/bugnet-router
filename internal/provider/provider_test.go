@@ -106,14 +106,34 @@ func TestDefaultGatePortIsTheSharedWireValue(t *testing.T) {
 	}
 }
 
+func TestCheckGatePort(t *testing.T) {
+	for _, port := range []int{1, 29417, 65535} {
+		if err := provider.CheckGatePort(port); err != nil {
+			t.Errorf("port %d gave %v", port, err)
+		}
+	}
+	for _, port := range []int{-1, 0, 65536} {
+		e, ok := provider.AsError(provider.CheckGatePort(port))
+		if !ok || e.Code != provider.CodeInvalid {
+			t.Errorf("port %d gave %v, want invalid", port, e)
+		}
+	}
+	err := provider.GateUnprepared("boat", "bx_1", "gate_host")
+	e, ok := provider.AsError(err)
+	if !ok || e.Code != provider.CodeInvalid || !errors.Is(err, provider.ErrGateUnprepared) ||
+		!strings.Contains(err.Error(), "gate_host") {
+		t.Fatalf("unprepared gave %v, want invalid wrapping ErrGateUnprepared", err)
+	}
+}
+
 func TestNoSpaceIsItsOwnCode(t *testing.T) {
 	if provider.CodeNoSpace != "no_space" {
 		t.Fatalf("no space code %q, want no_space", provider.CodeNoSpace)
 	}
 }
 
-// reporting is a local provider whose adapter claims every data-plane feature itself
-type reporting struct{ *local.Provider }
+// reporting is a provider without a gate route whose adapter claims every data-plane feature
+type reporting struct{ provider.Provider }
 
 func (r reporting) Capabilities() provider.Capabilities {
 	c := r.Provider.Capabilities()
@@ -132,8 +152,8 @@ func (gated) GateRoute(provider.Ref, int) (provider.GateRoute, error) {
 	return provider.GateRoute{}, nil
 }
 
-// native is a local provider with an SSH server of its own and no gate route
-type native struct{ *local.Provider }
+// native is a provider with an SSH server of its own and no gate route
+type native struct{ provider.Provider }
 
 func (native) AuthorizeNativeSSH(
 	context.Context, provider.Ref, string,
