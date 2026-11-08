@@ -49,7 +49,7 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, testPrefix, read, testPools)(rec,
+	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{})(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -81,7 +81,8 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 	go func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
-		monitor(discard, store.New(pool), vk, testPrefix, hung, testPools)(rec, req)
+		monitor(discard, store.New(pool), vk, testPrefix, hung, testPools, feedCheck{})(rec,
+			req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -253,7 +254,7 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 		bad:                               "the mining pool list cannot be read\n",
 	} {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, path)(rec,
+		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
@@ -268,7 +269,7 @@ func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	ask := func() (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, prefix, healthy, testPools)(rec,
+		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -285,5 +286,51 @@ func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
 		"wallets.facilitator_addresses is empty"
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) != want {
 		t.Fatalf("with the mark: %d %q, want 503 %q", code, body, want)
+	}
+}
+
+func TestMonitorShowsStaleStats(t *testing.T) {
+	st := store.New(migrated(t))
+	vk, _ := testenv.Valkey(t)
+	ask := func(feed feedCheck) (int, string) {
+		rec := httptest.NewRecorder()
+		monitor(discard, st, vk, testPrefix, healthy, testPools, feed)(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		return rec.Code, rec.Body.String()
+	}
+	on := feedCheck{on: true}
+	if code, body := ask(on); code != http.StatusOK {
+		t.Fatalf("before the first snapshot: %d %q", code, body)
+	}
+	write := func(snap store.StatsSnapshot) {
+		t.Helper()
+		if err := st.WriteStatsSnapshot(t.Context(), snap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	write(store.StatsSnapshot{RouterAt: now, Body: []byte("{}"), Payments: []byte("{}"),
+		PaymentsAt: now})
+	if code, body := ask(on); code != http.StatusOK {
+		t.Fatalf("a fresh snapshot: %d %q", code, body)
+	}
+	write(store.StatsSnapshot{RouterAt: now.Add(-3 * time.Minute), Body: []byte("{}"),
+		Payments: []byte("{}"), PaymentsAt: now.Add(-7 * time.Minute)})
+	code, body := ask(on)
+	lines := strings.Split(body, "\n")
+	if code != http.StatusServiceUnavailable || len(lines) != 3 ||
+		!strings.HasPrefix(lines[0], "stats snapshot 18") ||
+		!strings.HasSuffix(lines[0], " s old") || lines[1] != "stats: Payments part 7 min old" {
+		t.Fatalf("a stale snapshot: %d %q", code, body)
+	}
+	if code, _ := ask(feedCheck{}); code != http.StatusOK {
+		t.Fatalf("the feed off still reads the row: %d", code)
+	}
+	write(store.StatsSnapshot{RouterAt: now})
+	_, body = ask(feedCheck{on: true, noToken: true})
+	want := "stats: no Payments part yet, so /api/stats answers 503, " +
+		"BUGNET_PAYMENTS_ROUTER_TOKEN is empty in router-worker\n"
+	if body != want {
+		t.Fatalf("no Payments part: %q, want %q", body, want)
 	}
 }

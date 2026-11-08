@@ -3,6 +3,7 @@
 //
 // router-worker -config FILE builds every service from the settings in FILE and the secrets in
 // the environment, starts the River client and answers /healthz, /readyz and /monitor over HTTP.
+// With stats.listen_addr set it also writes the public stats feed's snapshot every 30 s.
 // On SIGTERM or SIGINT it stops fetching jobs, gives running ones a bounded time before
 // cancelling them, waits a bounded time for the saga, and exits.
 package main
@@ -30,6 +31,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
@@ -161,6 +163,7 @@ func serve(
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers,
 		Egress:           worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
+		Stats:            feedDeps(cfg, cat),
 	})
 	if err != nil {
 		return err
@@ -175,8 +178,9 @@ func serve(
 		_, _ = io.WriteString(rw, "ok\n")
 	})
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
+	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList))
+		cfg.Hardening.PoolList, feed))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()
@@ -197,6 +201,19 @@ func serve(
 		log.Warn("http shutdown", "err", err)
 	}
 	return serveErr
+}
+
+// feedDeps builds the stats snapshot's inputs, nil while stats.listen_addr is empty
+func feedDeps(cfg config.Config, cat *catalog.Catalog) *worker.Stats {
+	if !cfg.Stats.Enabled() {
+		return nil
+	}
+	return &worker.Stats{
+		Payments: stats.NewPayments(cfg.Stats.PaymentsURL, cfg.PaymentsToken,
+			cfg.Stats.PaymentsTimeout),
+		Catalog: cat,
+		Limits:  stats.RouterLimits(&cfg),
+	}
 }
 
 // shutdown lets running jobs finish for a bounded time, then cancels them and waits for the saga
