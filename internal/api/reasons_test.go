@@ -52,6 +52,13 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 	for name, call := range e.secretCalls(t) {
 		calls[name] = call
 	}
+	calls["CheckX402"] = func(h string) error {
+		return e.checkX402(t, h, specsOn("api.example.com"))
+	}
+	calls["ListX402"] = func(h string) error {
+		_, err := e.listX402(t, h)
+		return err
+	}
 	calls["WatchJob"] = func(h string) error {
 		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
 		return err

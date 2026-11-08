@@ -24,6 +24,9 @@
 // secrets.apply_wait for the worker to apply it. A link's page reaches the router through
 // SecretsRouteService, which reads a link without using it and uses it on the first good submit.
 //
+// CheckX402 runs the checks of an x402 change without making it, and ListX402 shows a placement's
+// x402 services and refusals in any state. Neither spends an operation token.
+//
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
 // edge event reader per server fans out, or when it goes idle or reaches its hard stop. Drain
@@ -125,7 +128,9 @@ type Deps struct {
 	SecretsHost string
 	// EgressHost is the proxy's name, the secret writes refusing every call while it is empty
 	EgressHost string
-	// HostRules are the secret form of the host rules
+	// X402 are the x402 settings, a zero max_services or max_price_micros taking its default
+	X402 config.X402
+	// HostRules are the host rules in their x402 form, ForSecrets giving the secret form
 	HostRules hostrules.Rules
 }
 

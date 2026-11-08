@@ -116,6 +116,7 @@ type faulty struct {
 	*local.Provider
 	hold        <-chan struct{} // WaitReady waits for it to close, when set
 	maxLifetime time.Duration   // replaces the local provider's cap, when set
+	egress      bool            // reports EgressControl, so restricted packages place
 }
 
 func (f faulty) Capabilities() provider.Capabilities {
@@ -123,6 +124,7 @@ func (f faulty) Capabilities() provider.Capabilities {
 	if f.maxLifetime > 0 {
 		c.MaxLifetime = f.maxLifetime
 	}
+	c.EgressControl = c.EgressControl || f.egress
 	return c
 }
 
@@ -191,6 +193,10 @@ type options struct {
 	providerName string
 	// secretSettings changes the API server's [secrets] settings from secretDefaults
 	secretSettings func(*config.Secrets)
+	// x402 changes the API server's [x402] settings from x402Of's
+	x402 func(*config.X402)
+	// egressControl has the provider report EgressControl, so restricted packages place
+	egressControl bool
 }
 
 type env struct {
@@ -256,6 +262,7 @@ func newEnv(t *testing.T, opts options) *env {
 	}
 	var listed provider.Provider = faulty{
 		Provider: prov, hold: opts.holdReady, maxLifetime: opts.maxLifetime,
+		egress: opts.egressControl,
 	}
 	if opts.wrap != nil {
 		listed = opts.wrap(prov, root)
@@ -321,7 +328,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
-		HostRules: hostRules(),
+		X402: x402Of(opts), HostRules: hostRules(x402Of(opts)),
 	})
 	t.Cleanup(srv.Close)
 

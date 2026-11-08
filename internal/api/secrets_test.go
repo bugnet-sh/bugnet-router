@@ -52,12 +52,12 @@ func secretsOf(opts options) config.Secrets {
 	return c
 }
 
-func hostRules() hostrules.Rules {
-	return hostrules.New(config.X402{SharedHostingSuffixes: []string{"workers.dev"}},
-		config.Names{
-			PreviewDomain: previewDomain, TransferHost: transferHost, SecretsHost: secretsHost,
-			EgressHost: egressHost,
-		}, "").ForSecrets()
+// hostRules are the router's host rules in their x402 form, from x
+func hostRules(x config.X402) hostrules.Rules {
+	return hostrules.New(x, config.Names{
+		PreviewDomain: previewDomain, TransferHost: transferHost, SecretsHost: secretsHost,
+		EgressHost: egressHost,
+	}, "")
 }
 
 func (e *env) secretsRoute(t *testing.T) routerv1connect.SecretsRouteServiceClient {

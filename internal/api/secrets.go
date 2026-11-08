@@ -409,7 +409,7 @@ func (s *Server) claim(
 
 // checkSecret runs the rules that need no lock, the spec's and the sealed value's
 func (s *Server) checkSecret(p store.Placement, w secretWrite) error {
-	c := secrets.Context{Hosts: s.d.HostRules, CustomHosts: s.d.Secrets.CustomHosts}
+	c := secrets.Context{Hosts: s.d.HostRules.ForSecrets(), CustomHosts: s.d.Secrets.CustomHosts}
 	if pkg, ok := s.d.Catalog.Get(p.PackageID); ok {
 		c.EgressAllow = pkg.EgressAllow
 	}
