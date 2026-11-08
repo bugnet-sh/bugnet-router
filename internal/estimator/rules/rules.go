@@ -12,7 +12,7 @@ import (
 )
 
 // Version names the rule set, any change to a rule or a constant bumps it
-const Version = "est-2026.11.2"
+const Version = "est-2026.11.3"
 
 const (
 	mib = int64(1) << 20
@@ -271,12 +271,14 @@ type eval struct {
 	low      bool
 
 	vcpu, memMiB, diskMiB, seconds dim
-	gpu                            GPUNeed
-	gpuCount                       int
-	gpuMemBytes                    int64
-	downloadBytes                  int64
-	docker                         bool
-	model                          *modelFloor
+	// installSeconds is the install time counted beyond the default minutes, see addInstallSeconds
+	installSeconds int64
+	gpu            GPUNeed
+	gpuCount       int
+	gpuMemBytes    int64
+	downloadBytes  int64
+	docker         bool
+	model          *modelFloor
 	// lifetimeCapped is set when the lifetime alone keeps some package short on minutes
 	lifetimeCapped bool
 }
@@ -375,10 +377,13 @@ func (e *eval) softVCPU(n int) {
 	e.vcpu.setSoft(min(int64(n), e.vcpu.base*softVCPUStep))
 }
 
+// includedInstallSeconds is the install time a workload's default minutes already cover
+const includedInstallSeconds = 5 * 60
+
 // addInstallSeconds counts install time only when the agent gave no minutes of its own
 func (e *eval) addInstallSeconds(s int64) {
 	if e.in.Request.Minutes == 0 {
-		e.seconds.softAdd += s
+		e.installSeconds += s
 	}
 }
 
@@ -414,11 +419,13 @@ func (e *eval) needRules() {
 
 // floor rounds every dimension, memory to 256 MiB, disk to 1 GiB and minutes to 1
 func (e *eval) floor() Floor {
+	seconds := e.seconds
+	seconds.softAdd += max(0, e.installSeconds-includedInstallSeconds)
 	f := Floor{
 		VCPU:          int(e.vcpu.value()),
 		MemoryMiB:     int(roundUp(e.memMiB.value(), 256)),
 		DiskGiB:       int(ceilDiv(e.diskMiB.value(), 1024)),
-		Minutes:       int(ceilDiv(e.seconds.value(), 60)),
+		Minutes:       int(ceilDiv(seconds.value(), 60)),
 		DownloadBytes: e.downloadBytes,
 		GPU:           e.gpu,
 	}
@@ -679,7 +686,8 @@ func (e *eval) pinRules(r *facts.Repo) {
 		e.signals = true
 		e.diskMiB.softAdd += diskMiB
 		e.addInstallSeconds(seconds)
-		e.reason("tc.pin", "A pinned %s toolchain the images may lack adds %s", pinTool(p.Tool),
+		e.reason("tc.pin", "A pinned %s toolchain the images may lack takes about %s to install",
+			pinTool(p.Tool),
 			minutesText(seconds/60))
 	}
 }

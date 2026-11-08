@@ -56,3 +56,18 @@ func TestProductionServeRecommendsExtensions(t *testing.T) {
 		t.Fatalf("total %d micros, want 150000", rec.TotalPriceMicros)
 	}
 }
+
+// the default minutes cover a small install, so a Vite starter still takes two extensions
+func TestDefaultMinutesCoverASmallInstall(t *testing.T) {
+	f := facts.Facts{Repo: &facts.Repo{Lockfiles: []facts.Lockfile{{Packages: 9}}}}
+	eq(t, Run(productionInput(t, Request{Workload: WorkloadServe}, f)).Floor.Minutes, 30)
+}
+
+// install time past the covered 5 minutes still adds to the default
+func TestALongInstallAddsMinutes(t *testing.T) {
+	f := facts.Facts{Repo: &facts.Repo{NativeBuild: true,
+		Pins: []facts.Pin{{Tool: "go-toolchain", Version: "1.27"}}}}
+	eq(t, Run(productionInput(t, Request{Workload: WorkloadTests}, f)).Floor.Minutes, 12)
+	eq(t, Run(productionInput(t, Request{Workload: WorkloadTests, Minutes: 10}, f)).Floor.Minutes,
+		10)
+}

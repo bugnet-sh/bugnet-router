@@ -77,7 +77,7 @@
 			"gpu_count": 0,
 			"gpu_memory_gib": 0,
 			"memory_mib": 4096,
-			"minutes": 28,
+			"minutes": 23,
 			"vcpu": 4
 		},
 		"partial": false,
@@ -91,7 +91,7 @@
 				"rule_id": "deps.count"
 			},
 			{
-				"message": "A pinned Node toolchain the images may lack adds 1 minute",
+				"message": "A pinned Node toolchain the images may lack takes about 1 minute to install",
 				"rule_id": "tc.pin"
 			},
 			{

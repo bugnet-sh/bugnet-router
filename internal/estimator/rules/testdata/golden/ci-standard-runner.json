@@ -43,8 +43,6 @@
 		"confidence": "medium",
 		"fits": [
 			{
-				"extension_package_id": "cpu-small-10m-more",
-				"extensions_needed": 1,
 				"fits": false,
 				"package_id": "cpu-small-10m",
 				"short_on": [
@@ -52,7 +50,7 @@
 					"memory",
 					"disk"
 				],
-				"total_price_micros": 38000
+				"total_price_micros": 20000
 			},
 			{
 				"fits": false,
@@ -82,7 +80,7 @@
 			"gpu_count": 0,
 			"gpu_memory_gib": 0,
 			"memory_mib": 4864,
-			"minutes": 11,
+			"minutes": 10,
 			"vcpu": 4
 		},
 		"partial": false,

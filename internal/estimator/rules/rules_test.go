@@ -144,20 +144,20 @@ func TestContextFitsASmallerPackage(t *testing.T) {
 	eq(t, Run(input(t, req, f)).Floor.GPUMemoryGiB, 20)
 }
 
-func TestImageManifestPins(t *testing.T) { // matched on three, unmeasured on the fourth adds time
+func TestImageManifestPins(t *testing.T) { // matched on three, unmeasured on the fourth adds disk
 	f := facts.Facts{Repo: &facts.Repo{Pins: []facts.Pin{{Tool: "python3", Version: "3.12.4"}}}}
 	in := input(t, Request{Workload: WorkloadTests}, f)
 	unmeasured := Run(in)
-	eq(t, [2]int{unmeasured.Floor.Minutes, unmeasured.Floor.DiskGiB}, [2]int{11, 9})
+	eq(t, [2]int{unmeasured.Floor.Minutes, unmeasured.Floor.DiskGiB}, [2]int{10, 9})
 	for i := range in.Images {
 		in.Images[i].Tools.Python3 = "3.12"
 	}
 	matched := Run(in)
 	eq(t, [2]int{matched.Floor.Minutes, matched.Floor.DiskGiB}, [2]int{10, 8})
 	in.Images[0].Tools.Python3 = "3.11"
-	eq(t, Run(in).Floor.Minutes, 11)
+	eq(t, Run(in).Floor.DiskGiB, 9)
 	in.Images[0].Tools.Python3 = "none"
-	eq(t, Run(in).Floor.Minutes, 11)
+	eq(t, Run(in).Floor.DiskGiB, 9)
 }
 
 func TestNeedsDockerReadsEveryImage(t *testing.T) {
