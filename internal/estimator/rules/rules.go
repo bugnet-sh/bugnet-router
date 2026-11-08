@@ -566,8 +566,23 @@ func (e *eval) composeRules(r *facts.Repo) {
 		}
 	}
 	e.memMiB.softAdd += max(share, ci)
-	e.reason("svc.memory", "%d compose services need about %d MiB of memory", len(c.Services),
-		max(share, ci))
+	if ci > share {
+		e.serviceReason(len(r.CI.Services), "CI", ci)
+	} else {
+		e.serviceReason(len(c.Services), "compose", share)
+	}
+}
+
+// serviceReason says how much memory n services of one kind need, and nothing when it is none
+func (e *eval) serviceReason(n int, kind string, mib int64) {
+	if mib <= 0 {
+		return
+	}
+	if n == 1 {
+		e.reason("svc.memory", "1 %s service needs about %d MiB of memory", kind, mib)
+		return
+	}
+	e.reason("svc.memory", "%d %s services need about %d MiB of memory", n, kind, mib)
 }
 
 // serviceShare is a service's memory, its class's figure bounded by its limit and reservation
@@ -605,7 +620,7 @@ func (e *eval) ciRules(r *facts.Repo) {
 			m += serviceMiB[s]
 		}
 		e.memMiB.softAdd += m
-		e.reason("svc.memory", "%d CI services need about %d MiB of memory", len(ci.Services), m)
+		e.serviceReason(len(ci.Services), "CI", m)
 	}
 	if ci.StandardOnly {
 		e.vcpu.capAt(standardRunner[0])

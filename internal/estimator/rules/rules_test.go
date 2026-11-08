@@ -363,3 +363,26 @@ func TestWarningCodeNames(t *testing.T) {
 	_, err = json.Marshal(Warning{})
 	eq(t, err != nil, true)
 }
+
+func TestServiceMemoryReasonNamesTheLargerSide(t *testing.T) {
+	msg := func(r *facts.Repo) []string {
+		var out []string
+		for _, x := range Run(input(t, Request{Workload: WorkloadTests},
+			facts.Facts{Repo: r})).Reasons {
+			if x.RuleID == "svc.memory" {
+				out = append(out, x.Message)
+			}
+		}
+		return out
+	}
+	redis := []facts.Service{{Class: "redis"}}
+	eq(t, msg(&facts.Repo{Compose: &facts.Compose{Files: 1, Services: redis},
+		CI: &facts.CI{Jobs: 1, Services: []string{"postgres", "kafka"}}}),
+		[]string{"2 CI services need about 1280 MiB of memory"})
+	eq(t, msg(&facts.Repo{Compose: &facts.Compose{Files: 1, Services: redis},
+		CI: &facts.CI{Jobs: 1, Services: []string{"redis"}}}),
+		[]string{"1 compose service needs about 64 MiB of memory"})
+	eq(t, msg(&facts.Repo{Compose: &facts.Compose{Files: 1}}), []string(nil))
+	eq(t, msg(&facts.Repo{CI: &facts.CI{Jobs: 1, Services: []string{"unknown"}}}),
+		[]string(nil))
+}
