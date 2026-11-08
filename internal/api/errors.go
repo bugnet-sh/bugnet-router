@@ -16,6 +16,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sshkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
@@ -73,6 +74,16 @@ const (
 	reasonPreviewRevoked  = "PREVIEW_REVOKED"
 	reasonTooManyPreviews = "TOO_MANY_PREVIEWS"
 	reasonGateUnavailable = "GATE_UNAVAILABLE"
+)
+
+// SSH reasons, named as DP 11.3 names them
+const (
+	reasonKeyInvalid         = "KEY_INVALID"
+	reasonTooManyKeys        = "TOO_MANY_KEYS"
+	reasonGrantUnknown       = "GRANT_UNKNOWN"
+	reasonGrantInvalid       = "GRANT_INVALID"
+	reasonTooManyConnections = "TOO_MANY_CONNECTIONS"
+	reasonSSHPreparing       = "SSH_PREPARING"
 )
 
 // Codes a start package's unavailable_reason takes, never error text
@@ -135,6 +146,17 @@ var codes = []struct {
 	{errNoPreviews, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{errNoFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{saga.ErrGateUnavailable, connect.CodeUnavailable, reasonGateUnavailable},
+	{saga.ErrSSHPreparing, connect.CodeUnavailable, reasonSSHPreparing},
+	{sshkeys.ErrInvalid, connect.CodeInvalidArgument, reasonKeyInvalid},
+	{errSSHPath, connect.CodeInvalidArgument, reasonPathRefused},
+	{errFingerprint, connect.CodeInvalidArgument, ""},
+	{errLeaseMalformed, connect.CodeInvalidArgument, ""},
+	{store.ErrTooManyKeys, connect.CodeResourceExhausted, reasonTooManyKeys},
+	{errNoSSH, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errNoSSHGateway, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errGrantUnknown, connect.CodeNotFound, reasonGrantUnknown},
+	{errGrantInvalid, connect.CodePermissionDenied, reasonGrantInvalid},
+	{errTooManyConns, connect.CodeResourceExhausted, reasonTooManyConnections},
 	{errOverCap, connect.CodeOutOfRange, reasonOverCap},
 	{errRange, connect.CodeOutOfRange, reasonRange},
 	{errBudgetSpent, connect.CodeResourceExhausted, reasonBudgetSpent},
@@ -223,7 +245,7 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 		}
 		msg := err
 		if c.code == connect.CodeCanceled || c.code == connect.CodeDeadlineExceeded ||
-			c.err == saga.ErrGateUnavailable {
+			c.err == saga.ErrGateUnavailable || c.err == saga.ErrSSHPreparing {
 			// What wraps a context or gate error can name a job or the provider's words
 			msg = c.err
 		}

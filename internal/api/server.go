@@ -19,6 +19,11 @@
 // which runs at most once a minute per placement. OperatorService's RevokePreview moves a
 // preview's generation, so every earlier link dies and its port gets no new one.
 //
+// AddSshKey registers a public key on a placement whose provider has SSH, and SshGatewayService
+// answers bugnet-ssh: a read-only key check, connection leases in a Valkey sorted set per
+// placement, the upstream after the gateway's own key is authorised in the sandbox once, and a
+// check of the grants it holds. RemoveSshKey publishes SshKeyRemoved.
+//
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
 // edge event reader per server fans out, or when it goes idle or reaches its hard stop. Drain
@@ -109,6 +114,11 @@ type Deps struct {
 	PreviewDomain string
 	// Previews are the preview settings, a zero max_per_placement taking its default
 	Previews config.Previews
+	// SSH are the SSH settings, each zero field taking its default
+	SSH config.SSH
+	// SSHHost and SSHPort name the gateway, and AddSshKey refuses every call while it is empty
+	SSHHost string
+	SSHPort int
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -800,6 +810,7 @@ func placementMsg(p store.Placement) *routerv1.Placement {
 		CreatedAt:     timestamppb.New(p.CreatedAt),
 		FailureReason: p.FailureReason,
 		Refundable:    p.Refundable,
+		SshAlias:      p.SSHAlias,
 	}
 	if p.Deadline != nil {
 		out.Deadline = timestamppb.New(*p.Deadline)

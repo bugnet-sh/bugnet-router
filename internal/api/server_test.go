@@ -58,6 +58,9 @@ import (
 
 var runnerPath string
 
+// fakeSSHDPath is the stand-in sshd that local sandboxes' ssh-up runs
+var fakeSSHDPath string
+
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
 }
@@ -75,6 +78,14 @@ func run(m *testing.M) int {
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build bugnet-run:", err)
+		return 1
+	}
+	// ssh-up knows sshd by the name in its command line, so the stand-in keeps it
+	fakeSSHDPath = filepath.Join(dir, "fakesshd")
+	build = exec.Command("go", "build", "-o", fakeSSHDPath, "./testdata/fakesshd")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "build fakesshd:", err)
 		return 1
 	}
 	return m.Run()
@@ -189,6 +200,11 @@ type options struct {
 	noPreviews bool
 	// providerName names the local provider, "local" when empty
 	providerName string
+	// withSSH lists a provider with a gate route in ssh.providers, nativeSSH any provider on
+	// Boat's native path
+	withSSH, nativeSSH bool
+	// ssh are the SSH settings, sshDefaults' fields where zero
+	ssh config.SSH
 }
 
 type env struct {
@@ -260,6 +276,9 @@ func newEnv(t *testing.T, opts options) *env {
 	if _, gater := listed.(provider.Gater); gater && !opts.noPreviews {
 		features.Preview = []string{name}
 	}
+	if _, gater := listed.(provider.Gater); gater && opts.withSSH || opts.nativeSSH {
+		features.SSH, features.BoatNativeSSH = []string{name}, opts.nativeSSH
+	}
 	reg, err := provider.NewRegistry([]provider.Provider{listed}, features)
 	if err != nil {
 		t.Fatal(err)
@@ -273,6 +292,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
+		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath},
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
@@ -316,7 +336,8 @@ func newEnv(t *testing.T, opts options) *env {
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
-		PreviewDomain: previewDomain, Previews: previewSettings,
+		PreviewDomain: previewDomain, Previews: previewSettings, SSH: sshSettings(opts.ssh),
+		SSHHost: sshHost, SSHPort: 22,
 	})
 	t.Cleanup(srv.Close)
 
