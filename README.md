@@ -747,9 +747,10 @@ still terminating after 3 minutes, which mean the worker runs but no longer ends
 outbox events, Valkey memory at 80% of `maxmemory` or more, a `maxmemory-policy` other than
 `noeviction`, and a mining pool list that is empty, missing or unreadable. A failed connection
 means the worker is down. When `INFO memory` fails or times out while Valkey answers,
-`/monitor` reports `valkey memory is unknown`. When an ACL or `rename-command` refuses `INFO`, it reports `valkey refuses INFO, so its memory and policy go
-unchecked`, since that also leaves the start-up policy check blind, so leave `INFO` allowed. When it answers without a field, as a managed Valkey may, `/monitor` checks the
-fields it got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only
+`/monitor` reports `valkey memory is unknown`. When an ACL or `rename-command` refuses `INFO`,
+it reports `valkey refuses INFO, so its memory and policy go unchecked`, since that also leaves
+the start-up policy check blind, so leave `INFO` allowed. When it answers without a field, as a
+managed Valkey may, `/monitor` checks the fields it got and logs a warning. `/healthz` is a bare liveness answer and `/readyz` checks only
 that Postgres and Valkey answer.
 
 ## The VPS front
