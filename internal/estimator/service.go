@@ -266,7 +266,7 @@ func (s *Service) SourceOf(ctx context.Context, id string) (store.PlacementSourc
 	rs := in.Request.Source
 	ps := store.PlacementSource{
 		EstimateID: u, Kind: rs.Kind, Canonical: rs.Canonical, Ref: rs.Ref,
-		Revision: rs.Revision, Read: rs.Read,
+		Revision: rs.Revision, Read: rs.Read, Unread: string(rs.Unread),
 	}
 	ps.Label = Label(rs)
 	return ps, true

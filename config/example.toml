@@ -100,6 +100,13 @@ apply_wait = "15s"
 [fetch]
 max_bytes = "2GiB"                     # private repository tarballs, counted as egress
 egress_addr = "127.0.0.1:9443"         # the proxy's listener, dialled directly with PROXY v2
+egress_roots_file = ""                 # PEM roots for the proxy's outer certificate, or system
+
+[bootstrap]
+dir = "src"                            # under the exec user's home
+heartbeat_stale = "1m"                 # a private fetch silent this long has been interrupted
+max_private_attempts = 2               # private fetches per placement
+max_concurrent = 4                     # private fetches at once per replica
 
 [hooks]
 providers = []                         # providers whose webhooks are verified

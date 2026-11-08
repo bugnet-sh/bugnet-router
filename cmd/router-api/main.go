@@ -221,6 +221,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Wallets:             cfg.Wallets,
 		ProviderOps:         cfg.ProviderOps,
 		Estimator:           est,
+		Bootstrap:           cfg.Bootstrap,
+		Fetch:               cfg.Fetch,
+		FetchToken:          cfg.EgressFetchToken,
+		Images:              cfg.Images,
 	})
 	defer srv.Close()
 

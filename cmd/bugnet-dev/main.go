@@ -55,7 +55,10 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
         [--priv K] [--payer A] [--fee-payer A] [--tx S] [--allowance-micros N]
                                          print a signed order token
   create --package P [--order O] [--token T] [--payer A] [--fee-payer A] [--tx S]
-         [--allowance-micros N]          create a placement and wait until it is ready
+         [--allowance-micros N] [--estimate-id ID]
+                                         create a placement and wait until it is ready
+  fetch-source --handle H                put the placement's GitHub source in its sandbox and
+                                         print the bootstrap state
   get --handle H                         print a placement
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
@@ -176,6 +179,7 @@ func run(
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
 		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls, "estimate": c.estimate,
+		"fetch-source": c.fetchSource,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -504,6 +508,7 @@ func (c *cli) create(args []string) error {
 	fs.StringVar(&o.pkg, "package", "", "package id")
 	fs.StringVar(&o.id, "order", "", "order id")
 	given := fs.String("token", "", "order token")
+	estimate := fs.String("estimate-id", "", "estimate id from Estimate")
 	paymentFlags(fs, &o)
 	if err := parse(fs, args, false); err != nil {
 		return err
@@ -517,7 +522,7 @@ func (c *cli) create(args []string) error {
 		return err
 	}
 	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
-		OrderToken: token,
+		OrderToken: token, EstimateId: *estimate,
 	}))
 	if err != nil {
 		return err
@@ -677,6 +682,30 @@ func (c *cli) stop(args []string) error {
 		return err
 	}
 	return c.printPlacement(res.Msg.GetPlacement())
+}
+
+// fetchSource runs FetchSource and prints the bootstrap it answers
+func (c *cli) fetchSource(args []string) error {
+	h, err := handleFlag("fetch-source", args)
+	if err != nil {
+		return err
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	res, err := api.FetchSource(c.ctx, connect.NewRequest(&routerv1.FetchSourceRequest{
+		Handle: h,
+	}))
+	if err != nil {
+		return err
+	}
+	b := res.Msg.GetBootstrap()
+	return c.print([][2]string{
+		{"state", bootstrapName(b.GetState())},
+		{"path", b.GetPath()}, {"revision", b.GetRevision()}, {"job_id", b.GetJobId()},
+		{"failure_reason", b.GetFailureReason()},
+	})
 }
 
 /* Jobs */
@@ -926,7 +955,15 @@ func (c *cli) printPlacement(p *routerv1.Placement) error {
 	if p.GetPaidMicros() != 0 {
 		kv = append(kv, [2]string{"paid_micros", strconv.FormatInt(p.GetPaidMicros(), 10)})
 	}
+	if b := p.GetBootstrap(); b != nil {
+		kv = append(kv, [2]string{"bootstrap_state", bootstrapName(b.GetState())},
+			[2]string{"bootstrap_reason", b.GetFailureReason()})
+	}
 	return c.print(kv)
+}
+
+func bootstrapName(s routerv1.BootstrapState) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "BOOTSTRAP_STATE_"))
 }
 
 func stateName(s routerv1.PlacementState) string {

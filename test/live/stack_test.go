@@ -448,6 +448,10 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	secrets["box_public_keys"] = []map[string]any{{"id": "k1", "key": s.egress.boxPub}}
 	secrets["providers"] = []string{s.provider}
 	table(m, "fetch")["egress_addr"] = s.egress.listen
+	if s.mode == "local" {
+		// The local proxy's outer certificate is self-signed, so the fetcher trusts that one
+		table(m, "fetch")["egress_roots_file"] = filepath.Join(s.selfSigned(t), "fullchain.pem")
+	}
 	// The gateway's host key goes into the known_hosts lines the router hands out
 	table(m, "ssh")["providers"] = []string{s.provider}
 	table(m, "ssh")["host_keys"] = []string{s.sshHost}

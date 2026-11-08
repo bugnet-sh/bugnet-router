@@ -20,6 +20,9 @@ import (
 // maxDataplaneWorkers is the most workers River lets one queue run, any queue
 const maxDataplaneWorkers = 10_000
 
+// bootstrapDir is the form of bootstrap.dir, a relative path of safe characters
+var bootstrapDir = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+
 // maxKoyebPart is the most one request carries through Koyeb's front
 const maxKoyebPart = 100 << 20
 
@@ -64,6 +67,9 @@ func (f file) dataPlane(c *Config) error {
 		{"secrets.max_per_placement", k.MaxPerPlacement, &c.Secrets.MaxPerPlacement},
 		{"secrets.links_per_hour", k.LinksPerHour, &c.Secrets.LinksPerHour},
 		{"secrets.puts_per_hour", k.PutsPerHour, &c.Secrets.PutsPerHour},
+		{"bootstrap.max_private_attempts", f.Bootstrap.MaxPrivateAttempts,
+			&c.Bootstrap.MaxPrivateAttempts},
+		{"bootstrap.max_concurrent", f.Bootstrap.MaxConcurrent, &c.Bootstrap.MaxConcurrent},
 	} {
 		if n.raw < 1 {
 			return fmt.Errorf("%s must be a positive whole number", n.key)
@@ -124,6 +130,8 @@ func (f file) dataPlane(c *Config) error {
 		{"secrets.link_ttl", k.LinkTTL, dk.LinkTTL, &c.Secrets.LinkTTL},
 		{"secrets.put_grant_ttl", k.PutGrantTTL, dk.PutGrantTTL, &c.Secrets.PutGrantTTL},
 		{"secrets.apply_wait", k.ApplyWait, dk.ApplyWait, &c.Secrets.ApplyWait},
+		{"bootstrap.heartbeat_stale", f.Bootstrap.HeartbeatStale, d.Bootstrap.HeartbeatStale,
+			&c.Bootstrap.HeartbeatStale},
 	} {
 		v, err := time.ParseDuration(cmp.Or(t.raw, t.def))
 		if err != nil || v <= 0 {
@@ -173,6 +181,12 @@ func (f file) dataPlane(c *Config) error {
 	c.Fetch.EgressAddr = cmp.Or(f.Fetch.EgressAddr, df.EgressAddr)
 	if !isHostPort(c.Fetch.EgressAddr) {
 		return errors.New("fetch.egress_addr must be host:port with a port from 1 to 65535")
+	}
+	c.Fetch.EgressRootsFile = f.Fetch.EgressRootsFile
+	c.Bootstrap.Dir = cmp.Or(f.Bootstrap.Dir, d.Bootstrap.Dir)
+	if !bootstrapDir.MatchString(c.Bootstrap.Dir) || slices.Contains(
+		strings.Split(c.Bootstrap.Dir, "/"), "..") {
+		return errors.New("bootstrap.dir must be a relative path of letters, digits, . _ - and /")
 	}
 	switch c.Boxd.GateRoute {
 	case "subdomain", "default":
@@ -302,4 +316,19 @@ func (s *Secrets) read(f secretFile) error {
 		s.BoxPublicKeys = append(s.BoxPublicKeys, BoxKey{ID: k.ID, Key: key})
 	}
 	return nil
+}
+
+// OrDefaults returns b with each zero setting at its default, for callers built without settings
+func (b Bootstrap) OrDefaults() Bootstrap {
+	b.Dir = cmp.Or(b.Dir, "src")
+	b.HeartbeatStale = cmp.Or(b.HeartbeatStale, time.Minute)
+	b.MaxPrivateAttempts = cmp.Or(b.MaxPrivateAttempts, 2)
+	b.MaxConcurrent = cmp.Or(b.MaxConcurrent, 4)
+	return b
+}
+
+// OrDefaults returns f with a zero byte cap at its default, for callers built without settings
+func (f Fetch) OrDefaults() Fetch {
+	f.MaxBytes = cmp.Or(f.MaxBytes, 2<<30)
+	return f
 }

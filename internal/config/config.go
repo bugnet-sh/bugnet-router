@@ -86,6 +86,7 @@ type Config struct {
 	SSH           SSH
 	Secrets       Secrets
 	Fetch         Fetch
+	Bootstrap     Bootstrap
 	Hooks         Hooks
 	X402          X402
 	Hardening     Hardening
@@ -266,6 +267,21 @@ type Fetch struct {
 	MaxBytes int64
 	// EgressAddr is the proxy's listener, dialled directly with a PROXY v2 header
 	EgressAddr string
+	// EgressRootsFile is a PEM bundle the proxy's outer certificate is checked against, the
+	// system roots when empty
+	EgressRootsFile string
+}
+
+// Bootstrap holds the settings of FetchSource
+type Bootstrap struct {
+	// Dir is where repositories land, under the exec user's home
+	Dir string
+	// HeartbeatStale is how long a private fetch may stay silent before it reads as interrupted
+	HeartbeatStale time.Duration
+	// MaxPrivateAttempts caps the private fetches of one placement
+	MaxPrivateAttempts int
+	// MaxConcurrent caps the private fetches one replica runs at once
+	MaxConcurrent int
 }
 
 // Hooks holds the provider webhook settings
@@ -302,6 +318,7 @@ type file struct {
 	SSH                 sshFile       `toml:"ssh"`
 	Secrets             secretFile    `toml:"secrets"`
 	Fetch               fetchFile     `toml:"fetch"`
+	Bootstrap           bootstrapFile `toml:"bootstrap"`
 	Hooks               Hooks         `toml:"hooks"`
 	X402                x402File      `toml:"x402"`
 	Hardening           hardeningFile `toml:"hardening"`
@@ -440,8 +457,16 @@ type boxKeyFile struct {
 }
 
 type fetchFile struct {
-	MaxBytes   string `toml:"max_bytes"`
-	EgressAddr string `toml:"egress_addr"`
+	MaxBytes        string `toml:"max_bytes"`
+	EgressAddr      string `toml:"egress_addr"`
+	EgressRootsFile string `toml:"egress_roots_file"`
+}
+
+type bootstrapFile struct {
+	Dir                string `toml:"dir"`
+	HeartbeatStale     string `toml:"heartbeat_stale"`
+	MaxPrivateAttempts int64  `toml:"max_private_attempts"`
+	MaxConcurrent      int64  `toml:"max_concurrent"`
 }
 
 // defaults are the settings of an empty file, an empty string in the file also means its default
@@ -487,6 +512,9 @@ func defaults() file {
 			MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: "15s",
 		},
 		Fetch: fetchFile{MaxBytes: "2GiB", EgressAddr: "127.0.0.1:9443"},
+		Bootstrap: bootstrapFile{
+			Dir: "src", HeartbeatStale: "1m", MaxPrivateAttempts: 2, MaxConcurrent: 4,
+		},
 		X402: x402File{
 			MaxServices: 5, MaxPriceMicros: maxX402PriceMicros, UnpaidRequestsPerHost: 300,
 			UnpaidBytesPerHost: "50MiB",
@@ -708,6 +736,7 @@ func (f file) config() (Config, error) {
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
 		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile, &c.Hardening.PoolList,
+		&c.Fetch.EgressRootsFile,
 	} {
 		if *p == "" {
 			continue
