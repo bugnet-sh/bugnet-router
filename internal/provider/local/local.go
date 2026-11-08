@@ -44,6 +44,7 @@ const (
 	jobSpidFile       = "spid"
 	jobExitFile       = "exit"
 	metaFile          = "meta.json"
+	metaLockFile      = ".meta.lock"
 	idBytes           = 12
 	stderrLimit       = 64 << 10
 	stderrGrace       = time.Second
@@ -299,6 +300,32 @@ func (p *Provider) open(ref provider.Ref) (sandbox, error) {
 	return sandbox{dir: dir, meta: m}, nil
 }
 
+// openLocked opens ref's sandbox holding its meta lock until the caller runs the returned unlock
+func (p *Provider) openLocked(ref provider.Ref) (sandbox, func(), error) {
+	s, err := p.open(ref)
+	if err != nil {
+		return sandbox{}, nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, metaLockFile), os.O_RDWR|os.O_CREATE, 0o600)
+	if errors.Is(err, fs.ErrNotExist) {
+		return sandbox{}, nil, notFound(ref)
+	}
+	if err != nil {
+		return sandbox{}, nil, fileErr(err)
+	}
+	unlock := func() { _ = f.Close() }
+	// A file lock, since a second Provider or process can share the root
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		unlock()
+		return sandbox{}, nil, internalErr(err)
+	}
+	if s, err = p.open(ref); err != nil {
+		unlock()
+		return sandbox{}, nil, err
+	}
+	return s, unlock, nil
+}
+
 // WaitReady treats a sandbox as ready once ReadyDelay has passed since its creation
 func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 	s, err := p.open(ref)
@@ -320,10 +347,11 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 
 // SetLifetime records the deadline, which the router enforces rather than this provider
 func (p *Provider) SetLifetime(_ context.Context, ref provider.Ref, until time.Time) error {
-	s, err := p.open(ref)
+	s, unlock, err := p.openLocked(ref)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	s.meta.Deadline = until.UTC()
 	err = writeMeta(s.dir, s.meta)
 	if errors.Is(err, fs.ErrNotExist) {

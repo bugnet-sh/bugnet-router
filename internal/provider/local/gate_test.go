@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/oynozan/bugnet-router/internal/provider"
 	"github.com/oynozan/bugnet-router/internal/provider/local"
@@ -59,10 +61,9 @@ func TestLocalGatePortsInMeta(t *testing.T) {
 	eq(t, r, provider.GateRoute{BaseURL: "http://127.0.0.1:" + strconv.Itoa(gate)})
 }
 
-func TestLocalPrepareGateGivesPortsToAnOlderSandbox(t *testing.T) {
-	root := t.TempDir()
-	p := newLocal(t, local.Options{Root: root})
-	ref := createReady(t, p, nil)
+// dropPorts rewrites ref's meta.json without its ports, as a sandbox made before them has
+func dropPorts(t *testing.T, root string, ref provider.Ref) {
+	t.Helper()
 	name := filepath.Join(root, ref.ID, "meta.json")
 	raw, err := os.ReadFile(name)
 	if err != nil {
@@ -78,6 +79,13 @@ func TestLocalPrepareGateGivesPortsToAnOlderSandbox(t *testing.T) {
 	if err := os.WriteFile(name, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLocalPrepareGateGivesPortsToAnOlderSandbox(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	dropPorts(t, root, ref)
 
 	bare := provider.Ref{Provider: ref.Provider, ID: ref.ID}
 	meta, err := p.PrepareGate(t.Context(), bare, provider.DefaultGatePort)
@@ -90,6 +98,57 @@ func TestLocalPrepareGateGivesPortsToAnOlderSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, again, meta)
+}
+
+func TestLocalPrepareGateAtOnceGivesAnOlderSandboxOnePairOfPorts(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	dropPorts(t, root, ref)
+
+	const calls = 8
+	metas := make([]map[string]string, calls)
+	errs := make([]error, calls+1)
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Go(func() {
+			// A second provider on the same root shares no memory with the first
+			q := p
+			if i%2 == 1 {
+				q = newLocal(t, local.Options{Root: root})
+			}
+			metas[i], errs[i] = q.PrepareGate(t.Context(), ref, provider.DefaultGatePort)
+		})
+	}
+	wg.Go(func() { errs[calls] = p.SetLifetime(t.Context(), ref, until) })
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("call %d gave %v", i, err)
+		}
+	}
+	for _, m := range metas[1:] {
+		eq(t, m, metas[0])
+	}
+	again, err := p.PrepareGate(t.Context(), ref, provider.DefaultGatePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, again, metas[0])
+	raw, err := os.ReadFile(filepath.Join(root, ref.ID, "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Deadline time.Time `json:"deadline"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if !m.Deadline.Equal(until) {
+		t.Fatalf("meta.json deadline %v, want %v kept beside the ports", m.Deadline, until)
+	}
 }
 
 func TestLocalPrepareGateOfAGoneSandboxIsNotFound(t *testing.T) {

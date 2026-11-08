@@ -27,6 +27,14 @@ func (p *Provider) PrepareGate(
 	if err != nil {
 		return nil, err
 	}
+	if s.meta.GatePort != 0 && s.meta.SSHDPort != 0 {
+		return portsMeta(s.meta), nil
+	}
+	s, unlock, err := p.openLocked(ref)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if s.meta.GatePort == 0 || s.meta.SSHDPort == 0 {
 		if s.meta.GatePort, s.meta.SSHDPort, err = freePorts(); err != nil {
 			return nil, internalErr(err)
