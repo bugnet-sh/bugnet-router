@@ -48,6 +48,8 @@ const (
 	reasonNoSpace = "NO_SPACE"
 	// reasonFeatureUnavailable marks a call this router has no settings for
 	reasonFeatureUnavailable = "FEATURE_UNAVAILABLE"
+	// reasonSessionUnknown marks a session id with no record and a wrong key alike
+	reasonSessionUnknown = "SESSION_UNKNOWN"
 )
 
 // Transfer reasons, named as DP 11.3 names them
@@ -216,6 +218,7 @@ var codes = []struct {
 	{errIdle, connect.CodeDeadlineExceeded, ""},
 	{errStalled, connect.CodeDeadlineExceeded, ""},
 	{errHardStop, connect.CodeDeadlineExceeded, ""},
+	{errSessionUnknown, connect.CodeNotFound, reasonSessionUnknown},
 	{store.ErrUnknownHandle, connect.CodeNotFound, reasonHandleUnknown},
 	{errOrderUnknown, connect.CodeNotFound, reasonOrderUnknown},
 	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},

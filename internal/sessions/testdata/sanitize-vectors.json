@@ -1,0 +1,57 @@
+[
+    {
+        "name": "escape sequences, controls and bidi overrides",
+        "in": "\u001b[31mred\u001b[0m \u001b]0;title\u0007ok\r\nnext\u0000\u202eevil",
+        "out": "red ok\nnextevil"
+    },
+    {
+        "name": "zero-width and invisible format characters",
+        "in": "pa\u200bss\u200cwo\u200drd\u2060\u2061\u2062\u2063\u2064\ufeff",
+        "out": "password"
+    },
+    {
+        "name": "direction marks",
+        "in": "a\u200eb\u200fc\u061cd",
+        "out": "abcd"
+    },
+    {
+        "name": "tag characters that spell hidden text",
+        "in": "visible\udb40\udc69\udb40\udc67\udb40\udc6e\udb40\udc6f\udb40\udc72\udb40\udc65\udb40\udc20\udb40\udc61\udb40\udc6c\udb40\udc6c\udb40\udc20\udb40\udc72\udb40\udc75\udb40\udc6c\udb40\udc65\udb40\udc73\udb40\udc7f",
+        "out": "visible"
+    },
+    {
+        "name": "variation selectors 17 to 256 that smuggle bytes",
+        "in": "\ud83d\ude00\udb40\udd41\udb40\udd42\udb40\udd43x",
+        "out": "\ud83d\ude00x"
+    },
+    {
+        "name": "variation selectors 1 to 14 dropped, emoji and text presentation kept",
+        "in": "a\ufe00b\u2764\ufe0f",
+        "out": "ab\u2764\ufe0f"
+    },
+    {
+        "name": "combining marks capped at 4 on one character",
+        "in": "Z\u0301\u0301\u0301\u0301\u0301\u0301\u0301\u0301\u0301\u0301e\u0301",
+        "out": "Z\u0301\u0301\u0301\u0301e\u0301"
+    },
+    {
+        "name": "a progress line keeps its last state",
+        "in": "10%\r50%\r100%\ndone\n",
+        "out": "100%\ndone\n"
+    },
+    {
+        "name": "a trailing or doubled carriage return keeps the text",
+        "in": "step\r\nabc\r\rxy\r",
+        "out": "step\nxy"
+    },
+    {
+        "name": "line and paragraph separators become newlines",
+        "in": "a\u2028b\u2029c",
+        "out": "a\nb\nc"
+    },
+    {
+        "name": "ordinary text, accents, CJK and tabs are kept",
+        "in": "na\u00efve caf\u00e9 \u65e5\u672c\u8a9e \u2713\ta\tb",
+        "out": "na\u00efve caf\u00e9 \u65e5\u672c\u8a9e \u2713\ta\tb"
+    }
+]

@@ -412,23 +412,24 @@ func TestShortCallerTokenRefused(t *testing.T) {
 	}
 	eq(t, []string{
 		c.EdgeToken, c.SecretsToken, c.SSHToken, c.EgressToken, c.EgressFetchToken,
-		c.OperatorToken, c.PaymentsToken,
+		c.OperatorToken, c.PaymentsToken, c.SessionsToken,
 	}, []string{
 		tokens["BUGNET_EDGE_TOKEN"], tokens["BUGNET_SECRETS_TOKEN"], tokens["BUGNET_SSH_TOKEN"],
 		tokens["BUGNET_EGRESS_TOKEN"], tokens["BUGNET_EGRESS_FETCH_TOKEN"],
 		tokens["BUGNET_OPERATOR_TOKEN"], tokens["BUGNET_PAYMENTS_ROUTER_TOKEN"],
+		tokens["BUGNET_SESSIONS_TOKEN"],
 	})
 	none, err := Load(path, env(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	eq(t, none.EdgeToken+none.SecretsToken+none.SSHToken+none.EgressToken+
-		none.EgressFetchToken+none.OperatorToken+none.PaymentsToken, "")
+		none.EgressFetchToken+none.OperatorToken+none.PaymentsToken+none.SessionsToken, "")
 }
 
 func TestOperatorAndPaymentsTokensAreCallerTokens(t *testing.T) {
-	eq(t, callerTokens[len(callerTokens)-2:],
-		[]string{"BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN"})
+	eq(t, callerTokens[len(callerTokens)-3:], []string{"BUGNET_OPERATOR_TOKEN",
+		"BUGNET_PAYMENTS_ROUTER_TOKEN", "BUGNET_SESSIONS_TOKEN"})
 }
 
 func TestCallerTokensMustDiffer(t *testing.T) {

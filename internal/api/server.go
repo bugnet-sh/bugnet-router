@@ -2,9 +2,9 @@
 //
 // Each caller has its own service and bearer token. The gateway calls SandboxRouterService,
 // bugnet-edge EdgeService, bugnet-secrets SecretsRouteService, bugnet-ssh SshGatewayService,
-// bugnet-egress EgressService, bugnet-dev's operator commands OperatorService and Payments
-// PaymentsService. A service admits only its own token, and one whose token is empty admits no
-// calls. RPCs not built yet answer Unimplemented.
+// bugnet-egress EgressService, bugnet-dev's operator commands OperatorService, Payments
+// PaymentsService and the sessions role SessionPageService. A service admits only its own token,
+// and one whose token is empty admits no calls. RPCs not built yet answer Unimplemented.
 //
 // Placements go through the saga, commands through the jobs service and file operations straight to
 // the placement's provider. Exec, CancelJob and each file operation first spend a token of the
@@ -34,6 +34,10 @@
 //
 // CheckX402 runs the checks of an x402 change without making it, and ListX402 shows a placement's
 // x402 services and refusals in any state. Neither spends an operation token.
+//
+// Every Placement answer carries its session page link until the record expires. The page reads
+// its record through SessionPageService, which checks the link's key in constant time, and
+// streams a running job's cleaned output on a Valkey client and byte budget of its own.
 //
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
@@ -80,6 +84,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
@@ -156,6 +161,12 @@ type Deps struct {
 	// Estimator answers Estimate and gives a placement its source, Estimate lists packages alone
 	// while it is nil
 	Estimator *estimator.Service
+	// Sessions are the session page settings, an empty base URL giving no placement a link
+	Sessions config.Sessions
+	// SessionWriter writes the session page's events, none when nil
+	SessionWriter *sessions.Writer
+	// LiveValkey is the live view's own client, Valkey when nil
+	LiveValkey valkey.Client
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -178,6 +189,10 @@ type Server struct {
 	w      config.Wallets
 	guard  wallet.Guard
 	wl     *wallets.Store
+	// livePage serves the session page's live output
+	livePage *liveView
+	// noKeyID holds the placements logged as having no key_id, as every answer would log them
+	noKeyID sync.Map
 }
 
 var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
@@ -193,6 +208,7 @@ func New(deps Deps) *Server {
 	x := transferSettings(deps.Transfers)
 	events := edgeevents.New(deps.Valkey, deps.Prefix, deps.Log)
 	w := deps.Wallets.OrDefaults()
+	liveVK := cmp.Or(deps.LiveValkey, deps.Valkey)
 	s := &Server{
 		w:     w,
 		guard: wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
@@ -211,12 +227,13 @@ func New(deps Deps) *Server {
 			MaxTokens: x.MaxTokensPerPlacement, MaxActive: x.MaxActivePerPlacement,
 			MaxClaims: x.MaxClaims, TTL: x.URLTTL + x.MaxDuration, Lease: xferLease,
 		}),
-		x:      x,
-		ctx:    ctx,
-		cancel: cancel,
-		life:   life,
-		end:    end,
-		done:   make(chan struct{}),
+		x:        x,
+		livePage: newLiveView(liveVK, deps.Prefix, deps.Sessions.Live),
+		ctx:      ctx,
+		cancel:   cancel,
+		life:     life,
+		end:      end,
+		done:     make(chan struct{}),
 	}
 	var wg sync.WaitGroup
 	wg.Go(func() { s.notes.run(life) })
@@ -240,7 +257,7 @@ func (s *Server) Close() {
 
 // Tokens are the callers' bearer tokens, one per service, an empty one admitting no calls
 type Tokens struct {
-	Internal, Edge, Secrets, SSH, Egress, Operator, Payments string
+	Internal, Edge, Secrets, SSH, Egress, Operator, Payments, Sessions string
 }
 
 // Servers are the handlers of every caller service
@@ -252,6 +269,7 @@ type Servers struct {
 	Egress   *EgressServer
 	Operator *OperatorServer
 	Payments *PaymentsServer
+	Sessions *SessionPageServer
 }
 
 // Servers returns s and one server per other caller service, all sharing s's deps and Close
@@ -259,7 +277,7 @@ func (s *Server) Servers() Servers {
 	return Servers{
 		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{s: s},
 		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{s: s},
-		Payments: &PaymentsServer{s: s},
+		Payments: &PaymentsServer{s: s}, Sessions: &SessionPageServer{s: s, live: s.livePage},
 	}
 }
 
@@ -278,6 +296,8 @@ func Mount(mux *http.ServeMux, s Servers, t Tokens) {
 	mux.Handle(withWriter(routerv1connect.NewEgressServiceHandler(s.Egress, opts(t.Egress)...)))
 	mux.Handle(routerv1connect.NewOperatorServiceHandler(s.Operator, opts(t.Operator)...))
 	mux.Handle(routerv1connect.NewPaymentsServiceHandler(s.Payments, opts(t.Payments)...))
+	mux.Handle(withWriter(routerv1connect.NewSessionPageServiceHandler(s.Sessions,
+		opts(t.Sessions)...)))
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", s.Router.readyz)
 }
@@ -404,7 +424,7 @@ func (s *Server) CreatePlacement(
 		return nil, s.status(err)
 	}
 	return connect.NewResponse(&routerv1.CreatePlacementResponse{
-		Placement: placementMsg(p), Handle: h,
+		Placement: s.answer(ctx, p), Handle: h,
 	}), nil
 }
 
@@ -424,7 +444,7 @@ func (s *Server) GetPlacement(
 			return nil, s.status(err)
 		}
 	}
-	return connect.NewResponse(&routerv1.GetPlacementResponse{Placement: placementMsg(p)}), nil
+	return connect.NewResponse(&routerv1.GetPlacementResponse{Placement: s.answer(ctx, p)}), nil
 }
 
 // awaitChange re-reads the placement on every message until it leaves known or wait passes
@@ -474,7 +494,7 @@ func (s *Server) WatchPlacement(
 		if err != nil {
 			return s.status(err)
 		}
-		if msg := placementMsg(cur); sent == nil || !proto.Equal(msg, sent) {
+		if msg := s.answer(ctx, cur); sent == nil || !proto.Equal(msg, sent) {
 			if err := stream.Send(&routerv1.WatchPlacementResponse{Placement: msg}); err != nil {
 				return err
 			}
@@ -502,7 +522,7 @@ func (s *Server) ExtendPlacement(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	return connect.NewResponse(&routerv1.ExtendPlacementResponse{Placement: placementMsg(p)}), nil
+	return connect.NewResponse(&routerv1.ExtendPlacementResponse{Placement: s.answer(ctx, p)}), nil
 }
 
 // CheckExtendPlacement answers as a fresh order's extension would, with its deadline and package
@@ -518,7 +538,7 @@ func (s *Server) CheckExtendPlacement(
 		return nil, s.status(errors.New("api: the saga checked a package the catalog lacks"))
 	}
 	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
-		Placement: placementMsg(p), Deadline: timestamppb.New(deadline),
+		Placement: s.answer(ctx, p), Deadline: timestamppb.New(deadline),
 		Package: packageOption(pkg, true, ""),
 	}), nil
 }
@@ -546,7 +566,7 @@ func (s *Server) StopPlacement(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	return connect.NewResponse(&routerv1.StopPlacementResponse{Placement: placementMsg(p)}), nil
+	return connect.NewResponse(&routerv1.StopPlacementResponse{Placement: s.answer(ctx, p)}), nil
 }
 
 // ended reports whether a placement is terminated or failed, which no transition leaves
@@ -815,6 +835,7 @@ func (s *Server) ReadFile(
 	if err != nil {
 		return nil, s.fileStatus(err)
 	}
+	s.d.SessionWriter.File(ctx, p, "read", m.GetPath(), int64(len(data)))
 	return connect.NewResponse(&routerv1.ReadFileResponse{Data: data, Eof: eof}), nil
 }
 
@@ -840,6 +861,7 @@ func (s *Server) WriteFile(
 	if err := prov.WriteFile(ctx, *p.ProviderRef, m.GetPath(), m.GetData(), mode); err != nil {
 		return nil, s.fileStatus(err)
 	}
+	s.d.SessionWriter.File(ctx, p, "write", m.GetPath(), int64(len(m.GetData())))
 	return connect.NewResponse(&routerv1.WriteFileResponse{Size: uint64(len(m.GetData()))}), nil
 }
 
@@ -860,6 +882,7 @@ func (s *Server) ListFiles(
 	if err := prov.ListFiles(ctx, *p.ProviderRef, m.GetPath(), int(depth), listing); err != nil {
 		return nil, s.fileStatus(err)
 	}
+	s.d.SessionWriter.File(ctx, p, "list", m.GetPath(), 0)
 	out := make([]*routerv1.FileEntry, 0, len(listing.Entries))
 	for _, e := range listing.Entries {
 		out = append(out, &routerv1.FileEntry{

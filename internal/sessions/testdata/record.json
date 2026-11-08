@@ -1,0 +1,113 @@
+{
+  "v": 1,
+  "startedAt": "2026-11-06T10:00:00Z",
+  "endedAt": "2026-11-06T10:10:00Z",
+  "endedBecause": "deadline",
+  "deletesAt": "2026-11-08T10:10:00Z",
+  "output": "complete",
+  "events": [
+    {
+      "at": "2026-11-06T10:00:01Z",
+      "kind": "placement",
+      "phase": "placed",
+      "packageId": "dev-small-10m",
+      "vcpu": 2,
+      "memoryMib": 2048,
+      "diskGib": 10,
+      "minutes": 10
+    },
+    {
+      "at": "2026-11-06T10:00:02Z",
+      "kind": "payment",
+      "payKind": "start",
+      "amountMicros": 50000,
+      "tx": ""
+    },
+    {
+      "at": "2026-11-06T10:00:30Z",
+      "kind": "placement",
+      "phase": "ready",
+      "packageId": "dev-small-10m",
+      "vcpu": 2,
+      "memoryMib": 2048,
+      "diskGib": 10,
+      "minutes": 10,
+      "deadline": "2026-11-06T10:10:00Z"
+    },
+    {
+      "at": "2026-11-06T10:01:00Z",
+      "kind": "job",
+      "seq": 1,
+      "phase": "start"
+    },
+    {
+      "at": "2026-11-06T10:02:00Z",
+      "kind": "job",
+      "seq": 1,
+      "phase": "end",
+      "exitCode": 0,
+      "oom": false,
+      "peakMib": 512,
+      "durationMs": 60000,
+      "outBytes": 13,
+      "errBytes": 0
+    },
+    {
+      "at": "2026-11-06T10:03:00Z",
+      "kind": "file",
+      "op": "write",
+      "path": "/root/app/main.py",
+      "bytes": 120
+    },
+    {
+      "at": "2026-11-06T10:04:00Z",
+      "kind": "mcp",
+      "tool": "bugnet_exec",
+      "outcome": "ok",
+      "durationMs": 900
+    },
+    {
+      "at": "2026-11-06T10:05:00Z",
+      "kind": "allowance",
+      "phase": "paid",
+      "amountMicros": 1000000,
+      "asset": "USDC",
+      "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      "tx": "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"
+    },
+    {
+      "at": "2026-11-06T10:10:00Z",
+      "kind": "placement",
+      "phase": "ended",
+      "packageId": "dev-small-10m",
+      "vcpu": 2,
+      "memoryMib": 2048,
+      "diskGib": 10,
+      "minutes": 10,
+      "deadline": "2026-11-06T10:10:00Z",
+      "endedBecause": "deadline"
+    }
+  ],
+  "eventsDropped": 0,
+  "jobs": [
+    {
+      "seq": 1,
+      "command": "npm test",
+      "state": "exited",
+      "startedAt": "2026-11-06T10:01:00Z",
+      "finishedAt": "2026-11-06T10:02:00Z",
+      "exitCode": 0,
+      "oom": false,
+      "peakMib": 512,
+      "cutBytes": 0,
+      "frames": [
+        {
+          "s": "o",
+          "t": "ok 12 tests\n",
+          "cr": false
+        }
+      ]
+    }
+  ],
+  "jobsDropped": 0
+}

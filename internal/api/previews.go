@@ -78,9 +78,13 @@ func (s *Server) CreatePreview(
 	}
 	listening := s.listening(ctx, p, int(port))
 	most := cmp.Or(s.d.Previews.MaxPerPlacement, defaultMaxPreviews)
-	pv, err := s.d.Store.UpsertPreview(ctx, p.ID, int(port), most, preview.NewID())
+	id := preview.NewID()
+	pv, err := s.d.Store.UpsertPreview(ctx, p.ID, int(port), most, id)
 	if err != nil {
 		return nil, s.status(err)
+	}
+	if pv.ID == id {
+		s.d.SessionWriter.Preview(ctx, p.ID, pv.Port, "issued")
 	}
 	tok, err := s.d.Keys.PreviewToken(cmp.Or(p.KeyID, s.d.Keys.Current().ID), pv.ID,
 		pv.Generation)
@@ -378,6 +382,7 @@ func (o *OperatorServer) RevokePreview(
 	}})
 	s.d.Log.Info("api: preview revoked", "actor", m.GetActor(), "preview", pv.ID,
 		"placement", pv.PlacementID, "reason", m.GetReason())
+	s.d.SessionWriter.Preview(ctx, pv.PlacementID, pv.Port, "revoked")
 	return connect.NewResponse(&routerv1.RevokePreviewResponse{}), nil
 }
 

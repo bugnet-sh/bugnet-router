@@ -24,7 +24,9 @@ const (
 	overdueAfter = 3 * time.Minute
 	// memoryAlertPercent is the share of Valkey's maxmemory in use that /monitor reports
 	memoryAlertPercent = 80
-	monitorTimeout     = 2 * time.Second
+	// sessionAlertPercent is the share of sessions.disk_budget in use that /monitor reports
+	sessionAlertPercent = 80
+	monitorTimeout      = 2 * time.Second
 	// snapshotStaleAfter and paymentsStaleAfter are CP 20.9's alert ages of the stats row
 	snapshotStaleAfter = 2 * time.Minute
 	paymentsStaleAfter = 5 * time.Minute
@@ -37,6 +39,8 @@ type health struct {
 	valkey                 valkeyHealth
 	pools                  poolHealth
 	feed                   feedHealth
+	// sessions is the session tables' share of their disk budget, -1 when unread
+	sessions int64
 }
 
 // feedCheck says whether the stats snapshot job runs, and whether it lacks the Payments token
@@ -51,6 +55,9 @@ type feedHealth struct {
 	present, noPaymentsPart bool
 }
 
+// diskPercent reads the session tables' share of their disk budget
+type diskPercent func(ctx context.Context) (int64, error)
+
 // poolHealth is what the mining pool list held when /monitor read it
 type poolHealth int
 
@@ -63,7 +70,7 @@ const (
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
-	poolList string, feed feedCheck,
+	poolList string, feed feedCheck, disk diskPercent,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -75,6 +82,7 @@ func monitor(
 		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, prefix, read) })
 		wg.Go(func() { h.pools = checkPools(log, poolList) })
 		wg.Go(func() { h.feed = checkFeed(ctx, log, st, feed) })
+		wg.Go(func() { h.sessions = checkSessions(ctx, log, disk) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -128,6 +136,19 @@ func checkFeed(ctx context.Context, log *slog.Logger, st *store.Store, c feedChe
 		h.paymentsAge = now.Sub(snap.PaymentsAt)
 	}
 	return h
+}
+
+// checkSessions reads the session tables' share of their budget, -1 when it cannot
+func checkSessions(ctx context.Context, log *slog.Logger, disk diskPercent) int64 {
+	if disk == nil {
+		return -1
+	}
+	n, err := disk(ctx)
+	if err != nil {
+		log.Warn("monitor cannot read the session tables' size", "err", err)
+		return -1
+	}
+	return n
 }
 
 // checkPools reads the mining pool list with the loader router-api starts with
@@ -225,6 +246,10 @@ func (h health) problems() []string {
 	if h.valkey.unguarded {
 		out = append(out, "the payer claim is treated as absent, since no fee_payer came and "+
 			"wallets.facilitator_addresses is empty")
+	}
+	if h.sessions >= sessionAlertPercent {
+		out = append(out, fmt.Sprintf("session records at %d%% of their disk budget",
+			h.sessions))
 	}
 	switch h.pools {
 	case poolsEmpty:

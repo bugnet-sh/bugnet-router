@@ -37,6 +37,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 )
@@ -110,6 +111,8 @@ type Deps struct {
 	TailReserve int64
 	// MaxRunning bounds the jobs one placement runs at once, DefaultMaxRunning when zero
 	MaxRunning int
+	// Sessions gives each new job its session record row and events, none when nil
+	Sessions *sessions.Writer
 }
 
 // Service runs jobs and serves their streams
@@ -279,7 +282,7 @@ func (s *Service) start(
 		s.giveBack(lease, false)
 		return ErrShuttingDown
 	}
-	job, _, err := s.d.Store.CreateJob(ctx, nj)
+	job, created, err := s.d.Store.CreateJob(ctx, nj)
 	if errors.Is(err, store.ErrJobLimit) {
 		s.giveBack(lease, true)
 		return fmt.Errorf("%w, %d at once", ErrTooManyJobs, nj.Limit)
@@ -287,6 +290,9 @@ func (s *Service) start(
 	if err != nil {
 		s.giveBack(lease, true)
 		return err
+	}
+	if created && c != nil {
+		s.d.Sessions.StartJob(ctx, p, nj.ID, c.argv)
 	}
 	if job.State == store.JobRunning {
 		s.own(lease, p, prov, c)
@@ -1256,6 +1262,12 @@ func (o *owner) record(f frame.Frame) bool {
 	if err != nil && !errors.Is(err, store.ErrStateConflict) {
 		o.s.d.Log.Warn("record job outcome", "job", o.job(), "err", err)
 		return false
+	}
+	if err == nil {
+		o.s.d.Sessions.EndJob(ctx, o.place.ID, o.job(), sessions.JobEnd{
+			ExitCode: code, OOM: f.Kind == frame.KindExit && f.OOM, PeakMiB: f.PeakMiB,
+			OutBytes: out, ErrBytes: errBytes,
+		})
 	}
 	return true
 }

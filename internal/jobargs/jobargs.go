@@ -102,3 +102,17 @@ func (StatsSnapshot) Kind() string { return "stats_snapshot" }
 func (StatsSnapshot) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
 }
+
+// SessionCopy asks the worker to copy an ended placement's output into its session record
+type SessionCopy struct {
+	PlacementID uuid.UUID `json:"placement_id"`
+}
+
+// Kind returns the River job kind
+func (SessionCopy) Kind() string { return "session_copy" }
+
+// SessionExpiry asks the worker to delete the session records whose page ended
+type SessionExpiry struct{}
+
+// Kind returns the River job kind
+func (SessionExpiry) Kind() string { return "session_expiry" }

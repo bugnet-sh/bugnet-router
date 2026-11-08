@@ -54,6 +54,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
@@ -228,6 +229,8 @@ type options struct {
 	estimator     bool
 	estimatorTune func(*config.Estimator)
 	githubRepos   []*estimatortest.Repo
+	// sessions replaces sessionSettings, the session page settings
+	sessions *config.Sessions
 }
 
 type env struct {
@@ -316,19 +319,25 @@ func newEnv(t *testing.T, opts options) *env {
 	}
 	tracker := placement.NewTracker(time.Now)
 	engine := placement.New(reg, tracker)
-	st := store.New(pool)
+	sess := sessionSettings
+	if opts.sessions != nil {
+		sess = *opts.sessions
+	}
+	st := store.New(pool, store.WithSessionMaxEvents(sess.MaxEvents))
 	_, keys := testenv.DataPlaneKeys(t)
+	writer := sessions.NewWriter(st, keys, discard)
 	sg := saga.New(saga.Deps{
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
+		Sessions: writer, SessionKeep: sess.Keep, SessionAbuseHold: sess.AbuseHold,
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
 		Store: st, Bus: streams.NewBus(vk, prefix), Registry: reg, ReplicaID: "api-test",
-		Log: discard, MaxRunning: opts.maxRunning, JobBudget: opts.jobBudget,
+		Log: discard, MaxRunning: opts.maxRunning, JobBudget: opts.jobBudget, Sessions: writer,
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

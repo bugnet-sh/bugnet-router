@@ -85,7 +85,7 @@ func TestKeysMakeAValidConfig(t *testing.T) {
 		"BUGNET_EVENT_SIGNING_KEY", "BUGNET_DATA_PLANE_KEYS", "BUGNET_EDGE_TOKEN",
 		"BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
 		"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
-		"BUGNET_HOOK_PATH_SECRET",
+		"BUGNET_SESSIONS_TOKEN", "BUGNET_HOOK_PATH_SECRET",
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("keys printed %v, want only the secrets %v", names, want)

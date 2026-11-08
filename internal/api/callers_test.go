@@ -31,11 +31,13 @@ const (
 	egressToken   = "api-test-egress-token-0123456789abcdef0"
 	operatorToken = "api-test-operator-token-0123456789abcde"
 	paymentsToken = "api-test-payments-token-0123456789abcde"
+	sessionsToken = "api-test-sessions-token-0123456789abcde"
 )
 
 var allTokens = api.Tokens{
 	Internal: internalToken, Edge: edgeToken, Secrets: secretsToken, SSH: sshToken,
 	Egress: egressToken, Operator: operatorToken, Payments: paymentsToken,
+	Sessions: sessionsToken,
 }
 
 // budgetDefaults are the [edge_budget] defaults with 1 GiB of egress, so edge and egress differ
@@ -113,6 +115,14 @@ var services = []service{
 			connect.NewRequest(&routerv1.GetOrderRequest{OrderId: "none"}))
 		return err
 	}},
+	{"Sessions", func(ctx context.Context, c *http.Client, url string) error {
+		_, err := routerv1connect.NewSessionPageServiceClient(c, url).GetSessionRecord(ctx,
+			connect.NewRequest(&routerv1.GetSessionRecordRequest{Id: "none"}))
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil
+		}
+		return err
+	}},
 }
 
 func TestEachTokenOpensOnlyItsService(t *testing.T) {
@@ -120,8 +130,9 @@ func TestEachTokenOpensOnlyItsService(t *testing.T) {
 	tokens := map[string]string{
 		"Internal": internalToken, "Edge": edgeToken, "Secrets": secretsToken, "SSH": sshToken,
 		"Egress": egressToken, "Operator": operatorToken, "Payments": paymentsToken,
+		"Sessions": sessionsToken,
 	}
-	eq(t, len(services), 7)
+	eq(t, len(services), 8)
 	for _, svc := range services {
 		for name, tok := range tokens {
 			err := svc.call(t.Context(), e.httpClient(t, tok), e.url)
@@ -157,13 +168,6 @@ var x402Calls = []x402Call{
 			}))
 		return err
 	}},
-	{"AppendAllowanceEvent", "Payments", func(
-		ctx context.Context, c *http.Client, url string,
-	) error {
-		_, err := routerv1connect.NewPaymentsServiceClient(c, url).AppendAllowanceEvent(ctx,
-			connect.NewRequest(&routerv1.AppendAllowanceEventRequest{OrderId: "none"}))
-		return err
-	}},
 	{"AppendX402Resolved", "Payments", func(
 		ctx context.Context, c *http.Client, url string,
 	) error {
@@ -177,7 +181,8 @@ func TestNewEgressAndPaymentsRPCsNeedTheirTokens(t *testing.T) {
 	e := newEnv(t, options{})
 	tokens := map[string]string{
 		"Internal": internalToken, "Edge": edgeToken, "Secrets": secretsToken, "SSH": sshToken,
-		"Egress": egressToken, "Operator": operatorToken, "Payments": paymentsToken, "empty": "",
+		"Egress": egressToken, "Operator": operatorToken, "Payments": paymentsToken,
+		"Sessions": sessionsToken, "empty": "",
 	}
 	for _, c := range x402Calls {
 		for name, tok := range tokens {

@@ -3,6 +3,7 @@ package dpkeys
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -165,7 +166,79 @@ func TestDerivedVectors(t *testing.T) {
 
 func TestPurposesAreTheDerivedKeys(t *testing.T) {
 	eq(t, Purposes, []string{"preview", "gate", "grant", "transfer", "link", "put", "pair",
-		"placeholder", "ref"})
+		"placeholder", "ref", "sessions"})
+}
+
+func TestSessionKey(t *testing.T) {
+	k := twoRoots(t)
+	key, err := k.SessionKey("k1", "abcdefghijklmnop", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(key), 47)
+	eq(t, strings.HasPrefix(key, "bnk_"), true)
+	raw, ok := decode("bnk_", key)
+	eq(t, ok, true)
+	eq(t, len(raw), 32)
+	eq(t, k.CheckSessionKey("k1", "abcdefghijklmnop", 0, key), true)
+	next, err := k.SessionKey("k1", "abcdefghijklmnop", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, next == key, false)
+	eq(t, k.CheckSessionKey("k1", "abcdefghijklmnop", 1, key), false)
+	eq(t, k.CheckSessionKey("k1", "abcdefghijklmnop", 1, next), true)
+	eq(t, k.CheckSessionKey("k2", "abcdefghijklmnop", 0, key), false)
+	eq(t, k.CheckSessionKey("k1", "bcdefghijklmnopq", 0, key), false)
+	eq(t, k.CheckSessionKey("k9", "abcdefghijklmnop", 0, key), false)
+	eq(t, k.CheckSessionKey("k1", "abcdefghijklmnop", 0, key[:46]), false)
+	eq(t, k.CheckSessionKey("k1", "abcdefghijklmnop", 0, ""), false)
+	_, err = k.SessionKey("k1", "", 0)
+	eq(t, err != nil, true)
+	_, err = k.SessionKey("k9", "abcdefghijklmnop", 0)
+	eq(t, errors.Is(err, ErrUnknownRoot), true)
+	// The key is the session purpose's own, never a preview token of the same id
+	pv, _ := k.PreviewToken("k1", "abcdefghijklmnop", 0)
+	eq(t, pv[4:] == key[4:], false)
+}
+
+func TestSessionCursor(t *testing.T) {
+	k := twoRoots(t)
+	const id, pos = "abcdefghijklmnop", "1731000000000-3.12.0"
+	c, err := k.SessionCursor("k1", id, 2, 5, pos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, strings.HasPrefix(c, pos+"."), true)
+	eq(t, len(c), len(pos)+1+22)
+	got, ok := k.OpenSessionCursor("k1", id, 2, 5, c)
+	eq(t, ok, true)
+	eq(t, got, pos)
+	refused := []struct {
+		keyID      string
+		id         string
+		gen, seq   uint32
+		cursor     string
+		forTheCase string
+	}{
+		{"k1", id, 2, 5, "1731000000000-3", "a bare entry id"},
+		{"k1", id, 2, 5, "1731000000000-2.12.0" + c[len(pos):], "another position"},
+		{"k1", id, 3, 5, c, "another generation"},
+		{"k1", id, 2, 6, c, "another job"},
+		{"k1", "bcdefghijklmnopq", 2, 5, c, "another record"},
+		{"k2", id, 2, 5, c, "another root"},
+		{"k9", id, 2, 5, c, "an unknown root"},
+		{"k1", id, 2, 5, c[:len(c)-1], "a cut seal"},
+		{"k1", id, 2, 5, "", "nothing"},
+		{"k1", id, 2, 5, "." + c[len(pos)+1:], "an empty position"},
+	}
+	for _, r := range refused {
+		if _, ok := k.OpenSessionCursor(r.keyID, r.id, r.gen, r.seq, r.cursor); ok {
+			t.Errorf("%s opened", r.forTheCase)
+		}
+	}
+	_, err = k.SessionCursor("k1", id, 2, 5, "")
+	eq(t, err != nil, true)
 }
 
 func TestUnknownKeyIDRefused(t *testing.T) {

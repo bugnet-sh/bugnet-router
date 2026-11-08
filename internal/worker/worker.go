@@ -15,7 +15,9 @@
 // advisory lock, so any number of queued jobs converge. A prepare_ssh job makes one ready
 // placement's sshd ready through the saga, within 150 s. wallet_stop_live ends a blocked payer's
 // live placements a few at a time, and wallet_expiry lifts timed wallet blocks every 10 minutes.
-// With Deps.Stats set, stats_snapshot writes the public stats feed's row every 30 s.
+// With Deps.Stats set, stats_snapshot writes the public stats feed's row every 30 s. The session
+// copy moves an ended placement's job output into its session record, and session expiry runs at
+// start and hourly and deletes the records whose page ended and no hold keeps.
 package worker
 
 import (
@@ -33,12 +35,14 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
@@ -48,18 +52,26 @@ const (
 	sweepEvery  = 60 * time.Second
 	watchEvery  = 30 * time.Second
 	// The sweep and the watch stop well before a rescue could start a second run beside them
-	sweepTimeout  = 2 * time.Minute
-	watchTimeout  = 2 * time.Minute
-	outboxEvery   = time.Second
-	postTimeout   = 10 * time.Second
-	callTimeout   = 30 * time.Second
-	outboxRunTime = 30 * time.Second
+	sweepTimeout       = 2 * time.Minute
+	watchTimeout       = 2 * time.Minute
+	outboxEvery        = time.Second
+	postTimeout        = 10 * time.Second
+	callTimeout        = 30 * time.Second
+	outboxRunTime      = 30 * time.Second
+	sessionExpiryEvery = time.Hour
 )
 
 // dataplaneWorkers and defaultWorkers are each queue's workers when Deps leaves them unset
 const (
 	dataplaneWorkers = 8
 	defaultWorkers   = 20
+)
+
+// The session settings' defaults, for Deps that leave them unset
+const (
+	defaultJobOutput       = 64 << 10
+	defaultPlacementOutput = 4 << 20
+	defaultDiskBudget      = 8 << 30
 )
 
 // Deps are the worker's own settings next to the saga it builds
@@ -75,6 +87,8 @@ type Deps struct {
 	Egress Egress
 	// Stats turns on the stats_snapshot job, off when nil
 	Stats *Stats
+	// Sessions sizes the session copy and its disk budget
+	Sessions config.Sessions
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -98,6 +112,9 @@ type Worker struct {
 	noTokenLogged time.Time
 	// tokenRefused holds back the error log of a refused token until Payments answers again
 	tokenRefused bool
+	// bus reads job streams for the session copy
+	bus  *streams.Bus
+	disk diskGauge
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -110,6 +127,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	}
 	d.DataplaneWorkers = cmp.Or(d.DataplaneWorkers, dataplaneWorkers)
 	d.DefaultWorkers = cmp.Or(d.DefaultWorkers, defaultWorkers)
+	d.Sessions.JobOutput = cmp.Or(d.Sessions.JobOutput, defaultJobOutput)
+	d.Sessions.PlacementOutput = cmp.Or(d.Sessions.PlacementOutput, defaultPlacementOutput)
+	d.Sessions.DiskBudget = cmp.Or(d.Sessions.DiskBudget, defaultDiskBudget)
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -118,6 +138,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		store:    sd.Store,
 		registry: sd.Registry,
 		log:      sd.Log,
+		bus:      streams.NewBus(sd.Valkey, sd.Prefix),
 		keys:     sd.Keys,
 		events:   sd.Events,
 		http: &http.Client{
@@ -138,6 +159,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &walletStopLiveWorker{w: w})
 	river.AddWorker(workers, &walletExpiryWorker{w: w})
 	river.AddWorker(workers, &statsWorker{w: w})
+	river.AddWorker(workers, &sessionCopyWorker{w: w})
+	river.AddWorker(workers, &sessionExpiryWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -214,6 +237,7 @@ func periodic(d Deps) []periodicJob {
 		{watchEvery, jobargs.Watch{}},
 		{outboxEvery, jobargs.Outbox{}},
 		{expiryEvery, jobargs.WalletExpiry{}},
+		{sessionExpiryEvery, jobargs.SessionExpiry{}},
 	}
 	if d.Stats != nil {
 		out = append(out, periodicJob{statsEvery, jobargs.StatsSnapshot{}})

@@ -31,6 +31,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
@@ -120,7 +121,9 @@ func checkPool(log *slog.Logger, maxConns int32, workers int) {
 
 // openStore returns the store, sealing provider credentials under the data-plane keys
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
-	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log))
+	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
+		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents),
+		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs))
 }
 
 func serve(
@@ -170,11 +173,15 @@ func serve(
 		Keys:         cfg.DataPlaneKeys,
 		SSH:          saga.SSHSettingsOf(cfg),
 		Wallets:      cfg.Wallets,
+		Sessions:     sessions.NewWriter(st, cfg.DataPlaneKeys, log),
+		SessionKeep:  cfg.Sessions.Keep,
+		// The hold of D-b (a), for abuse and operator ends
+		SessionAbuseHold: cfg.Sessions.AbuseHold,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
 		Egress: worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
-		Stats:  feedDeps(cfg, cat),
+		Stats:  feedDeps(cfg, cat), Sessions: cfg.Sessions,
 	})
 	if err != nil {
 		return err
@@ -192,7 +199,7 @@ func serve(
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList, feed))
+		cfg.Hardening.PoolList, feed, w.SessionDiskPercent))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

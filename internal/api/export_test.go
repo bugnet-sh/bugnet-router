@@ -46,3 +46,10 @@ func SetApplyPoll(t testing.TB, d time.Duration) {
 	applyPoll = d
 	t.Cleanup(func() { applyPoll = old })
 }
+
+// SetLiveRecheck makes live session streams re-read their record and placement every d
+func SetLiveRecheck(t testing.TB, d time.Duration) {
+	old := liveRecheck
+	liveRecheck = d
+	t.Cleanup(func() { liveRecheck = old })
+}

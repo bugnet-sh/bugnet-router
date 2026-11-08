@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -19,6 +20,9 @@ type RefSealer interface {
 
 // credentialFields are the Ref.Meta fields that hold a provider credential
 var credentialFields = []string{"envd_token", "traffic_token", "secret", "_token"}
+
+// CredentialFields returns the Ref.Meta fields that hold a provider credential
+func CredentialFields() []string { return slices.Clone(credentialFields) }
 
 // sealedPrefix starts every sealed field, so a field without it was written before sealing
 const sealedPrefix = "v1."

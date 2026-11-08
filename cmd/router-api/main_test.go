@@ -130,11 +130,11 @@ func TestJobDepsCarryTheOutputLimits(t *testing.T) {
 func TestTokensComeFromTheSettings(t *testing.T) {
 	got := tokens(config.Config{
 		InternalToken: "i", EdgeToken: "e", SecretsToken: "s", SSHToken: "h", EgressToken: "g",
-		EgressFetchToken: "f", OperatorToken: "o", PaymentsToken: "p",
+		EgressFetchToken: "f", OperatorToken: "o", PaymentsToken: "p", SessionsToken: "k",
 	})
 	want := api.Tokens{
 		Internal: "i", Edge: "e", Secrets: "s", SSH: "h", Egress: "g", Operator: "o",
-		Payments: "p",
+		Payments: "p", Sessions: "k",
 	}
 	if got != want {
 		t.Fatalf("tokens %+v, want %+v", got, want)

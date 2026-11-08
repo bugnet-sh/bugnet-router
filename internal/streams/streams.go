@@ -340,6 +340,52 @@ func (b *Bus) revRange(ctx context.Context, jobID, end string, n int64) ([]Entry
 	return decodeAll(raw)
 }
 
+// Before returns at most n entries before end, newest first, end being + for the newest
+func (b *Bus) Before(ctx context.Context, jobID, end string, n int64) ([]Entry, error) {
+	return b.revRange(ctx, jobID, end, n)
+}
+
+// After returns at most n entries after cursor in order, from the start when it is empty
+func (b *Bus) After(ctx context.Context, jobID, cursor string, n int64) ([]Entry, error) {
+	start := "-"
+	if cursor != "" {
+		if !cursorPattern.MatchString(cursor) {
+			return nil, fmt.Errorf("%w %q", ErrBadCursor, cursor)
+		}
+		start = "(" + cursor
+	}
+	cmd := b.c.B().Xrange().Key(b.key(jobID, "s")).Start(start).End("+").Count(n).Build()
+	raw, err := b.c.Do(ctx, cmd).AsXRange()
+	if err != nil {
+		return nil, fmt.Errorf("read job %s: %w", jobID, err)
+	}
+	return decodeAll(raw)
+}
+
+// Exists reports whether the job's stream is still kept
+func (b *Bus) Exists(ctx context.Context, jobID string) (bool, error) {
+	n, err := b.c.Do(ctx, b.c.B().Exists().Key(b.key(jobID, "s")).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("check job %s: %w", jobID, err)
+	}
+	return n == 1, nil
+}
+
+// Unlink removes the jobs' streams without blocking Valkey
+func (b *Bus) Unlink(ctx context.Context, jobIDs ...string) error {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	keys := make([]string, len(jobIDs))
+	for i, id := range jobIDs {
+		keys[i] = b.key(id, "s")
+	}
+	if err := b.c.Do(ctx, b.c.B().Unlink().Key(keys...).Build()).Error(); err != nil {
+		return fmt.Errorf("unlink job streams: %w", err)
+	}
+	return nil
+}
+
 // Last returns the job's newest entry, reporting false for an empty stream
 func (b *Bus) Last(ctx context.Context, jobID string) (Entry, bool, error) {
 	entries, err := b.revRange(ctx, jobID, "+", 1)

@@ -61,6 +61,10 @@ type Store struct {
 	q      Querier
 	sealer RefSealer
 	log    *slog.Logger
+	// maxEvents caps one session record's events, DefaultSessionMaxEvents when 0
+	maxEvents int
+	// maxJobs caps one session record's jobs, DefaultSessionMaxJobs when 0
+	maxJobs int
 }
 
 // Option configures a Store
@@ -91,7 +95,7 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 
 // Tx returns a Store whose queries all run inside tx
 func (s *Store) Tx(tx pgx.Tx) *Store {
-	return &Store{q: tx, sealer: s.sealer, log: s.log}
+	return &Store{q: tx, sealer: s.sealer, log: s.log, maxEvents: s.maxEvents}
 }
 
 // WithTx runs fn in a transaction, committing when fn returns nil and rolling back otherwise

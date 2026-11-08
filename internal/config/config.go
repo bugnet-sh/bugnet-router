@@ -99,6 +99,7 @@ type Config struct {
 	HFToken     string
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
+	Sessions    Sessions
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -113,6 +114,8 @@ type Config struct {
 	OperatorToken string
 	// PaymentsToken admits Payments to PaymentsService, no caller when empty
 	PaymentsToken string
+	// SessionsToken admits bugnet-edge --role sessions to SessionPageService, none when empty
+	SessionsToken string
 	// DataPlaneKeys are the roots every derived data-plane value and sealed provider ref uses
 	DataPlaneKeys dpkeys.Keys
 }
@@ -309,6 +312,7 @@ type file struct {
 	Stats               statsFile     `toml:"stats"`
 	Estimator           estimatorFile `toml:"estimator"`
 	Images              imagesFile    `toml:"images"`
+	Sessions            sessionsFile  `toml:"sessions"`
 }
 
 type apiFile struct {
@@ -497,6 +501,7 @@ func defaults() file {
 		Wallets:   defaultWallets(),
 		Stats:     defaultStats(),
 		Estimator: defaultEstimator(),
+		Sessions:  defaultSessions(),
 	}
 }
 
@@ -705,6 +710,9 @@ func (f file) config() (Config, error) {
 			c.ProviderOps[o.name] = int(o.rate)
 		}
 	}
+	if c.Sessions, err = f.Sessions.read(d.Sessions); err != nil {
+		return Config{}, err
+	}
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
 		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile, &c.Hardening.PoolList,
@@ -843,12 +851,13 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 var callerTokens = []string{
 	"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
 	"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_OPERATOR_TOKEN", "BUGNET_PAYMENTS_ROUTER_TOKEN",
+	"BUGNET_SESSIONS_TOKEN",
 }
 
 // readCallerTokens reads each caller token, empty or 32 characters and unlike every other token
 func (c *Config) readCallerTokens(get func(string) string) error {
 	into := []*string{&c.EdgeToken, &c.SecretsToken, &c.SSHToken, &c.EgressToken,
-		&c.EgressFetchToken, &c.OperatorToken, &c.PaymentsToken}
+		&c.EgressFetchToken, &c.OperatorToken, &c.PaymentsToken, &c.SessionsToken}
 	seen := map[string]string{c.InternalToken: "BUGNET_INTERNAL_TOKEN"}
 	for i, name := range callerTokens {
 		v := get(name)
