@@ -64,6 +64,8 @@ type egressSpec struct {
 	Home           string      `json:"home"`
 	GitPlaceholder string      `json:"git_placeholder"`
 	NPMPlaceholder string      `json:"npm_placeholder"`
+	// X402Hosts are the hosts of x402 services, each also in Hosts, omitted when there are none
+	X402Hosts []string `json:"x402_hosts,omitempty"`
 }
 
 // egressEnv is one NAME=placeholder line of the sandbox's secrets.env
@@ -114,40 +116,47 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	loaded := slices.DeleteFunc(all, func(s store.Secret) bool { return s.FetchOnly })
+	x402, err := w.store.LoadX402ForApply(ctx, id)
+	if err != nil {
+		return err
+	}
+	set := applySet{secrets: loaded, x402: x402}
 	prov, ok := w.registry.Get(p.Provider)
 	if !ok || p.ProviderRef == nil || !w.registry.Capabilities(prov).Secrets ||
 		w.d.Egress.Host == "" || len(w.d.Egress.IPs) == 0 || len(w.keys.Roots()) == 0 {
-		return w.finishApply(ctx, p, lag, loaded, store.SecretFailed, reasonUnavailable)
+		return w.finishApply(ctx, p, lag, set, store.SecretFailed, reasonUnavailable)
 	}
 	has, err := w.store.HasEgressToken(ctx, id)
 	if err != nil {
 		return err
 	}
 	// Nothing was ever written into this sandbox, so there is nothing to take back
-	if len(loaded) == 0 && !has {
-		return w.finishApply(ctx, p, lag, nil, store.SecretActive, "")
+	if len(loaded) == 0 && len(x402) == 0 && !has {
+		return w.finishApply(ctx, p, lag, applySet{}, store.SecretActive, "")
 	}
-	err = w.applyEgress(ctx, p, prov, loaded)
+	err = w.applyEgress(ctx, p, prov, set)
 	var re *saga.RunnerError
 	switch {
 	case err == nil:
-		w.log.Info("secrets applied", "placement", id, "secrets", len(loaded))
-		return w.finishApply(ctx, p, lag, loaded, store.SecretActive, "")
+		w.log.Info("secrets applied", "placement", id, "secrets", len(loaded),
+			"x402", len(x402))
+		set.wrote = true
+		return w.finishApply(ctx, p, lag, set, store.SecretActive, "")
 	case errors.As(err, &re):
 		w.log.Warn("secrets apply refused", "placement", id, "err", err)
 		reason := cmp.Or(strings.ToUpper(re.Value), reasonApplyFailed)
-		return w.finishApply(ctx, p, lag, loaded, store.SecretFailed, reason)
+		return w.finishApply(ctx, p, lag, set, store.SecretFailed, reason)
 	}
 	return err
 }
 
 // applyEgress writes the spec, once more with a fresh token after token_missing, in one budget
 func (w *Worker) applyEgress(
-	ctx context.Context, p store.Placement, prov provider.Provider, loaded []store.Secret,
+	ctx context.Context, p store.Placement, prov provider.Provider, set applySet,
 ) error {
 	ctx, cancel := context.WithTimeout(ctx, egressBudget)
 	defer cancel()
-	err := w.writeEgress(ctx, p, prov, loaded)
+	err := w.writeEgress(ctx, p, prov, set)
 	var re *saga.RunnerError
 	if !errors.As(err, &re) || re.Value != tokenMissing {
 		return err
@@ -156,14 +165,14 @@ func (w *Worker) applyEgress(
 	if err := w.store.ClearEgressToken(ctx, p.ID); err != nil {
 		return err
 	}
-	return w.writeEgress(ctx, p, prov, loaded)
+	return w.writeEgress(ctx, p, prov, set)
 }
 
 // writeEgress mints a token when the placement has none and runs egress apply with the spec
 func (w *Worker) writeEgress(
-	ctx context.Context, p store.Placement, prov provider.Provider, loaded []store.Secret,
+	ctx context.Context, p store.Placement, prov provider.Provider, set applySet,
 ) error {
-	spec, err := w.egressSpec(p, prov, loaded)
+	spec, err := w.egressSpec(p, prov, set)
 	if err != nil {
 		return err
 	}
@@ -186,27 +195,54 @@ func (w *Worker) writeEgress(
 	return err
 }
 
-// egressSpec is DP 10.3 step 3's spec for the loaded secrets, without a token
+// applySet is what one run loaded, and what it wrote when it succeeded
+type applySet struct {
+	secrets []store.Secret
+	x402    []store.X402Loaded
+	// wrote is true once egress apply took the spec, so applied_hosts follows it
+	wrote bool
+}
+
+// x402Hosts are the hosts of the loaded x402 rows, sorted and de-duplicated
+func (a applySet) x402Hosts() []string {
+	var out []string
+	for _, r := range a.x402 {
+		out = append(out, r.Host)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// hosts are the secret hosts and x402 hosts, sorted and de-duplicated
+func (a applySet) hosts() []string {
+	out := append([]string{}, a.x402Hosts()...)
+	for _, s := range a.secrets {
+		out = append(out, s.Hosts...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// egressSpec is DP 10.3 step 3's spec for the loaded rows, without a token
 func (w *Worker) egressSpec(
-	p store.Placement, prov provider.Provider, loaded []store.Secret,
+	p store.Placement, prov provider.Provider, set applySet,
 ) (egressSpec, error) {
 	caps := w.registry.Capabilities(prov)
 	spec := egressSpec{
 		V: 1, Endpoint: w.d.Egress.Host, Port: egressPort, Listen: forwardListen,
-		Hosts: []string{}, Env: []egressEnv{},
+		Env:  []egressEnv{},
 		Home: transfer.Home(prov, *p.ProviderRef, caps),
 	}
 	for _, ip := range w.d.Egress.IPs {
 		spec.IPs = append(spec.IPs, ip.String())
 	}
 	keyID := cmp.Or(p.KeyID, w.keys.Current().ID)
-	for _, s := range loaded {
+	for _, s := range set.secrets {
 		ph, err := w.keys.Placeholder(keyID, p.ID, s.Name)
 		if err != nil {
 			return egressSpec{}, fmt.Errorf("placeholder: %w", err)
 		}
 		spec.Env = append(spec.Env, egressEnv{Name: s.Name, Value: ph})
-		spec.Hosts = append(spec.Hosts, s.Hosts...)
 		preset, ok := secrets.PresetOf(s.Name)
 		if !ok || !slices.Contains(s.Hosts, preset.Hosts[0]) {
 			continue
@@ -218,14 +254,14 @@ func (w *Worker) egressSpec(
 			spec.NPMPlaceholder = ph
 		}
 	}
-	slices.Sort(spec.Hosts)
-	spec.Hosts = slices.Compact(spec.Hosts)
+	spec.Hosts = set.hosts()
+	spec.X402Hosts = set.x402Hosts()
 	return spec, nil
 }
 
-// finishApply is step 5, marking only the loaded secrets still as loaded and clearing lag
+// finishApply is step 5 and X402 step 7, marking only the rows still as loaded and clearing lag
 func (w *Worker) finishApply(
-	ctx context.Context, p store.Placement, lag int64, loaded []store.Secret, state, reason string,
+	ctx context.Context, p store.Placement, lag int64, set applySet, state, reason string,
 ) error {
 	ready := true
 	err := w.store.WithTx(ctx, func(tx pgx.Tx) error {
@@ -238,8 +274,16 @@ func (w *Worker) finishApply(
 			ready = false
 			return nil
 		}
-		if _, err := ts.MarkSecrets(ctx, p.ID, loaded, state, reason); err != nil {
+		if err := ts.MarkX402Applied(ctx, p.ID, set.x402, x402State(state), reason); err != nil {
 			return err
+		}
+		if _, err := ts.MarkSecrets(ctx, p.ID, set.secrets, state, reason); err != nil {
+			return err
+		}
+		if set.wrote {
+			if err := ts.SetAppliedHosts(ctx, p.ID, set.hosts()); err != nil {
+				return err
+			}
 		}
 		return ts.FinishSecretsApply(ctx, p.ID, lag)
 	})
@@ -252,4 +296,12 @@ func (w *Worker) finishApply(
 		}})
 	}
 	return nil
+}
+
+// x402State maps a secret state to the x402 row state of the same outcome
+func x402State(secret string) string {
+	if secret == store.SecretActive {
+		return store.X402Active
+	}
+	return store.X402Failed
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/fs"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -25,6 +27,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
 const egressSpecPath = "/tmp/bugnet/egress-spec.json"
@@ -47,6 +50,7 @@ type sentSpec struct {
 	Home           string   `json:"home"`
 	GitPlaceholder string   `json:"git_placeholder"`
 	NPMPlaceholder string   `json:"npm_placeholder"`
+	X402Hosts      []string `json:"x402_hosts"`
 }
 
 type envVar struct {
@@ -59,6 +63,8 @@ type egressFake struct {
 	*local.Provider
 	mu    sync.Mutex
 	specs []sentSpec
+	// raw holds each spec as written
+	raw [][]byte
 	// answer is the line and exit code of apply number n, success when nil
 	answer func(n int, s sentSpec) (string, int)
 	// during runs inside apply number n, before it answers
@@ -82,6 +88,7 @@ func (f *egressFake) WriteFile(
 	}
 	f.mu.Lock()
 	f.specs = append(f.specs, s)
+	f.raw = append(f.raw, bytes.Clone(data))
 	f.mu.Unlock()
 	return nil
 }
@@ -579,5 +586,247 @@ func TestApplyTimeoutIsUnderTheRescue(t *testing.T) {
 	timeout := worker.ApplyTimeout()
 	if timeout != 90*time.Second {
 		t.Fatalf("apply_secrets times out after %v, want 90 s", timeout)
+	}
+}
+
+const payTo = "11111111111111111111111111111111"
+
+// putX402 stores an applying GET service of the placement
+func (e *env) putX402(t *testing.T, p store.Placement, host, prefix string) store.X402Service {
+	t.Helper()
+	row := store.X402Service{
+		PlacementID: p.ID, ServiceID: x402.ServiceID("GET", host, prefix),
+		Spec: x402.Spec{
+			Host: host, Prefix: prefix, Method: "GET", MaxPriceMicros: 10_000, PayTo: payTo,
+			Indexed: true,
+		},
+	}
+	if err := e.store.PutX402Service(t.Context(), row); err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+// x402States answers the state of each service of the placement by its prefix and host
+func (e *env) x402States(t *testing.T, p store.Placement) map[string]string {
+	t.Helper()
+	rows, err := e.store.X402Services(t.Context(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, r := range rows {
+		out[r.Spec.Host+r.Spec.Prefix] = strings.TrimSpace(r.State + " " + r.FailureReason)
+	}
+	return out
+}
+
+func TestApplyWritesX402HostsAndField(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-x402")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	e.putX402(t, p, "agent402.tools", "/a/")
+	e.putX402(t, p, "agent402.tools", "/b/")
+	e.putX402(t, p, "api.example.com", "/v1/")
+	e.apply(t, p)
+	specs := fake.sent()
+	eq(t, len(specs), 1)
+	eq(t, specs[0].Hosts, []string{"agent402.tools", "api.example.com", "huggingface.co"})
+	eq(t, specs[0].X402Hosts, []string{"agent402.tools", "api.example.com"})
+	eq(t, e.x402States(t, p), map[string]string{
+		"agent402.tools/a/": "active", "agent402.tools/b/": "active",
+		"api.example.com/v1/": "active",
+	})
+	got := e.reload(t, p.ID)
+	eq(t, got.AppliedHosts, []string{"agent402.tools", "api.example.com", "huggingface.co"})
+	eq(t, got.SecretsVersion, int64(1))
+	eq(t, e.secretsChanged(t, p), 1)
+}
+
+func TestApplySpecMatchesRunnerGolden(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join("testdata", "spec-x402.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, string(worker.GoldenSpec())+"\n", string(golden))
+}
+
+func TestSecretsOnlySpecHasNoX402Key(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-nox402")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	e.apply(t, p)
+	fake.mu.Lock()
+	raw := string(fake.raw[0])
+	fake.mu.Unlock()
+	if strings.Contains(raw, "x402") {
+		t.Fatalf("a secrets-only spec holds an x402 key: %s", raw)
+	}
+}
+
+// the main case, a sandbox with x402 services and no secret at all
+func TestX402OnlyPlacementGetsATunnel(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-x402only")
+	e.putX402(t, p, "agent402.tools", "/a/")
+	e.apply(t, p)
+	specs := fake.sent()
+	eq(t, len(specs), 1)
+	s := specs[0]
+	if s.Token == nil || !strings.HasPrefix(*s.Token, "bnt_") {
+		t.Fatalf("no tunnel token was minted: %v", s.Token)
+	}
+	eq(t, s.Hosts, []string{"agent402.tools"})
+	eq(t, s.X402Hosts, []string{"agent402.tools"})
+	eq(t, s.Env, []envVar{})
+	eq(t, e.x402States(t, p), map[string]string{"agent402.tools/a/": "active"})
+	sum := sha256.Sum256([]byte(*s.Token))
+	got, err := e.store.PlacementByEgressToken(t.Context(), sum[:])
+	if err != nil || got.ID != p.ID {
+		t.Fatalf("the token resolves to %v (%v), want %s", got.ID, err, p.ID)
+	}
+	left, err := e.store.Secrets(t.Context(), p.ID)
+	eq(t, len(left), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDisableAloneRemovesHost(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-disable")
+	row := e.putX402(t, p, "agent402.tools", "/a/")
+	e.apply(t, p)
+	eq(t, e.reload(t, p.ID).SecretsVersion, int64(1))
+	if err := e.store.DisableX402Service(t.Context(), p.ID, row.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.BumpSecretsVersion(t.Context(), p.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	e.apply(t, p)
+	specs := fake.sent()
+	eq(t, len(specs), 2)
+	eq(t, specs[1].Hosts, []string{})
+	eq(t, specs[1].X402Hosts, []string(nil))
+	got := e.reload(t, p.ID)
+	eq(t, len(got.AppliedHosts), 0)
+	eq(t, got.SecretsVersion, int64(3))
+}
+
+func TestEarlyExitCountsX402Work(t *testing.T) {
+	e, _ := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-early")
+	pending := func(want bool, why string) {
+		t.Helper()
+		got, _, err := e.store.SecretsPending(t.Context(), p.ID)
+		if err != nil || got != want {
+			t.Fatalf("%s: pending %v (%v), want %v", why, got, err, want)
+		}
+	}
+	pending(false, "nothing")
+	a := e.putX402(t, p, "agent402.tools", "/a/")
+	b := e.putX402(t, p, "agent402.tools", "/b/")
+	pending(true, "an applying row")
+	e.apply(t, p)
+	pending(false, "after the apply")
+	ctx := t.Context()
+	// Another live row keeps the host, so a disabled row alone is no work
+	if err := e.store.DisableX402Service(ctx, p.ID, a.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	pending(false, "a disabled row on a host a live row keeps")
+	// The last row of the host goes, so its host must leave the sandbox
+	if err := e.store.DisableX402Service(ctx, p.ID, b.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	pending(true, "a disabled row on an applied host")
+	e.apply(t, p)
+	pending(false, "after the host left")
+	// A secret on the host keeps it written, so the disabled row is no work
+	e.putSecret(t, p, "EX_KEY", false, "api.example.com")
+	c := e.putX402(t, p, "api.example.com", "/v1/")
+	e.apply(t, p)
+	pending(false, "after the shared host")
+	if err := e.store.DisableX402Service(ctx, p.ID, c.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	pending(false, "a disabled row on a secret host")
+}
+
+// a row re-priced between the load and the mark keeps applying, the next run marks it
+func TestApplyMarksOnlyLoadedVersion(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-x402marks")
+	e.putX402(t, p, "agent402.tools", "/a/")
+	e.putX402(t, p, "api.example.com", "/v1/")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	fake.during = func(n int) {
+		if n == 1 {
+			row := store.X402Service{PlacementID: p.ID,
+				ServiceID: x402.ServiceID("GET", "agent402.tools", "/a/"),
+				Spec: x402.Spec{Host: "agent402.tools", Prefix: "/a/", Method: "GET",
+					MaxPriceMicros: 20_000, PayTo: payTo, Indexed: true}}
+			if err := e.store.PutX402Service(t.Context(), row); err != nil {
+				t.Error(err)
+			}
+			e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+		}
+	}
+	e.apply(t, p)
+	eq(t, e.x402States(t, p), map[string]string{
+		"agent402.tools/a/": "applying", "api.example.com/v1/": "active"})
+	eq(t, e.states(t, p), map[string]string{"HF_TOKEN": "applying"})
+	e.apply(t, p)
+	eq(t, e.x402States(t, p), map[string]string{
+		"agent402.tools/a/": "active", "api.example.com/v1/": "active"})
+	eq(t, e.states(t, p), map[string]string{"HF_TOKEN": "active"})
+	eq(t, len(fake.sent()), 2)
+}
+
+func TestApplyPort443TakenFailsX402Rows(t *testing.T) {
+	e, fake := secretsEnv(t)
+	fake.answer = func(int, sentSpec) (string, int) { return `{"error":"port_443_taken"}`, 1 }
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-x402-443")
+	e.putX402(t, p, "agent402.tools", "/a/")
+	e.apply(t, p)
+	eq(t, e.x402States(t, p), map[string]string{"agent402.tools/a/": "failed PORT_443_TAKEN"})
+	eq(t, len(e.reload(t, p.ID).AppliedHosts), 0)
+}
+
+// EnableX402 takes the placement row first, as step 7 does, so the two never wait on each other
+func TestApplyAndEnableNeverDeadlock(t *testing.T) {
+	e, _ := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-deadlock")
+	for round := range 100 {
+		done := make(chan error, 1)
+		go func() {
+			done <- e.store.WithTx(t.Context(), func(tx pgx.Tx) error {
+				ts := e.store.Tx(tx)
+				if _, err := ts.PlacementForUpdate(t.Context(), p.ID); err != nil {
+					return err
+				}
+				row := store.X402Service{PlacementID: p.ID,
+					ServiceID: x402.ServiceID("GET", "agent402.tools", "/a/"),
+					Spec: x402.Spec{Host: "agent402.tools", Prefix: "/a/", Method: "GET",
+						MaxPriceMicros: int64(10_000 + round), PayTo: payTo, Indexed: true}}
+				if err := ts.PutX402Service(t.Context(), row); err != nil {
+					return err
+				}
+				return ts.BumpSecretsVersion(t.Context(), p.ID, true)
+			})
+		}()
+		e.apply(t, p)
+		if err := <-done; err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
 	}
 }
