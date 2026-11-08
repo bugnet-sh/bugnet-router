@@ -12,8 +12,10 @@ import (
 	"io/fs"
 	"maps"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1128,4 +1130,41 @@ func TestE2BListFilesRateLimited(t *testing.T) {
 func TestCapabilitiesReportNoSSHOrPreview(t *testing.T) {
 	c := newFake(t).provider(t, fakeKey).Capabilities()
 	eq(t, c.SSH || c.Preview, false)
+}
+
+func TestE2BCreateDenyOut(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	p.denyOut = ipv4Ranges([]netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("100.64.0.0/10"),
+	})
+	size, _ := p.SizeFor(provider.Resources{VCPU: 1})
+	if _, err := p.Create(t.Context(), provider.CreateRequest{
+		Size: size, Lifetime: 15 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	network, _ := f.lastCreate().body["network"].(map[string]any)
+	if !reflect.DeepEqual(network["denyOut"], []any{"10.0.0.0/8", "169.254.0.0/16",
+		"100.64.0.0/10"}) || network["allowOut"] != nil {
+		t.Fatalf("network %v, want the IPv4 ranges denied and nothing allowed", network)
+	}
+
+	if _, err := p.Create(t.Context(), provider.CreateRequest{
+		Size: size, Lifetime: 15 * time.Minute, Egress: &provider.EgressAllow{
+			Hosts: []string{"huggingface.co", "egress.bugnet.sh"},
+			Proxy: []netip.Addr{netip.MustParseAddr("203.0.113.7"),
+				netip.MustParseAddr("2001:db8::7")},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	network, _ = f.lastCreate().body["network"].(map[string]any)
+	if !reflect.DeepEqual(network["allowOut"], []any{"203.0.113.7/32"}) ||
+		!reflect.DeepEqual(network["denyOut"], []any{"0.0.0.0/0"}) ||
+		network["allowPublicTraffic"] != false {
+		t.Fatalf("a restricted package's network %v, want only the proxy's IPv4 allowed",
+			network)
+	}
 }

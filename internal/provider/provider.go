@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"io/fs"
+	"net/netip"
 	"time"
 )
 
@@ -55,6 +56,16 @@ type CreateRequest struct {
 	Size           Size
 	Labels         map[string]string
 	Lifetime       time.Duration
+	// Egress restricts outbound traffic for a restricted package, nil leaving it open
+	Egress *EgressAllow
+}
+
+// EgressAllow is all a restricted package's sandbox may reach, set at create where EgressControl
+type EgressAllow struct {
+	// Hosts are the package's hosts and the egress proxy's name
+	Hosts []string
+	// Proxy holds the egress proxy's addresses
+	Proxy []netip.Addr
 }
 
 // ExecSpec is a command run directly, without a shell, inside a sandbox

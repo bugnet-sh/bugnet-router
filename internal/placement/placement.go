@@ -76,6 +76,10 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		if !capable(caps, req) {
 			continue
 		}
+		// A restricted package needs rules outside the VM, which Koyeb, Boat and local lack
+		if len(pk.EgressAllow) > 0 && !caps.EgressControl {
+			continue
+		}
 		if caps.MaxLifetime != 0 && caps.MaxLifetime < need {
 			continue
 		}

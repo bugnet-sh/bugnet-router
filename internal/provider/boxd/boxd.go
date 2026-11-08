@@ -250,6 +250,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if req.Lifetime > 0 {
 		in.DeleteAfterSecs = proto.Uint64(wholeSeconds(req.Lifetime))
 	}
+	if req.Egress != nil {
+		in.Spec.Egress = egressList(req.Egress)
+	}
 
 	resp, err := p.api.CreateVm(ctx, in)
 	if networkRefused(err) {
@@ -293,6 +296,22 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, err
 	}
 	return p.stopHibernation(after, vm.GetVmId()), nil
+}
+
+// egressList is the machine's egress allowlist, the hosts and the proxy's IPv4, never empty
+func egressList(e *provider.EgressAllow) []string {
+	out := slices.Clone(e.Hosts)
+	for _, ip := range e.Proxy {
+		// boxd's list takes IPv4 addresses and ranges alone
+		if ip.Is4() {
+			out = append(out, ip.String())
+		}
+	}
+	if len(out) == 0 {
+		// An empty list means unrestricted to boxd, and none means nothing is reachable
+		return []string{"none"}
+	}
+	return out
 }
 
 // networkRefused reports a create boxd refused for its network config

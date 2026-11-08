@@ -575,3 +575,26 @@ func TestCostMinutesAcrossIncrement(t *testing.T) {
 		t.Fatalf("cost = %d", got[0].CostMicros)
 	}
 }
+
+func TestRestrictedPackageNeverOnBoatOrKoyeb(t *testing.T) {
+	e := engine(fakeHealth{}, adapters(t)...)
+	open := pkg(10, 1000000)
+	got, err := e.Candidates(Inputs{Package: open})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"koyeb", "boat", "local"} {
+		if !slices.Contains(names(got), name) {
+			t.Fatalf("an open package's candidates %v lack %s", names(got), name)
+		}
+	}
+	restricted := open
+	restricted.EgressAllow = []string{"huggingface.co"}
+	got, err = e.Candidates(Inputs{Package: restricted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := names(got)
+	slices.Sort(have)
+	eq(t, have, []string{"boxd", "e2b"})
+}

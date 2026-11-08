@@ -915,6 +915,14 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
 
+E2B's create blocks `hardening.deny_ranges` outside the VM with `network.denyOut`, IPv4 ones
+alone, since E2B sandboxes reach out over IPv4. A package with `egress.allow` is restricted: it
+lands only on a provider with egress control at create. On E2B it reaches the egress proxy's
+IPv4 addresses alone, through `network.allowOut` under a `0.0.0.0/0` deny. On boxd the
+machine's `egress` list holds the package's hosts, `names.egress_host` and the proxy's IPv4
+addresses. Koyeb, Boat and `local` never take one: Boat has no egress control, and Koyeb's
+network policy waits for live test N1.
+
 The registry decides which providers offer previews, SSH and secrets, and the placement engine and
 the API read capabilities only through it. A provider offers previews when it is listed in
 `previews.providers` and its adapter has a gate route, SSH when it is listed in `ssh.providers`

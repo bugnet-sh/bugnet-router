@@ -10,7 +10,9 @@
 // Filesystem service. An upload cannot carry a mode, so WriteFile runs chmod when the mode is not
 // the one envd gives new files. File streams use their own HTTP/1.1 client that never asks for
 // compression. A streamed upload fills a hidden temporary file beside the target, since envd
-// truncates in place, and Commit chmods it and moves it over the target.
+// truncates in place, and Commit chmods it and moves it over the target. Create blocks the
+// private, link-local and metadata ranges outside the VM with network.denyOut, and a restricted
+// package's sandbox reaches the egress proxy's IPv4 addresses alone.
 package e2b
 
 import (
@@ -29,6 +31,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptrace"
+	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
@@ -139,6 +142,8 @@ type Options struct {
 	Templates []Template
 	// MaxLifetime caps a sandbox's lifetime, 1 h for the Hobby plan when zero and 24 h on Pro
 	MaxLifetime time.Duration
+	// DenyOut are the ranges every sandbox's network.denyOut blocks, IPv6 ones dropped
+	DenyOut []netip.Prefix
 	// BinaryCodec talks to envd in binary protobuf instead of the JSON the SDKs use
 	BinaryCodec bool
 	BaseURL     string
@@ -156,6 +161,7 @@ type Provider struct {
 	envdURL      string
 	domain       string
 	templates    []Template
+	denyOut      []string
 	maxLifetime  time.Duration
 	codec        []connect.ClientOption
 	pollInterval time.Duration
@@ -185,6 +191,7 @@ func New(opts Options) (*Provider, error) {
 		envdURL:      opts.EnvdURL,
 		domain:       domain,
 		templates:    byCost(opts.Templates),
+		denyOut:      ipv4Ranges(opts.DenyOut),
 		maxLifetime:  cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		pollInterval: defaultPoll,
 		retryBase:    defaultRetryBase,
@@ -205,6 +212,37 @@ func New(opts Options) (*Provider, error) {
 	}
 	p.api = client
 	return p, nil
+}
+
+// ipv4Ranges keeps the IPv4 ranges, since E2B sandboxes reach out over IPv4 alone
+func ipv4Ranges(ranges []netip.Prefix) []string {
+	var out []string
+	for _, r := range ranges {
+		if r.Addr().Is4() {
+			out = append(out, r.Masked().String())
+		}
+	}
+	return out
+}
+
+// network closes public traffic and blocks denyOut, or everything but the proxy when restricted
+func (p *Provider) network(egress *provider.EgressAllow) *api.SandboxNetworkConfig {
+	n := &api.SandboxNetworkConfig{AllowPublicTraffic: new(false)}
+	if egress != nil {
+		// No domain entry, since a domain would also open all traffic to E2B's DNS servers
+		allow := []string{}
+		for _, ip := range egress.Proxy {
+			if ip.Is4() {
+				allow = append(allow, netip.PrefixFrom(ip, 32).String())
+			}
+		}
+		n.AllowOut, n.DenyOut = &allow, &[]string{"0.0.0.0/0"}
+		return n
+	}
+	if len(p.denyOut) > 0 {
+		n.DenyOut = new(slices.Clone(p.denyOut))
+	}
+	return n
 }
 
 // byCost orders templates cheapest first so SizeFor picks the cheapest that fits
@@ -269,7 +307,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		TemplateID: p.templates[i].TemplateID,
 		Timeout:    new(seconds(req.Lifetime)),
 		AutoPause:  new(false),
-		Network:    &api.SandboxNetworkConfig{AllowPublicTraffic: new(false)},
+		Network:    p.network(req.Egress),
 	}
 	if len(req.Labels) > 0 {
 		body.Metadata = new(api.SandboxMetadata(maps.Clone(req.Labels)))

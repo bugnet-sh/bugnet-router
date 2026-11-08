@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/netip"
 	"os"
 	"time"
 
@@ -55,7 +56,7 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			}
 			ps = append(ps, p)
 		case "e2b":
-			p, err := buildE2B(cfg.E2B, cfg.ProviderKeys["e2b"])
+			p, err := buildE2B(cfg, cfg.ProviderKeys["e2b"])
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -121,27 +122,40 @@ func Runners(cfg config.Config, reg *provider.Registry) (map[string][]byte, erro
 }
 
 // buildE2B builds E2B from its settings, an adapter without templates is never a candidate
-func buildE2B(cfg config.E2B, key string) (*e2b.Provider, error) {
+func buildE2B(c config.Config, key string) (*e2b.Provider, error) {
 	if key == "" {
 		return nil, errors.New("e2b needs E2B_API_KEY")
 	}
+	opts := e2bOptions(c, key)
+	if len(opts.Templates) == 0 {
+		slog.Warn("e2b has no templates and is never a candidate, set e2b.templates")
+	}
+	p, err := e2b.New(opts)
+	if err != nil {
+		return nil, fmt.Errorf("e2b.templates: %w", err)
+	}
+	return p, nil
+}
+
+// e2bOptions maps E2B's settings and the hardening deny ranges, blocked outside the VM
+func e2bOptions(c config.Config, key string) e2b.Options {
 	var templates []e2b.Template
-	for _, t := range cfg.Templates {
+	for _, t := range c.E2B.Templates {
 		templates = append(templates, e2b.Template{
 			Name: t.Size, TemplateID: t.Template, VCPU: t.VCPU, MemoryMiB: t.MemoryMiB,
 			DiskGiB: t.DiskGiB,
 		})
 	}
-	if len(templates) == 0 {
-		slog.Warn("e2b has no templates and is never a candidate, set e2b.templates")
+	var deny []netip.Prefix
+	for _, r := range c.Hardening.DenyRanges {
+		if p, err := netip.ParsePrefix(r); err == nil {
+			deny = append(deny, p)
+		}
 	}
-	p, err := e2b.New(e2b.Options{
-		APIKey: key, Domain: cfg.Domain, Templates: templates, MaxLifetime: cfg.MaxLifetime,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("e2b.templates: %w", err)
+	return e2b.Options{
+		APIKey: key, Domain: c.E2B.Domain, Templates: templates, MaxLifetime: c.E2B.MaxLifetime,
+		DenyOut: deny,
 	}
-	return p, nil
 }
 
 // boxdOptions maps the settings boxd reads, the gate's port and route among them, to its options

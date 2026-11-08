@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1029,4 +1030,24 @@ func TestBoxdClassifiesADestroyedMachineAsNotFound(t *testing.T) {
 			t.Errorf("FailedPrecondition %q gave %v, want %s", c.msg, err, c.code)
 		}
 	}
+}
+
+func TestBoxdRestrictedCreateCarriesTheEgressList(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	size, _ := p.SizeFor(provider.Resources{VCPU: 2})
+	_, err := p.Create(t.Context(), provider.CreateRequest{
+		IdempotencyKey: "key-r", Size: size, Lifetime: 15 * time.Minute,
+		Egress: &provider.EgressAllow{
+			Hosts: []string{"huggingface.co", "egress.bugnet.sh"},
+			Proxy: []netip.Addr{netip.MustParseAddr("203.0.113.7"),
+				netip.MustParseAddr("2001:db8::7")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, f.lastCreate().GetSpec().GetEgress(),
+		[]string{"huggingface.co", "egress.bugnet.sh", "203.0.113.7"})
+	eq(t, egressList(&provider.EgressAllow{}), []string{"none"})
 }

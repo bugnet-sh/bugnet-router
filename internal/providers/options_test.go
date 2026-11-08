@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,5 +55,17 @@ func TestBuildKoyebNamesTheSettingItRefuses(t *testing.T) {
 	_, err = buildKoyeb(cfg, "koyeb_test")
 	if err == nil || !strings.Contains(err.Error(), "koyeb.instance_types") {
 		t.Fatalf("an unknown instance type gave %v, want it to name koyeb.instance_types", err)
+	}
+}
+
+func TestE2BOptionsCarryTheDenyRanges(t *testing.T) {
+	var cfg config.Config
+	cfg.E2B.Domain = "e2b-juliett.dev"
+	cfg.Hardening.DenyRanges = []string{"10.0.0.0/8", "fe80::/10"}
+	got := e2bOptions(cfg, "e2b_test")
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("fe80::/10")}
+	if !reflect.DeepEqual(got.DenyOut, want) || got.Domain != "e2b-juliett.dev" ||
+		got.APIKey != "e2b_test" {
+		t.Fatalf("e2b options %+v, want the deny ranges, domain and key", got)
 	}
 }

@@ -1226,8 +1226,8 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 	}
 	// Exec runs as root, so ExecUser stays empty
 	want := provider.Capabilities{
-		GPU: true, EgressControl: true, NeedsRunnerUpload: true,
-		MaxLifetime: 24*time.Hour - 10*time.Minute, OneSandboxPerKey: true,
+		GPU: true, NeedsRunnerUpload: true, MaxLifetime: 24*time.Hour - 10*time.Minute,
+		OneSandboxPerKey: true,
 	}
 	if caps := p.Capabilities(); caps != want {
 		t.Errorf("capabilities %+v, want %+v", caps, want)
