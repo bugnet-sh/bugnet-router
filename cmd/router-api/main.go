@@ -149,6 +149,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err != nil {
 		return err
 	}
+	if err := api.CheckHooks(cfg.Hooks, cfg.HookSecrets, reg); err != nil {
+		return err
+	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
 	runners, err := providers.Runners(cfg, reg)
 	if err != nil {
@@ -248,6 +251,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Fetch:               cfg.Fetch,
 		FetchToken:          cfg.EgressFetchToken,
 		Images:              cfg.Images,
+		Hooks:               cfg.Hooks,
+		HookSecrets:         cfg.HookSecrets,
 	})
 	defer srv.Close()
 

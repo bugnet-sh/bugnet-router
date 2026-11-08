@@ -179,6 +179,9 @@ type Deps struct {
 	Images map[string]config.ImageTools
 	// Upstream names the hosts a private fetch talks to, the production ones when zero
 	Upstream bootstrap.Upstream
+	// Hooks and HookSecrets say which providers' webhooks DeliverHook verifies and with what
+	Hooks       config.Hooks
+	HookSecrets map[string]config.HookSecret
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler

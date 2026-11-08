@@ -238,6 +238,9 @@ type options struct {
 	fetchToken string
 	images     map[string]config.ImageTools
 	upstream   bootstrap.Upstream
+	// hooks and hookSecrets set the webhook providers and their secrets
+	hooks       config.Hooks
+	hookSecrets map[string]config.HookSecret
 }
 
 type env struct {
@@ -255,6 +258,7 @@ type env struct {
 	apiVK     valkey.Client // the API server's own Valkey client
 	apiVKName string        // client name of the API server's own Valkey connections
 	prefix    string
+	registry  *provider.Registry
 	root      string
 	priv      ed25519.PrivateKey
 	handleKey []byte
@@ -399,14 +403,15 @@ func newEnv(t *testing.T, opts options) *env {
 		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, ProviderOps: opts.providerOps,
 		Sessions: sess, SessionWriter: writer,
 		Bootstrap: opts.bootstrap, Fetch: opts.fetch, FetchToken: opts.fetchToken,
-		Images: opts.images, Upstream: opts.upstream,
+		Images: opts.images, Upstream: opts.upstream, Hooks: opts.hooks,
+		HookSecrets: opts.hookSecrets,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
 		api: srv, gh: gh, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
 		tracker: tracker, apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root,
-		priv: priv, handleKey: handleKey, dpKeys: keys,
+		priv: priv, handleKey: handleKey, dpKeys: keys, registry: reg,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv.Servers(), allTokens)

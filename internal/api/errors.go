@@ -48,6 +48,10 @@ const (
 	reasonNoSpace = "NO_SPACE"
 	// reasonFeatureUnavailable marks a call this router has no settings for
 	reasonFeatureUnavailable = "FEATURE_UNAVAILABLE"
+	// reasonHookUnknownProvider marks a webhook for a provider the router verifies none for
+	reasonHookUnknownProvider = "HOOK_UNKNOWN_PROVIDER"
+	// reasonHookBadSignature marks a webhook whose signature no current secret matches
+	reasonHookBadSignature = "HOOK_BAD_SIGNATURE"
 	// reasonSessionUnknown marks a session id with no record and a wrong key alike
 	reasonSessionUnknown = "SESSION_UNKNOWN"
 )
