@@ -253,6 +253,7 @@ func (s *Saga) Create(
 	np := store.NewPlacement{
 		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
+		Tx: c.Tx,
 	}
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
@@ -318,7 +319,7 @@ func (s *Saga) record(
 		// The order keeps the claim and the placement the decision (CP 7.1, 7.5)
 		id, inserted, err := ts.InsertOrder(ctx, store.Order{
 			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
-			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros,
+			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros, Tx: np.Tx,
 		})
 		if err != nil {
 			return err
@@ -850,7 +851,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}
 		p, applied, err = ts.ExtendWithOrder(ctx, store.Order{
 			ID: c.OrderID, PlacementID: id, Payer: c.Payer, FeePayer: c.FeePayer,
-			AmountMicros: c.PackageMicros(),
+			AmountMicros: c.PackageMicros(), Tx: c.Tx,
 		}, by)
 		if err != nil || !applied {
 			return err
