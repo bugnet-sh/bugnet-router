@@ -20,6 +20,12 @@
 			"extension_of": "dev-small-10m"
 		},
 		{
+			"id": "dev-small-40m",
+			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
+			"minutes": 40,
+			"price_micros": 200000
+		},
+		{
 			"id": "dev-xfer-30m",
 			"resources": {"vcpu": 1, "memory_mib": 1024, "disk_gib": 5, "gpu_count": 0, "gpu_memory_gib": 0},
 			"minutes": 30,
