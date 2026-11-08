@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // runnerPath is where bugnet-run lives inside every sandbox
@@ -40,12 +41,14 @@ type BootReport struct {
 	GateReadyAt time.Time
 	// CAVersion is the Bugnet CA version the sandbox trusts, 0 for none
 	CAVersion int
+	// SSH is the sshd ssh-up made ready, nil when the order needs no SSH
+	SSH *store.SSHHost
 }
 
 // errRestricted means a restricted package reached a provider without egress control
 var errRestricted = errors.New("a restricted package needs a provider with egress control")
 
-// Boot waits for the sandbox, puts the runner in place, runs setup and harden, and opens the gate
+// Boot boots a sandbox, opens its gate and makes sshd ready when the order needs SSH
 func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Ref,
 	b BootPlan) (provider.Ref, BootReport, error) {
 	var rep BootReport
@@ -89,6 +92,13 @@ func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Re
 	default:
 		s.d.Log.Warn("gate not ready, the order needs neither previews nor SSH",
 			"placement", b.Placement, "provider", prov.Name(), "err", err)
+	}
+	if b.NeedSSH && !s.d.Registry.NativeSSH(prov) {
+		host, err := s.sshUp(ctx, prov, ref, b.Placement, nil)
+		if err != nil {
+			return ref, rep, fmt.Errorf("ssh-up: %w", err)
+		}
+		rep.SSH = &host
 	}
 	if _, err := s.setup(ctx, prov, ref, key, true); err != nil {
 		s.d.Log.Warn("setup with the sampler", "placement", b.Placement,

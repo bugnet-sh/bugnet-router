@@ -50,6 +50,8 @@ type scripted struct {
 	argv *[][]string
 	caps func(provider.Capabilities) provider.Capabilities
 	reqs *[]provider.CreateRequest
+	// onAnswer runs before a scripted subcommand answers, nil for nothing
+	onAnswer func(sub string)
 }
 
 func newScripted(p *local.Provider, answers map[string]answer) scripted {
@@ -99,6 +101,17 @@ func (s scripted) Exec(
 	a, ok := s.answers[sub]
 	if !ok {
 		return s.Provider.Exec(ctx, ref, spec)
+	}
+	if s.onAnswer != nil {
+		s.onAnswer(sub)
+	}
+	// An ssh-up answer names the first port its spec offered wherever it says $PORT
+	if sub == "ssh-up" {
+		raw, _, err := s.ReadFile(ctx, ref, "/tmp/bugnet/ssh-spec.json", 0, 1<<20)
+		var got struct{ Ports []int }
+		if err == nil && json.Unmarshal(raw, &got) == nil && len(got.Ports) > 0 {
+			a.out = strings.ReplaceAll(a.out, "$PORT", strconv.Itoa(got.Ports[0]))
+		}
 	}
 	return s.Provider.Exec(ctx, ref, provider.ExecSpec{Argv: []string{
 		"sh", "-c", `printf '%s\n' "$1"; exit "$2"`, "sh", a.out, strconv.Itoa(a.code),
@@ -276,7 +289,7 @@ func TestBootOrderSetupHardenThenTheSampler(t *testing.T) {
 		d.Boot.Harden = map[string]config.HardenRule{"boxd": {Required: true}}
 	}, boxd)
 	e.placeReady(t, "order-1")
-	// ssh-up joins between harden and the second setup with Task 19
+	// An order that needs no SSH runs no ssh-up
 	eq(t, boxd.calls(), []string{"setup sample=false", "harden", "setup sample=true"})
 }
 

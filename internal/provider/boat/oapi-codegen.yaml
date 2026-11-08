@@ -27,3 +27,4 @@ output-options:
     - moveFile
     - deleteFile
     - hostPort
+    - sshKey

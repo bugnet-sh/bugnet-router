@@ -6,7 +6,8 @@
 // order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the settings file's
 // packages_file. Only commands that need a setting read the file. exec and watch write a job's
 // output to stdout and stderr as it arrives and exit with the job's code. transfer prints a
-// transfer URL and its curl command, and preview a preview link. revoke-preview calls
+// transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
+// public key, refusing a private key file before anything is sent. revoke-preview calls
 // OperatorService with BUGNET_OPERATOR_TOKEN instead. deploy maps renders the VPS's HAProxy and
 // bugnet-certs files from deploy/vps.
 package main
@@ -70,6 +71,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
+  ssh-key --handle H --public-key FILE [--identity-file P] [--known-hosts-file P]
+                                         register a public key on a placement and print the
+                                         ssh command, known_hosts lines and an ssh_config stanza
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -132,7 +136,7 @@ func run(
 		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
-		"revoke-preview": c.revokePreview, "secret": c.secret,
+		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
@@ -831,6 +835,9 @@ func (c *cli) printPlacement(p *routerv1.Placement) error {
 	}
 	if p.GetDeadline() != nil {
 		kv = append(kv, [2]string{"deadline", stamp(p.GetDeadline())})
+	}
+	if p.GetSshAlias() != "" {
+		kv = append(kv, [2]string{"ssh_alias", p.GetSshAlias()})
 	}
 	if p.GetFailureReason() != "" {
 		kv = append(kv, [2]string{"failure_reason", p.GetFailureReason()},

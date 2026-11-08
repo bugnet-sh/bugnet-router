@@ -52,6 +52,16 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 	for name, call := range e.secretCalls(t) {
 		calls[name] = call
 	}
+	calls["AddSshKey"] = func(h string) error {
+		_, err := e.client.AddSshKey(ctx, connect.NewRequest(
+			&routerv1.AddSshKeyRequest{Handle: h, PublicKey: "ssh-ed25519 AAAA"}))
+		return err
+	}
+	calls["RemoveSshKey"] = func(h string) error {
+		_, err := e.client.RemoveSshKey(ctx, connect.NewRequest(
+			&routerv1.RemoveSshKeyRequest{Handle: h, Fingerprint: "SHA256:x"}))
+		return err
+	}
 	calls["WatchJob"] = func(h string) error {
 		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
 		return err

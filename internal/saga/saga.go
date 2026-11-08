@@ -18,8 +18,9 @@
 //
 // Boot runs after every create, whether or not the runner was uploaded. It runs bugnet-run setup
 // with the gate key, the CA and the env lines, then harden where the provider has a hardening rule,
-// then PrepareGate and three health checks through the route, then setup again to start the
-// sampler, so harden's installs never count as the user's disk. A failed setup, or a failed
+// then PrepareGate and three health checks through the route, then ssh-up when the order needs
+// SSH, then setup again to start the sampler, so the installs of harden and ssh-up never count as
+// the user's disk. A failed setup, or a failed
 // harden where it is required, fails the attempt over as boot_failed. A gate that never answers
 // fails it over only when the order needs previews or SSH, and is logged otherwise. The ready
 // transaction records when the gate answered and the CA version the sandbox trusts. A restricted
@@ -28,6 +29,13 @@
 // RepairGate runs setup --repair and PrepareGate, both one replica at a time under a Postgres
 // advisory lock per placement. Both store the route's meta. OpenGate records when the gate
 // answered, and RepairGate leaves the gate time to its caller.
+//
+// The ready transaction records the sshd ssh-up made ready and mints the placement's SSH alias
+// when the registry gives its provider SSH. PrepareSSH, run by the prepare_ssh job, makes the sshd
+// of a placement whose order did not ask for SSH ready later. AuthorizeGateway puts the gateway's
+// key for a placement in its sshd once per key, through ssh-up or, for Boat's own sshd, through
+// the provider, both one replica at a time under an advisory lock per placement. The end of a
+// placement forgets its gateway keys.
 package saga
 
 import (
@@ -155,6 +163,8 @@ type Deps struct {
 	Keys dpkeys.Keys
 	// Boot holds what each sandbox's setup and harden specs carry
 	Boot BootSettings
+	// SSH holds what each sandbox's ssh-up spec carries
+	SSH SSHSettings
 }
 
 // Saga runs placements from order to teardown
@@ -536,6 +546,14 @@ func (s *Saga) commitReady(
 		}
 		if err := ts.SetPlacementGate(tctx, p.ID, gateAt, boot.CAVersion); err != nil {
 			return err
+		}
+		if boot.SSH != nil {
+			if err := ts.PutSSHHost(tctx, *boot.SSH); err != nil {
+				return err
+			}
+		}
+		if s.d.Registry.Capabilities(prov).SSH {
+			s.mintAlias(tctx, ts, p.ID)
 		}
 		if _, _, err := s.addBudgets(tctx, ts, p.ID, pkg); err != nil {
 			return err
@@ -1070,6 +1088,9 @@ func (s *Saga) terminate(
 			return err
 		}
 		if _, err := ts.ReleasePlacementCapacity(ctx, p.ID); err != nil {
+			return err
+		}
+		if err := ts.DeleteGatewayKeys(ctx, p.ID); err != nil {
 			return err
 		}
 		if ended, err = ts.PlacementByID(ctx, p.ID); err != nil {

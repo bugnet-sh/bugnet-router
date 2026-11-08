@@ -58,6 +58,9 @@ import (
 
 var runnerPath string
 
+// fakeSSHDPath is the stand-in sshd that local sandboxes' ssh-up runs
+var fakeSSHDPath string
+
 func TestMain(m *testing.M) {
 	os.Exit(run(m))
 }
@@ -75,6 +78,14 @@ func run(m *testing.M) int {
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build bugnet-run:", err)
+		return 1
+	}
+	// ssh-up knows sshd by the name in its command line, so the stand-in keeps it
+	fakeSSHDPath = filepath.Join(dir, "fakesshd")
+	build = exec.Command("go", "build", "-o", fakeSSHDPath, "./testdata/fakesshd")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "build fakesshd:", err)
 		return 1
 	}
 	return m.Run()
@@ -191,6 +202,12 @@ type options struct {
 	providerName string
 	// secretSettings changes the API server's [secrets] settings from secretDefaults
 	secretSettings func(*config.Secrets)
+	// withSSH lists a gate-routed provider in ssh.providers, nativeSSH any provider on Boat's sshd
+	withSSH, nativeSSH bool
+	// noSSHHost leaves the API server without names.ssh_host
+	noSSHHost bool
+	// ssh are the SSH settings, sshDefaults' fields where zero
+	ssh config.SSH
 }
 
 type env struct {
@@ -263,6 +280,9 @@ func newEnv(t *testing.T, opts options) *env {
 	if _, gater := listed.(provider.Gater); gater && !opts.noPreviews {
 		features.Preview = []string{name}
 	}
+	if _, gater := listed.(provider.Gater); gater && opts.withSSH || opts.nativeSSH {
+		features.SSH, features.BoatNativeSSH = []string{name}, opts.nativeSSH
+	}
 	reg, err := provider.NewRegistry([]provider.Provider{listed}, features)
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +296,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
+		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath},
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
@@ -314,6 +335,10 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.noKeys {
 		apiKeys = dpkeys.Keys{}
 	}
+	apiSSHHost := sshHost
+	if opts.noSSHHost {
+		apiSSHHost = ""
+	}
 	srv := api.New(api.Deps{
 		Store: st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
@@ -321,7 +346,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
-		HostRules: hostRules(),
+		HostRules: hostRules(), SSH: sshSettings(opts.ssh), SSHHost: apiSSHHost, SSHPort: 22,
 	})
 	t.Cleanup(srv.Close)
 

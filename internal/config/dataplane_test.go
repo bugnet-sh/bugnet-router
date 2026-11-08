@@ -71,7 +71,7 @@ func TestDataPlaneDefaults(t *testing.T) {
 func TestExampleNamesAreTheProductionSet(t *testing.T) {
 	eq(t, loadExample(t).Names, Names{
 		PreviewDomain: "preview.bugnet.sh", TransferHost: "transfer.bugnet.sh",
-		SecretsHost: "secrets.bugnet.sh", SSHHost: "ssh.bugnet.sh", SSHPort: 22,
+		SecretsHost: "secrets.bugnet.sh", SSHHost: "ssh.bugnet.sh", SSHPort: 2222,
 		EgressHost: "egress.bugnet.sh",
 	})
 }

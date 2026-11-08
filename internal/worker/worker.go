@@ -12,7 +12,8 @@
 // running is rescued after a few minutes, so it holds back the next run of its kind only that
 // long. Data-plane jobs run on the dataplane queue with workers of their own. apply_secrets
 // writes a placement's whole secret set into its sandbox, one run at a time per placement under an
-// advisory lock, so any number of queued jobs converge.
+// advisory lock, so any number of queued jobs converge. A prepare_ssh job makes one ready
+// placement's sshd ready through the saga, within 150 s.
 package worker
 
 import (
@@ -118,6 +119,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
 	river.AddWorker(workers, &applySecretsWorker{w: w})
+	river.AddWorker(workers, &prepareSSHWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,

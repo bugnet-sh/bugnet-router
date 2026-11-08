@@ -9,7 +9,10 @@ size as a template of its own. `template.ts` defines the image, E2B's Debian bas
 | `bugnet-2x2` | 2 | 2048 MiB |
 | `bugnet-4x8` | 4 | 8192 MiB |
 
-The router uploads `bugnet-run` into every sandbox, so the image needs nothing else.
+The router uploads `bugnet-run` into every sandbox, so the image needs nothing else. The build
+disables and masks the image's own `ssh.service` and `ssh.socket` and deletes its
+`/etc/ssh/ssh_host_*` keys, so the only sshd in a sandbox is the one `bugnet-run ssh-up` starts on
+127.0.0.1 behind the gate (DP 6.9).
 
 ## Building
 

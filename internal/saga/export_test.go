@@ -38,3 +38,13 @@ func HardenSpecFor(b BootSettings, name string) (HardenSpecFields, bool) {
 	spec, _, ok := b.hardenSpecFor(name)
 	return spec, ok
 }
+
+// SSHSpecFields is the ssh-up spec the saga writes, field by field
+type SSHSpecFields = sshSpec
+
+// SSHSpecFor is the ssh-up spec the saga writes for a sandbox of prov
+func SSHSpecFor(
+	s SSHSettings, prov provider.Provider, ref provider.Ref, authorize []string,
+) SSHSpecFields {
+	return s.specFor(prov, ref, authorize)
+}

@@ -4,11 +4,11 @@ go 1.27
 
 require (
 	connectrpc.com/connect v1.21.1
+	github.com/bugnet-sh/bugnet-proto v0.1.0
+	github.com/bugnet-sh/bugnet-run v0.1.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/oapi-codegen/runtime v1.8.0
-	github.com/bugnet-sh/bugnet-proto v0.1.0
-	github.com/bugnet-sh/bugnet-run v0.1.2
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/riverqueue/river v0.51.0

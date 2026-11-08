@@ -23,8 +23,8 @@ linters:
         linters:
           - revive
         text: "var-naming: method \\w*(Vm|Ssh)\\w* should be"
-      # SshGatewayService's generated interface names these methods
-      - path: internal/api/
+      # SshGatewayService's and AddSshKey's generated interfaces name these methods
+      - path: (internal/api|cmd/bugnet-dev)/
         linters:
           - revive
         text: "var-naming: method \\w*Ssh\\w* should be"
