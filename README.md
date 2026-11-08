@@ -10,7 +10,7 @@ Valkey carries output streams and job leases, and River runs durable jobs. Both 
 settings from a TOML file and their secrets from the environment.
 
 `router-api` serves `SandboxRouterService` from `bugnet-proto`, and one more Connect service for
-each other caller (see [Caller services](#caller-services)). Its SSH keys and `FetchSource` RPCs,
+each other caller (see [Caller services](#caller-services)). Its SSH keys RPCs,
 and every other RPC not built yet, answer `Unimplemented` until the router builds them.
 Transfers, previews and secrets are built (see [Transfers](#transfers),
 [Previews](#previews) and [Sealed secrets](#sealed-secrets)).
@@ -231,7 +231,7 @@ it opens. N1 also probes `[fd00:ec2::254]:80`.
 | Names | The dev names, reached with `curl --resolve` through a loopback front that adds HAProxy's PROXY v2 header | The dev names through the VPS |
 | TLS | ACME off, a fresh self-signed pair | Let's Encrypt for the exact names over the tunnel, the wildcard `make dev-certs` copied |
 | `secrets.egress_ips` | `127.0.0.1` | `vps.egress_ips` in `config/dev-front.toml` |
-| `bugnet-egress` | A free loopback port, which `fetch.egress_addr` follows, with the self-signed pair | Port 9443, Let's Encrypt over the tunnel |
+| `bugnet-egress` | A free loopback port, which `fetch.egress_addr` follows, with the self-signed pair, which `fetch.egress_roots_file` trusts | Port 9443, Let's Encrypt over the tunnel |
 | `secrets.ca_cert_file` | A fresh CA for the stack | The dev CA in `egress.ca_dir` of `config/dev-front.toml` when it exists, which E2B needs |
 
 The fronted mode keeps its ACME caches in `~/.local/state/bugnet-dev/acme/<service>/`, so
@@ -310,6 +310,7 @@ bin/bugnet-dev x402 enable --handle sbx_... --wait \
 bin/bugnet-dev x402 list --handle sbx_...
 bin/bugnet-dev session rotate --handle sbx_...
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev session hold --placement <placement id>
+bin/bugnet-dev fetch-source --handle sbx_...
 bin/bugnet-dev stop --handle sbx_...
 bin/bugnet-dev create --package dev-small-10m --payer <base58> \
     --fee-payer DevFaci1itatorAddress1111111111111111111111
@@ -510,7 +511,8 @@ features that read them land one by one, and until then the settings only load a
 | `[transfers]` | The start window, per-file cap and duration, per-placement counts, claims per URL and Koyeb's part buffers |
 | `[ssh]` | `providers` whose SSH live test passed, the gateway's host keys, sshd ports and the per-placement limits and timeouts |
 | `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
-| `[fetch]` | The private repository fetch's byte cap and the egress proxy's listener |
+| `[fetch]` | The private repository fetch's byte cap, the egress proxy's listener and the PEM roots its outer certificate is checked against, the system roots when empty |
+| `[bootstrap]` | Where `FetchSource` puts repositories under the exec user's home, how long a silent private fetch lives, and its attempts per placement and fetches per replica |
 | `[hooks]` | `providers` whose webhooks are verified |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 
@@ -749,6 +751,23 @@ and `source_read`. A GitHub or Hugging Face source that was read also sets `sour
 the recommendation byte for byte. An estimate made under another `rules.Version` is replayed from
 that version's git tag.
 
+### FetchSource
+
+`FetchSource(handle)` puts a placement's GitHub source in its sandbox at `~/<bootstrap.dir>/<repo>`.
+A source the estimator read, or failed to read for a reason other than not found, is cloned by a
+job under the key `_bootstrap:<attempt>`: `git fetch --depth 1` of the commit, then a full fetch.
+A failed clone runs again under the next key. A private source (not found) needs an active secret
+whose hosts include `api.github.com`, else the call answers `SECRET_REQUIRED` and the placement's
+`bootstrap.state` reads `NEEDS_SECRET`. The router then fetches the tarball itself through the
+egress proxy, which swaps the secret's placeholder, follows one redirect to `codeload.github.com`
+through `internal/netguard`, spools it, counts every byte in the placement's egress budget, writes
+it to `~/.bugnet/src.tar.gz` and starts a job that unpacks and deletes it. At most
+`bootstrap.max_private_attempts` private fetches run per placement and `bootstrap.max_concurrent`
+per replica. A fetch silent for `bootstrap.heartbeat_stale` reads as `INTERRUPTED`. Failures reach
+the gateway as `Bootstrap.state` `FAILED` with a `failure_reason`, never as an error. Idempotency
+keys that start with `_` are the router's own, and `Exec` refuses them with
+`IDEMPOTENCY_KEY_RESERVED`. `bugnet-dev fetch-source --handle H` calls it.
+
 ## Extensions
 
 `ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
@@ -918,6 +937,10 @@ holds a handle or a job ID.
 | `NotFound` | `FILE_NOT_FOUND` | `ReadFile`, `WriteFile`, `ListFiles` or a download names a path that does not exist |
 | `NotFound` | `TOKEN_UNKNOWN` | `OpenTransfer` gets a token with no record |
 | `NotFound` | `ESTIMATE_UNKNOWN` | `GetEstimate` names an estimate that is not stored |
+| `FailedPrecondition` | `NO_SOURCE` | `FetchSource` on a placement with no GitHub source |
+| `FailedPrecondition` | `TOOL_MISSING` | `FetchSource` where the provider's image manifest has no `git`, or no `tar` for a private source |
+| `FailedPrecondition` | `SECRET_REQUIRED` | `FetchSource` of a private source with no active GitHub secret |
+| `InvalidArgument` | `IDEMPOTENCY_KEY_RESERVED` | `Exec` with an idempotency key that starts with `_` |
 | `NotFound` | `PREVIEW_UNKNOWN` | A preview id the router never made, or one that is malformed |
 | `PermissionDenied` | `TOKEN_INVALID` | A preview token that belongs to no generation of the preview |
 | `InvalidArgument` | `SOURCE_INVALID` | An `Estimate` source that parses as nothing, or a URL with userinfo |

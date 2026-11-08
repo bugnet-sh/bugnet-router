@@ -244,6 +244,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Sessions:            cfg.Sessions,
 		SessionWriter:       writer,
 		LiveValkey:          liveVK,
+		Bootstrap:           cfg.Bootstrap,
+		Fetch:               cfg.Fetch,
+		FetchToken:          cfg.EgressFetchToken,
+		Images:              cfg.Images,
 	})
 	defer srv.Close()
 

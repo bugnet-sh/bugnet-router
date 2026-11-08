@@ -70,6 +70,8 @@ type Placement struct {
 	// source, empty with no estimate, and SourceRead says the estimator read it
 	SourceKind, SourceCanonical, SourceRef, SourceRevision string
 	SourceRead                                             bool
+	// SourceUnread is why the estimator did not read the source, empty when it did
+	SourceUnread string
 }
 
 // PlacementSource is the resolved source of an estimate, which a placement copies at create
@@ -80,6 +82,8 @@ type PlacementSource struct {
 	Ref        string
 	Revision   string
 	Read       bool
+	// Unread is why the estimator did not read the source, empty when it did
+	Unread string
 	// Label is source_label, empty for a source that is neither GitHub nor Hugging Face
 	Label string
 }
@@ -148,7 +152,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at,
 	applied_hosts, needs_secrets, coalesce(payer, ''), estimate_id, coalesce(source_kind, ''),
 	coalesce(source_canonical, ''), coalesce(source_ref, ''), coalesce(source_revision, ''),
-	coalesce(source_read, false),
+	coalesce(source_read, false), coalesce(source_unread, ''),
 	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
 		where o.placement_id = placements.id
 			and not (placements.state = 'failed' and placements.refundable)),
@@ -164,6 +168,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
 		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.EstimateID,
 		&p.SourceKind, &p.SourceCanonical, &p.SourceRef, &p.SourceRevision, &p.SourceRead,
+		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
@@ -350,13 +355,14 @@ func (s *Store) InsertPlacement(ctx context.Context, p NewPlacement) (Placement,
 		insert into placements (id, handle_sha256, order_id, package_id, state,
 			failure_reason, refundable, terminated_at, key_id, needs_secrets, payer,
 			estimate_id, source_kind, source_canonical, source_ref, source_revision,
-			source_read, source_label)
+			source_read, source_label, source_unread)
 		values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17)`,
+			$11, $12, $13, $14, $15, $16, $17, $18)`,
 		p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
 		failed, nullIfEmpty(p.KeyID), p.NeedsSecrets, nullIfEmpty(p.Payer), estimate,
 		nullIfEmpty(src.Kind), nullIfEmpty(src.Canonical), nullIfEmpty(src.Ref),
-		nullIfEmpty(src.Revision), src.Read && estimate != nil, nullIfEmpty(src.Label))
+		nullIfEmpty(src.Revision), src.Read && estimate != nil, nullIfEmpty(src.Label),
+		nullIfEmpty(src.Unread))
 	if err != nil {
 		return Placement{}, fmt.Errorf("insert placement: %w", err)
 	}
