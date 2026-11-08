@@ -268,6 +268,9 @@ bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
 bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
 printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN --host huggingface.co
+bin/bugnet-dev x402 check --handle sbx_... \
+    --service "GET,api.example.com,/search/,10000,$PAY_TO,/search"
+bin/bugnet-dev x402 list --handle sbx_...
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -292,6 +295,12 @@ preview for good. `secret` reads a value from stdin, seals it locally with
 hosts and header names as DP 10.2 says, and puts it with `PutSecret`. It prints the secret's state,
 never the value. It trusts the router's key list, as a dev tool may, where the page and the bridge
 pin their keys.
+`x402 check` runs `CheckX402` on a change without making it. Each `--service` is
+`method,host,prefix,max_price_micros,pay_to[,paid_path]`, and a service without a paid path is
+indexed. `--disable ID` names a service id to disable. Without `--handle` it runs only the checks
+that need no placement. It prints `passed=true`, or exits 1 with the code, the reason and the
+refused entry's `service_id` and `host`. `x402 list` prints `enabled`, then one line per service
+with its state, pins and counts, then one line per refusal reason with its count and last time.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
