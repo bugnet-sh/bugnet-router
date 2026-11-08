@@ -70,6 +70,11 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   secret --handle H --name N --host HOST... [--header NAME]... [--fetch-only]
                                          seal a value read from stdin to the router's newest
                                          sealing key and put it as a secret of the placement
+  x402 check [--handle H] [--service M,HOST,PREFIX,PRICE,PAY_TO[,PAID_PATH]]...
+        [--disable ID]...                check an x402 change without making it, a service
+                                         indexed when it has no paid path, with no handle only
+                                         the checks that need no placement
+  x402 list --handle H                   list a placement's x402 services and refusals
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
@@ -149,6 +154,7 @@ func run(
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
 		"wallet": c.wallet,
+		"x402":   c.x402,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

@@ -273,6 +273,9 @@ bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
 printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN --host huggingface.co
 bin/bugnet-dev ssh-key --handle sbx_... --public-key ~/.ssh/id_ed25519.pub
+bin/bugnet-dev x402 check --handle sbx_... \
+    --service "GET,api.example.com,/search/,10000,$PAY_TO,/search"
+bin/bugnet-dev x402 list --handle sbx_...
 bin/bugnet-dev stop --handle sbx_...
 bin/bugnet-dev create --package dev-small-10m --payer <base58> \
     --fee-payer DevFaci1itatorAddress1111111111111111111111
@@ -314,6 +317,12 @@ raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, 
 and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else
 `USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts until
 an operator lifts it.
+`x402 check` runs `CheckX402` on a change without making it. Each `--service` is
+`method,host,prefix,max_price_micros,pay_to[,paid_path]`, and a service without a paid path is
+indexed. `--disable ID` names a service id to disable. Without `--handle` it runs only the checks
+that need no placement. It prints `passed=true`, or exits 1 with the code, the reason and the
+refused entry's `service_id` and `host`. `x402 list` prints `enabled`, then one line per service
+with its state, pins and counts, then one line per refusal reason with its count and last time.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -500,8 +509,8 @@ Money is integer micro-USD and times are UTC.
 ### x402
 
 `[x402]` holds the settings of the x402 host kind, through which code in a sandbox pays x402 APIs
-from an allowance Payments holds. The features that read them land one by one, and until then
-the settings only load and check.
+from an allowance Payments holds. `CheckX402` and `ListX402` read them today, and the other
+features that read them land one by one.
 
 | Key | Default | Takes |
 | --- | --- | --- |
@@ -547,6 +556,24 @@ second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
 `router-api` refuses to start with `use_payer = true` while `BUGNET_PAYMENTS_ROUTER_TOKEN` is
 empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
 block. With `use_payer = false` it logs once at start that every order counts as having no payer.
+
+`CheckX402` checks a change of a placement's x402 services without making it, in this order: the
+handle, `enabled`, the state (placing or ready), the capability, each `add` entry in request
+order, the `disable` ids, then the counts. While placing, the capability is the order's
+`requirements.secrets`; from ready, it is the provider's place in `secrets.providers`. An entry's
+own checks are the service rules of `internal/x402`, a repeated service id or one also in
+`disable`, a host a secret already reaches and a host outside the package's `egress.allow`. A
+change that brings in a service or a host may not end over `max_services` live services or 32
+hosts with the secret hosts, where `applying`, `active` and `failed` rows are live. A change that
+only keeps, changes or disables services passes the counts, so a placement over a lowered
+`max_services` can still shrink. Without a handle it runs `enabled`, each entry's service rules,
+a repeated id and more than `max_services` entries, and any `disable` id is unknown. With a
+handle and no change it runs the checks up to the capability.
+
+`ListX402` answers in any state, with `enabled`, every row with its counts and the refusal counts
+by reason with their last time. A row that is not `disabled` whose host is in `blocked_hosts`, or
+under a shared-hosting suffix and not in `allowed_shared_hosts`, shows as `FAILED` with
+`HOST_BLOCKED`, and the stored row stays as it was. Neither call spends an operation token.
 
 ## Prices and availability
 
@@ -755,6 +782,26 @@ holds a handle or a job ID.
 | `ResourceExhausted` | `WALLET_BUSY` | A start at the wallet's cap on live placements, or the anonymous cap |
 | `ResourceExhausted` | `WALLET_RATE_LIMITED` | A start while one of the payer's start buckets is empty, with `RetryInfo` |
 | `FailedPrecondition` | `FACILITATOR_ADDRESS` | A block of a facilitator address |
+
+| `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all, an 11th host or a 9th header name of one secret, or an x402 change past 32 hosts with the secret hosts |
+| `InvalidArgument` | `PREFIX_REFUSED` | An x402 prefix not `^/.+/$`, over 200 characters, holding `?` or `#` or failing the path rules, or a paid path missing, unneeded, outside its prefix or failing the same rules |
+| `InvalidArgument` | `SERVICE_DUPLICATE` | An x402 change naming one service id twice in `add`, or in both `add` and `disable` |
+| `InvalidArgument` | `METHOD_REFUSED` | An x402 service method other than `GET` or `POST` |
+| `InvalidArgument` | `PRICE_REFUSED` | An x402 price cap at or under 0, or over `x402.max_price_micros` |
+| `InvalidArgument` | `PAYTO_REFUSED` | An x402 `pay_to` that is not canonical base58 of 32 bytes |
+| `FailedPrecondition` | `X402_DISABLED` | `CheckX402` while `x402.enabled` is false |
+| `FailedPrecondition` | `HOST_IN_USE` | An x402 host that is already a secret's host |
+| `ResourceExhausted` | `TOO_MANY_SERVICES` | An x402 change past `x402.max_services` live services |
+| `NotFound` | `SERVICE_UNKNOWN` | An x402 `disable` id the placement lacks, or any id without a handle |
+
+`HOST_REFUSED` and `HOST_NOT_ALLOWED` also answer an x402 host, by the same host rules with
+`allowed_shared_hosts` and `blocked_hosts` added. `FEATURE_UNAVAILABLE` also answers `CheckX402`
+on a placing placement whose order did not ask for secrets, or a ready one on a provider not in
+`secrets.providers`. The per-service x402 refusals, `HOST_REFUSED`, `HOST_NOT_ALLOWED`,
+`PREFIX_REFUSED`, `SERVICE_DUPLICATE`, `METHOD_REFUSED`, `PRICE_REFUSED`, `PAYTO_REFUSED` and
+`HOST_IN_USE`, carry ErrorInfo metadata `service_id` and `host` of the first failing `add` entry.
+`SERVICE_UNKNOWN` carries only `service_id`, the first unknown id. Every other refusal carries
+no metadata.
 
 A provider failure carries the provider's code in lowercase instead, such as `rate_limited`. A
 call that its caller cancels or lets run out of time answers `Canceled` or `DeadlineExceeded`,

@@ -62,6 +62,13 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 			&routerv1.RemoveSshKeyRequest{Handle: h, Fingerprint: "SHA256:x"}))
 		return err
 	}
+	calls["CheckX402"] = func(h string) error {
+		return e.checkX402(t, h, specsOn("api.example.com"))
+	}
+	calls["ListX402"] = func(h string) error {
+		_, err := e.listX402(t, h)
+		return err
+	}
 	return calls
 }
 

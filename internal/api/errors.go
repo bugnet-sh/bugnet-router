@@ -99,6 +99,23 @@ const (
 	reasonSSHPreparing       = "SSH_PREPARING"
 )
 
+// x402 reasons, named as XS 6.3 names them
+const (
+	reasonHostRefused      = "HOST_REFUSED"
+	reasonPrefixRefused    = "PREFIX_REFUSED"
+	reasonServiceDuplicate = "SERVICE_DUPLICATE"
+	reasonMethodRefused    = "METHOD_REFUSED"
+	reasonPriceRefused     = "PRICE_REFUSED"
+	reasonPayToRefused     = "PAYTO_REFUSED"
+	reasonX402Disabled     = "X402_DISABLED"
+	reasonHostInUse        = "HOST_IN_USE"
+	reasonHostNotAllowed   = "HOST_NOT_ALLOWED"
+	reasonHostBlocked      = "HOST_BLOCKED"
+	reasonTooManyServices  = "TOO_MANY_SERVICES"
+	reasonTooManySecrets   = "TOO_MANY_SECRETS"
+	reasonServiceUnknown   = "SERVICE_UNKNOWN"
+)
+
 // Codes a start package's unavailable_reason takes, never error text
 const (
 	unavailableNoCandidate = saga.ReasonNoCandidate
@@ -165,6 +182,10 @@ var codes = []struct {
 	{errNoFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{errNoSecrets, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{errNoSecretFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errX402Disabled, connect.CodeFailedPrecondition, reasonX402Disabled},
+	{errNoX402Feature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errTooManyServices, connect.CodeResourceExhausted, reasonTooManyServices},
+	{errTooManyHosts, connect.CodeResourceExhausted, reasonTooManySecrets},
 	{errLinkUnknown, connect.CodeNotFound, reasonLinkUnknown},
 	{errLinkLocked, connect.CodeFailedPrecondition, reasonLinkLocked},
 	{errLinkUsed, connect.CodeFailedPrecondition, reasonTokenUsed},
@@ -221,7 +242,14 @@ func invalid(format string, args ...any) *connect.Error {
 
 // withInfo attaches a google.rpc.ErrorInfo carrying reason to ce
 func withInfo(ce *connect.Error, reason string) *connect.Error {
-	d, err := connect.NewErrorDetail(&errdetails.ErrorInfo{Reason: reason, Domain: errorDomain})
+	return withMeta(ce, reason, nil)
+}
+
+// withMeta attaches a google.rpc.ErrorInfo carrying reason and metadata to ce
+func withMeta(ce *connect.Error, reason string, metadata map[string]string) *connect.Error {
+	d, err := connect.NewErrorDetail(&errdetails.ErrorInfo{
+		Reason: reason, Domain: errorDomain, Metadata: metadata,
+	})
 	if err == nil {
 		ce.AddDetail(d)
 	}
