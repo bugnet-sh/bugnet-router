@@ -3,7 +3,8 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "tsx build.ts"
+        "build": "tsx build.ts production",
+        "build:dev": "tsx build.ts dev"
     },
     "engines": {
         "node": ">=22.19.0"
