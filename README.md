@@ -835,21 +835,21 @@ is empty, and the record is still kept.
 - **Expiry:** `session_expiry` runs at start and hourly, deleting up to 10,000 records whose page
   ended and whose hold is empty or past. `abuse`, `wallet_blocked` and `operator` ends close the
   page at once and hold the record `sessions.abuse_hold` for `GetSessionHold`.
-- **Cleaning and redaction** follow bugnet-gateway's `cleanText` rule for rule, against its
-  vectors in `internal/sessions/testdata`, and then redact Bugnet and vendor token shapes,
-  `Authorization` and `Proxy-Authorization` values whatever their scheme, `Bearer` and `Basic`
-  values, URL passwords, private key blocks, and the placement's gate key and provider
-  credentials, as `[redacted <kind>]`. A token split across frames is still caught, and a line
-  naming an `Authorization` header is held until its end, with at most 16 KiB held back per
-  output. A full 16 KiB is shown up to the token, lead word or open `Authorization` value it
-  would cut, which stays held; one run of token characters that fills it is dropped with the rest
-  of its line. Output that goes on after a
-  gap, a `skip` that moves it or a replay start inside a line drops the held word before it and
-  its text up to the next line break, so neither part of a cut token is shown. It then drops the
-  lines a private key block it may have gone on inside could have (base64 and `=` only,
-  `Proc-Type:`, `DEK-Info:`, a blank line, and the block's `END` line) up to the first other
-  line, as a replay that starts at a line's start does too. A key block longer than 16 KiB that a
-  gap cuts stays hidden until its `END` line.
+- **Cleaning and redaction** follow bugnet-gateway's `cleanText` rule for rule, against its vectors
+  in `internal/sessions/testdata`, and then redact Bugnet and vendor token shapes, `Authorization`
+  and `Proxy-Authorization` values whatever their scheme, `Bearer` and `Basic` values, URL
+  passwords, private key blocks, and the placement's gate key and provider credentials, as
+  `[redacted <kind>]`, in output and in the strings an event takes from the sandbox (a file path, a
+  transfer's name, a secret host). A token split across frames is still caught, and a line naming an
+  `Authorization` header is held until its end, with at most 16 KiB held back per output. A full
+  16 KiB is shown up to the token, lead word or open `Authorization` value it would cut, which stays
+  held; one run of token characters that fills it is dropped with the rest of its line. Output that
+  goes on after a gap, a `skip` that moves it or a replay start inside a line drops the held word
+  before it and its text up to the next line break, so neither part of a cut token is shown. It then
+  drops the lines a private key block it may have gone on inside could have (base64 and `=` only,
+  `Proc-Type:`, `DEK-Info:`, a blank line, and the block's `END` line) up to the first other line,
+  as a replay that starts at a line's start does too. A key block longer than 16 KiB that a gap cuts
+  stays hidden until its `END` line.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized
   for `sessions.live.max_readers`, and counts its bytes in `live:used:<placement>`, never in the
   edge budget. A first connection replays the newest `sessions.live.replay` after a `skip`. A

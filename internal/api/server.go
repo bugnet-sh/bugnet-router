@@ -725,7 +725,7 @@ func (s *Server) ReadFile(
 	if err != nil {
 		return nil, s.fileStatus(err)
 	}
-	s.d.SessionWriter.File(ctx, p.ID, "read", m.GetPath(), int64(len(data)))
+	s.d.SessionWriter.File(ctx, p, "read", m.GetPath(), int64(len(data)))
 	return connect.NewResponse(&routerv1.ReadFileResponse{Data: data, Eof: eof}), nil
 }
 
@@ -751,7 +751,7 @@ func (s *Server) WriteFile(
 	if err := prov.WriteFile(ctx, *p.ProviderRef, m.GetPath(), m.GetData(), mode); err != nil {
 		return nil, s.fileStatus(err)
 	}
-	s.d.SessionWriter.File(ctx, p.ID, "write", m.GetPath(), int64(len(m.GetData())))
+	s.d.SessionWriter.File(ctx, p, "write", m.GetPath(), int64(len(m.GetData())))
 	return connect.NewResponse(&routerv1.WriteFileResponse{Size: uint64(len(m.GetData()))}), nil
 }
 
@@ -772,7 +772,7 @@ func (s *Server) ListFiles(
 	if err := prov.ListFiles(ctx, *p.ProviderRef, m.GetPath(), int(depth), listing); err != nil {
 		return nil, s.fileStatus(err)
 	}
-	s.d.SessionWriter.File(ctx, p.ID, "list", m.GetPath(), 0)
+	s.d.SessionWriter.File(ctx, p, "list", m.GetPath(), 0)
 	out := make([]*routerv1.FileEntry, 0, len(listing.Entries))
 	for _, e := range listing.Entries {
 		out = append(out, &routerv1.FileEntry{

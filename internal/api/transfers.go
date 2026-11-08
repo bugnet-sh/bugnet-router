@@ -625,7 +625,7 @@ func (st *stream) finish(ok bool) {
 		if st.rec.Direction == upload {
 			dir = "in"
 		}
-		st.s.d.SessionWriter.Transfer(ctx, st.p.ID, dir, st.rec.Path, st.rec.Size)
+		st.s.d.SessionWriter.Transfer(ctx, st.p, dir, st.rec.Path, st.rec.Size)
 	}
 	// Staging is per URL, so a claim taken over leaves it to the new holder and the hourly sweep
 	if st.rec.StagedPath != "" && !errors.Is(err, transfer.ErrInUse) {

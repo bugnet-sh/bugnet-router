@@ -78,15 +78,15 @@ func (w *Writer) SetClock(now func() time.Time) { w.now = now }
 // Fields are one event's stored fields, snake case as SP 6.2 names them
 type Fields map[string]any
 
-// clean cleans and cuts every string of f, which it changes in place
-func (f Fields) clean() {
+// clean cleans, redacts with r and cuts every string of f, which it changes in place
+func (f Fields) clean(r *Redactor) {
 	for k, v := range f {
 		if s, ok := v.(string); ok {
 			n, ok := maxChars[k]
 			if !ok {
 				n = defaultChars
 			}
-			f[k] = Clean(s, n)
+			f[k] = cut(r.Redact(cleanText(s)), n)
 		}
 	}
 }
@@ -95,11 +95,17 @@ func (f Fields) clean() {
 func (w *Writer) Store(
 	ctx context.Context, placement uuid.UUID, kind string, f Fields,
 ) (bool, error) {
+	return w.store(ctx, placement, kind, f, shapes)
+}
+
+func (w *Writer) store(
+	ctx context.Context, placement uuid.UUID, kind string, f Fields, r *Redactor,
+) (bool, error) {
 	if w == nil {
 		return false, nil
 	}
 	f = maps.Clone(f)
-	f.clean()
+	f.clean(r)
 	raw, err := json.Marshal(f)
 	if err != nil {
 		return false, fmt.Errorf("encode %s event: %w", kind, err)
@@ -121,7 +127,7 @@ func (w *Writer) StoreAll(
 	data := make([][]byte, 0, len(events))
 	for _, f := range events {
 		f = maps.Clone(f)
-		f.clean()
+		f.clean(shapes)
 		raw, err := json.Marshal(f)
 		if err != nil {
 			return fmt.Errorf("encode %s event: %w", kind, err)
@@ -137,7 +143,13 @@ func (w *Writer) StoreAll(
 
 // Write stores one event and logs a failure, which never fails the call that caused it
 func (w *Writer) Write(ctx context.Context, placement uuid.UUID, kind string, f Fields) {
-	if _, err := w.Store(ctx, placement, kind, f); err != nil {
+	w.write(ctx, placement, kind, f, shapes)
+}
+
+func (w *Writer) write(
+	ctx context.Context, placement uuid.UUID, kind string, f Fields, r *Redactor,
+) {
+	if _, err := w.store(ctx, placement, kind, f, r); err != nil {
 		w.failed(kind, placement, err)
 	}
 }
@@ -149,11 +161,16 @@ func (w *Writer) failed(kind string, placement uuid.UUID, err error) {
 // Fold adds counts to the minute's row of kind whose fields hold match, logging a failure
 func (w *Writer) Fold(ctx context.Context, placement uuid.UUID, kind string, at time.Time,
 	match Fields, add map[string]int64) {
+	w.fold(ctx, placement, kind, at, match, add, shapes)
+}
+
+func (w *Writer) fold(ctx context.Context, placement uuid.UUID, kind string, at time.Time,
+	match Fields, add map[string]int64, r *Redactor) {
 	if w == nil {
 		return
 	}
 	match = maps.Clone(match)
-	match.clean()
+	match.clean(r)
 	raw, err := json.Marshal(match)
 	if err == nil {
 		err = w.st.FoldSessionEvent(ctx, placement, kind, at.UTC().Truncate(time.Minute), raw,
@@ -170,7 +187,7 @@ func (w *Writer) Allowance(ctx context.Context, placement uuid.UUID, f Fields) e
 		return nil
 	}
 	f = maps.Clone(f)
-	f.clean()
+	f.clean(shapes)
 	raw, err := json.Marshal(f)
 	if err != nil {
 		return err
@@ -215,8 +232,12 @@ func (w *Writer) Payment(
 }
 
 // File writes a file operation, its path cut to 200 characters
-func (w *Writer) File(ctx context.Context, placement uuid.UUID, op, p string, bytes int64) {
-	w.Write(ctx, placement, KindFile, Fields{"op": op, "path": p, "bytes": bytes})
+func (w *Writer) File(ctx context.Context, p store.Placement, op, filePath string, bytes int64) {
+	if w == nil {
+		return
+	}
+	w.write(ctx, p.ID, KindFile, Fields{"op": op, "path": filePath, "bytes": bytes},
+		w.known(p))
 }
 
 // Preview writes a preview issued or revoked
@@ -233,11 +254,14 @@ func (w *Writer) PreviewTraffic(ctx context.Context, placement uuid.UUID, port i
 
 // Transfer writes a finished transfer by its file's name, never its whole path
 func (w *Writer) Transfer(
-	ctx context.Context, placement uuid.UUID, direction, filePath string, bytes int64,
+	ctx context.Context, p store.Placement, direction, filePath string, bytes int64,
 ) {
-	w.Write(ctx, placement, KindTransfer, Fields{
+	if w == nil {
+		return
+	}
+	w.write(ctx, p.ID, KindTransfer, Fields{
 		"direction": direction, "name": path.Base(filePath), "bytes": bytes,
-	})
+	}, w.known(p))
 }
 
 // SSH writes an SSH session's start or end
@@ -250,10 +274,13 @@ func (w *Writer) SSH(
 }
 
 // SecretHost folds one usage report's calls to a secret host into the host's minute
-func (w *Writer) SecretHost(ctx context.Context, placement uuid.UUID, host string, at time.Time,
+func (w *Writer) SecretHost(ctx context.Context, p store.Placement, host string, at time.Time,
 	requests, bytes int64) {
-	w.Fold(ctx, placement, KindSecretHost, at, Fields{"host": host},
-		map[string]int64{"requests": requests, "bytes": bytes})
+	if w == nil {
+		return
+	}
+	w.fold(ctx, p.ID, KindSecretHost, at, Fields{"host": host},
+		map[string]int64{"requests": requests, "bytes": bytes}, w.known(p))
 }
 
 /* Jobs */
@@ -320,6 +347,11 @@ func Command(argv []string) string {
 		parts[i] = a
 	}
 	return strings.Join(parts, " ")
+}
+
+// known redacts strings an event of p takes from its sandbox, so no secret of p lands in it
+func (w *Writer) known(p store.Placement) *Redactor {
+	return KnownRedactor(p, w.keys)
 }
 
 // KnownRedactor redacts the shapes and the placement's gate key and provider credentials

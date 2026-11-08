@@ -125,7 +125,7 @@ func filled(t *testing.T) *fixture {
 	f.exec(t, `update session_events set at = $1 where kind = 'job' and data->>'phase' = 'end'`,
 		f.now)
 	f.at(t, 3*time.Minute, func(ctx context.Context) {
-		f.w.File(ctx, id, "write", "/root/app/main.py", 120)
+		f.w.File(ctx, f.p, "write", "/root/app/main.py", 120)
 	})
 	f.at(t, 4*time.Minute, func(ctx context.Context) {
 		if _, err := f.w.Store(ctx, id, KindMCP, Fields{
@@ -246,8 +246,8 @@ func TestTrafficFoldsPerMinute(t *testing.T) {
 	f.w.PreviewTraffic(t.Context(), f.p.ID, 3000, minute.Add(5*time.Second), 3, 300)
 	f.w.PreviewTraffic(t.Context(), f.p.ID, 3000, minute.Add(50*time.Second), 2, 200)
 	f.w.PreviewTraffic(t.Context(), f.p.ID, 3000, minute.Add(65*time.Second), 1, 1)
-	f.w.SecretHost(t.Context(), f.p.ID, "api.openai.com", minute, 4, 40)
-	f.w.SecretHost(t.Context(), f.p.ID, "api.openai.com", minute.Add(time.Second), 1, 1)
+	f.w.SecretHost(t.Context(), f.p, "api.openai.com", minute, 4, 40)
+	f.w.SecretHost(t.Context(), f.p, "api.openai.com", minute.Add(time.Second), 1, 1)
 	f.w.SSH(t.Context(), f.p.ID, "end", 10, 20)
 	events, err := f.st.SessionEvents(t.Context(), f.rec.ID)
 	if err != nil {
@@ -278,15 +278,41 @@ func served2(events []store.SessionEvent) []map[string]any {
 func TestWriterCleansAndCutsStrings(t *testing.T) {
 	f := newFixture(t)
 	long := strings.Repeat("d/", 150)
-	f.w.File(t.Context(), f.p.ID, "read", "/root/\x1b[31m"+long, 1)
-	f.w.Transfer(t.Context(), f.p.ID, "in", "/root/"+strings.Repeat("n", 150), 1)
+	f.w.File(t.Context(), f.p, "read", "/root/\x1b[31m"+long, 1)
+	f.w.Transfer(t.Context(), f.p, "in", "/root/"+strings.Repeat("n", 150), 1)
 	events, _ := f.st.SessionEvents(t.Context(), f.rec.ID)
 	got := served2(events)
 	eq(t, len([]rune(got[0]["path"].(string))), 200)
 	eq(t, strings.Contains(got[0]["path"].(string), "\x1b"), false)
 	eq(t, len(got[1]["name"].(string)), 100)
 	// An unknown placement's event is dropped quietly
-	f.w.File(t.Context(), uuid.New(), "read", "/x", 1)
+	f.w.File(t.Context(), store.Placement{ID: uuid.New()}, "read", "/x", 1)
+}
+
+func TestWriterRedactsThePlacementsSecretsInEvents(t *testing.T) {
+	f := newFixture(t)
+	gate, err := f.w.keys.GateKey(f.p.KeyID, f.p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const envd = "plain-envd-token-value"
+	p := f.p
+	p.ProviderRef = &provider.Ref{Meta: map[string]string{"envd_token": envd}}
+	f.w.File(t.Context(), p, "read", "/root/"+gate+"/a.txt", 1)
+	f.w.Transfer(t.Context(), p, "in", "/root/"+envd+".tar", 1)
+	f.w.SecretHost(t.Context(), p, envd+".example.com", t0, 1, 1)
+	events, err := f.st.SessionEvents(t.Context(), f.rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[any]map[string]any{}
+	for _, ev := range served2(events) {
+		got[ev["kind"]] = ev
+	}
+	eq(t, len(got), 3)
+	eq(t, got[KindFile]["path"], any("/root/[redacted secret]/a.txt"))
+	eq(t, got[KindTransfer]["name"], any("[redacted secret].tar"))
+	eq(t, got[KindSecretHost]["host"], any("[redacted secret].example.com"))
 }
 
 func TestKeeper(t *testing.T) {
