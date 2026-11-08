@@ -206,14 +206,28 @@ func (s *Store) MintEgressToken(
 	return tag.RowsAffected() == 1, nil
 }
 
-// ClearEgressToken forgets the tunnel token of this digest, so the next run mints another
-func (s *Store) ClearEgressToken(ctx context.Context, placement uuid.UUID, sha []byte) error {
-	_, err := s.q.Exec(ctx, `update placements set egress_token_sha256 = null
-		where id = $1 and egress_token_sha256 = $2`, placement, sha)
+// ClearEgressToken forgets the tunnel token, so the next apply mints another
+func (s *Store) ClearEgressToken(ctx context.Context, placement uuid.UUID) error {
+	_, err := s.q.Exec(ctx, `update placements set egress_token_sha256 = null where id = $1`,
+		placement)
 	if err != nil {
 		return fmt.Errorf("clear egress token: %w", err)
 	}
 	return nil
+}
+
+// HasEgressToken says whether the placement holds a tunnel token
+func (s *Store) HasEgressToken(ctx context.Context, placement uuid.UUID) (bool, error) {
+	var has bool
+	err := s.q.QueryRow(ctx, `select egress_token_sha256 is not null from placements
+		where id = $1`, placement).Scan(&has)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("has egress token: %w", err)
+	}
+	return has, nil
 }
 
 /* Links */

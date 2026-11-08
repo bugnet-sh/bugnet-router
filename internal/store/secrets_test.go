@@ -212,14 +212,14 @@ func TestEgressTokenMintedOnce(t *testing.T) {
 			t.Fatalf("mint %v %v, want %v", got, err, c.want)
 		}
 	}
-	if err := s.ClearEgressToken(ctx, p.ID, two[:]); err != nil {
+	if has, err := s.HasEgressToken(ctx, p.ID); err != nil || !has {
+		t.Fatalf("has %v %v", has, err)
+	}
+	if err := s.ClearEgressToken(ctx, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.MintEgressToken(ctx, p.ID, two[:]); got {
-		t.Fatal("clearing another token cleared this one")
-	}
-	if err := s.ClearEgressToken(ctx, p.ID, one[:]); err != nil {
-		t.Fatal(err)
+	if has, err := s.HasEgressToken(ctx, p.ID); err != nil || has {
+		t.Fatalf("has after clear %v %v", has, err)
 	}
 	if got, err := s.MintEgressToken(ctx, p.ID, two[:]); err != nil || !got {
 		t.Fatalf("mint after clear %v %v", got, err)
