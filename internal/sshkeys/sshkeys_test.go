@@ -95,8 +95,8 @@ func dsaLine(t *testing.T) string {
 	blob := ssh.Marshal(struct {
 		Name       string
 		P, Q, G, Y []byte
-	}{ssh.KeyAlgoDSA, []byte{0, 0xff}, []byte{1}, []byte{2}, []byte{3}})
-	return ssh.KeyAlgoDSA + " " + base64.StdEncoding.EncodeToString(blob)
+	}{"ssh-dss", []byte{0, 0xff}, []byte{1}, []byte{2}, []byte{3}})
+	return "ssh-dss" + " " + base64.StdEncoding.EncodeToString(blob)
 }
 
 func certLine(t *testing.T) string {
@@ -241,7 +241,8 @@ func TestIdentityFileRule(t *testing.T) {
 	}
 }
 
-const hostKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+const hostKeyLine = "ssh-ed25519 " +
+	"AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 func TestHandOffOnPort22(t *testing.T) {
 	h := sshkeys.HandOff{
