@@ -16,6 +16,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
 
 const (
@@ -45,7 +46,8 @@ const (
 
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
-	log *slog.Logger, st *store.Store, vk valkey.Client, read vkinfo.Reader, poolList string,
+	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
+	poolList string,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -54,7 +56,7 @@ func monitor(
 		// Both run at once so a hung Postgres cannot spend Valkey's share of the timeout
 		var wg sync.WaitGroup
 		wg.Go(func() { h.overdue, h.ending, h.stuck, h.postgresDown = checkPostgres(ctx, log, st) })
-		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, read) })
+		wg.Go(func() { h.valkey = checkValkey(ctx, log, vk, prefix, read) })
 		wg.Go(func() { h.pools = checkPools(log, poolList) })
 		wg.Wait()
 		problems := h.problems()
@@ -103,15 +105,21 @@ func checkPools(log *slog.Logger, path string) poolHealth {
 type valkeyHealth struct {
 	memory                  vkinfo.Memory
 	down, unknown, refusing bool
+	// unguarded says a payer claim counted as absent within the hour for want of a guard
+	unguarded bool
 }
 
 // checkValkey pings Valkey and reads its memory, a refused INFO told apart from one that failed
 func checkValkey(
-	ctx context.Context, log *slog.Logger, vk valkey.Client, read vkinfo.Reader,
+	ctx context.Context, log *slog.Logger, vk valkey.Client, prefix string, read vkinfo.Reader,
 ) valkeyHealth {
 	if err := vk.Do(ctx, vk.B().Ping().Build()).Error(); err != nil {
 		log.Warn("monitor cannot reach valkey", "err", err)
 		return valkeyHealth{down: true}
+	}
+	n, err := vk.Do(ctx, vk.B().Exists().Key(prefix+wallet.UnguardedKey).Build()).AsInt64()
+	if err != nil {
+		log.Warn("monitor cannot read the payer guard mark", "err", err)
 	}
 	m, err := read(ctx, vk)
 	if err != nil {
@@ -120,7 +128,8 @@ func checkValkey(
 	var reply *valkey.ValkeyError
 	refused := errors.As(err, &reply) && !reply.IsNil()
 	return valkeyHealth{
-		memory: m,
+		memory:    m,
+		unguarded: n > 0,
 		// A managed Valkey may hide a field for good, which must not keep /monitor failing
 		unknown:  err != nil && !refused && !errors.Is(err, vkinfo.ErrIncomplete),
 		refusing: refused,
@@ -170,6 +179,10 @@ func (h health) problems() []string {
 	if p := h.valkey.memory.Policy; p != "" && p != vkinfo.NoEviction {
 		out = append(out, fmt.Sprintf(
 			"valkey maxmemory-policy is %s, the router needs noeviction", p))
+	}
+	if h.valkey.unguarded {
+		out = append(out, "the payer claim is treated as absent, since no fee_payer came and "+
+			"wallets.facilitator_addresses is empty")
 	}
 	switch h.pools {
 	case poolsEmpty:

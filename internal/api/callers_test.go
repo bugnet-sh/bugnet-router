@@ -669,7 +669,7 @@ func TestGetOrderRefusesOtherCallersAndAnEmptyID(t *testing.T) {
 	wantCode(t, err, connect.CodeInvalidArgument)
 	_, err = e.payments(t).CheckPayer(t.Context(), connect.NewRequest(
 		&routerv1.CheckPayerRequest{}))
-	wantCode(t, err, connect.CodeUnimplemented)
+	wantCode(t, err, connect.CodeInvalidArgument)
 }
 
 func TestWatchOpensBeforeTheFirstEvent(t *testing.T) {

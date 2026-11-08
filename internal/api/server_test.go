@@ -189,6 +189,10 @@ type options struct {
 	noPreviews bool
 	// providerName names the local provider, "local" when empty
 	providerName string
+	// wallets are the saga's and API server's wallet settings, each zero limit at its default
+	wallets config.Wallets
+	// providerOps is each provider account's operations a second
+	providerOps map[string]int
 }
 
 type env struct {
@@ -273,6 +277,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
+		Wallets: opts.wallets,
 	})
 	t.Cleanup(sg.Wait)
 	js := jobs.New(jobs.Deps{
@@ -316,7 +321,8 @@ func newEnv(t *testing.T, opts options) *env {
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
-		PreviewDomain: previewDomain, Previews: previewSettings,
+		PreviewDomain: previewDomain, Previews: previewSettings, Wallets: opts.wallets,
+		ProviderOps: opts.providerOps,
 	})
 	t.Cleanup(srv.Close)
 

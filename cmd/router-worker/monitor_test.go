@@ -20,12 +20,16 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
 
 var healthy = fixed(vkinfo.Memory{Used: 79, Max: 100, Policy: "noeviction"})
 
 // testPools is a mining pool list of one entry, so /monitor finds nothing wrong with it
 const testPools = "testdata/mining-pools.txt"
+
+// testPrefix holds no keys, so /monitor finds no payer guard mark under it
+const testPrefix = "bn:monitor-test-empty:"
 
 // migrated returns a pool on a fresh migrated database
 func migrated(t *testing.T) *pgxpool.Pool {
@@ -45,7 +49,7 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, read, testPools)(rec,
+	monitor(discard, st, vk, testPrefix, read, testPools)(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -77,7 +81,7 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 	go func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
-		monitor(discard, store.New(pool), vk, hung, testPools)(rec, req)
+		monitor(discard, store.New(pool), vk, testPrefix, hung, testPools)(rec, req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -249,12 +253,37 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 		bad:                               "the mining pool list cannot be read\n",
 	} {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, healthy, path)(rec,
+		monitor(discard, st, vk, testPrefix, healthy, path)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
 			t.Errorf("monitor with %s answered %d %q, want 503 %q", path, rec.Code,
 				rec.Body.String(), want)
 		}
+	}
+}
+
+func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
+	st := store.New(migrated(t))
+	vk, prefix := testenv.Valkey(t)
+	ask := func() (int, string) {
+		rec := httptest.NewRecorder()
+		monitor(discard, st, vk, prefix, healthy, testPools)(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		return rec.Code, rec.Body.String()
+	}
+	if code, body := ask(); code != http.StatusOK {
+		t.Fatalf("before the mark: %d %q", code, body)
+	}
+	err := vk.Do(t.Context(), vk.B().Set().Key(prefix+wallet.UnguardedKey).Value("x").
+		Ex(time.Hour).Build()).Error()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body := ask()
+	want := "the payer claim is treated as absent, since no fee_payer came and " +
+		"wallets.facilitator_addresses is empty"
+	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) != want {
+		t.Fatalf("with the mark: %d %q, want 503 %q", code, body, want)
 	}
 }

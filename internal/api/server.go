@@ -8,7 +8,8 @@
 //
 // Placements go through the saga, commands through the jobs service and file operations
 // straight to the placement's provider. Exec, CancelJob and each file operation first spend a
-// token of the placement's operation bucket, which every replica shares in Valkey. GetPlacement
+// token of the placement's operation bucket, which every replica shares in Valkey, and of its
+// payer's and its provider account's buckets when they have one, from all of them or none. GetPlacement
 // and WatchPlacement wait on the placement's Valkey channel, which one pattern subscription per
 // server fans out to the waiting requests. Each wake-up re-reads the store, so a lost message
 // only delays a reader until its next read. The edge-side services meter usage against each
@@ -18,6 +19,8 @@
 // first, and the edge resolves it with ResolvePreview and asks for a repair with RepairPreview,
 // which runs at most once a minute per placement. OperatorService's RevokePreview moves a
 // preview's generation, so every earlier link dies and its port gets no new one.
+// OperatorService also blocks, lifts and lists wallets, and PaymentsService's CheckPayer answers
+// what an order of a payer would meet now, writing nothing.
 //
 // CreateTransfer mints a transfer URL, and the edge serves it through OpenTransfer, ReadTransfer
 // and WriteTransfer, each stream ending when its placement ends or spends its budget, which one
@@ -62,6 +65,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
+	"github.com/bugnet-sh/bugnet-router/internal/wallet"
+	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
 const (
@@ -109,6 +114,10 @@ type Deps struct {
 	PreviewDomain string
 	// Previews are the preview settings, a zero max_per_placement taking its default
 	Previews config.Previews
+	// Wallets are the payer and wallet settings, a zero limit taking its default
+	Wallets config.Wallets
+	// ProviderOps is each provider account's user operations a second, absent for no bucket
+	ProviderOps map[string]int
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -128,6 +137,9 @@ type Server struct {
 	life   context.Context // ends when Close is called, transfer streams run on it
 	end    context.CancelFunc
 	done   chan struct{}
+	w      config.Wallets
+	guard  wallet.Guard
+	wl     *wallets.Store
 }
 
 var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
@@ -142,7 +154,15 @@ func New(deps Deps) *Server {
 	ctx, cancel := context.WithCancel(life)
 	x := transferSettings(deps.Transfers)
 	events := edgeevents.New(deps.Valkey, deps.Prefix, deps.Log)
+	w := deps.Wallets.OrDefaults()
 	s := &Server{
+		w:     w,
+		guard: wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
+		wl: wallets.New(deps.Store, wallets.Settings{
+			Facilitators: w.FacilitatorAddresses, StrikeThreshold: w.StrikeThreshold,
+			StrikeWindow: w.StrikeWindow, StrikeBlockFor: w.StrikeBlockFor,
+			EmitEvents: w.EmitEvents,
+		}),
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
 		ops:    ops,
@@ -508,11 +528,18 @@ func (s *Server) home(p store.Placement) (provider.Provider, error) {
 	return prov, nil
 }
 
-// spend takes one of the placement's operation tokens, refusing the operation when none is left
+// spend takes a token from the placement's, payer's and provider account's buckets, or from none
 func (s *Server) spend(ctx context.Context, p store.Placement) error {
 	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
 	defer cancel()
-	ok, wait, err := s.ops.Take(tctx, p.ID)
+	buckets := []ratelimit.Bucket{s.ops.Ops(p.ID)}
+	if p.Payer != "" {
+		buckets = append(buckets, wallets.OpsBucket(s.w, p.Payer))
+	}
+	if rate := s.d.ProviderOps[p.Provider]; rate > 0 {
+		buckets = append(buckets, wallets.AccountBucket(p.Provider, rate))
+	}
+	ok, wait, err := s.ops.TakeAll(tctx, buckets)
 	switch {
 	case err != nil && gaveUp(ctx):
 		return cmp.Or(ctx.Err(), context.DeadlineExceeded)
@@ -800,6 +827,7 @@ func placementMsg(p store.Placement) *routerv1.Placement {
 		CreatedAt:     timestamppb.New(p.CreatedAt),
 		FailureReason: p.FailureReason,
 		Refundable:    p.Refundable,
+		PaidMicros:    p.PaidMicros,
 	}
 	if p.Deadline != nil {
 		out.Deadline = timestamppb.New(*p.Deadline)

@@ -110,6 +110,9 @@ func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.S
 }
 
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
+	if err := checkWallets(log, cfg); err != nil {
+		return err
+	}
 	boot, err := bootSettings(log, cfg)
 	if err != nil {
 		return err
@@ -172,6 +175,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
 		Boot:         boot,
+		Wallets:      cfg.Wallets,
 	})
 	js := jobs.New(jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log))
 	var scanner sync.WaitGroup
@@ -196,6 +200,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		TransferHost:        cfg.Names.TransferHost,
 		PreviewDomain:       cfg.Names.PreviewDomain,
 		Previews:            cfg.Previews,
+		Wallets:             cfg.Wallets,
+		ProviderOps:         cfg.ProviderOps,
 	})
 	defer srv.Close()
 
@@ -229,6 +235,22 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
 	scanner.Wait()
 	return serveErr
+}
+
+// checkWallets refuses the payer claim while Payments can neither ask CheckPayer nor hear blocks
+func checkWallets(log *slog.Logger, cfg config.Config) error {
+	w := cfg.Wallets
+	switch {
+	case !w.UsePayer:
+		log.Info("wallets.use_payer is false, so every order counts as having no payer")
+	case cfg.PaymentsToken == "":
+		return errors.New("wallets.use_payer is true while BUGNET_PAYMENTS_ROUTER_TOKEN is " +
+			"empty, so Payments cannot call CheckPayer, set the token or turn use_payer off")
+	case !w.EmitEvents:
+		return errors.New("wallets.use_payer is true while wallets.emit_events is false, so " +
+			"Payments never hears of a blocked wallet, turn emit_events on or use_payer off")
+	}
+	return nil
 }
 
 // bootSettings reads the CA and the mining pool list once, so no placement with secrets lacks a CA
