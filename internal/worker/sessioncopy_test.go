@@ -363,3 +363,30 @@ func eq[T any](t *testing.T, got, want T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
+
+func TestCopyRedactsAnAuthorizationValueAcrossFrames(t *testing.T) {
+	e := newEnv(t, options{})
+	e.start(t)
+	p, rec := e.ended(t, "copy-authz", time.Second)
+	if _, _, err := e.store.CreateJob(t.Context(), store.NewJob{ID: "j_authz",
+		PlacementID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.store.StartSessionJob(t.Context(), p.ID, "j_authz", "curl",
+		time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Each value comes in a frame of its own, after its header and scheme
+	var off int64
+	var frames []frame.Frame
+	for _, s := range []string{"Authorization: token ", "s3cr3tvalue123\n",
+		"Proxy-Authorization: Dig", `est username="bob", response="s3cr3tvalue123"` + "\n"} {
+		frames = append(frames, frame.Frame{Kind: frame.KindStdout, Offset: off,
+			Data: []byte(s)})
+		off += int64(len(s))
+	}
+	e.frames(t, "j_authz", append(frames, frame.Frame{Kind: frame.KindExit, Out: off})...)
+	_, text, _ := e.copied(t, p, rec)
+	eq(t, text[1], "Authorization: [redacted credential]\n"+
+		"Proxy-Authorization: [redacted credential]\n")
+}

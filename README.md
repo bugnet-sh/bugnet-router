@@ -837,9 +837,11 @@ is empty, and the record is still kept.
   page at once and hold the record `sessions.abuse_hold` for `GetSessionHold`.
 - **Cleaning and redaction** follow bugnet-gateway's `cleanText` rule for rule, against its
   vectors in `internal/sessions/testdata`, and then redact Bugnet and vendor token shapes,
-  `Authorization`, `Bearer` and `Basic` values, URL passwords, private key blocks, and the
-  placement's gate key and provider credentials, as `[redacted <kind>]`. A token split across
-  frames is still caught, with at most 16 KiB held back per output. Output that goes on after a
+  `Authorization` and `Proxy-Authorization` values whatever their scheme, `Bearer` and `Basic`
+  values, URL passwords, private key blocks, and the placement's gate key and provider
+  credentials, as `[redacted <kind>]`. A token split across frames is still caught, and a line
+  naming an `Authorization` header is held until its end, with at most 16 KiB held back per
+  output. Output that goes on after a
   gap, a `skip` that moves it or a replay start inside a line drops the held word before it and
   its text up to the next line break, so neither part of a cut token is shown.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized

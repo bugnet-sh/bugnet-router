@@ -35,6 +35,7 @@ func TestRedactLeavesOrdinaryWords(t *testing.T) {
 		"pip install hf_transfer", "task-runner-for-everything-here", "basic configuration",
 		"Basic authentication", "a bearer of news", "boat_trip", "sk-learn-tools",
 		"-----BEGIN CERTIFICATE-----", "https://github.com/a/b", "AKIA is a prefix",
+		"no Authorization header was sent",
 	} {
 		eq(t, r.Redact(s), s)
 	}
@@ -121,7 +122,7 @@ func TestStreamHoldsAPartialCharacter(t *testing.T) {
 func TestRedactLeadWordsInQuotesAcrossFrames(t *testing.T) {
 	r := NewRedactor()
 	got := joined(write(r, `{"Authorization": "Bearer Zx9`, `Q2mP7kL4tR8vB1nC6"}`+"\n"))
-	eq(t, got, `{"Authorization": "Bearer [redacted credential]"}`+"\n")
+	eq(t, got, `{"Authorization": "[redacted credential]"}`+"\n")
 	got = joined(write(r, "curl -H 'Authorization: Bearer Zx9", "Q2mP7kL4tR8vB1nC6'\n"))
 	eq(t, got, "curl -H 'Authorization: [redacted credential]'\n")
 	got = joined(write(r, `curl --header="Authorization: Basic `, "dXNlcjpwYXNzd29yZA==\"\n"))
@@ -170,4 +171,43 @@ func TestStreamResumeDropsAHeldPartialToken(t *testing.T) {
 	st = NewRedactor().Stream(Stdout)
 	eq(t, joined(st.Write([]byte("curl -H 'Authorization: Bearer abcdefgh"))), "curl -H ")
 	eq(t, joined(st.Resume()), "'Authorization: [redacted credential]")
+}
+
+func TestRedactAnyAuthorizationSchemeAcrossFrames(t *testing.T) {
+	const secret = "s3cr3tvalue123"
+	r := NewRedactor()
+	for _, c := range []struct {
+		chunks []string
+		want   string
+	}{
+		{[]string{"Authorization: token ", secret + "\n"},
+			"Authorization: [redacted credential]\n"},
+		{[]string{"Proxy-Authorization: token ", secret + "\n"},
+			"Proxy-Authorization: [redacted credential]\n"},
+		{[]string{"authorization: Digest ", `username="bob", response="` + secret + `"` + "\n"},
+			"authorization: [redacted credential]\n"},
+		{[]string{"PROXY-AUTHORIZATION: Dig", `est username="bob", response="` + secret + "\"\n"},
+			"PROXY-AUTHORIZATION: [redacted credential]\n"},
+		{[]string{"a\nAuthorization: to", "ken " + secret + "\nb\n"},
+			"a\nAuthorization: [redacted credential]\nb\n"},
+		{[]string{"x Proxy-Author", "ization: Negotiate ", secret + "\nnext\n"},
+			"x Proxy-Authorization: [redacted credential]\nnext\n"},
+		{[]string{"Authorization:  ", "MyScheme ", secret + "\r\n"},
+			"Authorization:  [redacted credential]\n"},
+		{[]string{`curl -H 'Authorization: Digest `, `username="bob", response="` + secret +
+			`"' https://x` + "\n"},
+			`curl -H 'Authorization: [redacted credential]' https://x` + "\n"},
+		{[]string{`{"Proxy-Authorization": "token `, secret + `", "a": 1}` + "\n"},
+			`{"Proxy-Authorization": "[redacted credential]", "a": 1}` + "\n"},
+	} {
+		got := joined(write(r, c.chunks...))
+		eq(t, got, c.want)
+		// Whatever frame boundary falls in the line, the value is never shown
+		whole := strings.Join(c.chunks, "")
+		for i := range len(whole) {
+			if got := joined(write(r, whole[:i], whole[i:])); strings.Contains(got, secret) {
+				t.Fatalf("split at %d of %q shows the value: %q", i, whole, got)
+			}
+		}
+	}
 }

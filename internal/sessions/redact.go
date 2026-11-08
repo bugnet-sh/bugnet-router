@@ -32,7 +32,9 @@ var (
 		`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemOpen  = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemClose = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	authz    = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)[^\r\n"',;]+`)
+	// An Authorization or Proxy-Authorization header up to its value, a quote that opens it kept
+	authz    = regexp.MustCompile(`(?i)(["']?)(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*`)
+	authzAny = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme   = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	userinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@]*):[^\s/@]+@`)
 	// The Bugnet shapes of DP 20.6.4 with bnk_, then the vendor shapes the gateway redacts
@@ -74,10 +76,57 @@ func (r *Redactor) Redact(s string) string {
 	for _, v := range r.known {
 		s = strings.ReplaceAll(s, v, redactedSecret)
 	}
-	s = authz.ReplaceAllString(s, "${1}"+redactedCredential)
+	s = redactAuthz(s)
 	s = scheme.ReplaceAllStringFunc(s, schemeValue)
 	s = userinfo.ReplaceAllString(s, "${1}:"+redactedPassword+"@")
 	return replaceTokens(s)
+}
+
+// redactAuthz redacts each Authorization value, any scheme, to its line's end or closing quote
+func redactAuthz(s string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range authz.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] < last {
+			continue
+		}
+		at, quote := m[1], byte(0)
+		if m[3] > m[2] {
+			quote = s[m[2]]
+			// A JSON or dict value opens a quote of its own after the name's
+			if at < len(s) && s[at] == quote {
+				at++
+			}
+		}
+		end := valueEnd(s, at, quote)
+		if end == at {
+			continue
+		}
+		b.WriteString(s[last:at])
+		b.WriteString(redactedCredential)
+		last = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// valueEnd is where a value starting at i ends: a line break, or quote unless escaped
+func valueEnd(s string, i int, quote byte) int {
+	for ; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\r' || c == '\n':
+			return i
+		case quote == 0:
+		case c == '\\':
+			i++
+		case c == quote:
+			return i
+		}
+	}
+	return min(i, len(s))
 }
 
 // schemeValue redacts a Bearer or Basic value unless it reads as an ordinary word
@@ -291,7 +340,7 @@ func (st *Stream) safe() (int, bool) {
 	return n, false
 }
 
-// cutPoint is just past the last space, tab, newline or lone carriage return, before a lead word
+// cutPoint is past the last space, tab or line break, before a lead word or an Authorization line
 func cutPoint(b []byte) int {
 	n := 0
 	for i, c := range b {
@@ -315,6 +364,14 @@ func cutPoint(b []byte) int {
 			break
 		}
 		n = start
+	}
+	// Any Authorization value is a secret, so the word that names it waits for its line's end
+	line := bytes.LastIndexAny(b[:n], "\r\n") + 1
+	if loc := authzAny.FindIndex(b[line:n]); loc != nil {
+		n = line + loc[0]
+		for n > line && !isSpace(b[n-1]) {
+			n--
+		}
 	}
 	return n
 }
