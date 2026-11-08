@@ -107,7 +107,8 @@ const (
 
 const catalogJSON = `{"packages": [
 	{"id": "gpu-10m", "resources": {"vcpu": 4, "memory_mib": 8192, "disk_gib": 20,
-		"gpu_count": 1, "gpu_memory_gib": 24}, "minutes": 10, "price_micros": 900000},
+		"gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA L4"}, "minutes": 10,
+		"price_micros": 900000},
 	{"id": "small-30m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
 		"minutes": 30, "price_micros": 120000},
 	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},

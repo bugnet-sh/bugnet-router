@@ -500,6 +500,11 @@ router's setting. `egress.allow` lists exact lowercase host names, at least one.
 carry the same `egress.allow` as the package it extends, since a sandbox keeps the egress rules
 it was created with.
 
+A package with `gpu_count` above 0 names its GPU in `resources.gpu_model`, as the public stats
+feed and the landing's pricing show it, such as `"NVIDIA L4"`, and `gpu_memory_gib` is each GPU's
+own memory. The name is 1 to 64 printable characters with no space at either end. A package
+without a GPU has no `gpu_model`, and an extension carries the same one as the package it extends.
+
 A host name here and in `[names]` is never an IP address, and never ends in a label that is all
 digits or `0x` and hex digits, such as `127.1` or `a.0x1f`. `inet_aton`, curl and browsers read
 those short forms as IPv4 addresses.
