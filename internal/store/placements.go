@@ -59,6 +59,24 @@ type Placement struct {
 	// PaidMicros sums the package share of the start order and every extension recorded, zero
 	// once the placement failed with its charge refunded
 	PaidMicros int64
+	// EstimateID is the estimate behind the order's quote, nil for none
+	EstimateID *uuid.UUID
+	// SourceKind, SourceCanonical, SourceRef and SourceRevision are the estimate's resolved
+	// source, empty with no estimate, and SourceRead says the estimator read it
+	SourceKind, SourceCanonical, SourceRef, SourceRevision string
+	SourceRead                                             bool
+}
+
+// PlacementSource is the resolved source of an estimate, which a placement copies at create
+type PlacementSource struct {
+	EstimateID uuid.UUID
+	Kind       string
+	Canonical  string
+	Ref        string
+	Revision   string
+	Read       bool
+	// Label is source_label, empty for a source that is neither GitHub nor Hugging Face
+	Label string
 }
 
 // NewPlacement describes a placement to create, placing unless it has a FailureReason
@@ -80,6 +98,8 @@ type NewPlacement struct {
 	FeePayer string
 	// AmountMicros is the start order's package share
 	AmountMicros int64
+	// Source is the estimate's source, nil for none
+	Source *PlacementSource
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -113,7 +133,9 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	coalesce(capacity_provider, ''), coalesce(termination_reason, ''), terminating_at,
 	coalesce(key_id, ''), coalesce(ssh_alias, ''), coalesce(source_label, ''), edge_budget_bytes,
 	egress_budget_bytes, coalesce(egress_ca_version, 0), secrets_version, gate_ready_at,
-	applied_hosts, needs_secrets, coalesce(payer, ''),
+	applied_hosts, needs_secrets, coalesce(payer, ''), estimate_id, coalesce(source_kind, ''),
+	coalesce(source_canonical, ''), coalesce(source_ref, ''), coalesce(source_revision, ''),
+	coalesce(source_read, false),
 	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
 		where o.placement_id = placements.id
 			and not (placements.state = 'failed' and placements.refundable))`
@@ -126,7 +148,9 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
 		&p.TerminationReason, &p.TerminatingAt, &p.KeyID, &p.SSHAlias, &p.SourceLabel,
 		&p.EdgeBudgetBytes, &p.EgressBudgetBytes, &p.EgressCAVersion, &p.SecretsVersion,
-		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.PaidMicros)
+		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.EstimateID,
+		&p.SourceKind, &p.SourceCanonical, &p.SourceRef, &p.SourceRevision, &p.SourceRead,
+		&p.PaidMicros)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -286,13 +310,26 @@ func (s *Store) InsertPlacement(ctx context.Context, p NewPlacement) (Placement,
 	if failed {
 		state = PlacementFailed
 	}
+	src := p.Source
+	if src == nil {
+		src = &PlacementSource{}
+	}
+	var estimate *uuid.UUID
+	if src.EstimateID != uuid.Nil {
+		estimate = &src.EstimateID
+	}
 	// now() is the transaction's start, so a placement created failed ends at its created_at
 	_, err := s.q.Exec(ctx, `
 		insert into placements (id, handle_sha256, order_id, package_id, state,
-			failure_reason, refundable, terminated_at, key_id, needs_secrets, payer)
-		values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9, $10)`,
+			failure_reason, refundable, terminated_at, key_id, needs_secrets, payer,
+			estimate_id, source_kind, source_canonical, source_ref, source_revision,
+			source_read, source_label)
+		values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9, $10,
+			$11, $12, $13, $14, $15, $16, $17)`,
 		p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
-		failed, nullIfEmpty(p.KeyID), p.NeedsSecrets, nullIfEmpty(p.Payer))
+		failed, nullIfEmpty(p.KeyID), p.NeedsSecrets, nullIfEmpty(p.Payer), estimate,
+		nullIfEmpty(src.Kind), nullIfEmpty(src.Canonical), nullIfEmpty(src.Ref),
+		nullIfEmpty(src.Revision), src.Read && estimate != nil, nullIfEmpty(src.Label))
 	if err != nil {
 		return Placement{}, fmt.Errorf("insert placement: %w", err)
 	}
