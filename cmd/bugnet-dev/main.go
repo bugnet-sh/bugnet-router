@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,8 +51,10 @@ import (
 
 const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
 
-  keys                                   print fresh secrets as KEY=value lines
+  keys [--production]                    print fresh secrets as KEY=value lines, --production
+                                         without BUGNET_ORDER_PRIVATE_KEY, which Payments holds
   pubkey [--priv K]                      print the order token public key of a private key
+  pubkey --event                         print the public half of BUGNET_EVENT_SIGNING_KEY
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
         [--priv K] [--payer A] [--fee-payer A] [--tx S] [--allowance-micros N]
                                          print a signed order token
@@ -86,6 +89,10 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   x402 seller-check --names A,B [--resolvers HOST:PORT,...]
                                          check the mainnet test seller's two public names
                                          over public DNS, paying nothing, in about 5 minutes
+  x402 allowed-hosts --index FILE --config FILE
+                                         print the router's allowed_shared_hosts line: the
+                                         index's hosts under the settings file's
+                                         shared_hosting_suffixes, sorted, each once
   revoke-preview ID --reason R [--actor A]
                                          revoke a preview for good, the actor from USER when
                                          --actor is not given
@@ -279,9 +286,12 @@ func (e envFlag) Set(kv string) error {
 
 /* Keys and tokens */
 
-// keys prints only secrets, the order token public key comes from pubkey
+// keys prints only secrets, the order token public key comes from pubkey. In production Payments
+// holds the order key, so --production leaves it out (DP 15.5)
 func (c *cli) keys(args []string) error {
-	if err := parse(newFlags("keys"), args, false); err != nil {
+	fs := newFlags("keys")
+	production := fs.Bool("production", false, "leave out BUGNET_ORDER_PRIVATE_KEY")
+	if err := parse(fs, args, false); err != nil {
 		return err
 	}
 	_, orderPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -299,6 +309,9 @@ func (c *cli) keys(args []string) error {
 		{"BUGNET_HANDLE_KEY", b64(rand32())},
 		{"BUGNET_EVENT_SIGNING_KEY", b64(eventPriv.Seed())},
 		{"BUGNET_DATA_PLANE_KEYS", dpkeys.NewEnv()},
+	}
+	if *production {
+		lines = slices.Delete(lines, 1, 2)
 	}
 	for _, name := range []string{
 		"BUGNET_EDGE_TOKEN", "BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN",
@@ -320,16 +333,34 @@ func rand32() []byte {
 	return b
 }
 
-// pubkey prints the key order_token_public_key needs for the order private key
+// pubkey prints the key order_token_public_key needs for the order private key, or with --event
+// the key Payments verifies the router's events with, read from the environment only
 func (c *cli) pubkey(args []string) error {
 	fs := newFlags("pubkey")
 	priv := fs.String("priv", "", "base64 Ed25519 private key")
+	event := fs.Bool("event", false, "the public half of BUGNET_EVENT_SIGNING_KEY")
 	if err := parse(fs, args, false); err != nil {
 		return err
 	}
-	key, err := c.privateKey(*priv)
-	if err != nil {
-		return err
+	var key ed25519.PrivateKey
+	var err error
+	switch {
+	case *event && *priv != "":
+		return fmt.Errorf("%w: --event reads the key from the environment, not --priv", errUsage)
+	case *event:
+		raw := c.getenv("BUGNET_EVENT_SIGNING_KEY")
+		if raw == "" {
+			return fmt.Errorf("%w: BUGNET_EVENT_SIGNING_KEY is not set", errUsage)
+		}
+		seed, derr := base64.StdEncoding.DecodeString(raw)
+		if derr != nil || len(seed) != ed25519.SeedSize {
+			return errors.New("BUGNET_EVENT_SIGNING_KEY must be base64 of a 32 byte seed")
+		}
+		key = ed25519.NewKeyFromSeed(seed)
+	default:
+		if key, err = c.privateKey(*priv); err != nil {
+			return err
+		}
 	}
 	pub := key.Public().(ed25519.PublicKey)
 	_, err = fmt.Fprintln(c.stdout, base64.StdEncoding.EncodeToString(pub))
