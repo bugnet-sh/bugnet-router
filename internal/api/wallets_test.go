@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	"github.com/valkey-io/valkey-go"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -459,6 +460,61 @@ func TestThreeOperationBucketsTogether(t *testing.T) {
 	mustCode(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
 	eq(t, e.bucketTokens(t, opsKey), ops)
 	eq(t, e.bucketTokens(t, walletKey), wallet)
+	eq(t, e.stop(t, h).GetState(), routerv1.PlacementState_PLACEMENT_STATE_TERMINATED)
+}
+
+func TestWatchJobTakesFromThreeBuckets(t *testing.T) {
+	e := newEnv(t, options{
+		wallets:     payerWallets(func(w *config.Wallets) { w.OpsPerSecond, w.OpsBurst = 1, 2 }),
+		providerOps: map[string]int{"local": 1}, opsPerSecond: 1, opsBurst: 2,
+	})
+	h := e.readyPaid(t, payerA)
+	id := e.get(t, h, 0, 0).GetPlacementId()
+	ran := sh(h, "echo ran")
+	ran.Until = &routerv1.Until{Exit: true}
+	job := e.exec(t, ran).GetJobId()
+	keys := []string{"ops:" + id, "rl:wallet:ops:" + payerA, "rl:acct:local"}
+	// A missing key is a full bucket, and a take leaves the key for a second
+	reset := func() {
+		t.Helper()
+		for _, k := range keys {
+			if err := e.vk.Do(t.Context(), e.vk.B().Del().Key(e.prefix+k).Build()).
+				Error(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	watch := func() error {
+		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: job})
+		return err
+	}
+	reset()
+	if err := watch(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		if e.bucketTokens(t, k) == "" {
+			t.Fatalf("the attach took nothing from %s", k)
+		}
+	}
+	for _, empty := range keys {
+		reset()
+		err := e.vk.Do(t.Context(), e.vk.B().Eval().Script(`
+			local n = redis.call('TIME')
+			redis.call('HSET', KEYS[1], 'tokens', 0, 'at', n[1] .. string.format('%06d', n[2]))
+			redis.call('PEXPIRE', KEYS[1], 60000)`).Numkeys(1).Key(e.prefix+empty).Build()).
+			Error()
+		if err != nil && !valkey.IsValkeyNil(err) {
+			t.Fatal(err)
+		}
+		err = watch()
+		mustCode(t, err, connect.CodeResourceExhausted, "RATE_LIMITED")
+		for _, k := range keys {
+			if k != empty && e.bucketTokens(t, k) != "" {
+				t.Fatalf("an attach refused on %s took from %s", empty, k)
+			}
+		}
+	}
 	eq(t, e.stop(t, h).GetState(), routerv1.PlacementState_PLACEMENT_STATE_TERMINATED)
 }
 
