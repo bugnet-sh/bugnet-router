@@ -1,7 +1,10 @@
 // Package jobargs holds the River job arguments shared by the API, the saga and the worker
 package jobargs
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+)
 
 // QueueDataplane is the River queue of every data-plane job, apart from the default queue
 const QueueDataplane = "dataplane"
@@ -31,3 +34,16 @@ type Outbox struct{}
 
 // Kind returns the River job kind
 func (Outbox) Kind() string { return "outbox" }
+
+// ApplySecrets asks the worker to write a placement's secrets into its sandbox
+type ApplySecrets struct {
+	PlacementID uuid.UUID `json:"placement_id"`
+}
+
+// Kind returns the River job kind
+func (ApplySecrets) Kind() string { return "apply_secrets" }
+
+// InsertOpts puts every insert on the dataplane queue, never unique, since a lock serialises runs
+func (ApplySecrets) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueDataplane}
+}

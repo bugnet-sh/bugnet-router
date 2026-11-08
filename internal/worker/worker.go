@@ -1,5 +1,5 @@
-// Package worker runs the router's River jobs for placement deadlines, the watch, the sweep and the
-// outbox.
+// Package worker runs the router's River jobs for placement deadlines, the watch, the sweep, the
+// outbox and apply_secrets.
 //
 // New builds one River client that works every kind and a saga that inserts its deadline jobs
 // through that client. A deadline job ends a placement once its paid time is up. The watch runs
@@ -10,7 +10,9 @@
 // outbox job runs every second and posts each due event, signed, to the configured events URL,
 // retrying a failed one with backoff until it is delivered. A periodic job a crashed worker left
 // running is rescued after a few minutes, so it holds back the next run of its kind only that
-// long. Data-plane jobs run on the dataplane queue with workers of their own.
+// long. Data-plane jobs run on the dataplane queue with workers of their own. apply_secrets
+// writes a placement's whole secret set into its sandbox, one run at a time per placement under an
+// advisory lock, so any number of queued jobs converge.
 package worker
 
 import (
@@ -28,6 +30,8 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
+	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -59,6 +63,8 @@ type Deps struct {
 	Now        func() time.Time   // time.Now when nil
 	// DataplaneWorkers works the dataplane queue, 8 when zero
 	DataplaneWorkers int
+	// Egress is where apply_secrets points every forwarder
+	Egress Egress
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -69,6 +75,8 @@ type Worker struct {
 	log      *slog.Logger
 	river    *river.Client[pgx.Tx]
 	saga     *saga.Saga
+	keys     dpkeys.Keys
+	events   *edgeevents.Bus
 	http     *http.Client
 	noURL    sync.Once
 	stuckMu  sync.Mutex
@@ -94,6 +102,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		store:    sd.Store,
 		registry: sd.Registry,
 		log:      sd.Log,
+		keys:     sd.Keys,
+		events:   sd.Events,
 		http: &http.Client{
 			Timeout: postTimeout,
 			// A redirect would turn the POST into a GET, so any 3xx counts as a failed delivery
@@ -107,6 +117,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &sweepWorker{w: w})
 	river.AddWorker(workers, &watchWorker{w: w})
 	river.AddWorker(workers, &outboxWorker{w: w})
+	river.AddWorker(workers, &applySecretsWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,

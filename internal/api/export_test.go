@@ -39,3 +39,10 @@ func SetBeforeWatch(t testing.TB, f func()) {
 func WatchTransferEvents(s *Server, placement string) (<-chan *routerv1.EdgeEvent, func()) {
 	return s.hub.watch(placement)
 }
+
+// SetApplyPoll makes secret writes reread their secret every d while they wait for the apply
+func SetApplyPoll(t testing.TB, d time.Duration) {
+	old := applyPoll
+	applyPoll = d
+	t.Cleanup(func() { applyPoll = old })
+}

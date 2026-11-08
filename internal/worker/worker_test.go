@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
@@ -175,6 +176,10 @@ type options struct {
 	deployment  string
 	// dataplaneWorkers sets Deps.DataplaneWorkers, the default when zero
 	dataplaneWorkers int
+	// features lists the providers of each data-plane feature
+	features provider.Features
+	// egress is where apply_secrets points forwarders
+	egress worker.Egress
 }
 
 type env struct {
@@ -186,6 +191,9 @@ type env struct {
 	priv       ed25519.PrivateKey
 	deployment string
 	events     <-chan *river.Event
+	vk         valkey.Client
+	prefix     string
+	keys       dpkeys.Keys
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -226,7 +234,7 @@ func newEnv(t *testing.T, o options) *env {
 	if len(ps) == 0 {
 		ps = []provider.Provider{newLocal(t, "local")}
 	}
-	reg, err := provider.NewRegistry(ps, provider.Features{})
+	reg, err := provider.NewRegistry(ps, o.features)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,6 +268,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
+		Egress: o.egress,
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
@@ -277,7 +286,7 @@ func newEnv(t *testing.T, o options) *env {
 	}
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
-		deployment: o.deployment,
+		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys,
 	}
 }
 

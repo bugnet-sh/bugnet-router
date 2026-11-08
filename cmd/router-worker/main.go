@@ -159,6 +159,7 @@ func serve(
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers,
+		Egress:           worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
 	})
 	if err != nil {
 		return err

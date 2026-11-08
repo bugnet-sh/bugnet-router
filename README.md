@@ -10,9 +10,10 @@ Valkey carries output streams and job leases, and River runs durable jobs. Both 
 settings from a TOML file and their secrets from the environment.
 
 `router-api` serves `SandboxRouterService` from `bugnet-proto`, and one more Connect service for
-each other caller (see [Caller services](#caller-services)). Its previews, SSH keys, secrets and
-`FetchSource` RPCs, and every other RPC not built yet, answer `Unimplemented` until the router
-builds them. Transfers are built (see [Transfers](#transfers)).
+each other caller (see [Caller services](#caller-services)). Its SSH keys and `FetchSource` RPCs,
+and every other RPC not built yet, answer `Unimplemented` until the router builds them.
+Transfers, previews and secrets are built (see [Transfers](#transfers),
+[Previews](#previews) and [Sealed secrets](#sealed-secrets)).
 
 A `Placement`'s `ended_at` is when it became terminated or failed, and never moves after that. It
 is unset before. A placement that fails at once, with no provider for its order, ends at its
@@ -26,7 +27,7 @@ A terminating or terminated placement's `termination_reason` is a stable code su
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep and outbox jobs, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox and `apply_secrets` jobs, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements and commands |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
@@ -266,6 +267,7 @@ bin/bugnet-dev transfer --handle sbx_... --upload data.csv --path ~/data.csv
 bin/bugnet-dev transfer --handle sbx_... --download /root/out.csv
 bin/bugnet-dev preview --handle sbx_... --port 5173
 BUGNET_OPERATOR_TOKEN=... bin/bugnet-dev revoke-preview <preview id> --reason 'phishing page'
+printf %s "$HF_TOKEN" | bin/bugnet-dev secret --handle sbx_... --name HF_TOKEN --host huggingface.co
 bin/bugnet-dev stop --handle sbx_...
 ```
 
@@ -285,7 +287,11 @@ optional `--sha256`, or a download of a sandbox path.
 `preview` prints the preview link of one port, its id, the paid deadline and whether something
 listened on the port when the router asked. `revoke-preview` calls `OperatorService` with
 `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else `USER`, and kills every link of that
-preview for good.
+preview for good. `secret` reads a value from stdin, seals it locally with
+`crypto_box_seal` to the newest key `GetSecretSealingKey` lists, bound to the placement, name,
+hosts and header names as DP 10.2 says, and puts it with `PutSecret`. It prints the secret's state,
+never the value. It trusts the router's key list, as a dev tool may, where the page and the bridge
+pin their keys.
 `bugnet-dev token` prints a token for other clients, `bugnet-dev pubkey` the public key that
 verifies its tokens, and `bugnet-dev` with no arguments lists every command.
 
@@ -565,7 +571,8 @@ stream reports no OOM kill, since the job row does not keep it.
 ## Operation limit
 
 Each placement's `Exec`, `CancelJob`, `ReadFile`, `WriteFile`, `ListFiles`, `CreateTransfer`,
-`CreatePreview` and `OpenTransfer` calls spend one token from a bucket that every `router-api`
+`CreatePreview`, `OpenTransfer`, `CreateSecretLink`, `CreateSecretPutGrant`, `PutSecret` and
+`PutBridgeSecret` calls spend one token from a bucket that every `router-api`
 replica shares, `ops:<placement id>` under `valkey.prefix`. It holds `limits.sandbox_ops_burst`
 tokens and gains `limits.sandbox_ops_per_second` a second by the Valkey server's clock, 20 and 10
 by default, and expires once it is full again. A call that finds it empty answers
@@ -615,7 +622,17 @@ holds a handle or a job ID.
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
 | `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
-| `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty |
+| `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty, or its link or put bucket |
+| `InvalidArgument` | `NAME_RESERVED` | A secret name that is malformed or that the sandbox's tools read, such as `PATH` or `LD_*` |
+| `InvalidArgument` | `HOST_REFUSED` | A secret host that is not one exact lowercase name, or is a public suffix, a shared-hosting name, a provider's or Bugnet's own, or repeats |
+| `InvalidArgument` | `HEADER_REFUSED` | A header name not lowercase, repeated, or one the proxy or a browser sets, such as `cookie` |
+| `InvalidArgument` | `SEALED_TOO_LARGE` | A sealed value that is empty or over 70 KiB |
+| `InvalidArgument` | `KEY_UNKNOWN` | A value sealed to a key not in `secrets.box_public_keys` |
+| `FailedPrecondition` | `HOST_NOT_ALLOWED` | A custom host while `secrets.custom_hosts` is false, or a host outside the package's `egress.allow` |
+| `FailedPrecondition` | `LINK_LOCKED` | A secret link refused 5 values |
+| `NotFound` | `LINK_UNKNOWN` | A secret link that is unknown, used or expired, or whose placement left ready |
+| `PermissionDenied` | `PUT_GRANT_INVALID` | A put grant that is expired, forged or names another placement |
+| `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all, an 11th host or a 9th header name of one secret |
 
 A provider failure carries the provider's code in lowercase instead, such as `rate_limited`. A
 call that its caller cancels or lets run out of time answers `Canceled` or `DeadlineExceeded`,
@@ -633,9 +650,9 @@ the gateway.
 
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
-| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer` and `CreatePreview` |
+| `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer`, `CreatePreview` and the secret RPCs |
 | `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
-| `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | None |
+| `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | `GetSecretLink`, `SubmitSecretLink`, `GetBridgeSealingKey`, `PutBridgeSecret` |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | `ReportSshUsage`, `WatchSshEvents` |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
 | `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
@@ -737,6 +754,47 @@ router asked (DP 8.2.10).
   generation and sets `revoked_at` once, writes `PreviewRevoked`, and logs the actor, preview,
   placement and reason. A refused call is logged too, with its code, the actor when valid and the
   preview only when its id is well formed. Other ports of the placement keep working.
+
+### Sealed secrets
+
+The router never sees a secret's value. The page and the bridge seal it to the egress proxy's
+X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP 10.2 to 10.4).
+
+- **Checks.** Every write needs a ready placement (`NOT_READY`) on a provider in
+  `secrets.providers`, and a router with data-plane keys, `secrets.box_public_keys`,
+  `secrets.egress_ips` and `names.egress_host` (`FEATURE_UNAVAILABLE`). Links also need
+  `names.secrets_host`. The spec's rules are in `internal/secrets`, and the host rules are the
+  same set x402 hosts use, from `internal/hostrules`, without `allowed_shared_hosts` and
+  `blocked_hosts`.
+- **Links.** `CreateSecretLink` derives its `bnsl_` token from the request id, so a repeat answers
+  the same link, and a used, expired or locked one answers `TOKEN_USED`, `TOKEN_EXPIRED` or
+  `LINK_LOCKED`. It keeps a suggested host only when it is in the preset of the suggested name.
+  Two calls with one new request id store and spend for one link. A link lives
+  `secrets.link_ttl`, at most `secrets.links_per_hour` an hour per placement (`rl:links:<id>`).
+  `GetSecretLink` never uses it, `SubmitSecretLink` uses it in the write's transaction, a repeat
+  of the same `submission_id` answers again, and 5 refused values lock it, a lock that the
+  write's transaction checks again.
+- **Puts.** `PutSecret` (with the handle) and `PutBridgeSecret` (with a `bnsp_` grant from
+  `CreateSecretPutGrant`, valid `secrets.put_grant_ttl`) share one implementation, keyed by the
+  idempotency key, at most `secrets.puts_per_hour` an hour per placement together
+  (`rl:puts:<id>`). A `fetch_only` secret is `ACTIVE` at once.
+- **The row lock.** Each write takes the placement's row lock in the one transaction that checks
+  its counts before it spends any limit, stores its row and inserts its `apply_secrets` job, and
+  commits before it waits up to `secrets.apply_wait` for the secret to leave `APPLYING`.
+  `DeleteSecret` removes the row, moves `secrets_version` and inserts the job, and a name the
+  placement lacks changes nothing.
+- **`apply_secrets`.** A River job on the `dataplane` queue, 90 s, never unique. It runs under
+  `pg_try_advisory_xact_lock` of `bugnet:apply:<placement>` and snoozes 2 s while another run holds
+  it. With the lock, it applies the whole current set: it mints a `bnt_` tunnel token when the
+  placement has none, writes `/tmp/bugnet/egress-spec.json` and runs `bugnet-run egress apply` as
+  root. Then it marks only the secrets it loaded, each still at the `updated_at` it read,
+  `ACTIVE` or `FAILED` with the runner's error in upper case (`PORT_443_TAKEN`), moves
+  `secrets_version` and writes `SecretsChanged`. A run with nothing applying and no pending
+  change exits at once. A pending change (a delete, or a fetch-only put over a loaded secret)
+  raises the lag between `secrets_version` and `secrets_applied_version`. A run clears only the
+  lag it read when it started, so a change that commits during the run stays pending for its own
+  job. A token a failed write may not have reached is forgotten, so the next run mints another,
+  and `token_missing` mints one at once, both writes within 75 s.
 
 ### Transfers
 

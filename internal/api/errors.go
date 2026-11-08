@@ -16,6 +16,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
@@ -134,6 +135,13 @@ var codes = []struct {
 	{store.ErrTooManyPreviews, connect.CodeResourceExhausted, reasonTooManyPreviews},
 	{errNoPreviews, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
 	{errNoFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errNoSecrets, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errNoSecretFeature, connect.CodeFailedPrecondition, reasonFeatureUnavailable},
+	{errLinkUnknown, connect.CodeNotFound, reasonLinkUnknown},
+	{errLinkLocked, connect.CodeFailedPrecondition, reasonLinkLocked},
+	{errLinkUsed, connect.CodeFailedPrecondition, reasonTokenUsed},
+	{errLinkExpired, connect.CodeFailedPrecondition, reasonTokenExpired},
+	{errPutGrant, connect.CodePermissionDenied, reasonPutGrantInvalid},
 	{saga.ErrGateUnavailable, connect.CodeUnavailable, reasonGateUnavailable},
 	{errOverCap, connect.CodeOutOfRange, reasonOverCap},
 	{errRange, connect.CodeOutOfRange, reasonRange},
@@ -216,6 +224,10 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 	var ce *connect.Error
 	if errors.As(err, &ce) && !fromBackend(err) {
 		return err
+	}
+	var refused *secrets.Refusal
+	if errors.As(err, &refused) {
+		return withInfo(connect.NewError(refused.Code, refused), refused.Reason)
 	}
 	for _, c := range codes {
 		if !errors.Is(err, c.err) {

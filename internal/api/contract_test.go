@@ -25,35 +25,6 @@ func unbuilt(
 				&routerv1.RemoveSshKeyRequest{Handle: h}))
 			return err
 		},
-		"CreateSecretLink": func() error {
-			_, err := c.CreateSecretLink(ctx, connect.NewRequest(
-				&routerv1.CreateSecretLinkRequest{Handle: h}))
-			return err
-		},
-		"CreateSecretPutGrant": func() error {
-			_, err := c.CreateSecretPutGrant(ctx, connect.NewRequest(
-				&routerv1.CreateSecretPutGrantRequest{Handle: h}))
-			return err
-		},
-		"GetSecretSealingKey": func() error {
-			_, err := c.GetSecretSealingKey(ctx, connect.NewRequest(
-				&routerv1.GetSecretSealingKeyRequest{Handle: h}))
-			return err
-		},
-		"PutSecret": func() error {
-			_, err := c.PutSecret(ctx, connect.NewRequest(&routerv1.PutSecretRequest{Handle: h}))
-			return err
-		},
-		"ListSecrets": func() error {
-			_, err := c.ListSecrets(ctx, connect.NewRequest(
-				&routerv1.ListSecretsRequest{Handle: h}))
-			return err
-		},
-		"DeleteSecret": func() error {
-			_, err := c.DeleteSecret(ctx, connect.NewRequest(
-				&routerv1.DeleteSecretRequest{Handle: h}))
-			return err
-		},
 		"FetchSource": func() error {
 			_, err := c.FetchSource(ctx, connect.NewRequest(
 				&routerv1.FetchSourceRequest{Handle: h}))
@@ -80,7 +51,8 @@ var built = []string{
 	"Estimate", "PricePackage", "CreatePlacement", "GetPlacement", "WatchPlacement",
 	"ExtendPlacement", "CheckExtendPlacement", "ListExtensions", "StopPlacement", "Exec",
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
-	"CreatePreview",
+	"CreatePreview", "CreateSecretLink", "CreateSecretPutGrant", "GetSecretSealingKey",
+	"PutSecret", "ListSecrets", "DeleteSecret",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {

@@ -49,6 +49,9 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 			&routerv1.StopPlacementRequest{Handle: h}))
 		return err
 	}
+	for name, call := range e.secretCalls(t) {
+		calls[name] = call
+	}
 	calls["WatchJob"] = func(h string) error {
 		_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
 		return err
