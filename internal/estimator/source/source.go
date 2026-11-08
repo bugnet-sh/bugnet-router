@@ -348,8 +348,8 @@ func EscapePath(segs []string) string {
 	return strings.Join(out, "/")
 }
 
-var secretShape = regexp.MustCompile(`(?:^|[^A-Za-z0-9])(?:(?:sk-|gh[pousr]_|github_pat_|hf_|` +
-	`xox[abpr]-|glpat-|r8_)[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}(?:$|[^A-Za-z0-9]))`)
+var secretShape = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])(?:(?:sk-|gh[pousr]_|github_pat_|hf_|` +
+	`xox[abpr]-|glpat-|r8_)[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}(?:$|[^A-Za-z0-9_]))`)
 
 // ContainsSecret says whether s holds a value of one of the gateway's secret shapes
 func ContainsSecret(s string) bool {

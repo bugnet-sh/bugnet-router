@@ -38,7 +38,10 @@ func TestSecretShapesNeedATokenBody(t *testing.T) { // review focus 1
 	for _, s := range []string{"pip install hf_transfer", "HF_HUB_ENABLE_HF_TRANSFER=1 python x.py",
 		"npm run sk-learn-tools", "pip install scikit-learn", "uv pip install r8_x ghp_short",
 		"echo AKIAIOSFODNN7EXAMPL", "AKIAIOSFODNN7EXAMPLEX",
-		"https://github.com/acme/hf_" + strings.Repeat("a", 10)} {
+		"https://github.com/acme/hf_" + strings.Repeat("a", 10),
+		"pip install django_hf_storage_backend_plugin", "python -m my_sk-learn-extension-tools-pkg",
+		"pip install git+https://github.com/acme/model_hf_transfer_accelerated",
+		"echo AKIAIOSFODNN7EXAMPLE_suffix"} {
 		eq(t, ContainsSecret(s), false)
 	}
 	for _, s := range []string{"python x.py --token hf_" + strings.Repeat("a", 34),
