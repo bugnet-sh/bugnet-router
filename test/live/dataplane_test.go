@@ -1219,7 +1219,8 @@ func rowP8(t *testing.T, s *stack) {
 func rowG3(t *testing.T, s *stack) {
 	h := s.sandbox(t, xferPackage)
 	pv := s.app(t, h)
-	killGate := asRoot + `for p in $(pgrep -f 'bugnet-run gate'); do $S kill "$p"; done`
+	// The bracket keeps pgrep from matching the sh -c line that runs it
+	killGate := asRoot + `for p in $(pgrep -f '[b]ugnet-run gate'); do $S kill "$p"; done`
 	s.sh(t, h, killGate)
 	killed := time.Now()
 	saw502 := false
@@ -1281,7 +1282,8 @@ func rowE2B6(t *testing.T, s *stack) {
 func rowE2B7(t *testing.T, s *stack) {
 	h := s.sandbox(t, xferPackage)
 	pv := s.app(t, h)
-	s.sh(t, h, asRoot+`for p in $(pgrep -f 'bugnet-run gate'); do $S kill -STOP "$p"; `+
+	// The bracket keeps pgrep from matching the sh -c line that runs it
+	s.sh(t, h, asRoot+`for p in $(pgrep -f '[b]ugnet-run gate'); do $S kill -STOP "$p"; `+
 		`$S kill "$p"; $S kill -CONT "$p"; done`)
 	for range 5 {
 		res, body := s.previewGet(t, pv, "/", headerToken, pv.token)
