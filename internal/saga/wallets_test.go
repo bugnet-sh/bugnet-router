@@ -157,7 +157,7 @@ func TestRetriedRefusalSameCode(t *testing.T) {
 
 func TestBlockedWalletRecordsNothing(t *testing.T) {
 	e := walletEnv(t, nil)
-	p, h := e.placeWith(t, "order-1", payerA)
+	p, h := e.placePaid(t, "order-1", payerA)
 	e.blockWallet(t, payerA)
 	orders, placements := e.orderCount(t), e.placementCount(t)
 	_, err := e.createPaid(t, "order-2", payerA)
@@ -183,7 +183,7 @@ func TestBlockedWalletRecordsNothing(t *testing.T) {
 
 func TestReplayedExtendSkipsTheBlockCheck(t *testing.T) {
 	e := walletEnv(t, nil)
-	_, h := e.placeWith(t, "order-1", payerB)
+	_, h := e.placePaid(t, "order-1", payerB)
 	ext := e.paidExtend(t, "ext-1", payerA, h)
 	first, err := e.saga.Extend(t.Context(), h, ext)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestPayerOffCountsEveryOrderAsAnonymous(t *testing.T) {
 func TestOrdersKeepThePayerClaim(t *testing.T) {
 	e := newEnvWith(t, func(d *saga.Deps) { d.Wallets = config.Wallets{UsePayer: false} },
 		newLocal(t, local.Options{Name: "a"}))
-	p, h := e.placeWith(t, "o1", payerA)
+	p, h := e.placePaid(t, "o1", payerA)
 	eq(t, p.Payer, "")
 	if _, err := e.saga.Extend(t.Context(), h, e.paidExtend(t, "x1", payerB, h)); err != nil {
 		t.Fatal(err)
@@ -405,7 +405,7 @@ func TestAnExtendWithoutAPayerHoldsNoLock(t *testing.T) {
 
 func TestAnExtensionPayerIsSeen(t *testing.T) {
 	e := walletEnv(t, nil)
-	_, h := e.placeWith(t, "order-1", payerA)
+	_, h := e.placePaid(t, "order-1", payerA)
 	if _, err := e.store.Wallet(t.Context(), payerB, time.Now()); !errors.Is(err,
 		store.ErrNotFound) {
 		t.Fatalf("payer B before any order: %v", err)
@@ -418,8 +418,8 @@ func TestAnExtensionPayerIsSeen(t *testing.T) {
 	eq(t, w.Payer, payerB)
 }
 
-// placeWith places a ready placement whose start order payer paid
-func (e *env) placeWith(t *testing.T, order, payer string) (store.Placement, string) {
+// placePaid places a ready placement whose start order payer paid
+func (e *env) placePaid(t *testing.T, order, payer string) (store.Placement, string) {
 	t.Helper()
 	p, h, err := e.saga.Create(t.Context(), e.paidToken(t, order, payer, facilitator),
 		placement.Requirements{})

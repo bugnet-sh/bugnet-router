@@ -133,7 +133,7 @@ func (s *Server) newLink(
 			return err
 		}
 		n := cmp.Or(s.d.Secrets.LinksPerHour, defaultLinksPerHour)
-		if err := s.take(ctx, hourly("rl:links:", p.ID, n)); err != nil {
+		if err := s.takeKey(ctx, hourly("rl:links:", p.ID, n)); err != nil {
 			return err
 		}
 		link, err = ts.InsertSecretLink(ctx, store.SecretLink{
@@ -403,7 +403,7 @@ func (s *Server) claim(
 	if err := s.spend(ctx, p); err != nil {
 		return err
 	}
-	return s.take(ctx, hourly("rl:puts:", p.ID, cmp.Or(s.d.Secrets.PutsPerHour,
+	return s.takeKey(ctx, hourly("rl:puts:", p.ID, cmp.Or(s.d.Secrets.PutsPerHour,
 		defaultPutsPerHour)))
 }
 
@@ -521,8 +521,8 @@ func (s *Server) placeholderSHA(p store.Placement, name string) ([]byte, error) 
 	return sum[:], nil
 }
 
-// take spends one token of a keyed bucket, letting the call through when the bucket is unread
-func (s *Server) take(ctx context.Context, b ratelimit.Bucket) error {
+// takeKey spends one token of a keyed bucket, letting the call through when the bucket is unread
+func (s *Server) takeKey(ctx context.Context, b ratelimit.Bucket) error {
 	tctx, cancel := context.WithTimeout(ctx, opsTimeout)
 	defer cancel()
 	ok, wait, err := s.ops.TakeKey(tctx, b)
