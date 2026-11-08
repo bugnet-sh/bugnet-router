@@ -456,7 +456,25 @@ func (st *Stream) safe() (int, bool) {
 	if loc := pemOpen.FindIndex(b[:n]); loc != nil && pemClose.FindIndex(b[loc[1]:n]) == nil {
 		return loc[0], true
 	}
-	return fullCut(b, n), false
+	// A known value may hold a colon or an @, where the run fullCut moves back over stops
+	return st.r.knownCut(b, fullCut(b, st.r.knownCut(b, n))), false
+}
+
+// knownCut moves n back to the start of a known value b[:n] would cut, or that may start there
+func (r *Redactor) knownCut(b []byte, n int) int {
+	for moved := true; moved; {
+		moved = false
+		for _, v := range r.known {
+			for at := max(n-len(v)+1, 0); at < n; at++ {
+				w := b[at:min(at+len(v), len(b))]
+				if string(w) == v[:len(w)] {
+					n, moved = at, true
+					break
+				}
+			}
+		}
+	}
+	return n
 }
 
 // fullCut moves a full carry's end n back before the token or Authorization value it would cut

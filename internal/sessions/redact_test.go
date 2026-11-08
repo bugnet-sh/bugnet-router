@@ -389,12 +389,14 @@ func TestStreamLongLineKeepsAnAuthorizationValueWhole(t *testing.T) {
 }
 
 func TestRedactFullCarryAtEveryBoundary(t *testing.T) {
-	const known = "Kn0wnSecretQJQJ123"
-	r := NewRedactor(known)
+	const known, other = "Kn0wnSecretQJQJ123", "Kn0wn:Secret@QJQJ!7"
+	r := NewRedactor(known, other)
 	for _, c := range []struct{ name, secret string }{
 		{`"t":"`, "bnt_" + strings.Repeat("Q", 30)},
 		{`"t":"x.`, "bnt_" + strings.Repeat("Q", 30)},
 		{`"k":"pre-`, known},
+		{`"k":"`, other},
+		{`"k":"`, other + "and_more"},
 		{`"k":"`, "sk-ant-api03-" + strings.Repeat("Q", 40)},
 		{`"Authorization":"`, `Digest username=\"bob\",response=\"QJ98\"`},
 		{`"authorization": "`, "token QJQJ98765"},
@@ -410,7 +412,8 @@ func TestRedactFullCarryAtEveryBoundary(t *testing.T) {
 			for _, split := range []int{carryMax, len(head + line)} {
 				got := write(r, whole[:split], whole[split:])
 				for _, f := range got {
-					if strings.ContainsAny(f.T, "QJ") || strings.Contains(f.T, "bob") {
+					if strings.ContainsAny(f.T, "QJ") || strings.Contains(f.T, "bob") ||
+						strings.Contains(f.T, "Kn0wn") {
 						t.Fatalf("%s cut at %d, frame %d: shows %q", c.secret, at, split,
 							f.T[max(len(f.T)-60, 0):])
 					}
