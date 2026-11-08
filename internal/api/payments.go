@@ -198,5 +198,4 @@ func lowerHex32(s string) ([]byte, bool) {
 	}
 	b, err := hex.DecodeString(s)
 	return b, err == nil
->>>>>>> task/x-X15
 }
