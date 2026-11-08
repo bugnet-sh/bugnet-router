@@ -274,6 +274,26 @@ func TestSessionsReadTheWindowAndTheCursor(t *testing.T) {
 	eq(t, src.lists, 3)
 }
 
+func TestCursorsPostgresNeverSees(t *testing.T) {
+	h, src, _ := newHandler(t)
+	a := call(h, "GET", "/api/stats/sessions?before="+allOnes)
+	eq(t, []string{strconv.Itoa(a.status), a.body, a.header.Get("Cache-Control")},
+		[]string{"400", `{"error":"bad_cursor"}`, "no-store"})
+	far := cursorOf([]byte{0x80, 0, 0, 0, 0, 0, 0, 0})
+	eq(t, call(h, "GET", "/api/stats/sessions?before="+far).status, http.StatusBadRequest)
+
+	// No row is both inside the 30 days and older than such a cursor
+	for _, at := range []time.Time{t0.Add(-31 * 24 * time.Hour), t0.Add(-Window)} {
+		a := call(h, "GET", "/api/stats/sessions?before="+EncodeCursor(at, uuid.New()))
+		eq(t, []string{strconv.Itoa(a.status), a.body, a.header.Get("Cache-Control")},
+			[]string{"200", `{"items":[],"next":null}`, "public, max-age=30"})
+	}
+	eq(t, src.lists, 0)
+	call(h, "GET", "/api/stats/sessions?before="+
+		EncodeCursor(t0.Add(-Window).Add(time.Microsecond), uuid.New()))
+	eq(t, src.lists, 1)
+}
+
 func TestServesLastBodyWhilePostgresFails(t *testing.T) {
 	h, src, c := newHandler(t)
 	eq(t, call(h, "GET", "/api/stats").body, servedBody)

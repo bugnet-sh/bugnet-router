@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -554,6 +555,39 @@ func TestCursorRoundTripAndRefusals(t *testing.T) {
 		if _, _, err := DecodeCursor(bad); !errors.Is(err, ErrBadCursor) {
 			t.Errorf("%q decoded", bad)
 		}
+	}
+}
+
+// cursorOf is a cursor of these 8 time bytes and a fixed id
+func cursorOf(t8 []byte) string {
+	b := append(slices.Clone(t8), bytes.Repeat([]byte{7}, 16)...)
+	return "s1." + cursorEncoding.EncodeToString(b)
+}
+
+// allOnes is 24 bytes of 0xff, whose time is a microsecond before 1970
+var allOnes = "s1." + cursorEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 24))
+
+func TestCursorTimeMustBeOneTheRouterWrote(t *testing.T) {
+	micros := func(at time.Time) []byte {
+		return binary.BigEndian.AppendUint64(nil, uint64(at.UnixMicro()))
+	}
+	for name, c := range map[string]string{
+		"all 0xff":         allOnes,
+		"just before 1970": cursorOf(micros(time.Unix(0, 0).Add(-time.Microsecond))),
+		"far past":         cursorOf([]byte{0x80, 0, 0, 0, 0, 0, 0, 0}),
+		"far future":       cursorOf([]byte{0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}),
+		"the year 10000":   cursorOf(micros(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))),
+	} {
+		if _, _, err := DecodeCursor(c); !errors.Is(err, ErrBadCursor) {
+			t.Errorf("%s: %q decoded", name, c)
+		}
+	}
+	for _, at := range []time.Time{
+		time.Unix(0, 0).UTC(), time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC),
+	} {
+		got, _, err := DecodeCursor(cursorOf(micros(at)))
+		eq(t, err, nil)
+		eq(t, got, at)
 	}
 }
 

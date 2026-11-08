@@ -1245,7 +1245,8 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   the last body while Postgres fails. No body answers 503 `unavailable`.
 - `/api/stats/sessions?before=<cursor>` reads 50 placements of the last 30 days a page, newest
   first, cached 30 s per cursor, at most `stats.max_queries` queries at once. A query waits 2 s
-  for a slot, then answers 503 `busy`. A bad cursor answers 400 `bad_cursor`.
+  for a slot, then answers 503 `busy`. A bad cursor answers 400 `bad_cursor`, as does one whose
+  time is outside 1970 to 9999. A cursor older than 30 days answers an empty page with no query.
 - Each client address has a bucket of `stats.per_source_per_minute` with bursts of
   `stats.per_source_burst`, the address being the last `X-Forwarded-For` entry or the peer, IPv6
   by /64. An empty bucket answers 429 `rate_limited`.

@@ -41,6 +41,9 @@ const (
 	publicCache      = "public, max-age=30"
 )
 
+// emptyPage is a page with no rows and no next cursor
+var emptyPage = []byte(`{"items":[],"next":null}`)
+
 // Source is what the routes read, a *store.Store in router-api
 type Source interface {
 	ReadStatsSnapshot(ctx context.Context) (store.StatsSnapshot, error)
@@ -170,6 +173,11 @@ func (h *Handler) serveSessions(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if beforeAt, beforeID, err = DecodeCursor(cursor); err != nil {
 			h.fail(w, r, http.StatusBadRequest, "bad_cursor", nil)
+			return
+		}
+		// No row is both inside the window and older than such a cursor
+		if !beforeAt.After(h.now().Add(-Window)) {
+			h.write(w, r, http.StatusOK, emptyPage, http.Header{"Cache-Control": {publicCache}})
 			return
 		}
 	}
