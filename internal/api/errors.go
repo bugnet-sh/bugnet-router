@@ -102,6 +102,7 @@ const (
 	reasonTooManyServices  = "TOO_MANY_SERVICES"
 	reasonTooManySecrets   = "TOO_MANY_SECRETS"
 	reasonServiceUnknown   = "SERVICE_UNKNOWN"
+	reasonOrderUnknown     = "ORDER_UNKNOWN"
 )
 
 // Codes a start package's unavailable_reason takes, never error text
@@ -113,6 +114,7 @@ const (
 
 var (
 	errNotReady     = errors.New("api: placement is not ready")
+	errOrderUnknown = errors.New("api: no placement has this start order")
 	errShuttingDown = errors.New("api: server is shutting down")
 	// Transfer refusals that transfer's own errors do not cover
 	errSizeRequired = errors.New("api: an upload needs size_bytes, 0 included")
@@ -197,6 +199,7 @@ var codes = []struct {
 	{errStalled, connect.CodeDeadlineExceeded, ""},
 	{errHardStop, connect.CodeDeadlineExceeded, ""},
 	{store.ErrUnknownHandle, connect.CodeNotFound, reasonHandleUnknown},
+	{errOrderUnknown, connect.CodeNotFound, reasonOrderUnknown},
 	{jobs.ErrNotFound, connect.CodeNotFound, reasonJobUnknown},
 	{store.ErrNotFound, connect.CodeNotFound, ""},
 	{jobs.ErrShuttingDown, connect.CodeUnavailable, ""},

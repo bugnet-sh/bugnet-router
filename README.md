@@ -701,6 +701,7 @@ holds a handle or a job ID.
 | `FailedPrecondition` | `HOST_IN_USE` | An x402 host that is already a secret's host |
 | `ResourceExhausted` | `TOO_MANY_SERVICES` | An x402 change past `x402.max_services` live services |
 | `NotFound` | `SERVICE_UNKNOWN` | An x402 `disable` id the placement lacks, or any id without a handle |
+| `NotFound` | `ORDER_UNKNOWN` | A `LookupPlacement` start order that names no placement, an extend order's id included |
 
 `HOST_REFUSED` and `HOST_NOT_ALLOWED` also answer an x402 host, by the same host rules with
 `allowed_shared_hosts` and `blocked_hosts` added. `FEATURE_UNAVAILABLE` also answers `CheckX402`
@@ -733,7 +734,7 @@ the gateway.
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
 | `OperatorService` | `bugnet-dev`'s operator commands | `BUGNET_OPERATOR_TOKEN` | `RevokePreview` |
-| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder` |
+| `PaymentsService` | Payments | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `GetOrder`, `LookupPlacement` |
 
 ### Budgets
 
@@ -974,6 +975,21 @@ state now, and the placement's `failure_reason`, `termination_reason` and `ended
 `Placement` carries them. `refundable` is the placement's, for a start order only, since the
 router records an extension only once it applied it. An empty `order_id` answers
 `InvalidArgument`. `CheckPayer` answers `Unimplemented` until the wallet checks land.
+
+`LookupPlacement` tells Payments which placement an x402 allowance account belongs to. It takes
+one key, the handle's SHA-256 as 64 lower-case hex or the placement's start order id.
+
+| Field | Value |
+| --- | --- |
+| `placement_id`, `start_order_id`, `package_id` | The placement's, in every state |
+| `state` | `placing`, `ready`, `terminating`, `terminated` or `failed`, as `GetOrder` says |
+| `deadline` | The deadline, unset before the placement was ready |
+| `ended_at` | When it ended as `terminated` or `failed`, unset before |
+| `x402_capable` | Before ready, whether the order asked for secrets; from ready, whether the provider is in `secrets.providers` |
+
+A missing key, an empty start order id or a hash that is not 64 lower-case hex answers
+`InvalidArgument`. An unknown hash answers `NotFound` `HANDLE_UNKNOWN`. A start order id that
+names no placement, such as an extend order's, answers `NotFound` `ORDER_UNKNOWN`.
 
 ## Deployment
 

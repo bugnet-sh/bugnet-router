@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -140,6 +141,9 @@ type x402Call struct {
 	call       func(ctx context.Context, c *http.Client, url string) error
 }
 
+// x402Served maps each built x402 RPC to what its owner's call in x402Calls answers
+var x402Served = map[string]connect.Code{"LookupPlacement": connect.CodeNotFound}
+
 var x402Calls = []x402Call{
 	{"AppendX402Events", "Egress", func(ctx context.Context, c *http.Client, url string) error {
 		_, err := routerv1connect.NewEgressServiceClient(c, url).AppendX402Events(ctx,
@@ -179,7 +183,7 @@ func TestNewEgressAndPaymentsRPCsNeedTheirTokens(t *testing.T) {
 		for name, tok := range tokens {
 			want := connect.CodeUnauthenticated
 			if name == c.owner {
-				want = connect.CodeUnimplemented
+				want = cmp.Or(x402Served[c.rpc], connect.CodeUnimplemented)
 			}
 			err := c.call(t.Context(), e.httpClient(t, tok), e.url)
 			if connect.CodeOf(err) != want {

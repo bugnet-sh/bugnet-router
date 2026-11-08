@@ -159,3 +159,13 @@ func quotesNone(t *testing.T, err error, ids ...string) {
 		}
 	}
 }
+
+func TestUnknownStartOrderIsOrderUnknown(t *testing.T) {
+	e := newEnv(t, options{})
+	_, err := e.payments(t).LookupPlacement(t.Context(), connect.NewRequest(
+		&routerv1.LookupPlacementRequest{
+			Key: &routerv1.LookupPlacementRequest_StartOrderId{StartOrderId: "ord_unknown"},
+		}))
+	mustCode(t, err, connect.CodeNotFound, "ORDER_UNKNOWN")
+	quotesNone(t, err, "ord_unknown")
+}
