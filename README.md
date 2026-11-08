@@ -960,6 +960,13 @@ so the caller retries it.
 Commands run as root on E2B and Koyeb, as `boxd` on boxd, as `user` on Boat, and as the user
 running the router on `local`.
 
+On `local`, the runner's root commands (`setup`, `gate`, `ssh-up`, `egress apply` and
+`forward`) get `--root <sandbox>/fs`, so `/etc/bugnet` is the sandbox's own, and their `--spec`
+and `--config` paths map into the sandbox as `--cwd` does. A root command the router sends
+through `sudo -n` runs as the host user there. Create hard-links `local.runner` at the
+sandbox's `/usr/local/lib/bugnet/bugnet-run`, so `setup` finds it in place, and `Destroy` kills
+the gate, forwarder, sshd and sampler whose pid files under `/run/bugnet` name the sandbox.
+
 Every adapter streams whole files in and out of sandboxes, for transfers, through
 `StatFile`, `OpenReader` and `OpenWriter` on `provider.Provider`. A read stops at the size the
 file had when it opened and fails if the file ends sooner. No write makes new bytes visible:

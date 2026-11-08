@@ -8,6 +8,10 @@
 // A sandbox appears and disappears with one directory rename, built under Root/.staging and
 // removed through Root/.trash. An idempotency key derives the sandbox id, and Root/.keys/<id>,
 // created with O_EXCL, records that the key was used so it keeps naming that sandbox.
+// The runner's root commands, setup, gate, ssh-up, egress apply and forward, get --root at the
+// sandbox's fs with their --spec and --config paths mapped there, and run as the host user even
+// when the router asks for sudo -n. Each sandbox gets the runner hard-linked at its stable path
+// at create, and Destroy kills the services setup started from the pid files under fs/run/bugnet.
 package local
 
 import (
@@ -52,6 +56,18 @@ const (
 
 // Runner subcommands that read or write the jobs directory
 var jobCommands = []string{"start", "attach", "ls", "cancel"}
+
+// rootCommands are the runner subcommands that take --root, each as its words
+var rootCommands = [][]string{{"setup"}, {"gate"}, {"ssh-up"}, {"egress", "apply"}, {"forward"}}
+
+// Sandbox paths of the runner's stable copy and its service pid files
+const (
+	stableRunner = "/usr/local/lib/bugnet/bugnet-run"
+	servicePids  = "/run/bugnet"
+)
+
+// services are the long-running processes setup and ssh-up start, by their pid file names
+var services = []string{"gate", "forward", "sshd", "sample"}
 
 // Options configures a local provider, Root must be an absolute path
 type Options struct {
@@ -242,6 +258,7 @@ func (p *Provider) build(id string, req provider.CreateRequest) error {
 	if m.GatePort, m.SSHDPort, err = freePorts(); err != nil {
 		return err
 	}
+	p.linkRunner(filepath.Join(staging, "fs"))
 	if req.Lifetime > 0 {
 		m.Deadline = now.Add(req.Lifetime)
 	}
@@ -253,6 +270,18 @@ func (p *Provider) build(id string, req provider.CreateRequest) error {
 		return nil
 	}
 	return err
+}
+
+// linkRunner puts the runner at its stable path without a copy, sparing macOS its first-run check
+func (p *Provider) linkRunner(fsDir string) {
+	if p.opts.RunnerPath == "" {
+		return
+	}
+	dst := filepath.Join(fsDir, filepath.FromSlash(stableRunner))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return
+	}
+	_ = os.Link(p.opts.RunnerPath, dst)
 }
 
 func (p *Provider) recordKey(id, key string) error {
@@ -372,6 +401,9 @@ func (p *Provider) Destroy(_ context.Context, ref provider.Ref) error {
 	if err := killJobs(s.jobsDir()); err != nil {
 		return internalErr(err)
 	}
+	if err := killServices(s.fsDir()); err != nil {
+		return internalErr(err)
+	}
 	trash, err := p.scratchDir("trash", ref.ID)
 	if err != nil {
 		return internalErr(err)
@@ -410,6 +442,34 @@ func killJobs(jobs string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// killServices ends the gate, forwarder, sshd and sampler setsid started for this sandbox
+func killServices(fsDir string) error {
+	var errs []error
+	for _, name := range services {
+		pidFile := filepath.Join(fsDir, filepath.FromSlash(servicePids), name+".pid")
+		pid, ok := readPid(pidFile)
+		// A pid the system gave another process since never names this sandbox's root
+		if !ok || !strings.Contains(commandLine(pid), fsDir) {
+			continue
+		}
+		// Each service leads its own session, so its group holds what it started
+		errs = append(errs, kill(-pid), kill(pid))
+	}
+	return errors.Join(errs...)
+}
+
+// commandLine is a process's command line, from /proc where it exists and ps elsewhere
+func commandLine(pid int) string {
+	if b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
+		return strings.ReplaceAll(string(b), "\x00", " ")
+	}
+	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // kill sends SIGKILL, and EPERM means the pid now belongs to another user
@@ -699,31 +759,60 @@ func (p *Provider) Exec(
 	return startStream(ctx, argv, dir, env)
 }
 
-// command points the runner at RunnerPath, its cwd at the host and its jobs at this sandbox
+// command points the runner at RunnerPath, its paths at the host and its state at this sandbox
 func (p *Provider) command(s sandbox, argv []string, dir string) ([]string, error) {
+	argv = unsudo(argv)
 	if argv[0] != runnerName && argv[0] != runnerSandboxPath {
 		return argv, nil
 	}
 	if p.opts.RunnerPath == "" {
 		return nil, invalid(errors.New("bugnet-run has no RunnerPath on this provider"))
 	}
-	args, err := s.runnerCwd(argv[1:], dir)
+	words := rootWords(argv[1:])
+	flags := []string{"cwd"}
+	if words > 0 {
+		flags = append(flags, "spec", "config")
+	}
+	args, err := s.mapPaths(argv[1:], dir, flags)
 	if err != nil {
 		return nil, err
 	}
 	out := append([]string{p.opts.RunnerPath}, args...)
-	if len(args) > 0 && slices.Contains(jobCommands, args[0]) && !hasDirFlag(args[1:]) {
+	if len(args) > 0 && slices.Contains(jobCommands, args[0]) && !hasFlag(args[1:], "dir") {
 		out = slices.Insert(out, 2, "--dir", s.jobsDir())
+	}
+	if words > 0 && !hasFlag(args[words:], "root") {
+		out = slices.Insert(out, 1+words, "--root", s.fsDir())
 	}
 	return out, nil
 }
 
-// runnerCwd maps the runner's own cwd flags, which end at "--", as Exec maps a cwd from dir
-func (s sandbox) runnerCwd(args []string, dir string) ([]string, error) {
+// unsudo runs a root command as the host user, since a local sandbox's root is a host directory
+func unsudo(argv []string) []string {
+	if len(argv) > 2 && argv[0] == "sudo" && argv[1] == "-n" &&
+		(argv[2] == runnerName || argv[2] == runnerSandboxPath) {
+		return argv[2:]
+	}
+	return argv
+}
+
+// rootWords is how many words name a root command at the start of args, 0 for another command
+func rootWords(args []string) int {
+	for _, words := range rootCommands {
+		if len(args) >= len(words) && slices.Equal(args[:len(words)], words) {
+			return len(words)
+		}
+	}
+	return 0
+}
+
+// mapPaths maps the runner's own path flags, which end at "--", as Exec maps a cwd from dir
+func (s sandbox) mapPaths(args []string, dir string, names []string) ([]string, error) {
 	out := slices.Clone(args)
 	for i := 0; i < len(out) && out[i] != "--"; i++ {
 		name, value, inline := strings.Cut(out[i], "=")
-		if name != "-cwd" && name != "--cwd" {
+		if !slices.Contains(names, strings.TrimLeft(name, "-")) || !strings.HasPrefix(name, "-") ||
+			strings.HasPrefix(name, "---") {
 			continue
 		}
 		at := i
@@ -749,13 +838,13 @@ func (s sandbox) runnerCwd(args []string, dir string) ([]string, error) {
 	return out, nil
 }
 
-// hasDirFlag looks only at the runner's own flags, which end at "--"
-func hasDirFlag(args []string) bool {
+// hasFlag looks only at the runner's own flags, which end at "--"
+func hasFlag(args []string, flag string) bool {
 	for _, a := range args {
 		if a == "--" {
 			return false
 		}
-		if name, _, _ := strings.Cut(a, "="); name == "-dir" || name == "--dir" {
+		if name, _, _ := strings.Cut(a, "="); name == "-"+flag || name == "--"+flag {
 			return true
 		}
 	}

@@ -908,3 +908,115 @@ func TestLocalFileErrors(t *testing.T) {
 		requireCode(t, "fileErr of "+errno.Error(), err, code)
 	}
 }
+
+// fakeRunner is a runner that prints each argument it gets on its own line
+func fakeRunner(t *testing.T) string {
+	t.Helper()
+	runner := filepath.Join(t.TempDir(), "fake-runner")
+	script := []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+	if err := os.WriteFile(runner, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+func TestLocalMapsSpecPaths(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root, RunnerPath: fakeRunner(t)})
+	ref := createReady(t, p, nil)
+	fsDir := filepath.Join(root, ref.ID, "fs")
+	cases := []struct{ argv, want []string }{
+		{
+			[]string{"sudo", "-n", "/tmp/bugnet/bin/bugnet-run", "setup", "--spec",
+				"/tmp/bugnet/setup-spec.json"},
+			[]string{"setup", "--root", fsDir, "--spec",
+				filepath.Join(fsDir, "tmp", "bugnet", "setup-spec.json")},
+		},
+		{
+			[]string{"bugnet-run", "egress", "apply", "--spec=/tmp/bugnet/egress-spec.json"},
+			[]string{"egress", "apply", "--root", fsDir,
+				"--spec=" + filepath.Join(fsDir, "tmp", "bugnet", "egress-spec.json")},
+		},
+		{
+			[]string{"bugnet-run", "gate", "-config", "/etc/bugnet/gate.json"},
+			[]string{"gate", "--root", fsDir, "-config",
+				filepath.Join(fsDir, "etc", "bugnet", "gate.json")},
+		},
+		{
+			[]string{"bugnet-run", "forward", "--config", "/etc/bugnet/egress.json"},
+			[]string{"forward", "--root", fsDir, "--config",
+				filepath.Join(fsDir, "etc", "bugnet", "egress.json")},
+		},
+		{
+			[]string{"bugnet-run", "ssh-up", "--root", "/elsewhere", "--spec", "s.json"},
+			[]string{"ssh-up", "--root", "/elsewhere", "--spec",
+				filepath.Join(fsDir, "root", "s.json")},
+		},
+		// Only root commands take --root, and only the runner loses its sudo
+		{[]string{"bugnet-run", "ping", "--spec", "/x"}, []string{"ping", "--spec", "/x"}},
+		{[]string{"bugnet-run", "egress", "--spec", "/x"}, []string{"egress", "--spec", "/x"}},
+	}
+	for _, c := range cases {
+		out, code, err := execOut(t, p, ref, provider.ExecSpec{Argv: c.argv})
+		want := strings.Join(c.want, "\n") + "\n"
+		if err != nil || code != 0 || out != want {
+			t.Errorf("argv %q reached the runner as %q (exit %d, %v), want %q", c.argv, out,
+				code, err, want)
+		}
+	}
+	_, err := p.Exec(t.Context(), ref, provider.ExecSpec{
+		Argv: []string{"bugnet-run", "setup", "--spec", "/../../escape.json"},
+	})
+	requireCode(t, "a spec outside the sandbox", err, provider.CodeInvalid)
+}
+
+func TestLocalLinksTheRunnerAtItsStablePath(t *testing.T) {
+	root := t.TempDir()
+	runner := fakeRunner(t)
+	p := newLocal(t, local.Options{Root: root, RunnerPath: runner})
+	ref := createReady(t, p, nil)
+	stable := filepath.Join(root, ref.ID, "fs", "usr", "local", "lib", "bugnet", "bugnet-run")
+	a, err := os.Stat(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Stat(stable)
+	if err != nil || !os.SameFile(a, b) {
+		t.Fatalf("the stable runner %v, %v, want a hard link to the runner", b, err)
+	}
+	bareRoot := t.TempDir()
+	bare := newLocal(t, local.Options{Root: bareRoot})
+	ref = createReady(t, bare, nil)
+	if _, err := os.Stat(filepath.Join(bareRoot, ref.ID, "fs", "usr")); err == nil {
+		t.Fatal("a provider without a runner made the stable path")
+	}
+}
+
+func TestLocalDestroyKillsServices(t *testing.T) {
+	root := t.TempDir()
+	p := newLocal(t, local.Options{Root: root})
+	ref := createReady(t, p, nil)
+	fsDir := filepath.Join(root, ref.ID, "fs")
+	// The gate stands in as a shell whose command line names the sandbox's root
+	gate := startHost(t, "sh", "-c", "sleep 30; : "+fsDir)
+	stray := startHost(t, "sleep", "30")
+	files := map[string]string{
+		"/run/bugnet/gate.pid":   strconv.Itoa(gate.pid) + "\n",
+		"/run/bugnet/sample.pid": strconv.Itoa(stray.pid) + "\n",
+		"/run/bugnet/sshd.pid":   "1\n",
+	}
+	for name, data := range files {
+		if err := p.WriteFile(t.Context(), ref, name, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.Destroy(t.Context(), ref); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	gate.requireKilled(t)
+	select {
+	case <-stray.done:
+		t.Fatal("Destroy killed a pid whose command line names no sandbox")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
