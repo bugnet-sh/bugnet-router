@@ -358,3 +358,36 @@ func TestStreamLongLineKeepsAnAuthorizationValueWhole(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactFullCarryAtEveryBoundary(t *testing.T) {
+	const known = "Kn0wnSecretQJQJ123"
+	r := NewRedactor(known)
+	for _, c := range []struct{ name, secret string }{
+		{`"t":"`, "bnt_" + strings.Repeat("Q", 30)},
+		{`"t":"x.`, "bnt_" + strings.Repeat("Q", 30)},
+		{`"k":"pre-`, known},
+		{`"k":"`, "sk-ant-api03-" + strings.Repeat("Q", 40)},
+		{`"Authorization":"`, `Digest username=\"bob\",response=\"QJ98\"`},
+		{`"authorization": "`, "token QJQJ98765"},
+		{`"h":"`, "Bearer QJQJ98765abcdefgh"},
+		{`"u":"`, "postgres://app:QJQJpw@db/x"},
+		{`"u":"`, "https://u:QJ@QJ/QJ@db.example.com/x"},
+	} {
+		line := `,` + c.name + c.secret + `","b":1}`
+		// The 16 KiB a full carry shows ends at every byte of the line, before its break comes
+		for at := range len(line) + 1 {
+			head := `{"a":"` + strings.Repeat("y", carryMax-6-at) + `"`
+			whole := head + line + "\nafter text\n"
+			for _, split := range []int{carryMax, len(head + line)} {
+				got := write(r, whole[:split], whole[split:])
+				for _, f := range got {
+					if strings.ContainsAny(f.T, "QJ") || strings.Contains(f.T, "bob") {
+						t.Fatalf("%s cut at %d, frame %d: shows %q", c.secret, at, split,
+							f.T[max(len(f.T)-60, 0):])
+					}
+				}
+				eq(t, strings.HasSuffix(joined(got), "after text\n"), true)
+			}
+		}
+	}
+}

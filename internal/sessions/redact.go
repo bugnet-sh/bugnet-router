@@ -49,6 +49,8 @@ var (
 		`glpat-[A-Za-z0-9_-]{20,}|r8_[A-Za-z0-9]{30,})`)
 	// Words after which a credential follows, so a frame never ends between the two
 	leadWords = regexp.MustCompile(`(?i)^(bearer|basic|(proxy-)?authorization\s*[:=]?)$`)
+	// A URL still open at the end, or a scheme whose // may follow, its user info maybe cut
+	openURL = regexp.MustCompile("[A-Za-z][A-Za-z0-9+.-]*:(//[^\\s\"'<>`]*)?$")
 )
 
 // shapes redacts the token shapes alone, for strings with no placement behind them
@@ -459,6 +461,11 @@ func (st *Stream) safe() (int, bool) {
 func fullCut(b []byte, n int) int {
 	for n > 0 && isTokenChar(b[n-1]) {
 		n--
+	}
+	// A password stops the run at a colon or an @, and no part of it shows without its scheme
+	if loc := openURL.FindSubmatchIndex(b[:n]); loc != nil &&
+		(loc[2] >= 0 || n == len(b) || b[n] == '/') {
+		n = loc[0]
 	}
 	n = beforeLeadWords(b, n)
 	line := bytes.LastIndexAny(b[:n], "\r\n") + 1
