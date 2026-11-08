@@ -22,12 +22,14 @@ import (
 const (
 	payerAddr = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	feeAddr   = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	paidTx    = "36CpwVLKDRH7UU96nxCVFzCR8DNoDFCxNu19SKnFiTWW" +
+		"TgJUs3HQbSHTb2zHgh2uo8yqUVZz2MjWanciehRuemgr"
 )
 
 func TestTokenCarriesThePaymentClaims(t *testing.T) {
 	pub, priv := newKey(t)
 	out, stderr, code := runCLI(t, env(nil), "token", "--priv", priv, "--package", "small-10m",
-		"--amount", "1053000", "--payer", payerAddr, "--fee-payer", feeAddr,
+		"--amount", "1053000", "--payer", payerAddr, "--fee-payer", feeAddr, "--tx", paidTx,
 		"--allowance-micros", "1000000")
 	if code != 0 {
 		t.Fatalf("token exited %d: %s", code, stderr)
@@ -38,6 +40,7 @@ func TestTokenCarriesThePaymentClaims(t *testing.T) {
 	}
 	eq(t, c.Payer, payerAddr)
 	eq(t, c.FeePayer, feeAddr)
+	eq(t, c.Tx, paidTx)
 	eq(t, c.AllowanceMicros, int64(1000000))
 	eq(t, c.AmountMicros, int64(1053000))
 }
@@ -70,6 +73,7 @@ func TestTokenRefusesBadPaymentClaims(t *testing.T) {
 	for name, args := range map[string][]string{
 		"bad payer":           {"--payer", "0x12"},
 		"bad fee payer":       {"--fee-payer", "l" + feeAddr[1:]},
+		"short tx":            {"--tx", paidTx[:80]},
 		"negative allowance":  {"--allowance-micros", "-1"},
 		"allowance over paid": {"--allowance-micros", "2"},
 		"allowance on extend": {"--kind", "extend", "--handle", h, "--allowance-micros", "1"},

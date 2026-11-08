@@ -42,6 +42,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
+	"github.com/bugnet-sh/bugnet-router/internal/solana"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
 
@@ -50,9 +51,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   keys                                   print fresh secrets as KEY=value lines
   pubkey [--priv K]                      print the order token public key of a private key
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
-        [--priv K] [--payer A] [--fee-payer A] [--allowance-micros N]
+        [--priv K] [--payer A] [--fee-payer A] [--tx S] [--allowance-micros N]
                                          print a signed order token
-  create --package P [--order O] [--token T] [--payer A] [--fee-payer A]
+  create --package P [--order O] [--token T] [--payer A] [--fee-payer A] [--tx S]
          [--allowance-micros N]          create a placement and wait until it is ready
   get --handle H                         print a placement
   extend --handle H --package P [--order O] [--token T]
@@ -315,16 +316,18 @@ type order struct {
 	priced bool // amount was given, so the catalog is not read
 	ttl    time.Duration
 	priv   string // BUGNET_ORDER_PRIVATE_KEY when empty
-	// payer, feePayer and allowance are the payment claims, each left out when empty or 0
+	// payer, feePayer, tx and allowance are the payment claims, each left out when empty or 0
 	payer     string
 	feePayer  string
+	tx        string
 	allowance int64
 }
 
-// paymentFlags adds --payer, --fee-payer and --allowance-micros to fs
+// paymentFlags adds --payer, --fee-payer, --tx and --allowance-micros to fs
 func paymentFlags(fs *flag.FlagSet, o *order) {
 	fs.StringVar(&o.payer, "payer", "", "base58 Solana address that paid")
 	fs.StringVar(&o.feePayer, "fee-payer", "", "base58 address of the facilitator's fee payer")
+	fs.StringVar(&o.tx, "tx", "", "base58 signature of the payment's transaction")
 	fs.Int64Var(&o.allowance, "allowance-micros", 0, "x402 allowance inside the amount, start only")
 }
 
@@ -367,7 +370,7 @@ func (c *cli) sign(o order) (string, error) {
 	claims := ordertoken.Claims{
 		OrderID: o.id, Kind: o.kind, PackageID: o.pkg, AmountMicros: o.amount,
 		ExpiresAt: time.Now().UTC().Add(o.ttl), Payer: o.payer, FeePayer: o.feePayer,
-		AllowanceMicros: o.allowance,
+		Tx: o.tx, AllowanceMicros: o.allowance,
 	}
 	if claims.OrderID == "" {
 		claims.OrderID = "dev-" + strings.ToLower(rand.Text())
@@ -406,6 +409,9 @@ func (o order) checkPayment() error {
 		if _, err := wallet.ParseSolana(f[1]); f[1] != "" && err != nil {
 			return fmt.Errorf("%w: --%s must be a canonical base58 Solana address", errUsage, f[0])
 		}
+	}
+	if _, ok := solana.Signature(o.tx); o.tx != "" && !ok {
+		return fmt.Errorf("%w: --tx must be base58 of a 64-byte signature", errUsage)
 	}
 	switch {
 	case o.allowance < 0:
