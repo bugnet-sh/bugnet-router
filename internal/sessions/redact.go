@@ -33,9 +33,10 @@ var (
 	pemOpen  = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemClose = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY-----`)
 	pemEnd   = regexp.MustCompile(`^-----END [A-Z0-9 ]*PRIVATE KEY-----$`)
-	// An Authorization header up to its value, the quote opening it kept, also escaped or a pair
-	authz = regexp.MustCompile(`(?i)((?:\\?["'])?)(?:proxy-)?authorization` +
-		`(?:\\?["']?[ \t]*[:=]|\\?["'][ \t]*,)[ \t]*`)
+	// An Authorization header up to its value, the quote opening it kept, also escaped or a pair,
+	// then what closes the name, a quote or a bracket, before a colon or = or before a comma
+	authz = regexp.MustCompile(`(?i)((?:\\*["'])?)(?:proxy-)?authorization` +
+		`(?:((?:\\*["'])?\]?)[ \t]*[:=]|(\\*["'])[ \t]*,)[ \t]*`)
 	authzAny  = regexp.MustCompile(`(?i)(?:proxy-)?authorization`)
 	scheme    = regexp.MustCompile(`(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
 	urlScheme = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://`)
@@ -171,26 +172,63 @@ func redactAuthz(s string) string {
 
 // authzValue is where the value of the Authorization header authz matched at m starts and ends
 func authzValue(s string, m []int) (int, int) {
-	at, quote, escaped := m[1], byte(0), false
+	at, quote, level := m[1], byte(0), 0
 	if open := s[m[2]:m[3]]; open != "" {
-		quote, escaped = open[len(open)-1], len(open) == 2
-		// A JSON or dict value opens a quote of its own after the name's
-		if strings.HasPrefix(s[at:], open) {
-			at += len(open)
+		quote, level = open[len(open)-1], len(open)-1
+	}
+	// After a name its own quote or bracket closed, as in JSON, Ruby, PHP or Go, the value opens
+	// a quote of its own, or has none and runs to the line's end
+	if m[5] > m[4] || m[7] > m[6] {
+		at = skipAssign(s, at)
+		j := at
+		for j < len(s) && s[j] == '\\' {
+			j++
+		}
+		quote, level = 0, 0
+		if j < len(s) && (s[j] == '"' || s[j] == '\'') {
+			quote, level, at = s[j], j-at, j+1
 		}
 	}
-	return at, valueEnd(s, at, quote, escaped)
+	return at, valueEnd(s, at, quote, level)
 }
 
-// valueEnd is where a value from i ends, at a line break or its closing quote, escaped or not
-func valueEnd(s string, i int, quote byte, escaped bool) int {
+// skipAssign moves i past what may join a name to its value: spaces, [, =, > and []string{
+func skipAssign(s string, i int) int {
+	for i < len(s) {
+		switch {
+		case strings.HasPrefix(s[i:], "[]string{"):
+			i += len("[]string{")
+		case strings.IndexByte(" \t[=>", s[i]) >= 0:
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// valueEnd is where a value from i ends, at a line break or its closing quote, which has level
+// backslashes before it in escaped JSON
+func valueEnd(s string, i int, quote byte, level int) int {
 	for ; i < len(s); i++ {
 		switch c := s[i]; {
 		case c == '\r' || c == '\n':
 			return i
 		case quote == 0:
-		case c == '\\' && escaped && i+1 < len(s) && s[i+1] == quote:
-			return i
+		case c == '\\' && level > 0:
+			j := i + 1
+			for j < len(s) && s[j] == '\\' {
+				j++
+			}
+			switch {
+			case j == len(s) || s[j] != quote:
+				i = j - 1
+			case j-i <= level:
+				return i
+			default:
+				// More backslashes escape a quote inside the value
+				i = j
+			}
 		case c == '\\':
 			i++
 		case c == quote:

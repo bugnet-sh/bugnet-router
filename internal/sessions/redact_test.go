@@ -223,6 +223,26 @@ func TestRedactAnyAuthorizationSchemeAcrossFrames(t *testing.T) {
 	}
 }
 
+func TestRedactAuthorizationAfterAClosedName(t *testing.T) {
+	r := NewRedactor()
+	for _, c := range []struct{ in, want string }{
+		{`{"Authorization":["token QJs3cr3t"]}`, `{"Authorization":["[redacted credential]"]}`},
+		{`http.Header{"Authorization":[]string{"token QJs3cr3t"}}`,
+			`http.Header{"Authorization":[]string{"[redacted credential]"}}`},
+		{`{"Authorization"=>"token QJs3cr3t"}`, `{"Authorization"=>"[redacted credential]"}`},
+		{`{"Authorization" => "token QJs3cr3t"}`,
+			`{"Authorization" => "[redacted credential]"}`},
+		{`'Authorization' => 'token QJs3cr3t',`, `'Authorization' => '[redacted credential]',`},
+		{"[Authorization] => token QJs3cr3t\n", "[Authorization] => [redacted credential]\n"},
+		{`headers["Authorization"] = "token QJs3cr3t";`,
+			`headers["Authorization"] = "[redacted credential]";`},
+		{`{\\\"Authorization\\\":\\\"token QJs3cr3t\\\"}`,
+			`{\\\"Authorization\\\":\\\"[redacted credential]\\\"}`},
+	} {
+		eq(t, r.Redact(c.in), c.want)
+	}
+}
+
 func TestRedactTokenAfterASkippedMatch(t *testing.T) {
 	r := NewRedactor()
 	body := strings.Repeat("Ab3_", 10)
