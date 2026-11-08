@@ -180,8 +180,11 @@ func serve(
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
-		Egress: worker.Egress{Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs},
-		Stats:  feedDeps(cfg, cat), Sessions: cfg.Sessions,
+		Egress: worker.Egress{
+			Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs,
+			Listen: cfg.Localrun.ForwardListen, Port: cfg.Localrun.EgressPort,
+		},
+		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions,
 	})
 	if err != nil {
 		return err

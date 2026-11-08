@@ -13,3 +13,10 @@ func TestLocalrunSeamsAbsentInNormalBuilds(t *testing.T) {
 		t.Fatal("secrets.providers = local was accepted")
 	}
 }
+
+func TestLocalrunTableAbsentInNormalBuilds(t *testing.T) {
+	_, err := LoadFile(writeFile(t, "[localrun]\negress_port = 4444"))
+	if err == nil || !strings.Contains(err.Error(), "egress_port") {
+		t.Fatalf("a [localrun] key was not refused: %v", err)
+	}
+}

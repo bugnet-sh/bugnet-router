@@ -22,4 +22,10 @@ func TestLocalrunSeams(t *testing.T) {
 	}
 	p, _ := reg.Get("local")
 	eq(t, reg.Capabilities(p).Secrets, true)
+	c, err = LoadFile(writeFile(t, "[localrun]\nforward_listen = \"127.0.0.1:4443\"\n"+
+		"egress_port = 4444"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Localrun, Localrun{ForwardListen: "127.0.0.1:4443", EgressPort: 4444})
 }
