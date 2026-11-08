@@ -840,19 +840,27 @@ is empty, and the record is still kept.
   `Authorization`, `Bearer` and `Basic` values, URL passwords, private key blocks, and the
   placement's gate key and provider credentials, as `[redacted <kind>]`. A token split across
   frames is still caught, with at most 16 KiB held back per output. Output that goes on after a
-  gap, a `skip` or a replay start inside a line drops its text up to the next line break, so a
-  token whose prefix was left out is never shown.
+  gap, a `skip` that moves it or a replay start inside a line drops the held word before it and
+  its text up to the next line break, so neither part of a cut token is shown.
 - **The live view** (`WatchSessionJob`) runs on its own Valkey client, its blocking pool sized
   for `sessions.live.max_readers`, and counts its bytes in `live:used:<placement>`, never in the
   edge budget. A first connection replays the newest `sessions.live.replay` after a `skip`. A
   stream ends on the job's exit, the placement's end, a closed or rotated link, 30 minutes or
-  shutdown, re-reading its record and placement every 5 s.
+  shutdown, re-reading its record and placement every 5 s. Its cursor is the stream entry and
+  both output offsets, sealed with an HMAC under the `sessions` purpose key over the record id,
+  generation and `seq`. A cursor without a valid seal starts over as a first connection, so a
+  page cannot resume at an entry boundary inside a token.
+- **The snapshot** (`live_json`) serves the placement's deadline, and while it is placing the
+  earliest deadline its package's minutes allow, now plus those minutes.
 - `AppendSessionEvents` takes at most 50 `mcp` events and leaves out each with a tool outside
-  `sessions.mcp_tools` or a malformed outcome, until 10 minutes after the end.
+  `sessions.mcp_tools` or a malformed outcome, until 10 minutes after the end. It stores a call's
+  events in one transaction, so a retried call never stores one twice.
   `AppendAllowanceEvent` stores one event per phase of the start order's record until it
   expires. `RotateSessionLink` moves the generation only when it names the current link.
-- The payment event's `tx` is empty, and its amount the order's whole amount, until router Task
-  28's `Tx` and `AllowanceMicros` claims land (`paymentClaims` in `internal/saga/session.go`).
+- The payment event's `tx` is served empty, and its amount the order's whole amount, until router
+  Task 28's `Tx` and `AllowanceMicros` claims land (`paymentClaims` in
+  `internal/saga/session.go`). An `allowance` event names USDC's mint as `USDC` and any other
+  mint as itself.
 
 ## Deployment
 

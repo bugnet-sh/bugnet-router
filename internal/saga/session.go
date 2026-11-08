@@ -21,8 +21,7 @@ const (
 	defaultAbuseHold   = 30 * 24 * time.Hour
 )
 
-// paymentClaims reads the package's share of an order and its tx from the order token, the one
-// place Task 28's Tx and AllowanceMicros claims are read until it lands
+// paymentClaims is the one place the payment event reads Task 28's Tx and AllowanceMicros claims
 func paymentClaims(c ordertoken.Claims) (packageMicros int64, tx string) {
 	return packageShare(c.AmountMicros, 0), ""
 }
