@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/netip"
 	"slices"
 
 	"connectrpc.com/connect"
@@ -113,13 +114,22 @@ func (g *EgressServer) ResolveTunnel(
 		return nil, s.status(err)
 	}
 	var block *routerv1.X402Config
+	var check *routerv1.TunnelSourceCheck
 	if !fetch {
 		if block, err = s.x402Block(ctx, p); err != nil {
 			return nil, s.status(err)
 		}
+		if s.d.Sources != nil {
+			observed, err := netip.ParseAddr(req.Msg.GetSourceIp())
+			if err != nil || observed.Zone() != "" {
+				observed = netip.Addr{}
+			}
+			check = s.d.Sources.Answer(ctx, p, observed)
+		}
 	}
 	return connect.NewResponse(&routerv1.ResolveTunnelResponse{
-		X402: block, PlacementId: p.ID.String(), Deadline: timestamppb.New(*p.Deadline),
+		X402: block, SourceCheck: check, PlacementId: p.ID.String(),
+		Deadline:  timestamppb.New(*p.Deadline),
 		CaVersion: uint32(p.EgressCAVersion), Secrets: s.egressSecrets(held, fetch),
 		BytesRemaining: left[p.ID], MaxTunnels: defaultMaxTunnels,
 		SecretsVersion: uint64(max(p.SecretsVersion, 0)),

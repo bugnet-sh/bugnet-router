@@ -513,13 +513,17 @@ features that read them land one by one, and until then the settings only load a
 | `[transfers]` | The start window, per-file cap and duration, per-placement counts, claims per URL and Koyeb's part buffers |
 | `[ssh]` | `providers` whose SSH live test passed, the gateway's host keys, sshd ports and the per-placement limits and timeouts |
 | `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
+| `[secrets.source_check]` | The source check's mode per provider (`off`, `report` or `enforce`), `on_unknown` (`allow` or `refuse`), the read interval and its timeout |
 | `[fetch]` | The private repository fetch's byte cap, the egress proxy's listener and the PEM roots its outer certificate is checked against, the system roots when empty |
 | `[bootstrap]` | Where `FetchSource` puts repositories under the exec user's home, how long a silent private fetch lives, and its attempts per placement and fetches per replica |
 | `[hooks]` | `providers` whose webhooks are verified |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
-and `local.sshd_path` choose each provider's route. A `bn` subdomain proxy made after boot can
+and `local.sshd_path` choose each provider's route. `boat.egress_families` (`ipv6`, `ipv4`) and
+`boat.egress_ipv6_bits` (64 to 128) shape the egress source Boat reports. Both routers refuse to
+start when `secrets.source_check.modes` names a provider that is not listed or reports no
+address, or when `boat.egress_families` is empty while Boat's mode is not `off`. A `bn` subdomain proxy made after boot can
 lack its certificate for a while, so boxd's default is the machine's own name. Every provider
 list takes known provider names, each once. `secrets.providers` never takes `local`, whose
 sandboxes share the host.
@@ -1192,6 +1196,18 @@ X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP
   preset (empty, with those hosts dropped from the secret, when `secrets.custom_hosts` is false).
   It answers `TOKEN_UNKNOWN` for an unknown token, `NOT_READY` for a placement that is not ready
   or has no CA version yet, and `BUDGET_SPENT` once the egress budget is spent.
+- **The source check.** Where a provider's API reports a sandbox's own address, only Boat, the
+  proxy accepts a tunnel only from it. `ResolveTunnel` takes the PROXY v2 source as `source_ip`
+  and answers `source_check`, a mode (`report` or `enforce`) and at most one allowed prefix. The
+  prefix comes from Boat's `ip` and is stored on the placement (`egress_source`), never from the
+  source the proxy saw. A source outside the stored prefix makes one provider read, at most once
+  per `refresh_interval` a placement across replicas (`egress:srcread:<id>`). A new address moves
+  `secrets_version`, writes `SecretsChanged` and inserts `apply_secrets`. `apply_secrets` reads
+  the address too unless a read is fresh, and writes `source` (`family` and `bind`) into the
+  spec when one is stored. With `on_unknown = "refuse"` and no address, it fails the secrets with
+  `SOURCE_UNKNOWN` and writes nothing. `/monitor` of `router-worker` lists the ready placements
+  with secrets and no usable address. `boat.egress_ipv6_bits` stays 128 unless each Boat sandbox
+  owns its own `/64`.
 - **Deletion.** The transaction ending a placement deletes its `secrets`, `secret_links` and
   `ssh_gateway_keys` rows and clears its tunnel token. The sweep deletes leftovers once the
   deadline is an hour past, and the `previews`, `ssh_keys` and `ssh_hosts` rows 7 days after

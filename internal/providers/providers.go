@@ -196,7 +196,10 @@ func buildBoat(
 	if key == "" {
 		return nil, errors.New("boat needs BOAT_API_KEY")
 	}
-	p, err := boat.New(boat.Options{APIKey: key, TypeBySize: cfg.Types, Valkey: vk, Prefix: prefix})
+	p, err := boat.New(boat.Options{
+		APIKey: key, TypeBySize: cfg.Types, Valkey: vk, Prefix: prefix,
+		EgressFamilies: cfg.EgressFamilies, EgressIPv6Bits: cfg.EgressIPv6Bits,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("boat.types: %w", err)
 	}

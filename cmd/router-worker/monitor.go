@@ -39,8 +39,16 @@ type health struct {
 	valkey                 valkeyHealth
 	pools                  poolHealth
 	feed                   feedHealth
+	// noSource counts ready placements with secrets and no usable egress address, by provider
+	noSource []sourceGap
 	// sessions is the session tables' share of their disk budget, -1 when unread
 	sessions int64
+}
+
+// sourceGap is the ready placements of one provider with secrets and no stored egress source
+type sourceGap struct {
+	provider string
+	n        int
 }
 
 // feedCheck says whether the stats snapshot job runs, and whether it lacks the Payments token
@@ -70,7 +78,7 @@ const (
 // monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
-	poolList string, feed feedCheck, disk diskPercent,
+	poolList string, feed feedCheck, disk diskPercent, sourced []string,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -83,6 +91,7 @@ func monitor(
 		wg.Go(func() { h.pools = checkPools(log, poolList) })
 		wg.Go(func() { h.feed = checkFeed(ctx, log, st, feed) })
 		wg.Go(func() { h.sessions = checkSessions(ctx, log, disk) })
+		wg.Go(func() { h.noSource = checkSources(ctx, log, st, sourced) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -111,6 +120,24 @@ func checkPostgres(
 		return 0, 0, 0, true
 	}
 	return overdue, ending, stuck, false
+}
+
+// checkSources counts, for each provider with a source check, the placements it cannot check
+func checkSources(
+	ctx context.Context, log *slog.Logger, st *store.Store, providers []string,
+) []sourceGap {
+	var out []sourceGap
+	for _, name := range providers {
+		n, err := st.SecretsWithoutSourceCount(ctx, name)
+		if err != nil {
+			log.Warn("monitor cannot count placements without an egress source", "err", err)
+			continue
+		}
+		if n > 0 {
+			out = append(out, sourceGap{provider: name, n: n})
+		}
+	}
+	return out
 }
 
 // checkFeed reads the stats snapshot row's ages while the snapshot job runs
@@ -250,6 +277,11 @@ func (h health) problems() []string {
 	if h.sessions >= sessionAlertPercent {
 		out = append(out, fmt.Sprintf("session records at %d%% of their disk budget",
 			h.sessions))
+	}
+	for _, g := range h.noSource {
+		out = append(out, fmt.Sprintf(
+			"egress sources: %d ready %s placements with secrets and no usable address",
+			g.n, g.provider))
 	}
 	switch h.pools {
 	case poolsEmpty:

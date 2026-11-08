@@ -31,6 +31,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -153,6 +154,14 @@ func serve(
 	}
 
 	st := openStore(pool, cfg, log)
+	events := edgeevents.New(vk, cfg.ValkeyPrefix, log)
+	sources, err := secrets.NewSources(secrets.SourcesDeps{
+		Settings: secrets.SourceSettingsOf(cfg), Registry: reg, Store: st, Valkey: vk,
+		Prefix: cfg.ValkeyPrefix, Events: events, Log: log,
+	})
+	if err != nil {
+		return err
+	}
 	tracker := placement.NewTracker(time.Now)
 	w, err := worker.New(pool, saga.Deps{
 		Store:        st,
@@ -168,7 +177,7 @@ func serve(
 		ReplicaID:    cfg.ReplicaID,
 		DeploymentID: cfg.DeploymentID,
 		Log:          log,
-		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
+		Events:       events,
 		Budget:       cfg.EdgeBudget,
 		Keys:         cfg.DataPlaneKeys,
 		SSH:          saga.SSHSettingsOf(cfg),
@@ -184,7 +193,7 @@ func serve(
 			Host: cfg.Names.EgressHost, IPs: cfg.Secrets.EgressIPs,
 			Listen: cfg.Localrun.ForwardListen, Port: cfg.Localrun.EgressPort,
 		},
-		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions,
+		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions, Sources: sources,
 	})
 	if err != nil {
 		return err
@@ -202,7 +211,7 @@ func serve(
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList, feed, w.SessionDiskPercent))
+		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, sources.Providers()))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

@@ -86,6 +86,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
@@ -143,6 +144,8 @@ type Deps struct {
 	River *river.Client[pgx.Tx]
 	// Secrets are the secret settings, a zero limit taking its default
 	Secrets config.Secrets
+	// Sources answers ResolveTunnel's source check, none when nil
+	Sources *secrets.Sources
 	// SecretsHost names secret links, CreateSecretLink refusing every call while it is empty
 	SecretsHost string
 	// EgressHost is the proxy's name, the secret writes refusing every call while it is empty

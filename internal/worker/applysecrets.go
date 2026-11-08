@@ -40,6 +40,8 @@ const (
 	// reasonUnavailable fails secrets on a provider or router that cannot serve them
 	reasonUnavailable = "FEATURE_UNAVAILABLE"
 	reasonApplyFailed = "APPLY_FAILED"
+	// reasonSourceUnknown fails secrets when on_unknown is refuse and no source is stored
+	reasonSourceUnknown = "SOURCE_UNKNOWN"
 )
 
 // Egress is where apply_secrets points every forwarder
@@ -70,6 +72,8 @@ type egressSpec struct {
 	NPMPlaceholder string      `json:"npm_placeholder"`
 	// X402Hosts are the hosts of x402 services, each also in Hosts, omitted when there are none
 	X402Hosts []string `json:"x402_hosts,omitempty"`
+	// Source pins the forwarder's family and bind address, omitted when none is stored
+	Source *secrets.SpecSource `json:"source,omitempty"`
 }
 
 // egressEnv is one NAME=placeholder line of the sandbox's secrets.env
@@ -138,6 +142,19 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 	if len(loaded) == 0 && len(x402) == 0 && !has {
 		return w.finishApply(ctx, p, lag, applySet{}, store.SecretActive, "")
 	}
+	p, err = w.readSource(ctx, p)
+	if err != nil {
+		return err
+	}
+	// The lag is read after the source check, so a source change in this run is applied by it
+	_, lag, err = w.store.SecretsPending(ctx, id)
+	if err != nil {
+		return err
+	}
+	if w.d.Sources != nil && w.d.Sources.Unknown(p) {
+		w.log.Warn("secrets not applied, no egress source is known", "placement", id)
+		return w.finishApply(ctx, p, lag, set, store.SecretFailed, reasonSourceUnknown)
+	}
 	err = w.applyEgress(ctx, p, prov, set)
 	var re *saga.RunnerError
 	switch {
@@ -152,6 +169,16 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 		return w.finishApply(ctx, p, lag, set, store.SecretFailed, reason)
 	}
 	return err
+}
+
+// readSource is step 2b, a read of the sandbox's egress source unless a read is fresh
+func (w *Worker) readSource(ctx context.Context, p store.Placement) (store.Placement, error) {
+	if w.d.Sources == nil || !w.d.Sources.Active(p) || w.d.Sources.Fresh(p) {
+		return p, nil
+	}
+	src, err := w.d.Sources.ReadInRun(ctx, p)
+	p.EgressSource = src
+	return p, err
 }
 
 // applyEgress writes the spec, once more with a fresh token after token_missing, in one budget
@@ -261,6 +288,9 @@ func (w *Worker) egressSpec(
 	}
 	spec.Hosts = set.hosts()
 	spec.X402Hosts = set.x402Hosts()
+	if w.d.Sources != nil {
+		spec.Source = w.d.Sources.Spec(p)
+	}
 	return spec, nil
 }
 

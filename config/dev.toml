@@ -31,6 +31,9 @@ egress_host = "egress.dev.bugnet.sh"
 [sessions]
 base_url = "https://sessions.dev.bugnet.sh"
 
+[secrets.source_check]
+modes = {}                    # local reports no egress address, a listed Boat takes boat = "report"
+
 [x402]
 enabled = false               # the kill switch, off here until the x402 switch-on
 
