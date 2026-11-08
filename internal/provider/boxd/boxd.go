@@ -103,7 +103,7 @@ type Options struct {
 	Log      *slog.Logger // slog.Default when nil
 	// GatePort is where every machine's default proxy points, provider.DefaultGatePort when 0
 	GatePort int
-	// GateRoute is subdomain for a bn proxy to the gate, or default for the default proxy
+	// GateRoute is default for the pinned default proxy, or subdomain for a bn proxy to the gate
 	GateRoute string
 }
 
@@ -128,7 +128,7 @@ func New(opts Options) (*Provider, error) {
 	if opts.GatePort < 0 || opts.GatePort > 65535 {
 		return nil, fmt.Errorf("boxd: gate port %d is not a TCP port", opts.GatePort)
 	}
-	route := cmp.Or(opts.GateRoute, routeSubdomain)
+	route := cmp.Or(opts.GateRoute, routeDefault)
 	if route != routeSubdomain && route != routeDefault {
 		return nil, fmt.Errorf("boxd: gate route %q is not subdomain or default", route)
 	}

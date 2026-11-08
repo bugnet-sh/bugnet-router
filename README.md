@@ -398,9 +398,11 @@ features that read them land one by one, and until then the settings only load a
 | `[hooks]` | `providers` whose webhooks are verified |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 
-`boxd.gate_route` (`subdomain` or `default`), `boat.ssh_path` (`gate` or `native`) and
-`local.sshd_path` choose each provider's route. Every provider list takes known provider names,
-each once. `secrets.providers` never takes `local`, whose sandboxes share the host.
+`boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
+and `local.sshd_path` choose each provider's route. A `bn` subdomain proxy made after boot can
+lack its certificate for a while, so boxd's default is the machine's own name. Every provider
+list takes known provider names, each once. `secrets.providers` never takes `local`, whose
+sandboxes share the host.
 `router-api` refuses to start when `secrets.providers` lists a provider while
 `secrets.ca_cert_file` is empty, so no placement with secrets lacks the CA. It reads the CA file
 once at start and refuses one that is not PEM certificates alone.

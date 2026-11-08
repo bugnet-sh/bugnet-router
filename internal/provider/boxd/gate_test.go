@@ -113,7 +113,7 @@ func TestBoxdRefusesAnUnknownGateRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
-	eq(t, p.gateRoute, "subdomain")
+	eq(t, p.gateRoute, "default")
 }
 
 func TestPrepareGateTwiceIsSafe(t *testing.T) {

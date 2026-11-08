@@ -109,7 +109,7 @@ type Config struct {
 type Boxd struct {
 	Region   string `toml:"region"`
 	Endpoint string `toml:"endpoint"` // overrides the region's endpoint when set
-	// GateRoute is subdomain for a bn proxy to the gate, or default for the pinned default proxy
+	// GateRoute is default for the pinned default proxy, or subdomain for a bn proxy to the gate
 	GateRoute string `toml:"gate_route"`
 }
 
@@ -439,7 +439,7 @@ func defaults() file {
 		Local: localFile{
 			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
 		},
-		Boxd:  boxdFile{Region: "fra", GateRoute: "subdomain", HardenRequired: true},
+		Boxd:  boxdFile{Region: "fra", GateRoute: "default", HardenRequired: true},
 		E2B:   e2bFile{HardenRequired: true},
 		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
 		Boat:  boatFile{SSHPath: "gate", HardenRequired: true},

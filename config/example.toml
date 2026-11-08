@@ -131,7 +131,7 @@ sshd_path = "/usr/sbin/sshd"  # the host's sshd, which ssh-up never installs
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
-gate_route = "subdomain"      # a bn proxy to the gate, or "default" for the pinned default proxy
+gate_route = "default"        # the pinned default proxy, or "subdomain" for a bn proxy to the gate
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
 

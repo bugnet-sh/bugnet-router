@@ -59,7 +59,7 @@ func TestDataPlaneDefaults(t *testing.T) {
 			eq(t, c.Fetch, Fetch{MaxBytes: 2 << 30, EgressAddr: "127.0.0.1:9443"})
 			eq(t, c.Hooks, Hooks{})
 			eq(t, c.DataplaneWorkers, 8)
-			eq(t, c.Boxd.GateRoute, "subdomain")
+			eq(t, c.Boxd.GateRoute, "default")
 			eq(t, c.Boat.SSHPath, "gate")
 			eq(t, c.LocalSSHDPath, "/usr/sbin/sshd")
 			eq(t, c.ValkeyAddr, "127.0.0.1:6379")
@@ -157,7 +157,7 @@ providers = ["e2b"]
 sshd_path = "/opt/sshd"
 
 [boxd]
-gate_route = "default"
+gate_route = "subdomain"
 
 [boat]
 ssh_path = "native"
@@ -207,8 +207,18 @@ ssh_path = "native"
 	eq(t, c.Fetch, Fetch{MaxBytes: 3 << 30, EgressAddr: "[::1]:9444"})
 	eq(t, c.Hooks, Hooks{Providers: []string{"e2b"}})
 	eq(t, c.LocalSSHDPath, "/opt/sshd")
-	eq(t, c.Boxd.GateRoute, "default")
+	eq(t, c.Boxd.GateRoute, "subdomain")
 	eq(t, c.Boat.SSHPath, "native")
+}
+
+func TestBoxdGateRouteDefault(t *testing.T) {
+	for _, content := range []string{"", "[boxd]\n", "[boxd]\ngate_route = \"\"\n"} {
+		c, err := LoadFile(writeFile(t, content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, c.Boxd.GateRoute, "default")
+	}
 }
 
 func TestDataPlaneRelativePathsResolve(t *testing.T) {
