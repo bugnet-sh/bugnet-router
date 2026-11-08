@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,44 @@ func TestMigrationWalletsUpDownUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, tables(), 3)
+}
+
+func TestMigrationWalletsGivesUpOnAHeldLock(t *testing.T) {
+	url := testenv.DatabaseURL(t)
+	ctx := context.Background()
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { _ = db.Close() })
+	gp, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walletsVersion := migrationVersion(t, "wallets")
+	if _, err := gp.UpTo(ctx, walletsVersion-1); err != nil {
+		t.Fatal(err)
+	}
+	held, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Rollback() }()
+	if _, err := held.ExecContext(ctx, `lock table orders in access share mode`); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	wait, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, err = gp.UpTo(wait, walletsVersion)
+	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Fatalf("migration under a held lock after %v: %v", time.Since(start), err)
+	}
+	_ = held.Rollback()
+	if _, err := gp.UpTo(ctx, walletsVersion); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // migrationVersion is the goose version of the migration file named <version>_<name>.sql

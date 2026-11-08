@@ -1,4 +1,8 @@
 -- +goose Up
+-- a long query holding orders or placements makes the deploy fail instead of queueing every
+-- query behind the alter
+set local lock_timeout = '5s';
+
 alter table orders
     -- the payer as the router decided it, null when the order counts as having none
     add column payer text,
