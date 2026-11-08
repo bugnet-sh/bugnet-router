@@ -41,6 +41,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
+	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
 const (
@@ -1625,4 +1626,68 @@ func TestSweepDeletesLeftovers(t *testing.T) {
 	// An ended placement's secrets go at once, its previews and SSH records after 7 days
 	eq(t, got(eightDays), rows{0, 0, 0, false})
 	eq(t, got(sixDays), rows{0, 0, 3, false})
+}
+
+func TestSweepDeletesX402Rows(t *testing.T) {
+	ctx := t.Context()
+	e := newEnv(t, options{})
+	spec := x402.Spec{
+		Host: "api.example.com", Prefix: "/v1/", Method: "GET", MaxPriceMicros: 1000,
+		PayTo: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", PaidPath: "/v1",
+	}
+	seed := func(p store.Placement) {
+		t.Helper()
+		id := x402.ServiceID("GET", spec.Host, spec.Prefix)
+		row := store.X402Service{PlacementID: p.ID, ServiceID: id, Spec: spec}
+		if err := e.store.PutX402Service(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.pool.Exec(ctx, `insert into x402_refusals
+			(placement_id, reason, count, last_at)
+			values ($1, 'PRICE', 1, now())`, p.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := func(p store.Placement) (n int) {
+		t.Helper()
+		err := e.pool.QueryRow(ctx, `select (select count(*) from x402_services
+			where placement_id = $1) + (select count(*) from x402_refusals
+			where placement_id = $1)`, p.ID).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	set := func(p store.Placement, deadline, ended string) {
+		t.Helper()
+		_, err := e.pool.Exec(ctx, `update placements set deadline = `+deadline+`,
+			terminated_at = `+ended+` where id = $1`, p.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	past, recent, live, failed := e.placing(t), e.placing(t), e.placing(t), e.placing(t)
+	for _, p := range []store.Placement{past, recent, live, failed} {
+		seed(p)
+	}
+	set(past, "now() - interval '2 hours'", "null")
+	set(recent, "now() - interval '30 minutes'", "null")
+	set(live, "now() + interval '1 hour'", "null")
+	if err := e.store.MarkPlacementFailed(ctx, failed.ID, "boom", true); err != nil {
+		t.Fatal(err)
+	}
+	set(failed, "null", "now() - interval '2 hours'")
+	e.start(t)
+
+	e.run(t, jobargs.Sweep{})
+	eq := func(name string, p store.Placement, want int) {
+		t.Helper()
+		if got := rows(p); got != want {
+			t.Errorf("%s placement has %d x402 rows, want %d", name, got, want)
+		}
+	}
+	eq("past deadline", past, 0)
+	eq("failed before ready", failed, 0)
+	eq("within the hour", recent, 2)
+	eq("live", live, 2)
 }

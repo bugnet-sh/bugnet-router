@@ -11,6 +11,9 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/x402"
 )
 
+// x402LeftoverAfter is how long x402 rows outlive their placement's end
+const x402LeftoverAfter = time.Hour
+
 // X402 service states, as the x402_services check names them
 const (
 	X402Applying = "applying"
@@ -128,4 +131,19 @@ func (s *Store) SecretHosts(ctx context.Context, placement uuid.UUID) ([]string,
 		return nil, fmt.Errorf("select secret hosts: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteX402Leftovers deletes x402_services and x402_refusals rows an hour after the end
+func (s *Store) DeleteX402Leftovers(ctx context.Context, now time.Time) (int64, error) {
+	var n int64
+	for _, table := range []string{"x402_services", "x402_refusals"} {
+		tag, err := s.q.Exec(ctx, `delete from `+table+` where placement_id in (
+			select id from placements where coalesce(deadline, terminated_at) <= $1)`,
+			utc(now.Add(-x402LeftoverAfter)))
+		if err != nil {
+			return n, fmt.Errorf("delete %s leftovers: %w", table, err)
+		}
+		n += tag.RowsAffected()
+	}
+	return n, nil
 }
