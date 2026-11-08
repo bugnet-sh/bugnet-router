@@ -3,7 +3,9 @@ package api
 import (
 	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -135,4 +137,66 @@ func (ps *PaymentsServer) CheckPayer(
 		})
 	}
 	return answer(ok)
+}
+
+// LookupPlacement names the placement a handle hash or a start order points to, for Payments
+func (ps *PaymentsServer) LookupPlacement(ctx context.Context,
+	req *connect.Request[routerv1.LookupPlacementRequest],
+) (*connect.Response[routerv1.LookupPlacementResponse], error) {
+	var p store.Placement
+	var err error
+	switch key := req.Msg.GetKey().(type) {
+	case *routerv1.LookupPlacementRequest_HandleSha256:
+		sha, ok := lowerHex32(key.HandleSha256)
+		if !ok {
+			return nil, invalid("handle_sha256 must be 64 lower-case hex characters")
+		}
+		p, err = ps.s.d.Store.PlacementByHandle(ctx, sha)
+	case *routerv1.LookupPlacementRequest_StartOrderId:
+		if key.StartOrderId == "" {
+			return nil, invalid("start_order_id is required")
+		}
+		p, err = ps.s.d.Store.PlacementByStartOrder(ctx, key.StartOrderId)
+		if errors.Is(err, store.ErrNotFound) {
+			err = errOrderUnknown
+		}
+	default:
+		return nil, invalid("handle_sha256 or start_order_id is required")
+	}
+	if err != nil {
+		return nil, ps.s.status(err)
+	}
+	out := &routerv1.LookupPlacementResponse{
+		PlacementId:  p.ID.String(),
+		StartOrderId: p.OrderID,
+		State:        p.State,
+		X402Capable:  ps.s.lookupCapable(p),
+		PackageId:    p.PackageID,
+	}
+	if p.ReadyAt != nil && p.Deadline != nil {
+		out.Deadline = timestamppb.New(*p.Deadline)
+	}
+	if p.TerminatedAt != nil {
+		out.EndedAt = timestamppb.New(*p.TerminatedAt)
+	}
+	return connect.NewResponse(out), nil
+}
+
+// lookupCapable is needs_secrets until the placement was ready, then its provider's Secrets
+func (s *Server) lookupCapable(p store.Placement) bool {
+	if p.ReadyAt == nil {
+		return p.NeedsSecrets
+	}
+	prov, ok := s.d.Registry.Get(p.Provider)
+	return ok && s.d.Registry.Capabilities(prov).Secrets
+}
+
+// lowerHex32 decodes s when it is exactly 64 lower-case hex characters
+func lowerHex32(s string) ([]byte, bool) {
+	if len(s) != 64 || strings.ToLower(s) != s {
+		return nil, false
+	}
+	b, err := hex.DecodeString(s)
+	return b, err == nil
+>>>>>>> task/x-X15
 }

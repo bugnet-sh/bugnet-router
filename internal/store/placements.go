@@ -168,6 +168,13 @@ func (s *Store) PlacementByHandle(ctx context.Context, sha []byte) (Placement, e
 	return p, err
 }
 
+// PlacementByStartOrder returns the placement whose start order is id, or ErrNotFound
+func (s *Store) PlacementByStartOrder(ctx context.Context, id string) (Placement, error) {
+	// The orders key finds the row, and an extend order never matches the placement's order_id
+	return s.placementWhere(ctx,
+		"id = (select placement_id from orders where order_id = $1) and order_id = $1", id)
+}
+
 // PlacementByID returns the placement or ErrNotFound
 func (s *Store) PlacementByID(ctx context.Context, id uuid.UUID) (Placement, error) {
 	return s.placementWhere(ctx, "id = $1", id)
