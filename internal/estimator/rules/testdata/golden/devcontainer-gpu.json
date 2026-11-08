@@ -1,0 +1,105 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {}
+	},
+	"facts": {
+		"repo": {
+			"devcontainers": 1,
+			"host": {
+				"gpu": "required",
+				"gpu_memory_gib": 16
+			},
+			"dockerfile": true,
+			"cuda_base": true,
+			"tree": {
+				"bytes": 52428800,
+				"blobs": 420
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk",
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-large-30m",
+				"short_on": [
+					"gpu",
+					"gpu_memory"
+				],
+				"total_price_micros": 240000
+			},
+			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 11,
+			"download_bytes": 0,
+			"gpu": "required",
+			"gpu_count": 1,
+			"gpu_memory_gib": 16,
+			"memory_mib": 2048,
+			"minutes": 20,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "A devcontainer needs a GPU with 16 GiB of memory",
+				"rule_id": "dc.gpu"
+			},
+			{
+				"message": "The Dockerfile builds on a CUDA base image",
+				"rule_id": "docker.cuda_base"
+			},
+			{
+				"message": "The checkout takes 0.05 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "gpu-20-30m",
+		"warnings": []
+	}
+}

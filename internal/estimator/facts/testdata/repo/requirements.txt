@@ -1,0 +1,4 @@
+# runtime
+vllm==0.6.4  # serving
+numpy>=2
+-r requirements-dev.txt

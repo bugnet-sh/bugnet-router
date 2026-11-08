@@ -1,0 +1,4 @@
+jobs:
+  test-gpu:
+    runs-on: [self-hosted, linux-gpu, ubuntu-22.04-16-cores]
+    timeout-minutes: 90

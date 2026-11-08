@@ -1,0 +1,81 @@
+{
+	"request": {
+		"source": {
+			"kind": "none",
+			"read": false
+		},
+		"workload": "inference",
+		"needs": [
+			"gpu"
+		],
+		"entry_hints": {}
+	},
+	"facts": {},
+	"output": {
+		"basis": "defaults",
+		"confidence": "low",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk",
+					"gpu"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"gpu"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-large-30m",
+				"short_on": [
+					"gpu"
+				],
+				"total_price_micros": 240000
+			},
+			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 10,
+			"download_bytes": 0,
+			"gpu": "required",
+			"gpu_count": 1,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 20,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The agent asks for a GPU",
+				"rule_id": "need.gpu"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "gpu-20-30m",
+		"warnings": []
+	}
+}

@@ -1,0 +1,90 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "tests",
+		"entry_hints": {}
+	},
+	"facts": {
+		"repo": {
+			"pins": [
+				{
+					"tool": "python3",
+					"version": "3.11.9"
+				}
+			],
+			"tree": {
+				"bytes": 52428800,
+				"blobs": 420
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 12,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 11,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "A pinned Python toolchain the images may lack adds 1 minute",
+				"rule_id": "tc.pin"
+			},
+			{
+				"message": "The checkout takes 0.05 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": []
+	}
+}

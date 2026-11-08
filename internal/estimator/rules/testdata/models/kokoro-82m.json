@@ -1,0 +1,9 @@
+{"model": {
+	"id": "hexgrad/Kokoro-82M", "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",
+	"pipeline": "text-to-speech",
+	"files": [
+		{"path": ".gitattributes", "size": 1519}, {"path": "README.md", "size": 8216},
+		{"path": "config.json", "size": 2351}, {"path": "kokoro-v1_0.pth", "size": 327212226},
+		{"path": "voices/af_heart.pt", "size": 523425}, {"path": "voices/am_adam.pt", "size": 523425}
+	]
+}}

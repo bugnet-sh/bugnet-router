@@ -1,0 +1,1 @@
+{"packages": [{"name": "monolog/monolog"}], "packages-dev": [{"name": "phpunit/phpunit"}, {"name": "mockery/mockery"}]}

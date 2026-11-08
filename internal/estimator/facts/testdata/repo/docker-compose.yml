@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    deploy:
+      resources:
+        reservations:
+          memory: 512m
+          cpus: "0.5"
+        limits:
+          memory: 1g
+  cache:
+    image: docker.io/library/redis:7
+    mem_limit: 128m
+  app:
+    build: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]

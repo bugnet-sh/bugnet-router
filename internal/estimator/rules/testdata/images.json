@@ -1,0 +1,9 @@
+{
+	"max_lifetime_minutes": 1440,
+	"images": [
+		{"provider": "boat", "tools": {"git": "2.39", "tar": "1.34", "python3": "3.12", "node": "22", "docker": "none"}},
+		{"provider": "boxd", "tools": {"git": "2.43", "tar": "1.35", "python3": "3.12", "node": "22", "docker": "27.3"}},
+		{"provider": "e2b", "tools": {"git": "2.39", "tar": "1.34", "python3": "3.12", "node": "22", "docker": "none"}},
+		{"provider": "koyeb", "tools": {"git": "", "tar": "", "python3": "", "node": "", "docker": ""}}
+	]
+}

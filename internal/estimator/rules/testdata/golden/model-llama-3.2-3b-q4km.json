@@ -1,0 +1,137 @@
+{
+	"request": {
+		"source": {
+			"kind": "huggingface",
+			"canonical": "huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF",
+			"revision": "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {}
+	},
+	"facts": {
+		"model": {
+			"id": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+			"revision": "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+			"pipeline": "text-generation",
+			"files": [
+				{
+					"path": ".gitattributes",
+					"size": 2468
+				},
+				{
+					"path": "README.md",
+					"size": 9120
+				},
+				{
+					"path": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+					"size": 2019377696
+				},
+				{
+					"path": "Llama-3.2-3B-Instruct-Q5_K_M.gguf",
+					"size": 2322154336
+				},
+				{
+					"path": "Llama-3.2-3B-Instruct-Q6_K.gguf",
+					"size": 2643853664
+				},
+				{
+					"path": "Llama-3.2-3B-Instruct-Q8_0.gguf",
+					"size": 3421899104
+				},
+				{
+					"path": "Llama-3.2-3B-Instruct-f16.gguf",
+					"size": 6433688416
+				}
+			],
+			"gguf": {
+				"architecture": "llama",
+				"context_length": 131072,
+				"parameters": 3212749888
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 2,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 56000
+			},
+			{
+				"context_tokens": 6912,
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 8192,
+			"disk_gib": 10,
+			"download_bytes": 2019377696,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 4352,
+			"minutes": 21,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The chosen GGUF file holds 1.88 GiB of weights",
+				"rule_id": "hf.weights"
+			},
+			{
+				"message": "The KV cache takes 112 KiB a token from its architecture, 0.88 GiB at 8192 tokens",
+				"rule_id": "hf.kv"
+			},
+			{
+				"message": "Needs 4.13 GiB of memory on CPU",
+				"rule_id": "hf.memory"
+			},
+			{
+				"message": "Downloads 1.88 GiB of model files",
+				"rule_id": "hf.disk"
+			}
+		],
+		"warnings": [
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Assumes a context of 8192 tokens, --ctx-size sets it, some packages fit only with 6912 tokens"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": [
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Assumes a context of 8192 tokens, --ctx-size sets it, some packages fit only with 6912 tokens"
+			}
+		]
+	}
+}

@@ -1,0 +1,13 @@
+{"model": {
+	"id": "bartowski/Llama-3.2-3B-Instruct-GGUF", "revision": "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+	"pipeline": "text-generation",
+	"files": [
+		{"path": ".gitattributes", "size": 2468}, {"path": "README.md", "size": 9120},
+		{"path": "Llama-3.2-3B-Instruct-Q4_K_M.gguf", "size": 2019377696},
+		{"path": "Llama-3.2-3B-Instruct-Q5_K_M.gguf", "size": 2322154336},
+		{"path": "Llama-3.2-3B-Instruct-Q6_K.gguf", "size": 2643853664},
+		{"path": "Llama-3.2-3B-Instruct-Q8_0.gguf", "size": 3421899104},
+		{"path": "Llama-3.2-3B-Instruct-f16.gguf", "size": 6433688416}
+	],
+	"gguf": {"architecture": "llama", "context_length": 131072, "parameters": 3212749888}
+}}

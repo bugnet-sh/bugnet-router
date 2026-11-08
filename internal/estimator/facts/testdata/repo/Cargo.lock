@@ -1,0 +1,13 @@
+version = 3
+
+[[package]]
+name = "serde"
+version = "1.0.215"
+
+[[package]]
+name = "tokio"
+version = "1.41.1"
+
+[[package]]
+name = "app"
+version = "0.1.0"

@@ -1,0 +1,129 @@
+{
+	"request": {
+		"source": {
+			"kind": "github",
+			"canonical": "github.com/acme/app",
+			"revision": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+			"read": true
+		},
+		"workload": "tests",
+		"entry_hints": {
+			"jobs": 16
+		}
+	},
+	"facts": {
+		"repo": {
+			"ci": {
+				"jobs": 3,
+				"test_timeout_minutes": 25,
+				"standard_only": true,
+				"services": [
+					"mysql",
+					"redis"
+				]
+			},
+			"lockfiles": [
+				{
+					"kind": "uv",
+					"packages": 180
+				}
+			],
+			"ml": [
+				"torch"
+			],
+			"transformers_below_5": true,
+			"tree": {
+				"bytes": 52428800,
+				"blobs": 420
+			}
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 1,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 38000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"vcpu",
+					"memory"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 14,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 4864,
+			"minutes": 11,
+			"vcpu": 4
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "CI stops the test job after 25 minutes",
+				"rule_id": "ci.timeout"
+			},
+			{
+				"message": "2 CI services need about 576 MiB of memory",
+				"rule_id": "svc.memory"
+			},
+			{
+				"message": "CI passes on a standard runner, so soft signals stop at 4 vCPU, 16 GiB of memory and 14 GiB of disk",
+				"rule_id": "ci.std_runner"
+			},
+			{
+				"message": "Machine learning packages pull in large libraries",
+				"rule_id": "deps.ml"
+			},
+			{
+				"message": "The lockfiles hold 180 packages",
+				"rule_id": "deps.count"
+			},
+			{
+				"message": "The checkout takes 0.05 GiB, counted twice for the tree and .git",
+				"rule_id": "tree.size"
+			},
+			{
+				"message": "The command builds with 16 jobs",
+				"rule_id": "cmd.jobs"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-large-30m",
+		"warnings": []
+	}
+}

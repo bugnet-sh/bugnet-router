@@ -1,0 +1,79 @@
+{
+	"request": {
+		"source": {
+			"kind": "none",
+			"read": false
+		},
+		"workload": "tests",
+		"minutes": 100,
+		"entry_hints": {}
+	},
+	"facts": {},
+	"output": {
+		"basis": "defaults",
+		"confidence": "low",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 9,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 182000
+			},
+			{
+				"extension_package_id": "cpu-std-30m-more",
+				"extensions_needed": 3,
+				"fits": true,
+				"package_id": "cpu-std-30m",
+				"total_price_micros": 225000
+			},
+			{
+				"extension_package_id": "cpu-large-30m-more",
+				"extensions_needed": 3,
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 900000
+			},
+			{
+				"extension_package_id": "gpu-20-30m-more",
+				"extensions_needed": 3,
+				"fits": false,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 2250000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 10,
+			"download_bytes": 0,
+			"gpu": "none",
+			"gpu_count": 0,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 100,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for tests work and 100 minutes from the agent",
+				"rule_id": "workload.default"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "cpu-std-30m",
+		"warnings": [
+			{
+				"code": "NEEDS_EXTENSION",
+				"message": "The run needs 3 extensions"
+			}
+		]
+	}
+}

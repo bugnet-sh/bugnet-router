@@ -1,0 +1,83 @@
+{
+	"request": {
+		"source": {
+			"kind": "none",
+			"read": false
+		},
+		"workload": "serve",
+		"entry_hints": {
+			"context_tokens": 4096,
+			"tools": [
+				"vllm"
+			]
+		}
+	},
+	"facts": {},
+	"output": {
+		"basis": "signals",
+		"confidence": "medium",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 2,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk",
+					"gpu"
+				],
+				"total_price_micros": 56000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"gpu"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-large-30m",
+				"short_on": [
+					"gpu"
+				],
+				"total_price_micros": 240000
+			},
+			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 0,
+			"disk_gib": 10,
+			"download_bytes": 0,
+			"gpu": "required",
+			"gpu_count": 1,
+			"gpu_memory_gib": 0,
+			"memory_mib": 2048,
+			"minutes": 30,
+			"vcpu": 2
+		},
+		"partial": false,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for serve work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The command runs a GPU server or asks for CUDA",
+				"rule_id": "cmd.gpu"
+			}
+		],
+		"warnings": []
+	},
+	"recommendation": {
+		"package_id": "gpu-20-30m",
+		"warnings": []
+	}
+}

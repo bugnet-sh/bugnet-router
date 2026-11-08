@@ -1,0 +1,19 @@
+{"model": {
+	"id": "Qwen/Qwen2.5-7B-Instruct", "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+	"library": "transformers", "pipeline": "text-generation", "model_type": "qwen2",
+	"parameters": [{"dtype": "BF16", "count": 7615616512}],
+	"files": [
+		{"path": ".gitattributes", "size": 1519}, {"path": "LICENSE", "size": 11343},
+		{"path": "README.md", "size": 6131}, {"path": "config.json", "size": 663},
+		{"path": "generation_config.json", "size": 243}, {"path": "merges.txt", "size": 1671839},
+		{"path": "model-00001-of-00004.safetensors", "size": 3945441440},
+		{"path": "model-00002-of-00004.safetensors", "size": 3864726320},
+		{"path": "model-00003-of-00004.safetensors", "size": 3864726424},
+		{"path": "model-00004-of-00004.safetensors", "size": 3556377672},
+		{"path": "model.safetensors.index.json", "size": 27752},
+		{"path": "tokenizer.json", "size": 7031645}, {"path": "tokenizer_config.json", "size": 7305},
+		{"path": "vocab.json", "size": 2776833}
+	],
+	"config": {"layers": 28, "kv_heads": 4, "hidden_size": 3584, "attention_heads": 28,
+		"max_position": 32768, "dtype": "bfloat16"}
+}}

@@ -1,0 +1,213 @@
+{
+	"request": {
+		"source": {
+			"kind": "huggingface",
+			"canonical": "huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
+			"revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+			"read": true
+		},
+		"workload": "inference",
+		"entry_hints": {},
+		"partial": true
+	},
+	"facts": {
+		"model": {
+			"id": "meta-llama/Llama-3.1-8B-Instruct",
+			"revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+			"library": "transformers",
+			"pipeline": "text-generation",
+			"gated": "manual",
+			"model_type": "llama",
+			"parameters": [
+				{
+					"dtype": "BF16",
+					"count": 8030261248
+				}
+			],
+			"files": [
+				{
+					"path": ".gitattributes",
+					"size": 1519
+				},
+				{
+					"path": "LICENSE",
+					"size": 7627
+				},
+				{
+					"path": "README.md",
+					"size": 44034
+				},
+				{
+					"path": "USE_POLICY.md",
+					"size": 4691
+				},
+				{
+					"path": "config.json",
+					"size": 855
+				},
+				{
+					"path": "generation_config.json",
+					"size": 184
+				},
+				{
+					"path": "model-00001-of-00004.safetensors",
+					"size": 4976698672
+				},
+				{
+					"path": "model-00002-of-00004.safetensors",
+					"size": 4999802720
+				},
+				{
+					"path": "model-00003-of-00004.safetensors",
+					"size": 4915916176
+				},
+				{
+					"path": "model-00004-of-00004.safetensors",
+					"size": 1168138808
+				},
+				{
+					"path": "model.safetensors.index.json",
+					"size": 23950
+				},
+				{
+					"path": "original/consolidated.00.pth",
+					"size": 16060617592
+				},
+				{
+					"path": "original/params.json",
+					"size": 199
+				},
+				{
+					"path": "original/tokenizer.model",
+					"size": 2183982
+				},
+				{
+					"path": "special_tokens_map.json",
+					"size": 296
+				},
+				{
+					"path": "tokenizer.json",
+					"size": 9085657
+				},
+				{
+					"path": "tokenizer_config.json",
+					"size": 55351
+				}
+			]
+		}
+	},
+	"output": {
+		"basis": "signals",
+		"confidence": "low",
+		"fits": [
+			{
+				"extension_package_id": "cpu-small-10m-more",
+				"extensions_needed": 2,
+				"fits": false,
+				"package_id": "cpu-small-10m",
+				"short_on": [
+					"vcpu",
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 56000
+			},
+			{
+				"fits": false,
+				"package_id": "cpu-std-30m",
+				"short_on": [
+					"memory",
+					"disk"
+				],
+				"total_price_micros": 60000
+			},
+			{
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 240000
+			},
+			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			}
+		],
+		"floor": {
+			"context_tokens": 8192,
+			"disk_gib": 23,
+			"download_bytes": 16060556376,
+			"gpu": "recommended",
+			"gpu_count": 1,
+			"gpu_memory_gib": 20,
+			"memory_mib": 5888,
+			"minutes": 26,
+			"vcpu": 2
+		},
+		"partial": true,
+		"reasons": [
+			{
+				"message": "Starts from the defaults for inference work",
+				"rule_id": "workload.default"
+			},
+			{
+				"message": "The weights take 14.96 GiB",
+				"rule_id": "hf.weights"
+			},
+			{
+				"message": "The KV cache takes 128 KiB a token from its architecture, 1.00 GiB at 8192 tokens",
+				"rule_id": "hf.kv"
+			},
+			{
+				"message": "A text generation model above 3 billion parameters runs best on a GPU",
+				"rule_id": "hf.gpu"
+			},
+			{
+				"message": "Needs 19.45 GiB of GPU memory, or 19.95 GiB of memory on CPU",
+				"rule_id": "hf.memory"
+			},
+			{
+				"message": "Downloads 14.96 GiB of model files",
+				"rule_id": "hf.disk"
+			}
+		],
+		"warnings": [
+			{
+				"code": "GPU_RECOMMENDED",
+				"message": "Runs on CPU, slower than on a GPU"
+			},
+			{
+				"code": "GATED_MODEL",
+				"message": "The model is gated, accept its terms and add HF_TOKEN by secret link"
+			},
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source took too long to read"
+			},
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Assumes a context of 8192 tokens, --max-model-len sets it"
+			}
+		]
+	},
+	"recommendation": {
+		"package_id": "cpu-large-30m",
+		"warnings": [
+			{
+				"code": "GPU_RECOMMENDED",
+				"message": "Runs on CPU, slower than on a GPU"
+			},
+			{
+				"code": "GATED_MODEL",
+				"message": "The model is gated, accept its terms and add HF_TOKEN by secret link"
+			},
+			{
+				"code": "SOURCE_UNREAD",
+				"message": "Defaults used, the source took too long to read"
+			},
+			{
+				"code": "CONTEXT_ASSUMED",
+				"message": "Assumes a context of 8192 tokens, --max-model-len sets it"
+			}
+		]
+	}
+}
