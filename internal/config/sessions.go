@@ -33,7 +33,8 @@ type Sessions struct {
 
 // SessionsLive holds the live view's settings
 type SessionsLive struct {
-	// Enabled false refuses WatchSessionJob and ends every live stream
+	// Enabled false refuses WatchSessionJob; settings are read at start, so turning it off takes a
+	// restart, whose shutdown ends the open streams
 	Enabled bool
 	// MaxReaders bounds the live streams one router-api process serves at once
 	MaxReaders int

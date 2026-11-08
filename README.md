@@ -464,7 +464,7 @@ Money is integer micro-USD and times are UTC.
 | `placement_output` | `"4MiB"` | The output kept per record, earlier jobs keeping 8 KiB per output past it |
 | `disk_budget` | `"8GiB"` | The three session tables together, `/monitor` warning at 80% |
 | `mcp_tools` | 24 names | The gateway's tool names an `mcp` event may carry |
-| `live.enabled` | `true` | The live view's kill switch |
+| `live.enabled` | `true` | The live view's kill switch, read at start, so `false` takes a restart, whose shutdown ends every open stream |
 | `live.max_readers` | `256` | Live streams one `router-api` serves at once, 1 to 4096 |
 | `live.placement_bytes` | `"256MiB"` | Live bytes per placement |
 | `live.bytes_per_second` | `"1MiB"` | The pace of each live stream |
