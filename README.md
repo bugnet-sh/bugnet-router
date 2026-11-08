@@ -314,13 +314,13 @@ host and port, the key's fingerprint, the `known_hosts` lines, the `ssh` command
 and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a private key before
 calling the router. `--identity-file` and `--known-hosts-file` name the paths the command and stanza
 use. `get` and `create` print the placement's `ssh_alias` once it has one. `token` and `create` take
-`--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without `--amount` the
-allowance is added to the catalog price, so the package stays paid. `config/dev.toml` turns the
-payer claim on with one test facilitator address, so `create --payer` takes the wallet path, and
-raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`, `show`
-and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or else
-`USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts until
-an operator lifts it.
+`--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without
+`--amount` the allowance is added to the catalog price, so the package stays paid. `config/dev.toml`
+turns the payer claim on with one test facilitator address, so `create --payer` takes the wallet
+path, and raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`,
+`show` and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or
+else `USER`. `--until` takes an RFC 3339 time or a duration from now, and a block without it lasts
+until an operator lifts it.
 `x402 check` runs `CheckX402` on a change without making it. Each `--service` is
 `method,host,prefix,max_price_micros,pay_to[,paid_path]`, and a service without a paid path is
 indexed. `--disable ID` names a service id to disable. Without `--handle` it runs only the checks
