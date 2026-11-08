@@ -147,6 +147,12 @@ func (s *Saga) FlagEnded(
 				return err
 			}
 		}
+		// History ignores the observation of a placement flagged after its end
+		if !e.Held {
+			if err := s.d.Store.Tx(tx).FlagObservation(ctx, cur.ID); err != nil {
+				return err
+			}
+		}
 		// An abuse flag closes the public page and holds the record for operators
 		err := s.d.Store.Tx(tx).CloseSessionRecord(ctx, cur.ID, store.ClosedByAbuse,
 			s.now().Add(s.d.SessionAbuseHold))

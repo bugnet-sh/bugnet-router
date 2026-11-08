@@ -1,11 +1,21 @@
 package live
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
+	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 )
 
 // controlRows are CP 15's rows, each task adding its own
@@ -25,6 +35,11 @@ func init() {
 		row{id: "E4", run: rowE4},
 		row{id: "F1", run: rowF1},
 		row{id: "F2", run: rowF2},
+		row{id: "E5", run: rowE5},
+		row{id: "E6", run: rowE6},
+		row{id: "E7", providers: []string{"koyeb"}, run: rowE7},
+		row{id: "E8", run: rowE8},
+		row{id: "E9", run: rowE9},
 	)
 }
 
@@ -114,7 +129,7 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
-	for _, id := range []string{"E1", "E2", "E3", "E4", "F1", "F2"} {
+	for _, id := range []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2"} {
 		eq(t, slices.Contains(ids, id), true)
 	}
 }
@@ -184,4 +199,160 @@ func rowF2(t *testing.T, s *stack) {
 	if strings.Contains(left, "left") {
 		t.Fatal("live: the archive stays in the sandbox")
 	}
+}
+
+/* Learning loop rows, CP 15 E5 to E9 */
+
+// jobExit runs argv in the sandbox and answers the exit frame its stream ends with
+func (s *stack) jobExit(t *testing.T, h string, argv ...string) *routerv1.JobExit {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	c := s.quoter()
+	res, err := c.Exec(ctx, connect.NewRequest(&routerv1.ExecRequest{
+		Handle: h, Argv: argv, WaitMs: 1,
+	}))
+	if err != nil {
+		t.Fatalf("live: exec %v: %v", argv, err)
+	}
+	stream, err := c.WatchJob(ctx, connect.NewRequest(&routerv1.WatchJobRequest{
+		Handle: h, JobId: res.Msg.GetJobId(), Cursor: res.Msg.GetCursor(),
+	}))
+	if err != nil {
+		t.Fatalf("live: watch %s: %v", res.Msg.GetJobId(), err)
+	}
+	defer func() { _ = stream.Close() }()
+	for stream.Receive() {
+		if exit := stream.Msg().GetExit(); exit != nil {
+			return exit
+		}
+	}
+	t.Fatalf("live: the stream of %v ended without an exit frame: %v", argv, stream.Err())
+	return nil
+}
+
+// sandboxStats reads the sampler's file once it has written a reading after the last job
+func (s *stack) sandboxStats(t *testing.T, h string) map[string]any {
+	t.Helper()
+	// The sampler writes every 5 s
+	time.Sleep(7 * time.Second)
+	var got map[string]any
+	raw := s.sh(t, h, `cat /tmp/bugnet/stats.json`)
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("live: /tmp/bugnet/stats.json is not JSON: %v\n%s", err, raw)
+	}
+	return got
+}
+
+// packageMemory is the memory of a dev package
+func packageMemory(t *testing.T, id string) int {
+	t.Helper()
+	c, err := catalog.Load(filepath.Join(repo(t), "config", "dev-packages.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := c.Get(id)
+	if !ok {
+		t.Fatalf("live: no package %s", id)
+	}
+	return p.Resources.MemoryMiB
+}
+
+// holdScript holds mib MiB in a shell variable for a second
+func holdScript(mib int) string {
+	return fmt.Sprintf(`x=$(head -c %d /dev/zero | tr '\0' a); sleep 1; echo held`, mib<<20)
+}
+
+// rowE5 records the kernel and cgroup type, and checks a job's peak and the sampler's
+func rowE5(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	t.Logf("E5 on %s: kernel %s", s.provider, strings.TrimSpace(s.sh(t, h, `uname -r`)))
+	t.Logf("E5 on %s: /sys/fs/cgroup is %s", s.provider,
+		strings.TrimSpace(s.sh(t, h, `stat -fc %T /sys/fs/cgroup 2>/dev/null || echo none`)))
+	t.Logf("E5 on %s: a child cgroup can be made: %s", s.provider, strings.TrimSpace(s.sh(t, h,
+		`mkdir /sys/fs/cgroup/bugnet-e5 2>/dev/null && echo yes && rmdir /sys/fs/cgroup/bugnet-e5 `+
+			`|| echo no`)))
+	exit := s.jobExit(t, h, "sh", "-c", holdScript(150))
+	t.Logf("E5 on %s: the job's peak is %d MiB", s.provider, exit.GetPeakMemoryMib())
+	if exit.GetPeakMemoryMib() < 100 {
+		t.Errorf("E5: a job holding 150 MiB reported a peak of %d MiB", exit.GetPeakMemoryMib())
+	}
+	st := s.sandboxStats(t, h)
+	mem, _ := st["mem_peak_mib"].(float64)
+	if mem < 100 {
+		t.Errorf("E5: the sampler's mem_peak_mib is %v after a job held 150 MiB",
+			st["mem_peak_mib"])
+	}
+	t.Logf("E5 on %s: stats %v", s.provider, st)
+}
+
+// rowE6 allocates past the package's memory and checks both OOM counters
+func rowE6(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	exit := s.jobExit(t, h, "sh", "-c", holdScript(4*packageMemory(t, xferPackage)))
+	t.Logf("E6 on %s: exit %d, oom_killed %v, peak %d MiB", s.provider, exit.GetExitCode(),
+		exit.GetOomKilled(), exit.GetPeakMemoryMib())
+	st := s.sandboxStats(t, h)
+	t.Logf("E6 on %s: the sampler counted oom_kills %v", s.provider, st["oom_kills"])
+	kills, _ := st["oom_kills"].(float64)
+	if !exit.GetOomKilled() && kills < 1 {
+		t.Errorf("E6: four times the package's memory ended with neither counter set, exit %d",
+			exit.GetExitCode())
+	}
+}
+
+// rowE7 runs the nvidia-smi query on a GPU package, named by BUGNET_LIVE_GPU_PACKAGE
+func rowE7(t *testing.T, s *stack) {
+	pkg := os.Getenv("BUGNET_LIVE_GPU_PACKAGE")
+	if pkg == "" {
+		t.Skip("set BUGNET_LIVE_GPU_PACKAGE to a GPU package of the dev catalog for E7")
+	}
+	h := s.sandbox(t, pkg)
+	out := strings.TrimSpace(s.sh(t, h,
+		`nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits`))
+	f := strings.Split(strings.Split(out, "\n")[0], ",")
+	if len(f) != 2 {
+		t.Fatalf("E7: nvidia-smi answered %q", out)
+	}
+	for _, v := range f {
+		if _, err := strconv.Atoi(strings.TrimSpace(v)); err != nil {
+			t.Fatalf("E7: nvidia-smi answered %q, which is not two whole MiB figures", out)
+		}
+	}
+	st := s.sandboxStats(t, h)
+	t.Logf("E7 on %s: nvidia-smi %q, the sampler's gpu_mem_peak_mib is %v", s.provider, out,
+		st["gpu_mem_peak_mib"])
+}
+
+// rowE8 runs docker run hello-world, and checks a quote that needs Docker is a warning alone
+func rowE8(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	out := s.shTry(t, h, `docker run --rm hello-world 2>&1 | head -5; echo "status $?"`)
+	t.Logf("E8 on %s: docker run answered %q", s.provider, strings.TrimSpace(out))
+	resp, err := s.quoter().Estimate(context.Background(), connect.NewRequest(
+		&routerv1.EstimateRequest{Workload: routerv1.Workload_WORKLOAD_SCRIPT,
+			EntryCommand: "docker run --rm hello-world"}))
+	if err != nil {
+		t.Fatalf("E8: estimate: %v", err)
+	}
+	if resp.Msg.GetRecommendedPackageId() == "" {
+		t.Errorf("E8: a quote for docker run recommends nothing, so NEEDS_DOCKER is no warning")
+	}
+	t.Logf("E8: warnings %v", resp.Msg.GetWarnings())
+}
+
+// rowE9 prints the tool versions as the [images.<provider>] line the settings hold
+func rowE9(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	version := func(tool, cmd string) string {
+		out := s.shTry(t, h, `command -v `+tool+` >/dev/null 2>&1 && `+cmd+` || echo none`)
+		return strings.TrimSpace(strings.Split(strings.TrimSpace(out), "\n")[0])
+	}
+	t.Logf("E9: [images.%s]\ntools = { git = %q, tar = %q, python3 = %q, node = %q, docker = %q }",
+		s.provider,
+		version("git", `git --version | cut -d' ' -f3`),
+		version("tar", `tar --version | head -1 | grep -o '[0-9][0-9.]*' | head -1`),
+		version("python3", `python3 --version | cut -d' ' -f2`),
+		version("node", `node --version | tr -d v`),
+		version("docker", `docker --version | cut -d' ' -f3 | tr -d ,`))
 }

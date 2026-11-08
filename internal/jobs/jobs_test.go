@@ -361,11 +361,34 @@ func TestExecReportsAnOOMKillFromTheExitFrame(t *testing.T) {
 		t.Fatalf("state %s exit %v oom %v, want exited with 137 and an OOM kill", res.State,
 			res.ExitCode, res.OOMKilled)
 	}
+	row := waitFinished(t, e.store, res.JobID)
+	if !row.OOMKilled || row.PeakMemoryMiB != 700 || row.Install {
+		t.Fatalf("job row oom %v peak %d install %v", row.OOMKilled, row.PeakMemoryMiB, row.Install)
+	}
 	plain := newEnv(t)
 	quiet := plain.exec(t, plain.service(t, "r1"), []string{"true"}, "", 10*time.Second,
 		jobs.Until{})
 	if quiet.OOMKilled {
 		t.Fatal("a job with no OOM kill reports one")
+	}
+	if row := waitFinished(t, plain.store, quiet.JobID); row.OOMKilled {
+		t.Fatal("a job row with no OOM kill reports one")
+	}
+}
+
+func TestExecMarksInstallerJobs(t *testing.T) {
+	e := newEnv(t)
+	s := e.service(t, "r1")
+	// Neither command installs anything, the first words alone make a job an installer
+	pip := e.exec(t, s, []string{"sudo", "sh", "-c", "pip --version"}, "", 10*time.Second,
+		jobs.Until{})
+	plain := e.exec(t, s, []string{"sh", "-c", "echo pip install x"}, "", 10*time.Second,
+		jobs.Until{})
+	if j := waitFinished(t, e.store, pip.JobID); !j.Install {
+		t.Fatalf("an installer job is not marked: %+v", j)
+	}
+	if j := waitFinished(t, e.store, plain.JobID); j.Install {
+		t.Fatalf("a job that only names an installer is marked: %+v", j)
 	}
 }
 

@@ -179,6 +179,8 @@ type Deps struct {
 	Budget config.EdgeBudget
 	// Keys are the data-plane roots, a new placement records the newest one's id
 	Keys dpkeys.Keys
+	// StatsMaxBytes is the largest stats file a stop reads, 4 KiB when zero
+	StatsMaxBytes int64
 	// Boot holds what each sandbox's setup and harden specs carry
 	Boot BootSettings
 	// SSH holds what each sandbox's ssh-up spec carries
@@ -1235,12 +1237,14 @@ func (s *Saga) terminate(
 		return store.Placement{}, err
 	}
 	// A stop retried while the destroy is in flight waits for it instead of calling the provider
-	_, err, _ = s.destroys.Do(p.ID.String(), func() (any, error) {
-		return nil, destroyRef(ctx, prov, ref)
+	shared, err, _ := s.destroys.Do(p.ID.String(), func() (any, error) {
+		// The stats come first, bounded so they never hold the deletion up
+		return s.readStats(ctx, p, prov, ref), destroyRef(ctx, prov, ref)
 	})
 	if err != nil {
 		return store.Placement{}, fmt.Errorf("destroy sandbox: %w", err)
 	}
+	rawStats, _ := shared.([]byte)
 
 	var ended store.Placement
 	var ev Event
@@ -1287,6 +1291,7 @@ func (s *Saga) terminate(
 	if !already {
 		s.publish(ctx, ev)
 		s.sessionEnded(ctx, p.ID)
+		s.observe(ctx, ended, prov, rawStats)
 	}
 	return ended, nil
 }

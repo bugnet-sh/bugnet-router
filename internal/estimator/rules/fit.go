@@ -300,6 +300,10 @@ func (e *eval) gates(f Floor, fits []Fit) []Warning {
 	if mf := e.model; mf != nil && mf.kvPerToken > 0 {
 		add(WarningContextAssumed, "%s", e.contextText(fits))
 	}
+	if e.ranOut {
+		add(WarningRanOutOfMemory, "Earlier runs ran out of memory on %s with %d MiB, so more "+
+			"memory is advised", e.ranOutPackage, e.ranOutMiB)
+	}
 	slices.SortStableFunc(w, func(a, b Warning) int { return cmp.Compare(a.Code, b.Code) })
 	if w == nil {
 		w = []Warning{}

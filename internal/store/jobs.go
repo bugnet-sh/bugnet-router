@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,8 +22,14 @@ type Job struct {
 	StderrBytes    int64
 	// OutputTruncated says the job's stream left output out, which its sandbox files still hold
 	OutputTruncated bool
-	CreatedAt       time.Time
-	FinishedAt      *time.Time
+	// OOMKilled says the kernel's OOM killer ended a process of the job
+	OOMKilled bool
+	// PeakMemoryMiB is the job's peak memory, 0 when the sandbox could not measure it
+	PeakMemoryMiB int
+	// Install says the job's command is a known installer
+	Install    bool
+	CreatedAt  time.Time
+	FinishedAt *time.Time
 }
 
 // NewJob describes a job to create in the running state
@@ -30,19 +37,23 @@ type NewJob struct {
 	ID             string
 	PlacementID    uuid.UUID
 	IdempotencyKey string
-	Limit          int // refuses a new job while the placement runs this many, none when zero
+	// Install marks a job whose command is a known installer
+	Install bool
+	Limit   int // refuses a new job while the placement runs this many, none when zero
 }
 
 // ErrJobLimit means the placement already runs as many jobs as the new job's Limit allows
 var ErrJobLimit = errors.New("store: the placement runs as many jobs as it may")
 
 const jobColumns = `id, placement_id, coalesce(idempotency_key, ''), state, exit_code,
-	stdout_bytes, stderr_bytes, output_truncated, created_at, finished_at`
+	stdout_bytes, stderr_bytes, output_truncated, oom_killed, coalesce(peak_memory_mib, 0),
+	install, created_at, finished_at`
 
 func scanJob(row pgx.Row) (Job, error) {
 	var j Job
 	err := row.Scan(&j.ID, &j.PlacementID, &j.IdempotencyKey, &j.State, &j.ExitCode,
-		&j.StdoutBytes, &j.StderrBytes, &j.OutputTruncated, &j.CreatedAt, &j.FinishedAt)
+		&j.StdoutBytes, &j.StderrBytes, &j.OutputTruncated, &j.OOMKilled, &j.PeakMemoryMiB,
+		&j.Install, &j.CreatedAt, &j.FinishedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, ErrNotFound
 	}
@@ -60,9 +71,10 @@ func (s *Store) CreateJob(ctx context.Context, j NewJob) (Job, bool, error) {
 		return s.createLimited(ctx, j)
 	}
 	tag, err := s.q.Exec(ctx, `
-		insert into jobs (id, placement_id, idempotency_key, state) values ($1, $2, $3, $4)
+		insert into jobs (id, placement_id, idempotency_key, state, install)
+		values ($1, $2, $3, $4, $5)
 		on conflict (id) do nothing`,
-		j.ID, j.PlacementID, nullIfEmpty(j.IdempotencyKey), JobRunning)
+		j.ID, j.PlacementID, nullIfEmpty(j.IdempotencyKey), JobRunning, j.Install)
 	if err != nil {
 		return Job{}, false, fmt.Errorf("create job: %w", err)
 	}
@@ -135,15 +147,20 @@ type JobOutcome struct {
 	Code                     int
 	StdoutBytes, StderrBytes int64
 	Truncated                bool // the job's stream left output out
+	// OOMKilled and PeakMemoryMiB come from the exit frame
+	OOMKilled     bool
+	PeakMemoryMiB int
 }
 
 // FinishJob records the outcome of a running job
 func (s *Store) FinishJob(ctx context.Context, id string, o JobOutcome) error {
 	tag, err := s.q.Exec(ctx, `
 		update jobs set state = $2, exit_code = case when $2 = $7 then null else $3::int end,
-			stdout_bytes = $4, stderr_bytes = $5, output_truncated = $8, finished_at = now()
+			stdout_bytes = $4, stderr_bytes = $5, output_truncated = $8, oom_killed = $9,
+			peak_memory_mib = $10, finished_at = now()
 		where id = $1 and state = $6`,
-		id, o.State, o.Code, o.StdoutBytes, o.StderrBytes, JobRunning, JobLost, o.Truncated)
+		id, o.State, o.Code, o.StdoutBytes, o.StderrBytes, JobRunning, JobLost, o.Truncated,
+		o.OOMKilled, nullIf0(o.PeakMemoryMiB))
 	if err != nil {
 		return fmt.Errorf("finish job: %w", err)
 	}
@@ -173,4 +190,25 @@ func (s *Store) RunningJobs(ctx context.Context) ([]Job, error) {
 		return nil, fmt.Errorf("running jobs: %w", err)
 	}
 	return out, nil
+}
+
+func nullIf0(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
+}
+
+// InstallSeconds sums the seconds the placement's installer jobs ran, a job still running
+// counting until now
+func (s *Store) InstallSeconds(ctx context.Context, placement uuid.UUID) (int, error) {
+	var n int64
+	err := s.q.QueryRow(ctx, `
+		select coalesce(sum(extract(epoch from coalesce(finished_at, now()) - created_at)),
+			0)::bigint
+		from jobs where placement_id = $1 and install`, placement).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("install seconds: %w", err)
+	}
+	return int(min(n, math.MaxInt32)), nil
 }

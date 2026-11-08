@@ -23,6 +23,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/canon"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/facts"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/fetch"
+	"github.com/bugnet-sh/bugnet-router/internal/estimator/history"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/rules"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/source"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
@@ -61,6 +62,7 @@ type Service struct {
 	now     func() time.Time
 	buckets *buckets
 	catalog catalogBytes
+	history history.Settings
 }
 
 // New returns a Service, building the catalog bytes its estimates hash
@@ -78,6 +80,8 @@ func New(d Deps) (*Service, error) {
 		return nil, err
 	}
 	s.catalog = cb
+	s.history = history.SettingsOf(d.Config, d.Catalog.All())
+	s.history.Now = s.now
 	return s, nil
 }
 
@@ -168,7 +172,7 @@ func (s *Service) Estimate(ctx context.Context, req Request) (Answer, error) {
 	}
 	in := rules.Input{
 		Request: rr, Facts: fv, Catalog: s.d.Catalog.All(), Images: s.d.Images,
-		MaxLifetimeMinutes: s.d.MaxLifetimeMinutes,
+		MaxLifetimeMinutes: s.d.MaxLifetimeMinutes, History: s.loadHistory(ctx, src, res, fv, req),
 	}
 	out := rules.Run(in)
 	available := s.available(in.Catalog, req.Available)
@@ -288,4 +292,25 @@ func Label(rs rules.ResolvedSource) string {
 		return strings.TrimPrefix(rs.Canonical, "huggingface.co/")
 	}
 	return ""
+}
+
+// loadHistory reads what past runs of the source needed, nothing when the source has no facts to
+// key it by or the read fails, since a quote still answers from its rules
+func (s *Service) loadHistory(
+	ctx context.Context, src source.Source, res rules.ResolvedSource, fv facts.Facts, req Request,
+) rules.History {
+	if fv.Repo == nil && fv.Model == nil {
+		return rules.History{}
+	}
+	key := history.Key{Source: fetch.FactsKey(src, fetch.Resolved{Subdir: res.Subdir}),
+		Revision: res.Revision}
+	if fv.Repo != nil {
+		key.Lock = fv.Repo.LockKey
+	}
+	h, err := history.Load(ctx, s.d.Store.Querier(), key, string(req.Workload), s.history)
+	if err != nil {
+		s.log.Warn("estimator: read the history", "err", err)
+		return rules.History{}
+	}
+	return h
 }
