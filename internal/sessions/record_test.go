@@ -353,8 +353,12 @@ func TestServedPaymentAndAllowanceKeys(t *testing.T) {
 	// The page reads tx on every payment, so it is served empty until the order token has one
 	eq(t, served(servePayment, `{"pay_kind":"start","amount_micros":50000}`),
 		`{"payKind":"start","amountMicros":50000,"tx":""}`)
+	eq(t, served(serveAllowance, `{"phase":"refunded","amount_micros":5,"asset":"`+usdcMint+
+		`","network":"solana:x","tx":"sig"}`),
+		`{"phase":"refunded","amountMicros":5,"asset":"USDC","network":"solana:x","tx":"sig"}`)
+	// Any other mint is left out, since a base58 key could be a wallet's address (D-c)
 	const mint = "So11111111111111111111111111111111111111112"
 	eq(t, served(serveAllowance, `{"phase":"refunded","amount_micros":5,"asset":"`+mint+
 		`","network":"solana:x","tx":"sig"}`),
-		`{"phase":"refunded","amountMicros":5,"asset":"`+mint+`","network":"solana:x","tx":"sig"}`)
+		`{"phase":"refunded","amountMicros":5,"network":"solana:x","tx":"sig"}`)
 }

@@ -141,11 +141,10 @@ func servePayment(data map[string]json.RawMessage) (object, bool) {
 
 func serveAllowance(data map[string]json.RawMessage) (object, bool) {
 	o := fields(data, "phase", "phase", "amount_micros", "amountMicros")
-	asset := str(data["asset"])
-	if asset == usdcMint {
-		asset = "USDC"
+	// Any other mint stays out, as a base58 key could be a wallet's address (D-c)
+	if str(data["asset"]) == usdcMint {
+		o = o.with("asset", "USDC")
 	}
-	o = o.with("asset", asset)
 	o = append(o, fields(data, "network", "network")...)
 	// Only a kept amount never moved, so every other phase names its transaction
 	if str(data["phase"]) != "kept" {

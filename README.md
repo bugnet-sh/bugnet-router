@@ -867,8 +867,8 @@ is empty, and the record is still kept.
   expires. `RotateSessionLink` moves the generation only when it names the current link.
 - The payment event's `tx` is served empty, and its amount the order's whole amount, until router
   Task 28's `Tx` and `AllowanceMicros` claims land (`paymentClaims` in
-  `internal/saga/session.go`). An `allowance` event names USDC's mint as `USDC` and any other
-  mint as itself.
+  `internal/saga/session.go`). An `allowance` event names USDC's mint as `USDC` and leaves any
+  other mint out, so no base58 key reaches the page.
 
 ## Deployment
 
