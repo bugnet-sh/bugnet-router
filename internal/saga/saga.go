@@ -200,6 +200,8 @@ type Saga struct {
 	wallets  *wallets.Store
 	// unguardedAt is when step 4 of the payer decision was last logged, in Unix nanoseconds
 	unguardedAt atomic.Int64
+	// beforeMark runs between End's first read and its row lock, set only by tests
+	beforeMark func()
 }
 
 var errNoKeys = errors.New("saga: no data-plane keys to create a placement under")

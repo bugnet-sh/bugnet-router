@@ -1,6 +1,7 @@
 package saga_test
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -229,13 +230,16 @@ func TestAbuseReplacesAStopInFlight(t *testing.T) {
 	eq(t, p.TerminationReason, saga.ReasonAbuse)
 	eq(t, e.blocked(t, payerA).Blocked(time.Now()), true)
 
-	// Any other reason leaves a stop in flight as it is, with no wallet action
+	// Any other reason leaves a stop in flight as it is, says so, and takes no wallet action
 	other, _ := e.placePaid(t, "order-2", payerB)
 	if _, err := e.store.MarkPlacementTerminating(ctx, other.ID, saga.ReasonStop,
 		time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	p = e.end(t, other.ID, saga.End{Reason: saga.ReasonControlLost, Actor: wallets.ActorRouter})
+	p, err := e.saga.End(ctx, other.ID, saga.End{
+		Reason: saga.ReasonControlLost, Actor: wallets.ActorRouter,
+	})
+	eq(t, errors.Is(err, saga.ErrAlreadyEnded), true)
 	eq(t, p.State, store.PlacementTerminated)
 	eq(t, p.TerminationReason, saga.ReasonStop)
 	eq(t, e.walletEvents(t, payerB, store.WalletStrike), 0)
@@ -363,13 +367,16 @@ func TestAnonymousRefundCapCountsTogether(t *testing.T) {
 }
 
 func TestTerminatedCarriesUnusedSeconds(t *testing.T) {
-	e := endEnv(t, nil, nil, nil)
+	clk := &clock{}
+	e := endEnv(t, nil, clk, advancingDestroy{newLocal(t, local.Options{Name: "a"}), clk})
 	p, _ := e.placePaid(t, "order-1", payerA)
 	ended := e.end(t, p.ID, saga.End{
 		Reason: saga.ReasonProviderFailed, Actor: wallets.ActorRouter,
 	})
 	ev, raw := e.terminated(t, p.ID)
-	want := int64(ended.Deadline.Sub(*ended.TerminatedAt) / time.Second)
+	// The destroy took two minutes, and the user is not charged for them
+	eq(t, ended.TerminatedAt.Sub(*ended.TerminatingAt) >= 2*time.Minute, true)
+	want := int64(ended.Deadline.Sub(*ended.TerminatingAt) / time.Second)
 	eq(t, *ev.UnusedSeconds, want)
 	eq(t, want > 590 && want <= 600, true)
 	eq(t, ev.Refundable, true)
@@ -493,6 +500,63 @@ func TestEndRefusesWhatItCannotEnd(t *testing.T) {
 	eq(t, errors.Is(err, saga.ErrAlreadyEnded), true)
 	eq(t, again.TerminationReason, first.TerminationReason)
 	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 0)
+
+	// A retry of the end in force is done, not refused, and runs its wallet action only once
+	q, _ := e.placePaid(t, "order-2", payerB)
+	lost := saga.End{Reason: saga.ReasonControlLost, Actor: wallets.ActorRouter}
+	e.end(t, q.ID, lost)
+	strikes := e.walletEvents(t, payerB, store.WalletStrike)
+	retried, err := e.saga.End(t.Context(), q.ID, lost)
+	eq(t, err, nil)
+	eq(t, retried.TerminationReason, saga.ReasonControlLost)
+	eq(t, e.walletEvents(t, payerB, store.WalletStrike), strikes)
+}
+
+func TestARetriedEndDuringItsOwnDestroyIsDone(t *testing.T) {
+	gate := make(chan struct{})
+	e := endEnv(t, nil, nil, gatedDestroy{newLocal(t, local.Options{Name: "a"}), gate})
+	ctx := t.Context()
+	p, _ := e.placePaid(t, "order-1", payerA)
+	lost := saga.End{Reason: saga.ReasonControlLost, Actor: wallets.ActorRouter}
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.saga.End(ctx, p.ID, lost)
+		first <- err
+	}()
+	for {
+		cur, err := e.store.PlacementByID(ctx, p.ID)
+		eq(t, err, nil)
+		if cur.State == store.PlacementTerminating {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(gate)
+	}()
+	got, err := e.saga.End(ctx, p.ID, lost)
+	eq(t, err, nil)
+	eq(t, got.State, store.PlacementTerminated)
+	eq(t, <-first, nil)
+	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 1)
+}
+
+func TestAProviderFailedEndPastItsDeadlineUsesNoDailyRefund(t *testing.T) {
+	clk := &clock{}
+	e := endEnv(t, func(w *config.Wallets) { w.FailedRefundsPerDay = 1 }, clk, nil)
+	late, _ := e.placePaid(t, "order-1", payerA)
+	failed := saga.End{Reason: saga.ReasonProviderFailed, Actor: wallets.ActorRouter}
+	// The deadline passed before the sweep ended it, so nothing is left to refund
+	clk.Advance(late.Deadline.Sub(clk.Now()) + 5*time.Second)
+	p := e.end(t, late.ID, failed)
+	eq(t, p.Refundable, false)
+	ev, _ := e.terminated(t, p.ID)
+	eq(t, ev.Refunds, []saga.Refund{})
+	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 0)
+	n, err := e.store.FailedRefunds(t.Context(), payerA, clk.Now().Add(-time.Hour))
+	eq(t, err, nil)
+	eq(t, n, 0)
 }
 
 func TestAbuseEndAfterAStopFlagsIt(t *testing.T) {
@@ -516,6 +580,68 @@ func TestAbuseEndAfterAStopFlagsIt(t *testing.T) {
 	after, rawAfter := e.terminated(t, p.ID)
 	eq(t, after, before)
 	eq(t, rawAfter, raw)
+}
+
+func TestAnEndDuringAnotherEndIsAlreadyEnded(t *testing.T) {
+	for _, reason := range []string{saga.ReasonControlLost, saga.ReasonProviderFailed} {
+		t.Run(reason, func(t *testing.T) {
+			gate := make(chan struct{})
+			e := endEnv(t, nil, nil, gatedDestroy{newLocal(t, local.Options{Name: "a"}), gate})
+			ctx := t.Context()
+			p, h := e.placePaid(t, "order-1", payerA)
+			stopped := make(chan error, 1)
+			go func() {
+				_, err := e.saga.Stop(ctx, h)
+				stopped <- err
+			}()
+			// The stop holds the placement in terminating while its destroy waits on the gate
+			for {
+				cur, err := e.store.PlacementByID(ctx, p.ID)
+				eq(t, err, nil)
+				if cur.State == store.PlacementTerminating {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				close(gate)
+			}()
+			got, err := e.saga.End(ctx, p.ID, saga.End{Reason: reason, Actor: wallets.ActorRouter})
+			eq(t, errors.Is(err, saga.ErrAlreadyEnded), true)
+			eq(t, got.TerminationReason, saga.ReasonStop)
+			eq(t, <-stopped, nil)
+			eq(t, e.walletEvents(t, payerA, store.WalletStrike), 0)
+		})
+	}
+}
+
+func TestAStopBetweenEndsReadAndLockWinsTheRace(t *testing.T) {
+	e := endEnv(t, func(w *config.Wallets) { w.StopLiveOnAbuse = true }, nil, nil)
+	ctx := t.Context()
+	stopAt := func(h string) func() {
+		return func() {
+			if _, err := e.saga.Stop(ctx, h); err != nil {
+				t.Errorf("stop: %v", err)
+			}
+		}
+	}
+	// control_lost read a ready placement, then the owner's stop ended it first
+	p, h := e.placePaid(t, "order-1", payerA)
+	saga.SetBeforeMark(e.saga, stopAt(h))
+	got, err := e.saga.End(ctx, p.ID, saga.End{Reason: saga.ReasonControlLost})
+	eq(t, errors.Is(err, saga.ErrAlreadyEnded), true)
+	eq(t, got.TerminationReason, saga.ReasonStop)
+	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 0)
+	// abuse in the same race still blocks the payer, through FlagEnded
+	q, hq := e.placePaid(t, "order-2", payerB)
+	saga.SetBeforeMark(e.saga, stopAt(hq))
+	got, err = e.saga.End(ctx, q.ID, saga.End{Reason: saga.ReasonAbuse, Actor: wallets.ActorRouter})
+	eq(t, err, nil)
+	eq(t, got.TerminationReason, saga.ReasonStop)
+	eq(t, e.blocked(t, payerB).Blocked(time.Now()), true)
+	eq(t, e.walletEvents(t, payerB, store.WalletBlock), 1)
+	saga.SetBeforeMark(e.saga, nil)
 }
 
 func TestEndWithoutPayerLeavesTheSharedLock(t *testing.T) {
@@ -622,4 +748,26 @@ func TestEndTakesThePayerLocksBeforeTheRow(t *testing.T) {
 	eq(t, e.blocked(t, payerA).Blocked(time.Now()), true)
 	eq(t, e.blocked(t, payerB).Blocked(time.Now()), true)
 	eq(t, e.reload(t, p.ID).TerminationReason, saga.ReasonAbuse)
+}
+
+// advancingDestroy moves the clock two minutes on during each destroy, like a slow provider
+type advancingDestroy struct {
+	*local.Provider
+	clk *clock
+}
+
+func (a advancingDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
+	a.clk.Advance(2 * time.Minute)
+	return a.Provider.Destroy(ctx, ref)
+}
+
+// gatedDestroy holds each destroy until the gate closes, keeping its placement in terminating
+type gatedDestroy struct {
+	*local.Provider
+	gate chan struct{}
+}
+
+func (g gatedDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
+	<-g.gate
+	return g.Provider.Destroy(ctx, ref)
 }

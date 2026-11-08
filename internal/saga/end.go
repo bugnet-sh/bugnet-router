@@ -37,8 +37,9 @@ var (
 	// ErrAlreadyEnded answers an End other than abuse whose placement had ended before it, so its
 	// wallet action did not run; End for abuse flags such a placement instead
 	ErrAlreadyEnded = errors.New("saga: placement had already ended")
-	// errPayersMoved restarts an end whose placement gained a payer before its row was locked
-	errPayersMoved = errors.New("saga: the placement gained a payer")
+	// ErrPayersMoved restarts an end whose placement gained a payer before its row was locked,
+	// and reaches the caller when that keeps happening
+	ErrPayersMoved = errors.New("saga: the placement gained a payer")
 )
 
 // endAttempts bounds the restarts of an end whose placement keeps gaining payers
@@ -92,16 +93,27 @@ func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, e
 	}
 	ended := p.State == store.PlacementTerminated
 	if !ended {
+		if s.beforeMark != nil {
+			s.beforeMark()
+		}
+		taken := false
 		p, err = s.terminate(ctx, p, e.Reason, func(ctx context.Context) (bool, error) {
-			moved, done, err := s.markEnd(ctx, id, e)
-			ended = done
+			moved, done, other, err := s.markEnd(ctx, id, e)
+			ended, taken = done, other
 			return moved, err
 		})
+		if err == nil && taken {
+			return p, fmt.Errorf("%w: ending for %s", ErrAlreadyEnded, p.TerminationReason)
+		}
 		if err != nil || !ended {
 			return p, err
 		}
 	}
 	if e.Reason != ReasonAbuse {
+		// A retry of the end in force did its wallet action the first time, so it is done
+		if p.TerminationReason == e.Reason {
+			return p, nil
+		}
 		return p, fmt.Errorf("%w: ended for %s", ErrAlreadyEnded, p.TerminationReason)
 	}
 	p, _, err = s.FlagEnded(ctx, id, e)
@@ -192,19 +204,21 @@ func (s *Saga) covered(w store.Wallet) bool {
 // markEnd runs step 1 of End under the payers' locks, then the placement row's, the order
 // Extend takes them in, and reports whether it moved the placement or replaced its reason, and
 // whether the placement had already terminated
-func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, error) {
-	moved, ended := false, false
+// markEnd also reports whether another end already holds the placement, so End's reason lost
+func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, bool, error) {
+	moved, ended, taken := false, false, false
 	// Only provider_failed reads the start payer's daily count, so only it waits on "-"
 	startLock := e.Reason == ReasonProviderFailed
 	err := s.underPayers(ctx, id, startLock, func(tx pgx.Tx, cur store.Placement,
 		payers []string,
 	) error {
-		moved, ended = false, cur.State == store.PlacementTerminated
+		moved, ended, taken = false, cur.State == store.PlacementTerminated, false
 		switch cur.State {
 		case store.PlacementReady:
 		case store.PlacementTerminating:
 			// Abuse replaces a stop in flight, so its wallet action still happens
 			if e.Reason != ReasonAbuse || cur.TerminationReason == ReasonAbuse {
+				taken = e.Reason != ReasonAbuse && cur.TerminationReason != e.Reason
 				return nil
 			}
 		default:
@@ -236,7 +250,7 @@ func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, er
 		moved = true
 		return nil
 	})
-	return moved, ended, err
+	return moved, ended, taken, err
 }
 
 // endActions decides the end's refund and runs the wallet actions of its reason (CP 6.4),
@@ -271,6 +285,10 @@ func (s *Saga) endActions(
 	case ReasonControlLost:
 		n, err := s.strike(ctx, tx, p, payers, e)
 		return false, cond(n > 0, actionStruck, actionEnded), err
+	}
+	// With no whole second left there is nothing to refund, so no daily refund is used up
+	if p.Deadline == nil || p.Deadline.Sub(s.now()) < time.Second {
+		return false, actionEnded, nil
 	}
 	// provider_failed refunds its unused time while the start payer is under the daily cap
 	limit := s.w.FailedRefundsPerDay
@@ -385,11 +403,11 @@ func (s *Saga) underPayers(
 				return err
 			}
 			if cur.Payer != seen.Payer || !subset(now, payers) {
-				return errPayersMoved
+				return ErrPayersMoved
 			}
 			return fn(tx, cur, payers)
 		})
-		if !errors.Is(err, errPayersMoved) || attempt == endAttempts {
+		if !errors.Is(err, ErrPayersMoved) || attempt == endAttempts {
 			return err
 		}
 	}
@@ -536,8 +554,10 @@ func (s *Saga) terminatedEvent(
 	ev := newEvent(p, reason)
 	unused := int64(0)
 	ev.Refunds = []Refund{}
-	if p.Refundable && p.Deadline != nil && p.TerminatedAt != nil {
-		unused = max(int64(p.Deadline.Sub(*p.TerminatedAt)/time.Second), 0)
+	// Counted from when the end began, so a slow or failing destroy never shrinks the refund
+	if began := cmp.Or(p.TerminatingAt, p.TerminatedAt); p.Refundable && p.Deadline != nil &&
+		began != nil {
+		unused = max(int64(p.Deadline.Sub(*began)/time.Second), 0)
 		orders, err := ts.OrdersNewestFirst(ctx, p.ID)
 		if err != nil {
 			return Event{}, err
