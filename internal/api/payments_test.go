@@ -196,3 +196,47 @@ func TestLookupPlacementPackageID(t *testing.T) {
 		}
 	}
 }
+
+func (e *env) resolved(t *testing.T, m *routerv1.AppendX402ResolvedRequest) error {
+	t.Helper()
+	_, err := e.payments(t).AppendX402Resolved(t.Context(), connect.NewRequest(m))
+	return err
+}
+
+func TestAppendX402Resolved(t *testing.T) {
+	e := newEnv(t, options{})
+	order, tok := e.startOrder(t, smallPkg, smallPrice)
+	res, err := e.createWith(t, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := e.waitReady(t, res.Msg.GetHandle())
+	good := &routerv1.AppendX402ResolvedRequest{StartOrderId: order, Ref: "aaaaaaaaaaaaaaaa",
+		Status: "paid", AmountMicros: 10000, Tx: sig, PayTo: usdc, Host: "agent402.tools",
+		Method: "POST", Path: "/" + strings.Repeat("p", 120)}
+	eq(t, e.resolved(t, good), nil)
+	eq(t, e.resolved(t, good), nil)
+	rows := e.sessionEvents(t, p)["x402_resolved"]
+	eq(t, len(rows), 1)
+	eq(t, len([]rune(rows[0]["path"].(string))), 80)
+	eq(t, rows[0]["tx"], any(sig))
+	rel := &routerv1.AppendX402ResolvedRequest{StartOrderId: order, Ref: "bbbbbbbbbbbbbbbb",
+		Status: "released"}
+	eq(t, e.resolved(t, rel), nil)
+	eq(t, len(e.sessionEvents(t, p)["x402_resolved"]), 2)
+	type req = routerv1.AppendX402ResolvedRequest
+	for _, c := range []func(*req){
+		func(m *req) { m.Ref = "short" },
+		func(m *req) { m.Status = "other" },
+		func(m *req) { m.Tx = "" },
+		func(m *req) { m.Status, m.Ref = "released", "cccccccccccccccc" },
+		func(m *req) { m.PayTo = "nope" },
+	} {
+		bad := &routerv1.AppendX402ResolvedRequest{StartOrderId: order, Ref: "dddddddddddddddd",
+			Status: "paid", Tx: sig}
+		c(bad)
+		mustCode(t, e.resolved(t, bad), connect.CodeInvalidArgument, "")
+	}
+	good.StartOrderId = "ord_unknown"
+	mustCode(t, e.resolved(t, good), connect.CodeNotFound, "ORDER_UNKNOWN")
+}

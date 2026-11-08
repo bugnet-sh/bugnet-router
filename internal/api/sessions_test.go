@@ -691,7 +691,7 @@ func TestAppendAllowanceEventKept(t *testing.T) {
 	got := e.sessionEvents(t, p)["allowance"]
 	eq(t, len(got), 3)
 	eq(t, got[2], map[string]any{"phase": "kept", "amount_micros": 0.0,
-		"kept_micros": 4000.0, "asset": usdc, "network": solana})
+		"kept_micros": 4000.0, "asset": usdc, "network": solana, "order_id": order})
 	rec, err := e.record(t, p.GetSessionUrl())
 	if err != nil {
 		t.Fatal(err)
@@ -713,6 +713,38 @@ func TestAppendAllowanceEventKept(t *testing.T) {
 	eq(t, served[1]["tx"], sig)
 }
 
+func TestAllowanceTopUpOnStartRecord(t *testing.T) {
+	e := newEnv(t, options{})
+	order, tok := e.startOrder(t, smallPkg, smallPrice)
+	res, err := e.createWith(t, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := e.waitReady(t, res.Msg.GetHandle())
+	send := func(orderID, phase string, keptMicros int64) error {
+		ev := &routerv1.AllowanceEvent{Phase: phase, AmountMicros: 500_000, Tx: sig,
+			Asset: usdc, Network: solana}
+		if phase == "kept" {
+			ev.AmountMicros, ev.KeptMicros, ev.Tx = 0, keptMicros, ""
+		}
+		_, err := e.payments(t).AppendAllowanceEvent(t.Context(), connect.NewRequest(
+			&routerv1.AppendAllowanceEventRequest{OrderId: orderID, StartOrderId: order,
+				Event: ev}))
+		return err
+	}
+	eq(t, send(order, "paid", 0), nil)
+	eq(t, send("ord_topup", "paid", 0), nil)
+	eq(t, send("ord_topup", "paid", 0), nil)
+	eq(t, len(e.sessionEvents(t, p)["allowance"]), 2)
+	mustCode(t, send("ord_topup", "kept", 4000), connect.CodeInvalidArgument, "")
+	eq(t, send(order, "kept", 4000), nil)
+	_, err = e.payments(t).AppendAllowanceEvent(t.Context(), connect.NewRequest(
+		&routerv1.AppendAllowanceEventRequest{OrderId: "ord_topup", StartOrderId: "ord_unknown",
+			Event: &routerv1.AllowanceEvent{Phase: "paid", AmountMicros: 1, Asset: usdc,
+				Network: solana, Tx: sig}}))
+	mustCode(t, err, connect.CodeNotFound, "ORDER_UNKNOWN")
+}
+
 func TestAppendAllowanceEvent(t *testing.T) {
 	e := newEnv(t, options{})
 	order, tok := e.startOrder(t, smallPkg, smallPrice)
@@ -727,7 +759,7 @@ func TestAppendAllowanceEvent(t *testing.T) {
 	got := e.sessionEvents(t, p)["allowance"]
 	eq(t, len(got), 2)
 	eq(t, got[0], map[string]any{"phase": "paid", "amount_micros": float64(1_000_000),
-		"asset": usdc, "network": solana, "tx": sig})
+		"asset": usdc, "network": solana, "tx": sig, "order_id": order})
 	mustCode(t, e.allowance(t, "ord_unknown", "paid", 1, sig), connect.CodeNotFound,
 		"ORDER_UNKNOWN")
 	for _, c := range []struct {
