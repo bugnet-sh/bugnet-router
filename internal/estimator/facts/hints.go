@@ -75,10 +75,11 @@ func Hints(cmd string, f Facts) EntryHints {
 		if i+1 < len(words) && !words[i+1].op {
 			next = words[i+1].s
 		}
-		flag, _, hasInline := strings.Cut(lw, "=")
+		rawFlag, inline, hasInline := strings.Cut(w.s, "=")
+		flag := strings.ToLower(rawFlag)
 		value := next
 		if hasInline {
-			value = w.s[len(flag)+1:]
+			value = inline
 		}
 		if strings.Contains(lw, "cuda") {
 			tools[ToolCUDA] = true

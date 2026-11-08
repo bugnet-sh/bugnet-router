@@ -181,3 +181,20 @@ func TestCommandHints(t *testing.T) {
 	b, _ := canon.Marshal(Hints("time   make  test -j8 ", Facts{}))
 	eq(t, string(a), string(b))
 }
+
+func TestCommandHintsNonASCIIWords(t *testing.T) {
+	for _, c := range []struct {
+		cmd  string
+		want EntryHints
+	}{
+		{"\u023a=", EntryHints{}},
+		{"make \u023a\u023a=x", EntryHints{Tools: []string{"make"}}},
+		{"vllm serve m --dtype=\u023a", EntryHints{Tools: []string{"vllm"}}},
+		{"\u212a=1 make -j=4", EntryHints{Jobs: 4, Tools: []string{"make"}}},
+		{"vllm serve \u212a=1 --max-model-len=\u212a4096", EntryHints{Tools: []string{"vllm"}}},
+		{"vllm serve m --DTYPE=\u023a --Max-Model-Len=2048", EntryHints{ContextTokens: 2048,
+			Tools: []string{"vllm"}}},
+	} {
+		eq(t, Hints(c.cmd, Facts{}), c.want)
+	}
+}
