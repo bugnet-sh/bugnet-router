@@ -120,6 +120,9 @@ type runnerAnswer struct {
 	Init     string `json:"init"`
 	Firewall string `json:"firewall"`
 	Error    string `json:"error"`
+	// Port and HostKey are ssh-up's answer
+	Port    int    `json:"port"`
+	HostKey string `json:"host_key"`
 }
 
 func (b BootSettings) gatePort() int {

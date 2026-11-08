@@ -1,7 +1,11 @@
 // Package jobargs holds the River job arguments shared by the API, the saga and the worker
 package jobargs
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
 
 // QueueDataplane is the River queue of every data-plane job, apart from the default queue
 const QueueDataplane = "dataplane"
@@ -31,3 +35,25 @@ type Outbox struct{}
 
 // Kind returns the River job kind
 func (Outbox) Kind() string { return "outbox" }
+
+// PrepareSSH asks the worker to make a ready placement's sshd ready behind its gate
+type PrepareSSH struct {
+	PlacementID uuid.UUID `json:"placement_id"`
+}
+
+// Kind returns the River job kind
+func (PrepareSSH) Kind() string { return "prepare_ssh" }
+
+// prepareAttempts bounds the retries of one prepare_ssh job
+const prepareAttempts = 3
+
+// InsertOpts puts the job on the dataplane queue, once per placement while one waits or runs
+func (PrepareSSH) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDataplane, MaxAttempts: prepareAttempts,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+			rivertype.JobStateScheduled,
+		}},
+	}
+}
