@@ -1806,6 +1806,10 @@ func (e *env) sandboxOps(t *testing.T) map[string]func(h string) error {
 				&routerv1.ListFilesRequest{Handle: h, Path: "/root"}))
 			return err
 		},
+		"WatchJob": func(h string) error {
+			_, err := e.watchJob(t, &routerv1.WatchJobRequest{Handle: h, JobId: "j_nope"})
+			return err
+		},
 		"CreatePreview": func(h string) error {
 			_, err := e.client.CreatePreview(ctx, connect.NewRequest(
 				&routerv1.CreatePreviewRequest{Handle: h, Port: 3000}))
@@ -1917,21 +1921,21 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 		if err := e.watchFirst(t, busy); err != nil {
 			t.Fatalf("WatchPlacement %s: %v", when, err)
 		}
-		if err := watchErr(busy, job); err != nil {
-			t.Fatalf("WatchJob %s: %v", when, err)
-		}
-		wantCode(t, watchErr(busy, "j_nope"), connect.CodeNotFound)
 	}
 	for range burst + 1 {
 		uncounted("before the burst")
 	}
 
-	spend := []string{"WriteFile", "ReadFile", "ListFiles"}
-	for _, name := range spend[:burst] {
+	// An attach to a real job spends a token like the calls that touch the sandbox
+	if err := watchErr(busy, job); err != nil {
+		t.Fatalf("WatchJob within the burst: %v", err)
+	}
+	for _, name := range []string{"WriteFile", "ReadFile"} {
 		if err := ops[name](busy); err != nil {
 			t.Fatalf("%s within the burst: %v", name, err)
 		}
 	}
+	wantCode(t, watchErr(busy, job), connect.CodeResourceExhausted)
 	// A loaded machine may refill a token between calls, so each refusal starts on an empty bucket
 	drain := func() {
 		t.Helper()
@@ -1989,7 +1993,7 @@ func TestSandboxOperationsAreRateLimited(t *testing.T) {
 	}))
 	wantCode(t, err, connect.CodeInvalidArgument)
 
-	for _, name := range spend[:burst] {
+	for _, name := range []string{"WriteFile", "ReadFile", "ListFiles"} {
 		if err := ops[name](calm); err != nil {
 			t.Fatalf("%s on another placement: %v", name, err)
 		}

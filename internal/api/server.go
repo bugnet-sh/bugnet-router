@@ -613,7 +613,15 @@ func (s *Server) WatchJob(
 	if err != nil {
 		return err
 	}
-	job, err := s.job(ctx, m.GetHandle(), m.GetJobId())
+	// An attach takes an operation token, so a reconnect loop runs into the same limits (CP 7.6)
+	p, err := s.placement(ctx, m.GetHandle())
+	if err == nil {
+		err = s.spend(ctx, p)
+	}
+	var job store.Job
+	if err == nil {
+		job, err = s.jobOf(ctx, p, m.GetJobId())
+	}
 	if err != nil {
 		return s.status(err)
 	}
@@ -684,12 +692,8 @@ func (s *Server) CancelJob(
 	return connect.NewResponse(&routerv1.CancelJobResponse{State: jobState(state)}), nil
 }
 
-// job returns a job of the handle's placement, a job of any other placement being not found
-func (s *Server) job(ctx context.Context, h, jobID string) (store.Job, error) {
-	p, err := s.placement(ctx, h)
-	if err != nil {
-		return store.Job{}, err
-	}
+// jobOf returns a job of the placement, a job of any other placement being not found
+func (s *Server) jobOf(ctx context.Context, p store.Placement, jobID string) (store.Job, error) {
 	job, err := s.d.Store.JobByID(ctx, jobID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && job.PlacementID != p.ID) {
 		return store.Job{}, jobs.ErrNotFound
