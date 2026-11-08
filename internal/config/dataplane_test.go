@@ -57,6 +57,8 @@ func TestDataPlaneDefaults(t *testing.T) {
 				ApplyWait: 15 * time.Second,
 			})
 			eq(t, c.Fetch, Fetch{MaxBytes: 2 << 30, EgressAddr: "127.0.0.1:9443"})
+			eq(t, c.Bootstrap, Bootstrap{
+				Dir: "src", HeartbeatStale: time.Minute, MaxPrivateAttempts: 2, MaxConcurrent: 4})
 			eq(t, c.Hooks, Hooks{})
 			eq(t, c.DataplaneWorkers, 8)
 			eq(t, c.DefaultWorkers, 20)
@@ -360,6 +362,10 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"no puts", "[secrets]\nputs_per_hour = 0", "secrets.puts_per_hour"},
 		{"custom hosts as a string", "[secrets]\ncustom_hosts = \"yes\"",
 			"secrets.custom_hosts must be true or false"},
+		{"bootstrap dir up", "[bootstrap]\ndir = \"../x\"", "bootstrap.dir"},
+		{"bootstrap dir absolute", "[bootstrap]\ndir = \"/x\"", "bootstrap.dir"},
+		{"bootstrap no attempts", "[bootstrap]\nmax_private_attempts = 0",
+			"bootstrap.max_private_attempts"},
 		{"fetch bytes zero", "[fetch]\nmax_bytes = \"0\"", "fetch.max_bytes"},
 		{"fetch address without a port", "[fetch]\negress_addr = \"127.0.0.1\"",
 			"fetch.egress_addr must be host:port"},

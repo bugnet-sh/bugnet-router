@@ -52,6 +52,11 @@ func (e *env) handleCalls(t *testing.T) map[string]func(h string) error {
 	for name, call := range e.secretCalls(t) {
 		calls[name] = call
 	}
+	calls["FetchSource"] = func(h string) error {
+		_, err := e.client.FetchSource(ctx, connect.NewRequest(
+			&routerv1.FetchSourceRequest{Handle: h}))
+		return err
+	}
 	calls["AddSshKey"] = func(h string) error {
 		_, err := e.client.AddSshKey(ctx, connect.NewRequest(
 			&routerv1.AddSshKeyRequest{Handle: h, PublicKey: "ssh-ed25519 AAAA"}))

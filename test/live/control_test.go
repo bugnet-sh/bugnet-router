@@ -1,9 +1,11 @@
 package live
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // controlRows are CP 15's rows, each task adding its own
@@ -21,6 +23,8 @@ func init() {
 		row{id: "E2", run: rowE2},
 		row{id: "E3", run: rowE3},
 		row{id: "E4", run: rowE4},
+		row{id: "F1", run: rowF1},
+		row{id: "F2", run: rowF2},
 	)
 }
 
@@ -110,7 +114,74 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
-	for _, id := range []string{"E1", "E2", "E3", "E4"} {
+	for _, id := range []string{"E1", "E2", "E3", "E4", "F1", "F2"} {
 		eq(t, slices.Contains(ids, id), true)
+	}
+}
+
+// fetchWithin is how long a repository may take to land in the sandbox
+const fetchWithin = 3 * time.Minute
+
+// bootstrapDone calls FetchSource and waits until the placement shows the checkout as done
+func (s *stack) bootstrapDone(t *testing.T, h string) {
+	t.Helper()
+	first := kv(s.dev(t, "fetch-source", "--handle", h))
+	if first["state"] != "running" && first["state"] != "done" {
+		t.Fatalf("live: FetchSource answered %v", first)
+	}
+	deadline := time.Now().Add(fetchWithin)
+	for {
+		got := kv(s.dev(t, "get", "--handle", h))
+		switch got["bootstrap_state"] {
+		case "done":
+			return
+		case "failed":
+			t.Fatalf("live: the fetch failed with %s", got["bootstrap_reason"])
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("live: the fetch was still %s after %s", got["bootstrap_state"], fetchWithin)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// rowF1 clones a public repository at its quoted commit through FetchSource
+func rowF1(t *testing.T, s *stack) {
+	const repo, sha = "github.com/octocat/Hello-World", "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+	q, _ := s.quote(t, s.quoter(), repo)
+	h := s.sandboxFor(t, xferPackage, q.GetEstimateId())
+	s.bootstrapDone(t, h)
+	got := strings.TrimSpace(s.sh(t, h, `cd ~/src/Hello-World && git rev-parse HEAD`))
+	eq(t, got, sha)
+}
+
+// rowF2 fetches a private repository through the proxy, the router holding no token
+//
+// It needs a throwaway GitHub token that reads one private repository, in
+// BUGNET_LIVE_GITHUB_TOKEN, and the repository as owner/name in BUGNET_LIVE_PRIVATE_REPO.
+func rowF2(t *testing.T, s *stack) {
+	token, repo := os.Getenv("BUGNET_LIVE_GITHUB_TOKEN"), os.Getenv("BUGNET_LIVE_PRIVATE_REPO")
+	if token == "" || repo == "" {
+		t.Skip("set BUGNET_LIVE_GITHUB_TOKEN and BUGNET_LIVE_PRIVATE_REPO for F2")
+	}
+	q, _ := s.quote(t, s.quoter(), "github.com/"+repo)
+	h := s.sandboxFor(t, xferPackage, q.GetEstimateId())
+	if first := kv(s.dev(t, "get", "--handle", h)); first["bootstrap_state"] != "pending" {
+		t.Fatalf("live: a private source starts pending, got %v", first)
+	}
+	if _, stderr, err := s.devTry(t, "fetch-source", "--handle", h); err == nil ||
+		!strings.Contains(stderr, "SECRET_REQUIRED") {
+		t.Fatalf("live: FetchSource without a secret answered %v %s", err, stderr)
+	}
+	s.devStdin(t, token, "secret", "--handle", h, "--name", "GITHUB_TOKEN",
+		"--host", "api.github.com", "--fetch-only")
+	s.bootstrapDone(t, h)
+	name := repo[strings.LastIndexByte(repo, '/')+1:]
+	if out := strings.TrimSpace(s.sh(t, h, `ls ~/src/`+name+` | head -1`)); out == "" {
+		t.Fatalf("live: ~/src/%s is empty", name)
+	}
+	left := s.shTry(t, h, `test -e ~/.bugnet/src.tar.gz && echo left`)
+	if strings.Contains(left, "left") {
+		t.Fatal("live: the archive stays in the sandbox")
 	}
 }

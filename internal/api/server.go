@@ -54,6 +54,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +68,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/bugnet-sh/bugnet-router/internal/bootstrap"
 	"github.com/bugnet-sh/bugnet-router/internal/budget"
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
@@ -156,6 +158,16 @@ type Deps struct {
 	// Estimator answers Estimate and gives a placement its source, Estimate lists packages alone
 	// while it is nil
 	Estimator *estimator.Service
+	// Bootstrap and Fetch are the FetchSource settings, a zero field taking its default
+	Bootstrap config.Bootstrap
+	Fetch     config.Fetch
+	// FetchToken is the bnf_ token the private fetch opens egress tunnels with, and a private
+	// fetch is refused while it is empty
+	FetchToken string
+	// Images is each provider's tool manifest, absent for none measured
+	Images map[string]config.ImageTools
+	// Upstream names the hosts a private fetch talks to, the production ones when zero
+	Upstream bootstrap.Upstream
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -178,6 +190,7 @@ type Server struct {
 	w      config.Wallets
 	guard  wallet.Guard
 	wl     *wallets.Store
+	boot   *bootstrap.Service
 }
 
 var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
@@ -218,6 +231,12 @@ func New(deps Deps) *Server {
 		end:    end,
 		done:   make(chan struct{}),
 	}
+	s.boot = bootstrap.New(bootstrap.Deps{
+		Store: deps.Store, Jobs: deps.Jobs, Registry: deps.Registry, Keys: deps.Keys,
+		Counter: egressCounter{s}, Log: deps.Log, Settings: deps.Bootstrap.OrDefaults(),
+		Fetch: deps.Fetch.OrDefaults(), Images: deps.Images, EgressHost: deps.EgressHost,
+		CAFile: deps.Secrets.CACertFile, FetchToken: deps.FetchToken, Upstream: deps.Upstream,
+	})
 	var wg sync.WaitGroup
 	wg.Go(func() { s.notes.run(life) })
 	wg.Go(func() { s.hub.run(life) })
@@ -235,6 +254,7 @@ func (s *Server) Drain() { s.cancel() }
 func (s *Server) Close() {
 	s.cancel()
 	s.end()
+	s.boot.Close()
 	<-s.done
 }
 
@@ -424,7 +444,11 @@ func (s *Server) GetPlacement(
 			return nil, s.status(err)
 		}
 	}
-	return connect.NewResponse(&routerv1.GetPlacementResponse{Placement: placementMsg(p)}), nil
+	msg := placementMsg(p)
+	if msg.Bootstrap, err = s.boot.View(ctx, p); err != nil {
+		return nil, s.status(err)
+	}
+	return connect.NewResponse(&routerv1.GetPlacementResponse{Placement: msg}), nil
 }
 
 // awaitChange re-reads the placement on every message until it leaves known or wait passes
@@ -647,6 +671,10 @@ func (s *Server) Exec(
 	}
 	if err := jobs.CheckEnv(m.GetEnv()); err != nil {
 		return nil, s.status(err)
+	}
+	if strings.HasPrefix(m.GetIdempotencyKey(), "_") {
+		return nil, withInfo(invalid("idempotency keys starting with _ are the router's own"),
+			reasonKeyReserved)
 	}
 	until, err := untilOf(m.GetUntil())
 	if err != nil {

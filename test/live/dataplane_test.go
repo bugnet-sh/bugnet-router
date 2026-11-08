@@ -403,7 +403,17 @@ func rowBoat5(t *testing.T, s *stack) {
 // sandbox creates a placement on the stack's provider and stops it when the test ends
 func (s *stack) sandbox(t *testing.T, pkg string) string {
 	t.Helper()
-	h := kv(s.dev(t, "create", "--package", pkg))["handle"]
+	return s.sandboxFor(t, pkg, "")
+}
+
+// sandboxFor is sandbox for a placement that copies the source of estimateID when it is not empty
+func (s *stack) sandboxFor(t *testing.T, pkg, estimateID string) string {
+	t.Helper()
+	args := []string{"create", "--package", pkg}
+	if estimateID != "" {
+		args = append(args, "--estimate-id", estimateID)
+	}
+	h := kv(s.dev(t, args...))["handle"]
 	if h == "" {
 		t.Fatal("live: bugnet-dev create printed no handle")
 	}

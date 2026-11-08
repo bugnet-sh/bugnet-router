@@ -41,6 +41,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/bugnet-sh/bugnet-router/internal/api"
+	"github.com/bugnet-sh/bugnet-router/internal/bootstrap"
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
@@ -228,6 +229,12 @@ type options struct {
 	estimator     bool
 	estimatorTune func(*config.Estimator)
 	githubRepos   []*estimatortest.Repo
+	// bootstrap, fetch, fetchToken, images and upstream set the FetchSource settings
+	bootstrap  config.Bootstrap
+	fetch      config.Fetch
+	fetchToken string
+	images     map[string]config.ImageTools
+	upstream   bootstrap.Upstream
 }
 
 type env struct {
@@ -381,6 +388,8 @@ func newEnv(t *testing.T, opts options) *env {
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
 		X402: x402Of(opts), HostRules: hostRules(x402Of(opts)), SSH: sshSettings(opts.ssh),
 		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, ProviderOps: opts.providerOps,
+		Bootstrap: opts.bootstrap, Fetch: opts.fetch, FetchToken: opts.fetchToken,
+		Images: opts.images, Upstream: opts.upstream,
 	})
 	t.Cleanup(srv.Close)
 

@@ -10,18 +10,11 @@ import (
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 )
 
-// unbuilt maps each contract RPC the router does not serve yet to a call of it
+// unbuilt maps each contract RPC the router does not serve yet to a call of it, none being left
 func unbuilt(
-	ctx context.Context, c routerv1connect.SandboxRouterServiceClient,
+	_ context.Context, _ routerv1connect.SandboxRouterServiceClient,
 ) map[string]func() error {
-	const h = "sbx_aaaaaaaaaaaaaaaaaaaaaaaaaa"
-	return map[string]func() error{
-		"FetchSource": func() error {
-			_, err := c.FetchSource(ctx, connect.NewRequest(
-				&routerv1.FetchSourceRequest{Handle: h}))
-			return err
-		},
-	}
+	return map[string]func() error{}
 }
 
 // built names the RPCs Server implements
@@ -31,7 +24,7 @@ var built = []string{
 	"WatchJob", "CancelJob", "ReadFile", "WriteFile", "ListFiles", "CreateTransfer",
 	"CreatePreview", "CreateSecretLink", "CreateSecretPutGrant", "GetSecretSealingKey",
 	"PutSecret", "ListSecrets", "DeleteSecret", "AddSshKey", "RemoveSshKey", "CheckX402",
-	"ListX402", "EnableX402",
+	"ListX402", "EnableX402", "FetchSource",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {
