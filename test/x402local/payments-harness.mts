@@ -232,8 +232,8 @@ async function payStep(b: { payUrl: string; accepted: unknown }): Promise<unknow
 
 async function ledger(): Promise<unknown> {
     const rows = await svc.pool.query(
-        `select ref, state, amount_micros::text as amount_micros, tx_signature, host, path
-         from x402_payments order by created_at`,
+        `select ref, account_id, state, amount_micros::text as amount_micros, tx_signature,
+         host, path from x402_payments order by created_at`,
     );
     const acct = await svc.pool.query(
         `select id, funded_micros::text, spent_micros::text, held_micros::text, state
@@ -300,6 +300,7 @@ server.listen(0, "127.0.0.1", () => {
             orderPublicKey: orderPublicKeyBase64(Buffer.from(input.orderSeed, "base64")),
             chain: chain.url,
             feePayer: signers.feePayer!.address,
+            payer: signers.payer!.address,
         })}\n`,
     );
 });

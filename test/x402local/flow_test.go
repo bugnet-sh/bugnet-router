@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,7 +25,21 @@ const (
 	mcpVersion  = "2025-06-18"
 	mcpCallWait = 90 * time.Second
 	gatewayWait = 60 * time.Second
+	linksDomain = "dev.bugnet.sh"
+	// briefMax caps how much of an answer a failure message prints
+	briefMax = 600
 )
+
+// secretShapes are the parts of an answer a failure message never prints
+var secretShapes = []struct {
+	re   *regexp.Regexp
+	with string
+}{
+	{regexp.MustCompile(`\S*` + regexp.QuoteMeta(linksDomain) + `\S*`), "[session link]"},
+	{regexp.MustCompile(`#k=\S*`), "#k=[key]"},
+	{regexp.MustCompile(`bnk_[A-Za-z0-9_-]+`), "[key]"},
+	{regexp.MustCompile(`(?i)("?claim"?\W{0,4})[A-Za-z0-9_.~+/=-]{8,}`), "${1}[claim]"},
+}
 
 // gatewayDir is the bugnet-gateway checkout, BUGNET_GATEWAY_DIR or the one beside the router
 func gatewayDir(t testing.TB) string {
@@ -48,6 +63,38 @@ type gateway struct {
 	url string
 	p   *proc
 	id  atomic.Int64
+	// claims are the order claims the flow saw, kept out of every failure message
+	claims []string
+}
+
+// redact drops session links, record keys and claims from text a failure message prints
+func (g *gateway) redact(text string) string {
+	for _, c := range g.claims {
+		text = strings.ReplaceAll(text, c, "[claim]")
+	}
+	for _, sh := range secretShapes {
+		text = sh.re.ReplaceAllString(text, sh.with)
+	}
+	if len(text) > briefMax {
+		text = text[:briefMax] + " [cut]"
+	}
+	return text
+}
+
+// brief is the redacted and capped text of an answer, for failure messages
+func (g *gateway) brief(r toolResult) string {
+	return g.redact(r.text())
+}
+
+// gatewayEnv is the few host settings tsx needs, with no real secret of this machine
+func gatewayEnv() []string {
+	var env []string
+	for _, k := range []string{"PATH", "HOME", "TMPDIR"} {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }
 
 // startGateway runs the gateway on a free port against the stack until the test ends
@@ -58,14 +105,14 @@ func (s *stack) startGateway(t *testing.T) *gateway {
 public_url = %q
 [router]
 url = %q
-links_domain = "dev.bugnet.sh"
+links_domain = %q
 provider_names = ["local"]
 [payments]
 mode = "http"
 url = %q
 [x402]
 enabled = true
-`, addr, "http://"+addr, s.apiURL, s.payments.Internal)
+`, addr, "http://"+addr, s.apiURL, linksDomain, s.payments.Internal)
 	in, _ := json.Marshal(map[string]string{
 		"gatewayDir": gatewayDir(t), "config": s.write("gateway/gateway.toml", []byte(cfg)),
 		"sellerHost": sellerHost, "sellerAddr": s.sellerAddr, "sellerCA": s.sellerCA,
@@ -86,7 +133,7 @@ enabled = true
 	}
 	cmd := exec.Command(tsx, harness, input)
 	cmd.Dir = filepath.Join(gatewayDir(t), "packages", "gateway")
-	cmd.Env = append(hostEnv(),
+	cmd.Env = append(gatewayEnv(),
 		"BUGNET_INTERNAL_TOKEN="+s.keys["BUGNET_INTERNAL_TOKEN"],
 		"BUGNET_QUOTE_KEY="+base64.StdEncoding.EncodeToString(randomBytes(32)),
 		"BUGNET_PAYMENTS_TOKEN="+s.payments.paymentsToken)
@@ -177,7 +224,7 @@ func (g *gateway) call(name string, args map[string]any) toolResult {
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		g.t.Fatalf("x402local: %s answered %d: %s", name, resp.StatusCode, raw)
+		g.t.Fatalf("x402local: %s answered %d: %s", name, resp.StatusCode, g.redact(string(raw)))
 	}
 	msgs := [][]byte{raw}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -198,21 +245,24 @@ func (g *gateway) call(name string, args map[string]any) toolResult {
 			continue
 		}
 		if rpc.Result == nil {
-			g.t.Fatalf("x402local: %s failed: %s", name, rpc.Error)
+			g.t.Fatalf("x402local: %s failed: %s", name, g.redact(string(rpc.Error)))
 		}
 		return *rpc.Result
 	}
-	g.t.Fatalf("x402local: %s gave no answer: %s", name, raw)
+	g.t.Fatalf("x402local: %s gave no answer: %s", name, g.redact(string(raw)))
 	return toolResult{}
 }
 
 // payStep checks a tool answered a payment step and pays it from the harness' funded payer
-func (s *stack) payStep(t *testing.T, r toolResult) (orderID, claim string) {
-	t.Helper()
+func (g *gateway) payStep(s *stack, r toolResult) (orderID, claim string) {
+	g.t.Helper()
 	orderID, claim = r.str("orderId"), r.str("claim")
+	if claim != "" {
+		g.claims = append(g.claims, claim)
+	}
 	accepts, _ := r.Structured["accepts"].([]any)
 	if !r.IsError || orderID == "" || claim == "" || r.str("payUrl") == "" || len(accepts) == 0 {
-		t.Fatalf("x402local: no payment step: %s %v", r.text(), r.Structured)
+		g.t.Fatalf("x402local: no payment step: %s", g.brief(r))
 	}
 	s.control("/pay", map[string]any{"payUrl": r.str("payUrl"), "accepted": accepts[0]}, nil)
 	return orderID, claim
@@ -246,9 +296,64 @@ func usdText(micros int64) string {
 		"0"), ".")
 }
 
+// usdMicros reads the dollar text the tools answer as micros
+func usdMicros(t *testing.T, usd string) int64 {
+	t.Helper()
+	whole, frac, _ := strings.Cut(strings.TrimPrefix(usd, "$"), ".")
+	if len(frac) > 6 {
+		t.Fatalf("x402local: %q has more than 6 decimals", usd)
+	}
+	n, err := strconv.ParseInt(whole+frac+strings.Repeat("0", 6-len(frac)), 10, 64)
+	if err != nil {
+		t.Fatalf("x402local: %q is no dollar amount: %v", usd, err)
+	}
+	return n
+}
+
+// payerMicros is the USDC the harness' funded payer holds on the fake chain
+func (s *stack) payerMicros() int64 {
+	s.t.Helper()
+	var bal struct {
+		Micros string `json:"micros"`
+	}
+	s.control("/balance", map[string]string{"owner": s.payments.Payer}, &bal)
+	n, err := strconv.ParseInt(bal.Micros, 10, 64)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return n
+}
+
+// lived is the state and deadline that stay the same while a sandbox runs on
+func lived(r toolResult) string {
+	return r.str("state") + " until " + r.str("deadline")
+}
+
+// exec runs one shell command in the sandbox through the gateway and answers its stdout lines
+func (g *gateway) exec(handle, cmd string) []string {
+	g.t.Helper()
+	r := g.call("bugnet_exec", map[string]any{"handle": handle, "cmd": cmd, "waitSeconds": 30})
+	if code, done := r.Structured["exitCode"].(float64); r.IsError || !done || code != 0 {
+		g.t.Fatalf("x402local: the command failed: %s", g.brief(r))
+	}
+	return strings.Split(strings.ReplaceAll(r.str("stdout"), "\r", ""), "\n")
+}
+
+// field is the value of the first stdout line that starts with key=
+func field(lines []string, key string) string {
+	for _, l := range lines {
+		if v, ok := strings.CutPrefix(l, key+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // flow pays a gateway start and an x402 budget by wallet, then a call with no sandbox restart
 func flow(t *testing.T, s *stack) {
 	g := s.startGateway(t)
+	paidFrom := s.payerMicros()
+	fee := s.sessionFee(t)
 
 	q := g.call("bugnet_quote", map[string]any{"workload": "script", "needs": []string{"secrets"}})
 	quoteID := q.str("quoteId")
@@ -260,27 +365,39 @@ func flow(t *testing.T, s *stack) {
 		}
 	}
 	if q.IsError || quoteID == "" || price == "" {
-		t.Fatalf("no quote for %s: %s", packageID, q.text())
+		t.Fatalf("no quote for %s: %s", packageID, g.brief(q))
 	}
 	start := g.call("bugnet_start", map[string]any{
 		"quoteId": quoteID, "packageId": packageID, "confirmPriceUsd": price,
 	})
-	orderID, claim := s.payStep(t, start)
+	startOrder, claim := g.payStep(s, start)
 	var handle string
 	var r toolResult
 	for deadline := time.Now().Add(paidWait); handle == ""; time.Sleep(time.Second) {
 		r = g.call("bugnet_redeem", map[string]any{
-			"orderId": orderID, "claim": claim, "quoteId": quoteID,
+			"orderId": startOrder, "claim": claim, "quoteId": quoteID,
 		})
 		if handle = r.str("handle"); handle == "" && time.Now().After(deadline) {
-			t.Fatalf("the paid start gave no sandbox within %s: %s", paidWait, r.text())
+			t.Fatalf("the paid start gave no sandbox within %s: %s", paidWait, g.brief(r))
 		}
 	}
 	for deadline := time.Now().Add(readyWait); r.str("state") != "ready"; {
 		r = g.call("bugnet_status", map[string]any{"handle": handle, "waitSeconds": 20})
 		if time.Now().After(deadline) {
-			t.Fatalf("the sandbox was not ready within %s: %s", readyWait, r.text())
+			t.Fatalf("the sandbox was not ready within %s: %s", readyWait, g.brief(r))
 		}
+	}
+
+	// A process started before the budget must outlive it, which a restart would not allow
+	pid, err := strconv.Atoi(field(g.exec(handle,
+		"sleep 600 >/dev/null 2>&1 </dev/null & echo pid=$!"), "pid"))
+	if err != nil || pid <= 1 {
+		t.Fatalf("no background process in the sandbox: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	life := lived(r)
+	if r.str("deadline") == "" {
+		t.Fatalf("the ready sandbox has no deadline: %s", g.brief(r))
 	}
 
 	// The fake seller's ok route, unlisted, at its live price
@@ -288,10 +405,10 @@ func flow(t *testing.T, s *stack) {
 		usdText(priceMicros), s.sellerPayTo, okService.prefix)
 	budget := map[string]any{
 		"handle": handle, "amountUsd": usdText(allowanceMicros),
-		"confirmPriceUsd": usdText(allowanceMicros + s.sessionFee(t)),
+		"confirmPriceUsd": usdText(allowanceMicros + fee),
 		"services":        []string{line}, "allowUnlisted": true,
 	}
-	orderID, claim = s.payStep(t, g.call("bugnet_x402_budget", budget))
+	orderID, claim := g.payStep(s, g.call("bugnet_x402_budget", budget))
 	budget["orderId"], budget["claim"] = orderID, claim
 	var enabled toolResult
 	for deadline := time.Now().Add(paidWait); ; {
@@ -299,50 +416,70 @@ func flow(t *testing.T, s *stack) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the paid budget enabled nothing within %s: %s", paidWait, enabled.text())
+			t.Fatalf("the paid budget enabled nothing within %s: %s", paidWait, g.brief(enabled))
 		}
 		time.Sleep(time.Second)
 	}
 	x402, _ := enabled.Structured["x402"].(map[string]any)
 	services, _ := x402["services"].([]any)
 	if len(services) != 1 || !strings.Contains(enabled.text(), sellerHost) {
-		t.Fatalf("the budget did not enable the seller: %s", enabled.text())
+		t.Fatalf("the budget did not enable the seller: %s", g.brief(enabled))
 	}
-	t.Logf("budget answer:\n%s", enabled.text())
+	// The wallet paid the start, the allowance and the session fee and nothing more
+	eq(t, paidFrom-s.payerMicros(), usdMicros(t, price)+allowanceMicros+fee)
 
 	// The sandbox runs on, the stack only swaps its forwarder for one that trusts the test proxy
 	sb := &sandbox{s: s, handle: handle}
 	sb.findFS()
 	sb.trustProxy()
-	before, paidBefore := s.sellerMicros(), len(s.rows(paidPath))
-	// A local job reads the host's /etc, so it gets the sandbox's env, hosts and CA by hand
+	before := s.sellerMicros()
+	// A local job reads the host's /etc, so the budget's env file, hosts and CA are passed by hand
 	curl := fmt.Sprintf("set -a; . %s; set +a; echo hosts=$BUGNET_X402_HOSTS; "+
-		"curl -sS -o /dev/null -D - --connect-to %s:443:%s --cacert %s https://%s%s",
+		"curl -sS -o /dev/null -D - -w 'code=%%{http_code}\\n' --connect-to %s:443:%s "+
+		"--cacert %s https://%s%s",
 		filepath.Join(sb.fs, "etc", "bugnet", "secrets.env"), sellerHost, sb.fwd, s.egressCAFile,
 		sellerHost, paidPath)
-	ex := g.call("bugnet_exec", map[string]any{"handle": handle, "cmd": curl, "waitSeconds": 30})
-	head := strings.ToLower(ex.str("stdout"))
-	// The answer's environment reaches a new command with no restart
-	if ex.IsError || !strings.Contains(head, "hosts="+sellerHost+"\n") {
-		t.Fatalf("the new command lacks BUGNET_X402_HOSTS: %s", ex.text())
+	out := g.exec(handle, curl)
+	// The budget wrote the seller's host into the sandbox's env file
+	if got := field(out, "hosts"); got != sellerHost {
+		t.Fatalf("the env file names hosts %q, not %q", got, sellerHost)
 	}
-	if !strings.Contains(head, " 200") || !strings.Contains(head, "bugnet-x402-status: paid") {
-		t.Fatalf("the paid call from the sandbox failed: %s", ex.text())
+	status := ""
+	for _, l := range out {
+		if k, v, ok := strings.Cut(l, ":"); ok && strings.EqualFold(k, "bugnet-x402-status") {
+			status = strings.TrimSpace(v)
+		}
+	}
+	if code := field(out, "code"); code != "200" || status != "paid" {
+		t.Fatalf("the paid call from the sandbox answered %q with status %q", code, status)
 	}
 
-	// Exactly one seller payment, on the fake chain and in Payments' ledger
-	var rows []payment
+	// The process from before the budget still runs and the sandbox kept its state and deadline
+	if alive := field(g.exec(handle, fmt.Sprintf("kill -0 %d && echo alive=yes", pid)),
+		"alive"); alive != "yes" {
+		t.Fatalf("process %d died, so the sandbox restarted", pid)
+	}
+	after := g.call("bugnet_status", map[string]any{"handle": handle})
+	eq(t, lived(after), life)
+
+	// Exactly one seller payment for this sandbox, on the fake chain and in Payments' ledger
+	var mine []payment
 	for deadline := time.Now().Add(paidWait); ; time.Sleep(500 * time.Millisecond) {
-		rows = s.rows(paidPath)
-		if len(rows) == paidBefore+1 && rows[paidBefore].State == "confirmed" {
+		mine = nil
+		for _, p := range s.rows(paidPath) {
+			if p.AccountID == startOrder {
+				mine = append(mine, p)
+			}
+		}
+		if len(mine) == 1 && mine[0].State == "confirmed" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no single confirmed payment within %s: %+v", paidWait, rows)
+			t.Fatalf("no single confirmed payment for this sandbox within %s: %+v", paidWait, mine)
 		}
 	}
-	eq(t, rows[paidBefore].AmountMicros, strconv.Itoa(priceMicros))
-	if rows[paidBefore].TxSignature == "" {
+	eq(t, mine[0].AmountMicros, strconv.Itoa(priceMicros))
+	if mine[0].TxSignature == "" {
 		t.Fatal("the confirmed payment has no transaction")
 	}
 	eq(t, s.sellerMicros(), before+priceMicros)
@@ -351,12 +488,12 @@ func flow(t *testing.T, s *stack) {
 	said := stop.text()
 	if stop.IsError || !strings.Contains(said, "spent in 1 paid calls") ||
 		!strings.Contains(said, "goes back to the paying wallet") {
-		t.Fatalf("the stop answer is not the paid one: %s", said)
+		t.Fatalf("the stop answer is not the paid one: %s", g.redact(said))
 	}
 	// The answer's session link carries the record key, so only its money line is logged
 	for _, l := range strings.Split(said, "\n") {
 		if strings.HasPrefix(l, "x402:") {
-			t.Logf("stop line: %s", l)
+			t.Logf("stop line: %s", g.redact(l))
 		}
 	}
 }

@@ -278,6 +278,7 @@ func (sb *sandbox) do(method, path, body string, hdr map[string]string) call {
 // payment is one row of Payments' ledger
 type payment struct {
 	Ref, State, Path string
+	AccountID        string `json:"account_id"`
 	AmountMicros     string `json:"amount_micros"`
 	TxSignature      string `json:"tx_signature"`
 }

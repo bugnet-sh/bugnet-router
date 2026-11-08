@@ -1,4 +1,4 @@
-// Runs the real MCP gateway for the flow subtest of make x402-local, as src/main.ts starts it
+// Runs the real MCP gateway for the flow subtest of make x402-local through its own startGateway
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -18,14 +18,8 @@ const undici = await import(createRequire(join(pkgDir, "package.json")).resolve(
 
 const { ConfigError, loadConfig } = await src("config.ts");
 const { jsonLog } = await src("log.ts");
-const { paymentsFor } = await src("payments/index.ts");
-const { createRouterClient } = await src("router.ts");
-const { startHttp } = await src("server.ts");
-const { createAssessor } = await src("assess/index.ts");
+const { startGateway } = await src("start.ts");
 const { createSafeFetcher } = await src("assess/fetch.ts");
-const { watchHostsSeen } = await src("x402/index.ts");
-const { refreshPayai } = await src("x402/search.ts");
-const { pollTerms } = await src("x402/terms.ts");
 
 // Probes reach the fake seller alone, dialled as egress' upstream_addrs do
 const [sellerIP, sellerPort] = input.sellerAddr.split(":") as [string, string];
@@ -54,29 +48,12 @@ const rawFetch = async (url: string, init: Record<string, unknown>) =>
 const log = jsonLog("gateway");
 try {
     const config = loadConfig(input.config);
-    const deps = {
-        config,
-        router: createRouterClient(config, []),
-        payments: paymentsFor(config),
-        assessor: createAssessor(config),
-        log,
-        now: Date.now,
-        x402Fetch: createSafeFetcher({
-            timeoutMs: Math.max(config.x402.search_timeout, config.x402.probe_timeout),
-            rawFetch,
-        }),
-    };
-    const stops = [pollTerms(deps), watchHostsSeen(config.x402, log), refreshPayai(deps)];
-    const http = await startHttp(deps);
-    log.info("listening", {
-        addr: config.listen_addr,
-        payments: config.payments.mode,
-        router: config.router.url,
+    const x402Fetch = createSafeFetcher({
+        timeoutMs: Math.max(config.x402.search_timeout, config.x402.probe_timeout),
+        rawFetch,
     });
-    const stop = () => {
-        for (const s of stops) s();
-        http.close(() => process.exit(0));
-    };
+    const gateway = await startGateway(config, log, { x402Fetch });
+    const stop = () => void gateway.stop().then(() => process.exit(0));
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
 } catch (e) {
