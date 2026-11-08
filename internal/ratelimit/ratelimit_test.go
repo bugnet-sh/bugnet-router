@@ -328,6 +328,23 @@ func TestPeekSpendsNothing(t *testing.T) {
 	}
 }
 
+func TestPeekAllAnswersTheLongestWait(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	l := ratelimit.New(vk, prefix, 0, 0)
+	hour := ratelimit.Bucket{Key: "rl:wallet:h:c", PerSecond: ratelimit.PerHour(30), Burst: 1}
+	day := ratelimit.Bucket{Key: "rl:wallet:d:c", PerSecond: 200.0 / 86400, Burst: 200}
+	ok, wait, err := l.PeekAll(t.Context(), []ratelimit.Bucket{hour, day})
+	eq(t, err, nil)
+	eq(t, ok && wait == 0, true)
+	takeKey(t, l, hour)
+	ok, wait, err = l.PeekAll(t.Context(), []ratelimit.Bucket{hour, day})
+	eq(t, err, nil)
+	eq(t, !ok && wait > 119*time.Second && wait <= 120*time.Second, true)
+	eq(t, exists(t, vk, prefix+day.Key), false)
+	ok, _, err = l.PeekAll(t.Context(), nil)
+	eq(t, ok && err == nil, true)
+}
+
 func TestTakeKeepsTheOpsKey(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	l := ratelimit.New(vk, prefix, 1, 2)

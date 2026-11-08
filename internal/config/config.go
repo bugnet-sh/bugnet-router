@@ -87,6 +87,9 @@ type Config struct {
 	Hooks         Hooks
 	X402          X402
 	Hardening     Hardening
+	Wallets       Wallets
+	// ProviderOps is each provider account's user operations a second, absent for no bucket
+	ProviderOps map[string]int
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -293,6 +296,7 @@ type file struct {
 	Hooks               Hooks         `toml:"hooks"`
 	X402                x402File      `toml:"x402"`
 	Hardening           hardeningFile `toml:"hardening"`
+	Wallets             walletsFile   `toml:"wallets"`
 }
 
 type apiFile struct {
@@ -338,6 +342,7 @@ type e2bFile struct {
 	Templates      []E2BTemplate `toml:"templates"`
 	HardenRequired bool          `toml:"harden_required"`
 	HardenAllow    []string      `toml:"harden_allow"`
+	OpsPerSecond   int64         `toml:"ops_per_second"`
 }
 
 type boxdFile struct {
@@ -346,6 +351,7 @@ type boxdFile struct {
 	GateRoute      string   `toml:"gate_route"`
 	HardenRequired bool     `toml:"harden_required"`
 	HardenAllow    []string `toml:"harden_allow"`
+	OpsPerSecond   int64    `toml:"ops_per_second"`
 }
 
 type koyebFile struct {
@@ -353,6 +359,7 @@ type koyebFile struct {
 	InstanceTypes  map[string]string `toml:"instance_types"`
 	HardenRequired bool              `toml:"harden_required"`
 	HardenAllow    []string          `toml:"harden_allow"`
+	OpsPerSecond   int64             `toml:"ops_per_second"`
 }
 
 type boatFile struct {
@@ -360,6 +367,7 @@ type boatFile struct {
 	SSHPath        string            `toml:"ssh_path"`
 	HardenRequired bool              `toml:"harden_required"`
 	HardenAllow    []string          `toml:"harden_allow"`
+	OpsPerSecond   int64             `toml:"ops_per_second"`
 }
 
 type budgetFile struct {
@@ -442,7 +450,7 @@ func defaults() file {
 		Boxd:  boxdFile{Region: "fra", GateRoute: "default", HardenRequired: true},
 		E2B:   e2bFile{HardenRequired: true},
 		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
-		Boat:  boatFile{SSHPath: "gate", HardenRequired: true},
+		Boat:  boatFile{SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50},
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
 			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
@@ -473,6 +481,7 @@ func defaults() file {
 			SharedHostingSuffixes: slices.Clone(sharedHostingSuffixes),
 		},
 		Hardening: defaultHardening(),
+		Wallets:   defaultWallets(),
 	}
 }
 
@@ -656,6 +665,23 @@ func (f file) config() (Config, error) {
 	}
 	if c.X402, err = f.X402.read(d.X402); err != nil {
 		return Config{}, err
+	}
+	if c.Wallets, err = f.Wallets.read(d.Wallets); err != nil {
+		return Config{}, err
+	}
+	c.ProviderOps = map[string]int{}
+	for _, o := range []struct {
+		name string
+		rate int64
+	}{{"e2b", f.E2B.OpsPerSecond}, {"boxd", f.Boxd.OpsPerSecond},
+		{"koyeb", f.Koyeb.OpsPerSecond}, {"boat", f.Boat.OpsPerSecond}} {
+		if o.rate < 0 || o.rate > maxWalletLimit {
+			return Config{}, fmt.Errorf("%s.ops_per_second must be 0 to %d", o.name,
+				maxWalletLimit)
+		}
+		if o.rate > 0 {
+			c.ProviderOps[o.name] = int(o.rate)
+		}
 	}
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,

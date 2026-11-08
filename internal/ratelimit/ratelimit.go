@@ -1,7 +1,7 @@
 // Package ratelimit bounds operations with token buckets every replica shares in Valkey.
 //
-// Take spends from a placement's operation bucket, ops:<placement>. TakeKey, TakeAll and Peek
-// work on any bucket a caller names, whose refill may be a fraction of a token a second, so
+// Take spends from a placement's operation bucket, ops:<placement>. TakeKey, TakeAll, Peek and
+// PeekAll work on any bucket a caller names, whose refill may be a fraction of a token a second, so
 // limits such as 10 an hour need no other form.
 //
 // One script serves every form. A bucket holds micro-tokens timed by the Valkey server's clock in
@@ -103,12 +103,16 @@ func New(c valkey.Client, prefix string, perSecond, burst int) *Limiter {
 	return &Limiter{c: c, prefix: prefix, perSecond: perSecond, burst: burst}
 }
 
-// Take spends a token of the placement's bucket, or says how long until one is there
-func (l *Limiter) Take(ctx context.Context, placement uuid.UUID) (bool, time.Duration, error) {
-	b := Bucket{
+// Ops is the placement's operation bucket, ops:<placement>
+func (l *Limiter) Ops(placement uuid.UUID) Bucket {
+	return Bucket{
 		Key: "ops:" + placement.String(), PerSecond: float64(l.perSecond), Burst: l.burst,
 	}
-	ok, wait, err := l.run(ctx, modeTake, []Bucket{b})
+}
+
+// Take spends a token of the placement's bucket, or says how long until one is there
+func (l *Limiter) Take(ctx context.Context, placement uuid.UUID) (bool, time.Duration, error) {
+	ok, wait, err := l.run(ctx, modeTake, []Bucket{l.Ops(placement)})
 	if err != nil {
 		return false, 0, fmt.Errorf("take an operation of placement %s: %w", placement, err)
 	}
@@ -131,6 +135,14 @@ func (l *Limiter) TakeAll(ctx context.Context, bs []Bucket) (bool, time.Duration
 // Peek answers what TakeKey would, and spends nothing
 func (l *Limiter) Peek(ctx context.Context, b Bucket) (bool, time.Duration, error) {
 	return l.run(ctx, modePeek, []Bucket{b})
+}
+
+// PeekAll answers what TakeAll would, in one script, and spends nothing
+func (l *Limiter) PeekAll(ctx context.Context, bs []Bucket) (bool, time.Duration, error) {
+	if len(bs) == 0 {
+		return true, 0, nil
+	}
+	return l.run(ctx, modePeek, bs)
 }
 
 var errBadBucket = errors.New("ratelimit: a bucket needs a key, a positive finite rate and a burst")
