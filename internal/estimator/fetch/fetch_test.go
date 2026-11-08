@@ -2,8 +2,11 @@ package fetch_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -346,4 +349,21 @@ func TestLimitedAdmitStopsTheFetch(t *testing.T) {
 		t.Fatalf("got %v, want a LimitedError of 7s", err)
 	}
 	eq(t, gh.Tree.Load(), int32(0))
+}
+
+func TestRedirectsToOtherHostsAreNotFollowed(t *testing.T) {
+	var hits atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits.Add(1)
+	}))
+	t.Cleanup(elsewhere.Close)
+	hop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/x", http.StatusFound)
+	}))
+	t.Cleanup(hop.Close)
+	s := newStack(t, hop.URL)
+	g, _ := s.github(t, nil, "tok")
+	_, res := read(t, g, "github.com/acme/app")
+	eq(t, res.Unread, rules.UnreadUpstreamError)
+	eq(t, hits.Load(), int32(0))
 }
