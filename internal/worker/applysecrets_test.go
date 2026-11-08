@@ -16,6 +16,7 @@ import (
 
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"google.golang.org/protobuf/proto"
 
@@ -203,6 +204,25 @@ func (e *env) secretsChanged(t *testing.T, p store.Placement) int {
 	return n
 }
 
+// completed waits for the apply_secrets jobs ids to complete, through any number of snoozes
+func (e *env) completed(t *testing.T, ids ...int64) {
+	t.Helper()
+	waiting := map[int64]bool{}
+	for _, id := range ids {
+		waiting[id] = true
+	}
+	for len(waiting) > 0 {
+		ev := e.next(t, "apply_secrets")
+		switch {
+		case !waiting[ev.Job.ID] || ev.Kind == river.EventKindJobSnoozed:
+		case ev.Kind == river.EventKindJobCompleted:
+			delete(waiting, ev.Job.ID)
+		default:
+			t.Fatalf("job %d ended %s", ev.Job.ID, ev.Kind)
+		}
+	}
+}
+
 func (e *env) apply(t *testing.T, p store.Placement) {
 	t.Helper()
 	e.run(t, jobargs.ApplySecrets{PlacementID: p.ID})
@@ -288,10 +308,136 @@ func TestApplyAfterADeleteDropsTheSecret(t *testing.T) {
 	}
 	e.apply(t, q)
 	eq(t, len(fake.sent()), 2)
-	pending, err := e.store.SecretsPending(t.Context(), q.ID)
+	pending, _, err := e.store.SecretsPending(t.Context(), q.ID)
 	if err != nil || pending {
 		t.Fatalf("pending %v %v", pending, err)
 	}
+}
+
+// deleteDuring removes the placement's secret of name inside apply number 1, as DeleteSecret does
+func (e *env) deleteDuring(t *testing.T, fake *egressFake, p store.Placement, name string) {
+	fake.during = func(n int) {
+		if n != 1 {
+			return
+		}
+		err := e.store.WithTx(context.Background(), func(tx pgx.Tx) error {
+			ts := e.store.Tx(tx)
+			if _, err := ts.PlacementForUpdate(context.Background(), p.ID); err != nil {
+				return err
+			}
+			if _, err := ts.DeleteSecret(context.Background(), p.ID, name); err != nil {
+				return err
+			}
+			return ts.BumpSecretsVersion(context.Background(), p.ID, true)
+		})
+		if err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestADeleteDuringAnApplyIsAppliedNext(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-delete-during")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	e.putSecret(t, p, "OPENAI_API_KEY", false, "api.openai.com")
+	e.deleteDuring(t, fake, p, "HF_TOKEN")
+	e.apply(t, p)
+	eq(t, e.states(t, p), map[string]string{"OPENAI_API_KEY": "active"})
+	pending, _, err := e.store.SecretsPending(t.Context(), p.ID)
+	if err != nil || !pending {
+		t.Fatalf("a delete during the run is not pending after it: %v %v", pending, err)
+	}
+	// The delete's own job writes the set again without the secret
+	e.apply(t, p)
+	specs := fake.sent()
+	eq(t, len(specs), 2)
+	eq(t, specs[0].Hosts, []string{"api.openai.com", "huggingface.co"})
+	eq(t, specs[1].Hosts, []string{"api.openai.com"})
+	eq(t, specs[1].Env, []envVar{{"OPENAI_API_KEY", e.placeholder(t, p, "OPENAI_API_KEY")}})
+	e.apply(t, p)
+	eq(t, len(fake.sent()), 2)
+}
+
+func TestAFetchOnlyReplacementDuringAnApplyIsAppliedNext(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-fetch-during")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	fake.during = func(n int) {
+		if n != 1 {
+			return
+		}
+		e.putSecret(t, p, "HF_TOKEN", true, "huggingface.co")
+		if err := e.store.BumpSecretsVersion(context.Background(), p.ID, true); err != nil {
+			t.Error(err)
+		}
+	}
+	e.apply(t, p)
+	e.apply(t, p)
+	specs := fake.sent()
+	eq(t, len(specs), 2)
+	eq(t, specs[1].Hosts, []string{})
+	eq(t, specs[1].Env, []envVar{})
+	eq(t, e.states(t, p), map[string]string{"HF_TOKEN": "active"})
+}
+
+// two writes at once, each with its own job, leave one apply that sends both
+func TestTwoWritesAtOnceOneApplySendsBoth(t *testing.T) {
+	e, fake := secretsEnv(t)
+	e.start(t)
+	p, _ := e.placeReady(t, "o-apply-two")
+	held, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.store.TryLock(context.Background(), "apply:"+p.ID.String(), func() error {
+			close(held)
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	<-held
+	var wg sync.WaitGroup
+	ids := make([]int64, 2)
+	for i, name := range []string{"HF_TOKEN", "OPENAI_API_KEY"} {
+		wg.Go(func() {
+			err := e.store.WithTx(context.Background(), func(tx pgx.Tx) error {
+				ts := e.store.Tx(tx)
+				if _, err := ts.PlacementForUpdate(context.Background(), p.ID); err != nil {
+					return err
+				}
+				sum := sha256.Sum256([]byte(name))
+				if _, _, err := ts.PutSecret(context.Background(), store.Secret{
+					ID: uuid.New(), PlacementID: p.ID, Name: name, Hosts: []string{"a.example"},
+					PlaceholderSHA256: sum[:], Sealed: []byte("box"), KeyID: "k1",
+					Source: store.SourceGateway, State: store.SecretApplying,
+				}); err != nil {
+					return err
+				}
+				res, err := e.river.InsertTx(context.Background(), tx,
+					jobargs.ApplySecrets{PlacementID: p.ID}, nil)
+				if err == nil {
+					ids[i] = res.Job.ID
+				}
+				return err
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	e.completed(t, ids...)
+	specs := fake.sent()
+	eq(t, len(specs), 1)
+	eq(t, len(specs[0].Env), 2)
+	eq(t, e.states(t, p), map[string]string{"HF_TOKEN": "active", "OPENAI_API_KEY": "active"})
 }
 
 func TestFetchOnlySecretsNeedNoApply(t *testing.T) {

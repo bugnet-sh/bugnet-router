@@ -761,9 +761,12 @@ X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP
   placement has none, writes `/tmp/bugnet/egress-spec.json` and runs `bugnet-run egress apply` as
   root. Then it marks only the secrets it loaded, each still at the `updated_at` it read,
   `ACTIVE` or `FAILED` with the runner's error in upper case (`PORT_443_TAKEN`), moves
-  `secrets_version` and writes `SecretsChanged`. A run with nothing applying and no change since
-  the last run (`secrets_applied_version`) exits at once. A token a failed write may not have
-  reached is forgotten, so the next run mints another, and `token_missing` mints one at once.
+  `secrets_version` and writes `SecretsChanged`. A run with nothing applying and no pending
+  change exits at once. A pending change (a delete, or a fetch-only put over a loaded secret)
+  raises the lag between `secrets_version` and `secrets_applied_version`. A run clears only the
+  lag it read when it started, so a change that commits during the run stays pending for its own
+  job. A token a failed write may not have reached is forgotten, so the next run mints another,
+  and `token_missing` mints one at once, both writes within 75 s.
 
 ### Transfers
 

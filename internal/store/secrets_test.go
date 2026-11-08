@@ -141,12 +141,14 @@ func TestSecretsPendingAndVersions(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	p := newPlacement(t, s, "o-secret-pending")
-	pending := func(want bool) {
+	// pending checks the answer and returns the lag a run would read
+	pending := func(want bool) int64 {
 		t.Helper()
-		got, err := s.SecretsPending(ctx, p.ID)
+		got, lag, err := s.SecretsPending(ctx, p.ID)
 		if err != nil || got != want {
 			t.Fatalf("pending %v %v, want %v", got, err, want)
 		}
+		return lag
 	}
 	version := func(want int64) {
 		t.Helper()
@@ -155,20 +157,28 @@ func TestSecretsPendingAndVersions(t *testing.T) {
 			t.Fatalf("version %d %v, want %d", got.SecretsVersion, err, want)
 		}
 	}
+	bump := func(pending bool) {
+		t.Helper()
+		if err := s.BumpSecretsVersion(ctx, p.ID, pending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish := func(lag int64) {
+		t.Helper()
+		if err := s.FinishSecretsApply(ctx, p.ID, lag); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pending(false)
 	row, _ := mustPut(t, s, secretRow(p.ID, "A"))
-	pending(true)
+	lag := pending(true)
 	if _, err := s.MarkSecrets(ctx, p.ID, []store.Secret{row}, store.SecretActive, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishSecretsApply(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
+	finish(lag)
 	pending(false)
 	version(1)
-	if err := s.BumpSecretsVersion(ctx, p.ID, false); err != nil {
-		t.Fatal(err)
-	}
+	bump(false)
 	pending(false)
 	version(2)
 	deleted, err := s.DeleteSecret(ctx, p.ID, "A")
@@ -178,20 +188,30 @@ func TestSecretsPendingAndVersions(t *testing.T) {
 	if _, err := s.DeleteSecret(ctx, p.ID, "A"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("second delete %v", err)
 	}
-	if err := s.BumpSecretsVersion(ctx, p.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	pending(true)
+	bump(true)
 	version(3)
-	if err := s.BumpSecretsVersion(ctx, p.ID, false); err != nil {
-		t.Fatal(err)
+	bump(false)
+	if lag = pending(true); lag != 1 {
+		t.Fatalf("lag %d after a pending change, want 1", lag)
 	}
-	pending(true)
-	if err := s.FinishSecretsApply(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
+	finish(lag)
 	pending(false)
 	version(5)
+
+	// A pending change during a run outlives the run, a change needing no apply does not
+	b, _ := mustPut(t, s, secretRow(p.ID, "B"))
+	lag = pending(true)
+	bump(true)
+	if _, err := s.MarkSecrets(ctx, p.ID, []store.Secret{b}, store.SecretActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	finish(lag)
+	lag = pending(true)
+	bump(false)
+	finish(lag)
+	pending(false)
+	version(9)
+
 	fetch := secretRow(p.ID, "F")
 	fetch.FetchOnly, fetch.State = true, store.SecretActive
 	mustPut(t, s, fetch)

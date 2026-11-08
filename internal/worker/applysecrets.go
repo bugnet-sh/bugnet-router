@@ -30,7 +30,9 @@ const (
 	applyTimeout = 90 * time.Second
 	// applySnooze is how long a job waits while another run holds the placement's apply lock
 	applySnooze = 2 * time.Second
-	// forwardListen is where the forwarder listens in every sandbox, never 127.0.0.1 or ::1
+	// egressBudget bounds both egress apply attempts of a run, leaving time to record the result
+	egressBudget = 75 * time.Second
+	// forwardListen is where every sandbox's forwarder listens, never 127.0.0.1 or IPv6 loopback
 	forwardListen = "127.77.0.1:443"
 	egressPort    = 443
 	// tokenMissing is egress apply's answer when the sandbox lost its tunnel token
@@ -103,7 +105,7 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	pending, err := w.store.SecretsPending(ctx, id)
+	pending, lag, err := w.store.SecretsPending(ctx, id)
 	if err != nil || !pending {
 		return err
 	}
@@ -115,7 +117,7 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 	prov, ok := w.registry.Get(p.Provider)
 	if !ok || p.ProviderRef == nil || !w.registry.Capabilities(prov).Secrets ||
 		w.d.Egress.Host == "" || len(w.d.Egress.IPs) == 0 || len(w.keys.Roots()) == 0 {
-		return w.finishApply(ctx, p, loaded, store.SecretFailed, reasonUnavailable)
+		return w.finishApply(ctx, p, lag, loaded, store.SecretFailed, reasonUnavailable)
 	}
 	has, err := w.store.HasEgressToken(ctx, id)
 	if err != nil {
@@ -123,27 +125,38 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 	}
 	// Nothing was ever written into this sandbox, so there is nothing to take back
 	if len(loaded) == 0 && !has {
-		return w.finishApply(ctx, p, nil, store.SecretActive, "")
+		return w.finishApply(ctx, p, lag, nil, store.SecretActive, "")
 	}
-	err = w.writeEgress(ctx, p, prov, loaded)
+	err = w.applyEgress(ctx, p, prov, loaded)
 	var re *saga.RunnerError
-	if errors.As(err, &re) && re.Value == tokenMissing {
-		// The sandbox lost its token, so a fresh one goes with the next write
-		if err := w.store.ClearEgressToken(ctx, id); err != nil {
-			return err
-		}
-		err = w.writeEgress(ctx, p, prov, loaded)
-	}
 	switch {
 	case err == nil:
 		w.log.Info("secrets applied", "placement", id, "secrets", len(loaded))
-		return w.finishApply(ctx, p, loaded, store.SecretActive, "")
+		return w.finishApply(ctx, p, lag, loaded, store.SecretActive, "")
 	case errors.As(err, &re):
 		w.log.Warn("secrets apply refused", "placement", id, "err", err)
 		reason := cmp.Or(strings.ToUpper(re.Value), reasonApplyFailed)
-		return w.finishApply(ctx, p, loaded, store.SecretFailed, reason)
+		return w.finishApply(ctx, p, lag, loaded, store.SecretFailed, reason)
 	}
 	return err
+}
+
+// applyEgress writes the spec, once more with a fresh token after token_missing, in one budget
+func (w *Worker) applyEgress(
+	ctx context.Context, p store.Placement, prov provider.Provider, loaded []store.Secret,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, egressBudget)
+	defer cancel()
+	err := w.writeEgress(ctx, p, prov, loaded)
+	var re *saga.RunnerError
+	if !errors.As(err, &re) || re.Value != tokenMissing {
+		return err
+	}
+	// The sandbox lost its token, so a fresh one goes with the next write
+	if err := w.store.ClearEgressToken(ctx, p.ID); err != nil {
+		return err
+	}
+	return w.writeEgress(ctx, p, prov, loaded)
 }
 
 // writeEgress mints a token when the placement has none and runs egress apply with the spec
@@ -210,9 +223,9 @@ func (w *Worker) egressSpec(
 	return spec, nil
 }
 
-// finishApply is step 5, marking only the loaded secrets still as loaded and moving the version
+// finishApply is step 5, marking only the loaded secrets still as loaded and clearing lag
 func (w *Worker) finishApply(
-	ctx context.Context, p store.Placement, loaded []store.Secret, state, reason string,
+	ctx context.Context, p store.Placement, lag int64, loaded []store.Secret, state, reason string,
 ) error {
 	ready := true
 	err := w.store.WithTx(ctx, func(tx pgx.Tx) error {
@@ -228,7 +241,7 @@ func (w *Worker) finishApply(
 		if _, err := ts.MarkSecrets(ctx, p.ID, loaded, state, reason); err != nil {
 			return err
 		}
-		return ts.FinishSecretsApply(ctx, p.ID)
+		return ts.FinishSecretsApply(ctx, p.ID, lag)
 	})
 	if err != nil || !ready {
 		return err

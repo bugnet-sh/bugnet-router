@@ -38,7 +38,7 @@ type Secret struct {
 	Source            string
 	State             string
 	FailureReason     string
-	// IdempotencyKey is the put's key, link:<link id> for a link's submit
+	// IdempotencyKey is the put's key, or the link prefix and the link id for a link's submit
 	IdempotencyKey string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -157,40 +157,40 @@ func (s *Store) MarkSecrets(
 	return tag.RowsAffected(), nil
 }
 
-// SecretsPending says whether apply_secrets has work, a secret applying or a change since a run
-func (s *Store) SecretsPending(ctx context.Context, placement uuid.UUID) (bool, error) {
+// SecretsPending says whether apply_secrets has work, and the lag of changes no run applied
+func (s *Store) SecretsPending(ctx context.Context, placement uuid.UUID) (bool, int64, error) {
 	var pending bool
+	var lag int64
 	err := s.q.QueryRow(ctx, `
 		select secrets_version <> secrets_applied_version or exists (
 			select 1 from secrets
-			where placement_id = $1 and not fetch_only and state = $2)
-		from placements where id = $1`, placement, SecretApplying).Scan(&pending)
+			where placement_id = $1 and not fetch_only and state = $2),
+			secrets_version - secrets_applied_version
+		from placements where id = $1`, placement, SecretApplying).Scan(&pending, &lag)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ErrNotFound
+		return false, 0, ErrNotFound
 	}
 	if err != nil {
-		return false, fmt.Errorf("secrets pending: %w", err)
+		return false, 0, fmt.Errorf("secrets pending: %w", err)
 	}
-	return pending, nil
+	return pending, lag, nil
 }
 
-// BumpSecretsVersion adds one to secrets_version, pending leaving the change for apply_secrets
+// BumpSecretsVersion adds one to secrets_version, a pending change raising the lag by one
 func (s *Store) BumpSecretsVersion(ctx context.Context, placement uuid.UUID, pending bool) error {
 	tag, err := s.q.Exec(ctx, `
 		update placements set secrets_version = secrets_version + 1,
-			secrets_applied_version = case
-				when not $2 and secrets_applied_version = secrets_version
-				then secrets_version + 1 else secrets_applied_version end
+			secrets_applied_version = secrets_applied_version + case when $2 then 0 else 1 end
 		where id = $1`, placement, pending)
 	return rowChanged(tag.RowsAffected(), err, "bump secrets version", placement)
 }
 
-// FinishSecretsApply adds one to secrets_version and records it as applied
-func (s *Store) FinishSecretsApply(ctx context.Context, placement uuid.UUID) error {
+// FinishSecretsApply adds one to secrets_version and clears the lag the run read at its start
+func (s *Store) FinishSecretsApply(ctx context.Context, placement uuid.UUID, lag int64) error {
 	tag, err := s.q.Exec(ctx, `
 		update placements set secrets_version = secrets_version + 1,
-			secrets_applied_version = secrets_version + 1
-		where id = $1`, placement)
+			secrets_applied_version = secrets_applied_version + 1 + $2
+		where id = $1`, placement, lag)
 	return rowChanged(tag.RowsAffected(), err, "finish secrets apply", placement)
 }
 
