@@ -2,6 +2,7 @@ package saga
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,12 +19,14 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // Sandbox paths of the spec files the root commands read and then delete
 const (
 	setupSpecPath  = "/tmp/bugnet/setup-spec.json"
 	hardenSpecPath = "/tmp/bugnet/harden-spec.json"
+	egressSpecPath = "/tmp/bugnet/egress-spec.json"
 )
 
 const (
@@ -32,6 +35,8 @@ const (
 	// hardenTimeout covers an nftables install of up to 60 s and the load
 	hardenTimeout = 2 * time.Minute
 	gateTimeout   = 30 * time.Second
+	// egressTimeout covers the forwarder's 5 s listen wait and sshd's 10 s reload
+	egressTimeout = 60 * time.Second
 	gateTries     = 3
 	// maxRunnerOutput bounds what one root command may print
 	maxRunnerOutput = 64 << 10
@@ -238,7 +243,7 @@ func metaPort(ref provider.Ref, key string) int {
 /* Root commands */
 
 // errorValue matches the error values bugnet-run prints, so nothing else reaches a message
-var errorValue = regexp.MustCompile(`^[a-z_]{1,40}$`)
+var errorValue = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 
 // rootCommand writes spec to path, runs the runner's subcommand as root and reads its answer
 func rootCommand(
@@ -282,13 +287,26 @@ func runRoot(
 		return ans, fmt.Errorf("%s exited %d with no answer", sub, code)
 	}
 	if code != 0 || ans.Error != "" {
-		reason := ans.Error
-		if !errorValue.MatchString(reason) {
-			reason = "no reason"
+		value := ans.Error
+		if !errorValue.MatchString(value) {
+			value = ""
 		}
-		return ans, fmt.Errorf("%s exited %d with %s", sub, code, reason)
+		return ans, &RunnerError{Sub: sub, Code: code, Value: value}
 	}
 	return ans, nil
+}
+
+// RunnerError is a root command that answered an error value of its own, or exited non-zero
+type RunnerError struct {
+	Sub  string
+	Code int
+	// Value is the runner's error value, such as port_443_taken, empty when it gave none
+	Value string
+}
+
+// Error names the subcommand, its exit code and its error value, never anything it printed
+func (e *RunnerError) Error() string {
+	return fmt.Sprintf("%s exited %d with %s", e.Sub, e.Code, cmp.Or(e.Value, "no reason"))
 }
 
 /* Boot steps */
@@ -373,4 +391,23 @@ func withMeta(ref provider.Ref, meta map[string]string) provider.Ref {
 	}
 	ref.Meta = m
 	return ref
+}
+
+// ApplyEgress writes spec as a ready placement's egress spec and runs egress apply as root
+func (s *Saga) ApplyEgress(ctx context.Context, p store.Placement, spec any) error {
+	prov, ref, err := s.home(p)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, egressTimeout)
+	defer cancel()
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	if err := prov.WriteFile(ctx, ref, egressSpecPath, data, 0o600); err != nil {
+		return fmt.Errorf("write the egress spec: %w", err)
+	}
+	_, err = runRoot(ctx, prov, ref, "egress", "apply", "--spec", egressSpecPath)
+	return err
 }
