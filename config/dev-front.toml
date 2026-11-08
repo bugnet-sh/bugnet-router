@@ -7,6 +7,7 @@ preview_domain = "preview.dev.bugnet.sh"
 transfer_host = "transfer.dev.bugnet.sh"
 hooks_host = "hooks.dev.bugnet.sh"
 secrets_host = "secrets.dev.bugnet.sh"
+sessions_host = "sessions.dev.bugnet.sh"
 egress_host = "egress.dev.bugnet.sh"
 ssh_host = "ssh.dev.bugnet.sh"
 ssh_port = 2200               # what users dial, HAProxy's dev SSH port on the VPS
@@ -14,6 +15,7 @@ ssh_port = 2200               # what users dial, HAProxy's dev SSH port on the V
 [ports]                       # each on 127.0.0.1, taken by the tunnel from the VPS
 edge = 8443
 secrets = 8445
+sessions = 8448
 egress = 9443
 ssh = 2223
 

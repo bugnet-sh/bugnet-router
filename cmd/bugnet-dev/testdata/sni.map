@@ -3,6 +3,7 @@ preview.bugnet.sh           edge
 transfer.bugnet.sh          edge
 hooks.bugnet.sh             edge
 secrets.bugnet.sh           secrets
+sessions.bugnet.sh          sessions
 mcp.bugnet.sh               mcp
 bugnet.sh                   website
 www.bugnet.sh               website
@@ -11,4 +12,5 @@ preview.dev.bugnet.sh       edge_dev
 transfer.dev.bugnet.sh      edge_dev
 hooks.dev.bugnet.sh         edge_dev
 secrets.dev.bugnet.sh       secrets_dev
+sessions.dev.bugnet.sh      sessions_dev
 egress.dev.bugnet.sh        egress_dev

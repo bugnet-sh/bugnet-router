@@ -227,7 +227,7 @@ it opens. N1 also probes `[fd00:ec2::254]:80`.
 
 | | `--front local`, the default | `--front vps`, behind the dev front |
 |---|---|---|
-| Ports | Free loopback ports | Edge 8443, secrets route 8445, egress 9443, SSH 2223, from `config/dev-front.toml` |
+| Ports | Free loopback ports | Edge 8443, secrets route 8445, sessions route 8448, egress 9443, SSH 2223, from `config/dev-front.toml` |
 | Names | The dev names, reached with `curl --resolve` through a loopback front that adds HAProxy's PROXY v2 header | The dev names through the VPS |
 | TLS | ACME off, a fresh self-signed pair | Let's Encrypt for the exact names over the tunnel, the wildcard `make dev-certs` copied |
 | `secrets.egress_ips` | `127.0.0.1` | `vps.egress_ips` in `config/dev-front.toml` |
@@ -236,7 +236,7 @@ it opens. N1 also probes `[fd00:ec2::254]:80`.
 
 The fronted mode keeps its ACME caches in `~/.local/state/bugnet-dev/acme/<service>/`, so
 repeated runs reuse their certificates and stay inside Let's Encrypt's limits. It refuses to start
-when one of its four ports is taken, when the wildcard pair in
+when one of its five ports is taken, when the wildcard pair in
 `~/.local/state/bugnet-dev/preview-dev/` is missing or expired, or when
 `https://transfer.dev.bugnet.sh/` does not answer with the certificate this stack's edge holds,
 and it says which. The live stack needs the Linux build of `bugnet-run` from
@@ -1586,7 +1586,7 @@ with `limactl` (`brew install lima`). It needs no VPS, provider or DNS token. It
 - a bundle with `frontend ssh`, or with admin SSH where nothing listens, is refused untouched;
 - a second run changes nothing;
 - `haproxy -c` passes and HAProxy listens on 443 over both families and on 2200, never on 22;
-- `tunnel` has no shell, and may listen on the four tunnel ports and nowhere else, with no `-L`,
+- `tunnel` has no shell, and may listen on the five tunnel ports and nowhere else, with no `-L`,
   `-W` or command, while other users keep their sshd settings;
 - ufw allows TCP 80, 443, 2200 and the admin port alone, and drops UDP 443;
 - the unit, its user and `certs.toml` work, since a run without the token stops at `dns_env`, and
