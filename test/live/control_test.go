@@ -6,6 +6,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/livetest"
+	"github.com/bugnet-sh/bugnet-router/internal/providers"
 )
 
 // controlRows are CP 15's rows, each task adding its own
@@ -25,6 +30,10 @@ func init() {
 		row{id: "E4", run: rowE4},
 		row{id: "F1", run: rowF1},
 		row{id: "F2", run: rowF2},
+		row{id: "L1", providers: []string{"e2b"}, run: rowLimits},
+		row{id: "L2", providers: []string{"boat"}, run: rowLimits},
+		row{id: "L3", providers: []string{"boxd"}, run: rowLimits},
+		row{id: "L4", providers: []string{"koyeb"}, run: rowLimits},
 	)
 }
 
@@ -105,6 +114,65 @@ func rowN2(t *testing.T, s *stack) {
 	t.Logf("N2: the VM's IPv6 default route is %q, empty when it has none", route)
 }
 
+// liveAdapter builds the real adapter of name from the environment's key and config/dev.toml
+func liveAdapter(t *testing.T, name string) provider.Provider {
+	t.Helper()
+	env, ok := config.ProviderKeyEnv(name)
+	if !ok {
+		t.Fatalf("%s has no provider key variable", name)
+	}
+	key := os.Getenv(env)
+	if key == "" {
+		t.Fatalf("%s is not set, so the %s rows cannot run", env, name)
+	}
+	cfg := livetest.Settings(t)
+	cfg.Providers = []string{name}
+	cfg.ProviderKeys = map[string]string{name: key}
+	reg, err := providers.Build(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := reg.Get(name)
+	return p
+}
+
+// rowLimits is CP L1 to L4, the provider's limits and account calls with the runtime key
+func rowLimits(t *testing.T, s *stack) {
+	p := liveAdapter(t, s.provider)
+	reader, ok := p.(provider.LimitsReader)
+	if !ok {
+		t.Fatalf("%s reads no limits", s.provider)
+	}
+	checker, ok := p.(provider.AccountChecker)
+	if !ok {
+		t.Fatalf("%s checks no account", s.provider)
+	}
+	ctx := t.Context()
+	got, err := reader.ReadLimits(ctx)
+	if err != nil {
+		t.Fatalf("ReadLimits: %v", err)
+	}
+	// E2B's cap is a setting, so only the others give one
+	if got.MaxConcurrent <= 0 && s.provider != "e2b" {
+		t.Errorf("%s gave a cap of %d, want the account's", s.provider, got.MaxConcurrent)
+	}
+	if got.Active < 0 {
+		t.Errorf("%s gave %d active sandboxes", s.provider, got.Active)
+	}
+	t.Logf("%s limits: cap %d, %d active", s.provider, got.MaxConcurrent, got.Active)
+	acc, err := checker.CheckAccount(ctx)
+	if err != nil {
+		t.Fatalf("CheckAccount: %v", err)
+	}
+	if acc.Block != provider.BlockNone {
+		t.Errorf("%s account is blocked as %q: %s", s.provider, acc.Block, acc.Detail)
+	}
+	if team := livetest.Settings(t).E2B.TeamID; s.provider == "e2b" && team == "" {
+		t.Log("L1: e2b.team_id is empty, so the account check read the list call instead")
+	}
+	t.Logf("%s account: block %q", s.provider, acc.Block)
+}
+
 func TestControlRowsAndTheirProviders(t *testing.T) {
 	var ids []string
 	for _, r := range controlRows {
@@ -114,8 +182,20 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
-	for _, id := range []string{"E1", "E2", "E3", "E4", "F1", "F2"} {
+	for _, id := range []string{"E1", "E2", "E3", "E4", "F1", "F2", "L1", "L2", "L3", "L4"} {
 		eq(t, slices.Contains(ids, id), true)
+	}
+	for _, r := range controlRows {
+		switch r.id {
+		case "L1":
+			eq(t, r.providers, []string{"e2b"})
+		case "L2":
+			eq(t, r.providers, []string{"boat"})
+		case "L3":
+			eq(t, r.providers, []string{"boxd"})
+		case "L4":
+			eq(t, r.providers, []string{"koyeb"})
+		}
 	}
 }
 
