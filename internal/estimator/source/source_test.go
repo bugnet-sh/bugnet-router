@@ -73,6 +73,7 @@ func TestSourceParserGitHub(t *testing.T) {
 		{sshUser + ":openai/whisper.git", "openai", "whisper", nil},
 		{"ssh://" + sshUser + "/openai/whisper.git", "openai", "whisper", nil},
 		{"git+https://github.com/openai/whisper.git", "openai", "whisper", nil},
+		{"git+ssh://" + sshUser + "/openai/whisper.git", "openai", "whisper", nil},
 		{"https://github.com/openai/whisper/tree/v20240930", "openai", "whisper",
 			[]string{"v20240930"}},
 		{"https://github.com/openai/whisper/blob/main/whisper/audio.py", "openai", "whisper",
@@ -178,6 +179,7 @@ func TestSourceParserRefusals(t *testing.T) {
 		"https://huggingface.co/" + strings.Repeat("m", 97),
 		"https://example.dev/install%F3%A0%81%A9.sh\x00", "https://exa mple.com/x",
 		"https://" + strings.Repeat("x", 2100) + ".com",
+		"https://example.com/a\u2028b", "https://example.com/a\u2029b",
 	} {
 		refused(t, in)
 	}

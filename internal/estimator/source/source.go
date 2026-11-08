@@ -84,10 +84,10 @@ func Parse(s string) (Source, error) {
 	if strings.IndexFunc(s, hidden) >= 0 {
 		return Source{}, invalid("control or invisible characters")
 	}
+	s = strings.TrimPrefix(s, "git+")
 	if m := sshForm.FindStringSubmatch(s); m != nil {
 		return github(m[1], m[2], nil)
 	}
-	s = strings.TrimPrefix(s, "git+")
 	if !strings.Contains(s, "://") {
 		if !knownHost.MatchString(s) {
 			return bare(s)
@@ -124,7 +124,7 @@ func Parse(s string) (Source, error) {
 
 // hidden is a control, format or line-breaking character, which no source needs
 func hidden(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == ' ' || r == ' '
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029'
 }
 
 // segments splits an escaped path and unescapes each segment on its own
