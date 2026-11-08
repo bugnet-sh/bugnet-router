@@ -37,6 +37,7 @@ const (
 	ReasonSealedTooLarge = "SEALED_TOO_LARGE"
 	ReasonKeyUnknown     = "KEY_UNKNOWN"
 	ReasonTooMany        = "TOO_MANY_SECRETS"
+	ReasonHostInUse      = "HOST_IN_USE"
 )
 
 // Refusal is a refused secret, its Code and Reason as the API answers them
@@ -189,10 +190,22 @@ type Held struct {
 	Hosts []string
 }
 
-// Fit refuses a spec that would take the placement past max secrets or 32 hosts in all
-func Fit(spec *routerv1.SecretSpec, held []Held, most int) error {
+// CheckInUse refuses a spec with a host that a live x402 service of the placement uses
+func CheckInUse(spec *routerv1.SecretSpec, x402Hosts []string) error {
+	if slices.ContainsFunc(spec.GetHosts(), func(h string) bool {
+		return slices.Contains(x402Hosts, h)
+	}) {
+		return refuse(connect.CodeFailedPrecondition, ReasonHostInUse,
+			"x402 pays for a host of this secret in this sandbox, stop paying it first")
+	}
+	return nil
+}
+
+// Fit refuses a spec that would take the placement past max secrets or 32 hosts in all,
+// x402Hosts being the hosts of the placement's live x402 services
+func Fit(spec *routerv1.SecretSpec, held []Held, x402Hosts []string, most int) error {
 	count := 1
-	all := slices.Clone(spec.GetHosts())
+	all := slices.Concat(spec.GetHosts(), x402Hosts)
 	for _, h := range held {
 		if h.Name == spec.GetName() {
 			continue

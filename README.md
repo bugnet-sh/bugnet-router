@@ -866,10 +866,11 @@ holds a handle or a job ID.
 | `InvalidArgument` | `SEALED_TOO_LARGE` | A sealed value that is empty or over 70 KiB |
 | `InvalidArgument` | `KEY_UNKNOWN` | A value sealed to a key not in `secrets.box_public_keys` |
 | `FailedPrecondition` | `HOST_NOT_ALLOWED` | A custom host while `secrets.custom_hosts` is false, or a host outside the package's `egress.allow` |
+| `FailedPrecondition` | `HOST_IN_USE` | A secret host that a live x402 service of the placement uses |
 | `FailedPrecondition` | `LINK_LOCKED` | A secret link refused 5 values |
 | `NotFound` | `LINK_UNKNOWN` | A secret link that is unknown, used or expired, or whose placement left ready |
 | `PermissionDenied` | `PUT_GRANT_INVALID` | A put grant that is expired, forged or names another placement |
-| `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all, an 11th host or a 9th header name of one secret |
+| `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all with the live x402 hosts, an 11th host or a 9th header name of one secret |
 | `ResourceExhausted` | `RATE_LIMITED` | The placement's, the payer's or the provider account's operation bucket is empty |
 | `InvalidArgument` | `PAYER_INVALID` | `CheckPayer` or an operator call names an address that is not canonical base58 of 32 bytes |
 | `PermissionDenied` | `PAYER_REQUIRED` | A start order without a payer while `wallets.require_payer` is set |

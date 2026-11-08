@@ -129,3 +129,18 @@ func (s *Store) SecretHosts(ctx context.Context, placement uuid.UUID) ([]string,
 	}
 	return out, nil
 }
+
+// LiveX402Hosts answers the hosts of the placement's x402 rows that are not disabled
+func (s *Store) LiveX402Hosts(ctx context.Context, placement uuid.UUID) ([]string, error) {
+	rows, err := s.q.Query(ctx, `
+		select distinct host from x402_services
+		where placement_id = $1 and state <> $2 order by host`, placement, X402Disabled)
+	if err != nil {
+		return nil, fmt.Errorf("select live x402 hosts: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("select live x402 hosts: %w", err)
+	}
+	return out, nil
+}
