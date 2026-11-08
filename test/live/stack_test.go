@@ -451,6 +451,9 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 		"ssh_port": n.SSHPort,
 	}
 	table(m, "sessions")["base_url"] = "https://" + n.SessionsHost
+	if sessionsKeep != "" {
+		table(m, "sessions")["keep"] = sessionsKeep
+	}
 	egress := []string{"127.0.0.1"}
 	if s.mode == "vps" {
 		egress = s.f.VPS.EgressIPs

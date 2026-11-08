@@ -114,6 +114,7 @@ scripts/live-test.sh e2b
 scripts/live-test.sh boxd koyeb boat
 scripts/live-test.sh --suite dataplane --run 'LiveDataplane/T1' e2b
 scripts/live-test.sh --suite dataplane --front vps e2b boxd
+scripts/live-test.sh --suite sessions e2b
 scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 ```
 
@@ -123,6 +124,7 @@ scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 | `dataplane` | `TestLiveDataplane` in `test/live` | At least one | Each named provider's, from `.env` |
 | `control` | `TestLiveControl` in `test/live` | Zero or more | Each named provider's, from `.env` |
 | `leak` | `TestLiveLeak` in `test/live` | At least one | Each named provider's, from `.env` |
+| `sessions` | `TestLiveSessions` in `test/live`, rows SESS1 to SESS6, with `sessions.keep` at 3 minutes | At least one | Each named provider's, from `.env` |
 | `bench` | `bugnet-dev bench` against `--router URL` | Zero or more | None. It sources no `.env` and needs `BUGNET_OPERATOR_TOKEN` set |
 
 The script fails with the variable's name when a key is empty. `--run REGEX` replaces the suite's
