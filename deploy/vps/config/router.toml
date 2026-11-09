@@ -4,7 +4,7 @@
 
 # TODO(Payments): the public half of Payments' BUGNET_ORDER_PRIVATE_KEY, from `pnpm cli keys
 # pubkey` (bugnet-payments deploy/README.md section 5). router-api refuses to start while empty.
-order_token_public_key = ""
+order_token_public_key = "loAtatGXwc4DPBvSFHHjSShoEDhB/eam3sZCFuYHzHw="
 packages_file = "/etc/bugnet/packages.json"
 providers = ["boat", "e2b", "boxd"]
 deployment_id = "main"
@@ -59,7 +59,7 @@ use_payer = true
 require_payer = false
 emit_events = true
 # TODO(Payments): the fee payer's address from `pnpm cli keys show`
-facilitator_addresses = ["73iCm2eWpXsEqTpYkNHe4VoiR4Eq7nyCLv9wYZzEnFM9"]
+facilitator_addresses = ["AxsYqFSYfxJKJgj8iTCJhVWLi1mphAx6Sh3cMLMdqyyr"]
 
 [stats]
 listen_addr = "127.0.0.1:8082"
