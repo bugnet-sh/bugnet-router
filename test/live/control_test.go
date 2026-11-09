@@ -196,7 +196,9 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 		}
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
-	for _, id := range []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2", "L1", "L2", "L3", "L4"} {
+	ids2 := []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2"}
+	ids2 = append(ids2, "L1", "L2", "L3", "L4")
+	for _, id := range ids2 {
 		eq(t, slices.Contains(ids, id), true)
 	}
 	for _, r := range controlRows {
