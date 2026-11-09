@@ -17,6 +17,9 @@ import (
 // runnerPath is where bugnet-run lives inside every sandbox
 const runnerPath = "/tmp/bugnet/bin/bugnet-run"
 
+// RunnerPath is runnerPath for a probe that runs the runner's ping
+const RunnerPath = runnerPath
+
 const (
 	readyTimeout  = 60 * time.Second
 	uploadTimeout = 60 * time.Second
@@ -35,8 +38,10 @@ type BootPlan struct {
 
 // BootReport is what a boot did, which start samples record
 type BootReport struct {
-	GateReady        bool
-	RunnerMS, GateMS int
+	GateReady bool
+	// ReadyMS is the wait for the provider to answer, RunnerMS the runner upload and ping and
+	// GateMS the gate steps, each store.NoStep until its step ran
+	ReadyMS, RunnerMS, GateMS int
 	// GateReadyAt is when the gate first answered, zero when it never did
 	GateReadyAt time.Time
 	// CAVersion is the Bugnet CA version the sandbox trusts, 0 for none
@@ -51,15 +56,13 @@ var errRestricted = errors.New("a restricted package needs a provider with egres
 // Boot boots a sandbox, opens its gate and makes sshd ready when the order needs SSH
 func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Ref,
 	b BootPlan) (provider.Ref, BootReport, error) {
-	var rep BootReport
+	rep := BootReport{ReadyMS: store.NoStep, RunnerMS: store.NoStep, GateMS: store.NoStep}
 	if len(b.Restricted) > 0 && !prov.Capabilities().EgressControl {
 		return ref, rep, errRestricted
 	}
-	start := s.now()
-	if err := s.boot(ctx, prov, ref); err != nil {
+	if err := s.boot(ctx, prov, ref, &rep); err != nil {
 		return ref, rep, err
 	}
-	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
 	key, err := s.d.Keys.GateKey(b.KeyID, b.Placement)
 	if err != nil {
 		return ref, rep, fmt.Errorf("gate key: %w", err)
@@ -108,16 +111,24 @@ func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Re
 }
 
 // boot waits for a created sandbox and puts the runner in place when the provider lacks it
-func (s *Saga) boot(ctx context.Context, prov provider.Provider, ref provider.Ref) error {
+func (s *Saga) boot(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, rep *BootReport,
+) error {
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
-	if err := prov.WaitReady(readyCtx, ref); err != nil {
+	start := s.now()
+	err := prov.WaitReady(readyCtx, ref)
+	rep.ReadyMS = int(s.now().Sub(start).Milliseconds())
+	if err != nil {
 		return fmt.Errorf("wait ready: %w", err)
 	}
 	if !prov.Capabilities().NeedsRunnerUpload {
 		return nil
 	}
-	return s.uploadRunner(ctx, prov, ref)
+	start = s.now()
+	err = s.uploadRunner(ctx, prov, ref)
+	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
+	return err
 }
 
 // uploadRunner writes the build for the sandbox's architecture and checks that it runs there
