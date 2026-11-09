@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The checks of vm-test.sh front, run as root inside the VM after front.sh
-#   front-checks.sh <bundle dir> <tunnel private key> <admin user>
+#   front-checks.sh <bundle dir> <tunnel private key> <admin user> [loopback]
+# With loopback it runs only the loopback rule's checks, which the VM's reboot repeats.
 set -euo pipefail
 # Sorted lists and the commands' messages read the same in any locale
 export LC_ALL=C
@@ -41,6 +42,47 @@ tunnel_ssh() {
 listening() {
 	ss -Hltn "sport = :$1" | grep -q "127.0.0.1:$1"
 }
+
+# The loopback rule: only haproxy may connect to the tunnel's VPS end (DP 10.12.7.1)
+loopback_checks() {
+	local rule='tcp dport 19443 meta skuid "haproxy" accept'
+	check "nft shows the dev front's loopback rule" bash -c \
+		"nft list table inet bugnet_dev_front_lo | grep -qF '$rule'"
+	check "bugnet-nft.service is enabled" systemctl is-enabled --quiet bugnet-nft.service
+	check "bugnet-nft.service is active" systemctl is-active --quiet bugnet-nft.service
+	local pid code
+	python3 -c 'import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 19443))
+s.listen(8)
+time.sleep(60)' &
+	pid=$!
+	for _ in $(seq 50); do
+		listening 19443 && break
+		sleep 0.2
+	done
+	check "haproxy's user may connect to the tunnel port" \
+		runuser -u haproxy -- bash -c ': </dev/tcp/127.0.0.1/19443'
+	code=0
+	runuser -u nobody -- bash -c ': </dev/tcp/127.0.0.1/19443' 2>/dev/null || code=$?
+	if [[ $code -ne 0 ]]; then pass "another user is refused"; else fail "another user is refused"; fi
+	code=0
+	bash -c ': </dev/tcp/127.0.0.1/19443' 2>/dev/null || code=$?
+	if [[ $code -ne 0 ]]; then pass "root is refused too"; else fail "root is refused too"; fi
+	kill "$pid" 2>/dev/null || true
+	wait "$pid" 2>/dev/null || true
+}
+
+if [[ ${4:-} == loopback ]]; then
+	loopback_checks
+	if ((failed)); then
+		echo "loopback checks failed"
+		exit 1
+	fi
+	echo "loopback checks passed"
+	exit 0
+fi
 
 # HAProxy
 check "haproxy -c passes" haproxy -c -f /etc/haproxy/haproxy.cfg
@@ -129,6 +171,8 @@ equal "ufw allows TCP 80, 443, 2200 and admin SSH only" \
 check "ufw denies UDP 443" grep -Eq '^443/udp +DENY' <<<"$(ufw status)"
 check "iptables drops UDP 443" bash -c \
 	'iptables -S ufw-user-input | grep -q -- "-p udp -m udp --dport 443 -j DROP"'
+
+loopback_checks
 
 # bugnet-certs
 check "the timer is enabled" systemctl is-enabled --quiet bugnet-certs.timer

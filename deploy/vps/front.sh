@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The dev front on the VPS (DP 15.2, 15.4 and 15.6). It sets up the SNI split, the tunnel user,
-# bugnet-certs for the dev wildcard, and the firewall. Run it as root from its bundle directory,
-# which holds front.sh, systemd/, tunnel.pub and the files `bugnet-dev deploy maps --front` writes.
+# bugnet-certs for the dev wildcard, the loopback rule for the tunnel port and the firewall. Run
+# it as root from its bundle directory, which holds front.sh, systemd/, nftables/, tunnel.pub and
+# the files `bugnet-dev deploy maps --front` writes.
 #
 #   sudo ./front.sh ./bugnet-certs
 #
@@ -33,7 +34,8 @@ check_inputs() {
 	[[ $EUID -eq 0 ]] || die "run it as root, with sudo"
 	[[ -f $1 && -x $1 ]] || die "$1 is not an executable file; $usage"
 	for f in sni.map end.map haproxy.cfg certs.toml certs-staging.toml deploy.env tunnel.pub \
-		systemd/bugnet-certs.service systemd/bugnet-certs.timer; do
+		systemd/bugnet-certs.service systemd/bugnet-certs.timer systemd/bugnet-nft.service \
+		nftables/dev-front.nft; do
 		[[ -f $here/$f ]] || die "$here/$f is missing (bugnet-router README, The dev front)"
 	done
 	if grep -q '^frontend ssh$' "$here/haproxy.cfg"; then
@@ -85,7 +87,7 @@ check_inputs() {
 
 install_packages() {
 	local missing=() p
-	for p in haproxy ufw; do
+	for p in haproxy ufw nftables; do
 		[[ $(dpkg-query -W -f='${Status}' "$p" 2>/dev/null) == *'ok installed' ]] || missing+=("$p")
 	done
 	if ((${#missing[@]} > 0)); then
@@ -211,6 +213,20 @@ EOF
 	say "tunnel may listen on ${listens[*]}"
 }
 
+# install_loopback_rule lets only haproxy connect to the dev tunnel's VPS end (DP 10.12.7.1). The
+# nftables package stays disabled, since its own service flushes the ruleset
+install_loopback_rule() {
+	install -d -o root -g root -m 0755 /etc/bugnet /etc/bugnet/nftables
+	install -o root -g root -m 0644 "$here/nftables/dev-front.nft" /etc/bugnet/nftables/
+	install -o root -g root -m 0644 "$here/systemd/bugnet-nft.service" /etc/systemd/system/
+	systemctl daemon-reload
+	systemctl enable --quiet bugnet-nft.service
+	systemctl restart bugnet-nft.service
+	nft list table inet bugnet_dev_front_lo | grep -q 'skuid "haproxy" accept' ||
+		die "the loopback rule for the tunnel port did not load"
+	say "only haproxy may connect to 127.0.0.1:19443"
+}
+
 install_certs() {
 	local bin=$1 ver code=0 d
 	if ! id -u bugnet-certs >/dev/null 2>&1; then
@@ -283,6 +299,7 @@ main() {
 	install_packages
 	install_haproxy
 	install_tunnel_user
+	install_loopback_rule
 	install_certs "$1"
 	install_firewall
 	say "done; start autossh on the Mac as tunnel.md says, then run bugnet-certs (README)"
