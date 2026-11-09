@@ -25,14 +25,14 @@ func TestBoatInspectMapsStates(t *testing.T) {
 			provider.Status{
 				State: provider.StateDegraded, Since: since, Reason: "tunnel unreachable",
 			}},
-		{"provisioning", func(id string) { f.setState(id, "provisioning") },
+		{"init", func(id string) { f.setState(id, "init") },
 			provider.Status{State: provider.StateStarting}},
 		{"archived", func(id string) { f.setState(id, "archived") },
 			provider.Status{State: provider.StateStopped}},
 		{"stopped with text", func(id string) { f.stopWith(id, "stopped", "plan limit") },
 			provider.Status{State: provider.StateStopped, Reason: "plan limit"}},
 		{"cancelled", func(id string) { f.setState(id, "cancelled") },
-			provider.Status{State: provider.StateStopped}},
+			provider.Status{State: provider.StateStopped, Reason: "no machine was ready"}},
 		{"error", func(id string) { f.stopWith(id, "error", "kernel panic") },
 			provider.Status{State: provider.StateFailed, Reason: "kernel panic"}},
 	} {

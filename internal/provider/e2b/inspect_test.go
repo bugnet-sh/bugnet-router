@@ -2,7 +2,6 @@ package e2b
 
 import (
 	"testing"
-	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
@@ -17,9 +16,7 @@ func TestE2BInspectMapsStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, got, provider.Status{
-		State: provider.StateRunning, ExpiresAt: box.endAt.Truncate(time.Second),
-	})
+	eq(t, got, provider.Status{State: provider.StateRunning, ExpiresAt: box.endAt.UTC().Round(0)})
 
 	f.setBox(ref.ID, func(b *fakeSandbox) { b.state = "paused" })
 	got, err = p.Inspect(t.Context(), ref)
