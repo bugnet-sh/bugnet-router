@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 )
@@ -19,6 +21,8 @@ type sourcedFake struct {
 	src provider.EgressSource
 	ok  bool
 	n   int
+	// hook runs inside the first read
+	hook func()
 }
 
 func (f *sourcedFake) EgressSource(
@@ -27,6 +31,9 @@ func (f *sourcedFake) EgressSource(
 	f.smu.Lock()
 	defer f.smu.Unlock()
 	f.n++
+	if f.hook != nil && f.n == 1 {
+		f.hook()
+	}
 	return f.src, f.ok, nil
 }
 
@@ -151,4 +158,37 @@ func TestRefuseWithoutSourceFailsSecrets(t *testing.T) {
 	has, err := e.store.HasEgressToken(t.Context(), p.ID)
 	eq(t, err, nil)
 	eq(t, has, false)
+}
+
+func TestADeleteDuringTheSourceReadIsAppliedNext(t *testing.T) {
+	e, f, _ := sourceEnv(t, nil)
+	e.start(t)
+	f.reports("2001:db8::5", true)
+	p, _ := e.placeReady(t, "o-src-delete-during")
+	e.putSecret(t, p, "HF_TOKEN", false, "huggingface.co")
+	e.putSecret(t, p, "OPENAI_API_KEY", false, "api.openai.com")
+	f.hook = func() {
+		err := e.store.WithTx(context.Background(), func(tx pgx.Tx) error {
+			ts := e.store.Tx(tx)
+			if _, err := ts.PlacementForUpdate(context.Background(), p.ID); err != nil {
+				return err
+			}
+			if _, err := ts.DeleteSecret(context.Background(), p.ID, "HF_TOKEN"); err != nil {
+				return err
+			}
+			return ts.BumpSecretsVersion(context.Background(), p.ID, true)
+		})
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	e.apply(t, p)
+	pending, _, err := e.store.SecretsPending(t.Context(), p.ID)
+	if err != nil || !pending {
+		t.Fatalf("a delete during the source read is not pending after it: %v %v", pending, err)
+	}
+	e.apply(t, p)
+	specs := f.sent()
+	eq(t, len(specs), 2)
+	eq(t, specs[1].Hosts, []string{"api.openai.com"})
 }

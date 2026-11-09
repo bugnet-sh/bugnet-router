@@ -163,21 +163,25 @@ func (s *Sources) Unknown(p store.Placement) bool {
 // Read asks p's provider for its egress source and stores a usable one. It keeps what is
 // stored when the provider errs, reports none, or reports a family no egress IP serves
 func (s *Sources) Read(ctx context.Context, p store.Placement) (store.EgressSource, error) {
-	return s.read(ctx, p, true)
+	src, _, err := s.read(ctx, p, true)
+	return src, err
 }
 
-// ReadInRun is Read for apply_secrets, whose run writes the new spec next without a new job
-func (s *Sources) ReadInRun(ctx context.Context, p store.Placement) (store.EgressSource, error) {
+// ReadInRun is Read for apply_secrets, whose run writes the new spec next without a new job.
+// It also reports whether the read moved secrets_version, by exactly one
+func (s *Sources) ReadInRun(
+	ctx context.Context, p store.Placement,
+) (store.EgressSource, bool, error) {
 	return s.read(ctx, p, false)
 }
 
 func (s *Sources) read(
 	ctx context.Context, p store.Placement, enqueue bool,
-) (store.EgressSource, error) {
+) (store.EgressSource, bool, error) {
 	kept := p.EgressSource
 	es, _, ok := s.sourcer(p)
 	if !ok {
-		return kept, nil
+		return kept, false, nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, s.Settings.ReadTimeout)
 	defer cancel()
@@ -185,21 +189,21 @@ func (s *Sources) read(
 	switch {
 	case err != nil:
 		s.logRead(p, "error")
-		return kept, nil
+		return kept, false, nil
 	case !found:
 		s.logRead(p, "none")
-		return kept, nil
+		return kept, false, nil
 	case !s.serves(src.Bind):
 		s.logRead(p, "family_unserved")
-		return kept, nil
+		return kept, false, nil
 	}
 	changed, err := s.Store.SetEgressSource(ctx, p.ID, src)
 	if err != nil {
-		return kept, err
+		return kept, false, err
 	}
 	stored := store.EgressSource{Prefix: src.Prefix.Masked(), Bind: src.Bind, ReadAt: s.Now()}
 	if !changed {
-		return stored, nil
+		return stored, false, nil
 	}
 	s.Log.Warn("egress source changed", "provider", p.Provider, "placement", p.ID,
 		"old", kept.Prefix.String(), "new", stored.Prefix.String())
@@ -210,10 +214,10 @@ func (s *Sources) read(
 	}
 	if enqueue && s.River != nil {
 		if _, err := s.River.Insert(ctx, jobargs.ApplySecrets{PlacementID: p.ID}, nil); err != nil {
-			return stored, fmt.Errorf("insert apply_secrets job: %w", err)
+			return stored, true, fmt.Errorf("insert apply_secrets job: %w", err)
 		}
 	}
-	return stored, nil
+	return stored, true, nil
 }
 
 // serves says whether some egress IP is of addr's family

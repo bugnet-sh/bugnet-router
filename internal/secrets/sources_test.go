@@ -323,8 +323,8 @@ func TestNewAddressMovesVersionOnce(t *testing.T) {
 
 	// A read inside apply_secrets enqueues nothing
 	e.fake.report("2001:db8::6", true, nil)
-	if _, err := s.ReadInRun(t.Context(), e.load()); err != nil {
-		t.Fatal(err)
+	if _, changed, err := s.ReadInRun(t.Context(), e.load()); err != nil || !changed {
+		t.Fatal(changed, err)
 	}
 	eq(t, e.load().SecretsVersion, p.SecretsVersion+2)
 	eq(t, e.changedEvents(), 2)

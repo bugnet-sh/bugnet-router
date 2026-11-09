@@ -142,14 +142,13 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 	if len(loaded) == 0 && len(x402) == 0 && !has {
 		return w.finishApply(ctx, p, lag, applySet{}, store.SecretActive, "")
 	}
-	p, err = w.readSource(ctx, p)
+	p, changed, err := w.readSource(ctx, p)
 	if err != nil {
 		return err
 	}
-	// The lag is read after the source check, so a source change in this run is applied by it
-	_, lag, err = w.store.SecretsPending(ctx, id)
-	if err != nil {
-		return err
+	// A source change moves the version by one and this run writes it, so it counts as applied
+	if changed {
+		lag++
 	}
 	if w.d.Sources != nil && w.d.Sources.Unknown(p) {
 		w.log.Warn("secrets not applied, no egress source is known", "placement", id)
@@ -172,13 +171,15 @@ func (w *Worker) applySecrets(ctx context.Context, id uuid.UUID) error {
 }
 
 // readSource is step 2b, a read of the sandbox's egress source unless a read is fresh
-func (w *Worker) readSource(ctx context.Context, p store.Placement) (store.Placement, error) {
+func (w *Worker) readSource(
+	ctx context.Context, p store.Placement,
+) (store.Placement, bool, error) {
 	if w.d.Sources == nil || !w.d.Sources.Active(p) || w.d.Sources.Fresh(p) {
-		return p, nil
+		return p, false, nil
 	}
-	src, err := w.d.Sources.ReadInRun(ctx, p)
+	src, changed, err := w.d.Sources.ReadInRun(ctx, p)
 	p.EgressSource = src
-	return p, err
+	return p, changed, err
 }
 
 // applyEgress writes the spec, once more with a fresh token after token_missing, in one budget
