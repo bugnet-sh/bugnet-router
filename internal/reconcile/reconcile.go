@@ -13,6 +13,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -154,15 +155,15 @@ func (r *Reconciler) recheck(ctx context.Context, p store.Placement, after time.
 	return nil
 }
 
-// act ends the placement for the verdict, or holds its wallet actions when the guard says one
-// provider incident is behind it
+// act ends the placement for the verdict, the end holding its wallet actions when the guard says
+// one provider incident is behind it
 func (r *Reconciler) act(
 	ctx context.Context, p store.Placement, o *Observation, v Verdict,
 ) error {
 	ended := p.State == store.PlacementTerminated || p.State == store.PlacementFailed
 	e := saga.End{
 		Reason: string(v.Class), Actor: wallets.ActorRouter,
-		Evidence: r.evidence(p, o, v, ""),
+		Evidence: r.evidence(p, o, v),
 	}
 	end := func(e saga.End) error {
 		var err error
@@ -176,24 +177,17 @@ func (r *Reconciler) act(
 		}
 		return err
 	}
-	if !guards(v.Class) {
-		return end(e)
+	// An account-wide action shows within seconds, and trips the guard for the rest (CP 6.4)
+	if v.Class == ClassAbuse {
+		health.RequestAccountCheck(ctx, r.d.River, p.Provider)
 	}
-	// The guard's lock stays held until the end is written, so the next placement counts it
-	return r.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
-		held, err := Guard(ctx, tx, p.Provider, v.Class, r.now(), r.d.Abuse)
-		if err != nil {
-			return err
+	if guards(v.Class) {
+		// The guard runs in the end's own transaction, so its lock never waits on the destroy
+		e.Guard = func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return Guard(ctx, tx, p.Provider, v.Class, r.now(), r.d.Abuse)
 		}
-		if held {
-			e.Evidence = r.evidence(p, o, v, string(v.Class))
-			e.Held = true
-			if !ended {
-				e.Reason = string(ClassProviderFailed)
-			}
-		}
-		return end(e)
-	})
+	}
+	return end(e)
 }
 
 // guards reports whether the correlation guard looks at a class
@@ -202,7 +196,7 @@ func guards(c Class) bool {
 }
 
 // evidence is the signal as JSON, the provider's words cut and never a secret
-func (r *Reconciler) evidence(p store.Placement, o *Observation, v Verdict, held string) []byte {
+func (r *Reconciler) evidence(p store.Placement, o *Observation, v Verdict) []byte {
 	reason := o.Status.Reason
 	if len(reason) > maxReason {
 		reason = reason[:maxReason]
@@ -218,9 +212,6 @@ func (r *Reconciler) evidence(p store.Placement, o *Observation, v Verdict, held
 	if v.Alert != "" {
 		m["alert"] = v.Alert
 	}
-	if held != "" {
-		m["held_class"] = held
-	}
 	raw, _ := json.Marshal(m)
 	return raw
 }
@@ -228,17 +219,22 @@ func (r *Reconciler) evidence(p store.Placement, o *Observation, v Verdict, held
 // noLifetimeChange lists the providers whose lifetime the router cannot move without a redeploy
 var noLifetimeChange = map[string]bool{"koyeb": true}
 
+// Drifted reports whether a provider-side lifetime strays from the deadline plus the slack by
+// more than the bound, false for a provider whose lifetime cannot move or a missing value
+func Drifted(prov string, expires time.Time, deadline *time.Time, bound time.Duration) bool {
+	if noLifetimeChange[prov] || expires.IsZero() || deadline == nil {
+		return false
+	}
+	return abs(expires.Sub(deadline.Add(saga.LifetimeSlack))) > bound
+}
+
 // fixLifetime keeps the provider-side lifetime at the deadline plus the slack (CP 10.4). It never
 // acts on the reading alone: an extension holds the placement row until its new deadline commits.
 func (r *Reconciler) fixLifetime(
 	ctx context.Context, prov provider.Provider, p store.Placement, st provider.Status,
 ) {
-	if noLifetimeChange[p.Provider] || st.ExpiresAt.IsZero() || p.Deadline == nil ||
-		p.ProviderRef == nil {
-		return
-	}
 	drift := r.d.Settings.LifetimeDrift
-	if abs(st.ExpiresAt.Sub(p.Deadline.Add(saga.LifetimeSlack))) <= drift {
+	if p.ProviderRef == nil || !Drifted(p.Provider, st.ExpiresAt, p.Deadline, drift) {
 		return
 	}
 	err := r.d.Store.WithTx(ctx, func(tx pgx.Tx) error {

@@ -13,6 +13,7 @@ import (
 
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
@@ -775,4 +776,78 @@ type gatedDestroy struct {
 func (g gatedDestroy) Destroy(ctx context.Context, ref provider.Ref) error {
 	<-g.gate
 	return g.Provider.Destroy(ctx, ref)
+}
+
+func TestProviderFailedEndsPastTheIncidentMaximumAreAnOutage(t *testing.T) {
+	e := endEnv(t, func(w *config.Wallets) { w.FailedRefundsPerDay = 1 }, nil, nil)
+	failed := saga.End{Reason: saga.ReasonProviderFailed, Actor: wallets.ActorRouter}
+	var ids []uuid.UUID
+	for i := range 4 {
+		p, _ := e.placePaid(t, "order-"+strconv.Itoa(i), payerA)
+		ids = append(ids, p.ID)
+	}
+	var refundable []bool
+	for _, id := range ids {
+		refundable = append(refundable, e.end(t, id, failed).Refundable)
+	}
+	// The first uses the one daily refund, the next two are over the cap and struck, and the
+	// fourth in the window is an outage: refundable, no strike, and not counted
+	eq(t, refundable, []bool{true, false, false, true})
+	eq(t, e.walletEvents(t, payerA, store.WalletStrike), 2)
+	n, err := e.store.FailedRefunds(t.Context(), payerA, time.Now().Add(-time.Hour))
+	eq(t, err, nil)
+	eq(t, n, 1)
+}
+
+// The guard's lock is released with the end's marking, so a slow destroy never holds it
+func TestGuardLockIsReleasedBeforeTheDestroy(t *testing.T) {
+	gate := make(chan struct{})
+	e := endEnv(t, nil, nil, gatedDestroy{newLocal(t, local.Options{Name: "a"}), gate})
+	ctx := t.Context()
+	a, _ := e.placePaid(t, "order-1", payerA)
+	b, _ := e.placePaid(t, "order-2", payerB)
+	guard := func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		return false, store.LockProviderSignals(ctx, tx, "a")
+	}
+	done := make(chan error, 2)
+	for _, id := range []uuid.UUID{a.ID, b.ID} {
+		go func() {
+			_, err := e.saga.End(ctx, id, saga.End{
+				Reason: saga.ReasonControlLost, Actor: wallets.ActorRouter, Guard: guard,
+			})
+			done <- err
+		}()
+	}
+	// Both destroys wait on the gate, yet both ends are marked: neither waits on the other's lock
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ca, err := e.store.PlacementByID(ctx, a.ID)
+		eq(t, err, nil)
+		cb, err := e.store.PlacementByID(ctx, b.ID)
+		eq(t, err, nil)
+		if ca.State == store.PlacementTerminating && cb.State == store.PlacementTerminating {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("states %s and %s while the destroys wait", ca.State, cb.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(gate)
+	eq(t, <-done, nil)
+	eq(t, <-done, nil)
+}
+
+func TestGuardHoldsAnEndInsideItsTransaction(t *testing.T) {
+	e := endEnv(t, nil, nil, nil)
+	p, _ := e.placePaid(t, "order-1", payerA)
+	held := func(context.Context, pgx.Tx) (bool, error) { return true, nil }
+	got := e.end(t, p.ID, saga.End{
+		Reason: saga.ReasonAbuse, Actor: wallets.ActorRouter, Guard: held,
+	})
+	eq(t, got.TerminationReason, saga.ReasonProviderFailed)
+	eq(t, e.blocked(t, payerA).Blocked(time.Now()), false)
+	sigs, err := e.store.Signals(t.Context(), p.ID)
+	eq(t, err, nil)
+	eq(t, []string{sigs[0].Action, sigs[0].HeldClass}, []string{"held", "abuse"})
 }

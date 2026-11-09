@@ -190,6 +190,9 @@ type Deps struct {
 	SSH SSHSettings
 	// Wallets are the payer and wallet settings, a zero limit taking its default
 	Wallets config.Wallets
+	// Abuse holds the correlated window and maximum a provider outage is told by, each zero value
+	// at its default
+	Abuse config.Abuse
 	// Sessions writes the session page's events, none when nil
 	Sessions *sessions.Writer
 	// SessionKeep is how long a record lives after its placement ends, 48 h when zero
@@ -237,6 +240,7 @@ func New(deps Deps) *Saga {
 	deps.SessionKeep = cmp.Or(deps.SessionKeep, defaultSessionKeep)
 	deps.SessionAbuseHold = cmp.Or(deps.SessionAbuseHold, defaultAbuseHold)
 	w := deps.Wallets.OrDefaults()
+	deps.Abuse = deps.Abuse.OrDefaults()
 	s := &Saga{
 		d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget), w: w,
 		guard:  wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
@@ -1192,7 +1196,8 @@ func (s *Saga) Stop(ctx context.Context, h string) (store.Placement, error) {
 	if err != nil {
 		return store.Placement{}, err
 	}
-	return s.terminate(ctx, p, ReasonStop, func(ctx context.Context) (bool, error) {
+	reason := func() string { return ReasonStop }
+	return s.terminate(ctx, p, reason, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementTerminating(ctx, p.ID, ReasonStop, s.now())
 	})
 }
@@ -1203,7 +1208,8 @@ func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, due time.Ti
 	if err != nil {
 		return err
 	}
-	_, err = s.terminate(ctx, p, ReasonDeadline, func(ctx context.Context) (bool, error) {
+	reason := func() string { return ReasonDeadline }
+	_, err = s.terminate(ctx, p, reason, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementDue(ctx, p.ID, ReasonDeadline, due, s.now())
 	})
 	return err
@@ -1235,7 +1241,7 @@ func (s *Saga) placementEnded(ctx context.Context, id uuid.UUID, reason string) 
 
 // terminate marks the placement, destroys its sandbox, then ends it and frees its slot once
 func (s *Saga) terminate(
-	ctx context.Context, p store.Placement, reason string,
+	ctx context.Context, p store.Placement, reason func() string,
 	mark func(context.Context) (bool, error),
 ) (store.Placement, error) {
 	switch p.State {
@@ -1253,7 +1259,7 @@ func (s *Saga) terminate(
 	}
 	if moved {
 		// The edges cut the placement's traffic now, not once the destroy is done
-		s.placementEnded(ctx, p.ID, reason)
+		s.placementEnded(ctx, p.ID, reason())
 	} else {
 		if p, err = s.d.Store.PlacementByID(ctx, p.ID); err != nil {
 			return store.Placement{}, err

@@ -225,6 +225,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	}
 	sd.River = rc
 	w.river = rc
+	sd.Abuse = d.Abuse
 	w.saga = saga.New(sd)
 	w.reconciler = reconcile.New(reconcile.Deps{
 		Saga: w.saga, Store: sd.Store, Registry: sd.Registry, River: rc, Valkey: sd.Valkey,
