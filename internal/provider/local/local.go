@@ -505,6 +505,18 @@ func parsePid(b []byte) (int, bool) {
 	return int(pid), true
 }
 
+// Inspect reads the sandbox, one whose directory is missing being gone
+func (p *Provider) Inspect(_ context.Context, ref provider.Ref) (provider.Status, error) {
+	s, err := p.open(ref)
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	if err != nil {
+		return provider.Status{}, err
+	}
+	return provider.Status{State: provider.StateRunning, ExpiresAt: s.meta.Deadline}, nil
+}
+
 // ListOwned returns this provider's sandboxes carrying every given label
 func (p *Provider) ListOwned(
 	_ context.Context, labels map[string]string,

@@ -202,6 +202,9 @@ type options struct {
 	sourcesClock *clock
 	// canaries lets the canary tick find a size, which no test but the canary ones wants
 	canaries bool
+	// abuse and reconcile set the class and drift settings, each zero value at its default
+	abuse     config.Abuse
+	reconcile config.Reconcile
 }
 
 type env struct {
@@ -296,6 +299,7 @@ func newEnv(t *testing.T, o options) *env {
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
 		Egress: o.egress, DefaultWorkers: o.defaultWorkers, Stats: o.stats,
 		Sessions: o.sessions, LimitsPoll: o.limitsPoll, MaxConcurrent: o.maxConcurrent,
+		Abuse: o.abuse, Reconcile: o.reconcile,
 	}
 	if o.sources != nil {
 		sdeps := secrets.SourcesDeps{
@@ -1651,7 +1655,11 @@ func (e *env) endedAgo(t *testing.T, ago time.Duration) uuid.UUID {
 }
 
 func TestSweepDeletesLeftovers(t *testing.T) {
-	e := newEnv(t, options{})
+	// The placements here name sandboxes no provider has, which are not under test, so the
+	// lost-placement check waits out a year
+	e := newEnv(t, options{reconcile: config.Reconcile{
+		ReadyGrace: 365 * 24 * time.Hour, MaxPerSweep: 200, LifetimeDrift: 2 * time.Minute,
+	}})
 	e.start(t)
 	pastHour := e.overdue(t, 2*time.Hour)
 	justPast := e.overdue(t, 30*time.Minute)

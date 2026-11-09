@@ -95,6 +95,8 @@ type Config struct {
 	LimitsPoll    LimitsPoll
 	Health        Health
 	Bench         Bench
+	Abuse         Abuse
+	Reconcile     Reconcile
 	Wallets       Wallets
 	Stats         Stats
 	Estimator     Estimator
@@ -385,6 +387,8 @@ type file struct {
 	LimitsPoll          limitsPollFile `toml:"limits_poll"`
 	Health              healthFile     `toml:"health"`
 	Bench               benchFile      `toml:"bench"`
+	Abuse               abuseFile      `toml:"abuse"`
+	Reconcile           reconcileFile  `toml:"reconcile"`
 	Wallets             walletsFile    `toml:"wallets"`
 	Stats               statsFile      `toml:"stats"`
 	Estimator           estimatorFile  `toml:"estimator"`
@@ -617,6 +621,8 @@ func defaults() file {
 		LimitsPoll: defaultLimitsPoll(),
 		Health:     defaultHealth(),
 		Bench:      defaultBench(),
+		Abuse:      defaultAbuse(),
+		Reconcile:  defaultReconcile(),
 		Wallets:    defaultWallets(),
 		Stats:      defaultStats(),
 		Estimator:  defaultEstimator(),
@@ -817,6 +823,12 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	if c.Bench, err = f.Bench.read(); err != nil {
+		return Config{}, err
+	}
+	if c.Abuse, err = f.Abuse.read(d.Abuse); err != nil {
+		return Config{}, err
+	}
+	if c.Reconcile, err = f.Reconcile.read(d.Reconcile); err != nil {
 		return Config{}, err
 	}
 	if c.Wallets, err = f.Wallets.read(d.Wallets); err != nil {

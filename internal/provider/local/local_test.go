@@ -1020,3 +1020,28 @@ func TestLocalDestroyKillsServices(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+func TestLocalInspectReportsTheLifetimeAndAGoneSandbox(t *testing.T) {
+	p := newLocal(t, local.Options{})
+	ref, err := p.Create(t.Context(), provider.CreateRequest{IdempotencyKey: "k-inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	if err := p.SetLifetime(t.Context(), ref, until); err != nil {
+		t.Fatal(err)
+	}
+	st, err := p.Inspect(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, st, provider.Status{State: provider.StateRunning, ExpiresAt: until})
+	if err := p.Destroy(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+	st, err = p.Inspect(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, st.State, provider.StateGone)
+}

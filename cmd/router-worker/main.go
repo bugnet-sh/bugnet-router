@@ -215,6 +215,7 @@ func serve(
 		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent, Health: cfg.Health,
 		EstimatesKeep: cfg.Estimator.EstimatesKeep, SourceFactsKeep: cfg.Estimator.SourceFactsKeep,
 		ObservationsKeep: cfg.Estimator.ObservationsKeep,
+		Abuse: cfg.Abuse, Reconcile: cfg.Reconcile,
 	})
 	if err != nil {
 		return err
@@ -233,7 +234,8 @@ func serve(
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
 		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk),
-		sources.Providers(), canariesOf(cfg, reg, w)))
+		sources.Providers(), canariesOf(cfg, reg, w),
+		lossCheck{alertPerHour: cfg.Abuse.LostAlertPerHour}))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

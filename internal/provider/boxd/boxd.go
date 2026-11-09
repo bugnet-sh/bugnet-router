@@ -553,6 +553,50 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	return classify(ctx, err)
 }
 
+// statusOf maps a machine's status word, false for a status boxd added since
+func statusOf(vm *boxdpb.GetVmResponse) (provider.Status, bool) {
+	st := provider.Status{Reason: vm.GetStatus()}
+	if ms := vm.GetDeleteAtMs(); ms > 0 {
+		st.ExpiresAt = time.UnixMilli(ms).UTC()
+	}
+	switch vm.GetStatus() {
+	case "pending", "starting":
+		st.State = provider.StateStarting
+	case "running", "migrating":
+		st.State = provider.StateRunning
+	case "suspended", "hibernated", "stopped":
+		st.State = provider.StateStopped
+	case "failed":
+		st.State = provider.StateFailed
+	default:
+		return provider.Status{}, false
+	}
+	return st, true
+}
+
+// Inspect reads the machine, NOT_FOUND meaning boxd no longer has it
+func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Status, error) {
+	vmID, err := machineID(ref)
+	if err != nil {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	vm, err := p.api.GetVm(ctx, &boxdpb.GetVmRequest{VmId: vmID})
+	if status.Code(err) == codes.NotFound {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	if err != nil {
+		return provider.Status{}, classify(ctx, err)
+	}
+	st, ok := statusOf(vm)
+	if !ok {
+		return provider.Status{}, &provider.Error{
+			Code: provider.CodeInternal,
+			Err:  fmt.Errorf("boxd machine %s has status %q", vmID, vm.GetStatus()),
+		}
+	}
+	return st, nil
+}
+
 // ListOwned asks boxd for the machines carrying every label and hides the adapter's own labels
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
@@ -576,6 +620,9 @@ func (p *Provider) ListOwned(
 			continue
 		}
 		s := provider.Summary{Ref: newRef(vm.GetVmId()), Labels: decodeLabels(vm.GetLabels())}
+		if st, ok := statusOf(vm); ok {
+			s.State, s.ExpiresAt = st.State, st.ExpiresAt
+		}
 		if vm.GetCreatedAt() > 0 {
 			s.CreatedAt = time.Unix(vm.GetCreatedAt(), 0).UTC()
 		}

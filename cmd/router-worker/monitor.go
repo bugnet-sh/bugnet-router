@@ -46,6 +46,7 @@ type health struct {
 	sessions int64
 	limits   limitsHealth
 	canaries canaryHealth
+	losses   lossHealth
 }
 
 // sourceGap is the ready placements of one provider with secrets and no stored egress source
@@ -82,7 +83,7 @@ const (
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
 	poolList string, feed feedCheck, disk diskPercent, limits limitsCheck, sourced []string,
-	canaries canaryCheck,
+	canaries canaryCheck, losses lossCheck,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -98,6 +99,7 @@ func monitor(
 		wg.Go(func() { h.limits = checkLimits(ctx, log, st, limits) })
 		wg.Go(func() { h.noSource = checkSources(ctx, log, st, sourced) })
 		wg.Go(func() { h.canaries = checkCanaries(ctx, log, st, canaries) })
+		wg.Go(func() { h.losses = checkLosses(ctx, log, st, losses) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -297,6 +299,7 @@ func (h health) problems() []string {
 	}
 	out = append(out, h.limits.problems()...)
 	out = append(out, h.canaries.problems()...)
+	out = append(out, h.losses.problems()...)
 	return append(out, h.feed.problems()...)
 }
 

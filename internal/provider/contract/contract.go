@@ -56,11 +56,13 @@ func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider) {
 		run  func(t *testing.T)
 	}{
 		{"ready", c.ready},
+		{"inspect running", c.inspectRunning},
 		{"exec", c.exec},
 		{"files", c.files},
 		{"list owned", c.listOwned},
 		{"destroy twice", c.destroyTwice},
 		{"gone from list owned", c.gone},
+		{"inspect gone", c.inspectGone},
 		{"destroyed sandbox is not found", c.notFound},
 	}
 	for _, s := range steps {
@@ -189,6 +191,26 @@ func (c check) gone(t *testing.T) {
 			t.Fatalf("ListOwned still lists %s after Destroy", c.ref.ID)
 		case <-time.After(pollInterval):
 		}
+	}
+}
+
+func (c check) inspectRunning(t *testing.T) {
+	st, err := c.p.Inspect(withTimeout(t, opTimeout), c.ref)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if st.State != provider.StateRunning {
+		t.Fatalf("Inspect of a ready sandbox gave state %q, want running", st.State)
+	}
+}
+
+func (c check) inspectGone(t *testing.T) {
+	st, err := c.p.Inspect(withTimeout(t, opTimeout), c.ref)
+	if err != nil {
+		t.Fatalf("Inspect of a destroyed sandbox: %v", err)
+	}
+	if st.State != provider.StateGone {
+		t.Fatalf("Inspect of a destroyed sandbox gave state %q, want gone", st.State)
 	}
 }
 

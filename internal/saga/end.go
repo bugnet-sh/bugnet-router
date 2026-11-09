@@ -74,6 +74,30 @@ type End struct {
 	Actor string
 	// Held skips the wallet actions and records them for review (the correlation guard, 6.4)
 	Held bool
+	// Guard decides Held under the placement's locks, in the transaction that marks the end, so
+	// the guard's lock is released with it and never waits on the destroy. A held end other than
+	// an abuse flag ends as provider_failed and keeps its reason as held_class in the evidence.
+	Guard func(ctx context.Context, tx pgx.Tx) (bool, error)
+}
+
+// hold turns e into a held end, an end of a live placement becoming provider_failed
+func (e *End) hold(live bool) error {
+	m := map[string]any{}
+	if len(e.Evidence) > 0 {
+		if err := json.Unmarshal(e.Evidence, &m); err != nil {
+			return fmt.Errorf("held end evidence must be a JSON object: %w", err)
+		}
+	}
+	m["held_class"] = e.Reason
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	e.Evidence, e.Held, e.Guard = raw, true, nil
+	if live {
+		e.Reason = ReasonProviderFailed
+	}
+	return nil
 }
 
 // End ends a ready or terminating placement for e, a sandbox already gone counting as destroyed.
@@ -97,8 +121,9 @@ func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, e
 			s.beforeMark()
 		}
 		taken := false
-		p, err = s.terminate(ctx, p, e.Reason, func(ctx context.Context) (bool, error) {
-			moved, done, other, err := s.markEnd(ctx, id, e)
+		reason := func() string { return e.Reason }
+		p, err = s.terminate(ctx, p, reason, func(ctx context.Context) (bool, error) {
+			moved, done, other, err := s.markEnd(ctx, id, &e)
 			ended, taken = done, other
 			return moved, err
 		})
@@ -136,6 +161,18 @@ func (s *Saga) FlagEnded(
 	) error {
 		if cur.State != store.PlacementTerminated && cur.State != store.PlacementFailed {
 			return fmt.Errorf("%w: placement is %s", ErrNotEnded, cur.State)
+		}
+		e := e
+		if e.Guard != nil {
+			held, err := e.Guard(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if held {
+				if err := e.hold(false); err != nil {
+					return err
+				}
+			}
 		}
 		p, blocked = cur, nil
 		action := actionFlagged
@@ -217,14 +254,17 @@ func (s *Saga) covered(w store.Wallet) bool {
 // Extend takes them in, and reports whether it moved the placement or replaced its reason, and
 // whether the placement had already terminated
 // markEnd also reports whether another end already holds the placement, so End's reason lost
-func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, bool, error) {
+func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, ep *End) (bool, bool, bool, error) {
 	moved, ended, taken := false, false, false
-	// Only provider_failed reads the start payer's daily count, so only it waits on "-"
-	startLock := e.Reason == ReasonProviderFailed
+	var decided End
+	// Only provider_failed reads the start payer's daily count, so only it waits on "-"; a guard
+	// may turn the end into one, so it waits too
+	startLock := ep.Reason == ReasonProviderFailed || ep.Guard != nil
 	err := s.underPayers(ctx, id, startLock, func(tx pgx.Tx, cur store.Placement,
 		payers []string,
 	) error {
 		moved, ended, taken = false, cur.State == store.PlacementTerminated, false
+		e := *ep
 		switch cur.State {
 		case store.PlacementReady:
 		case store.PlacementTerminating:
@@ -237,7 +277,19 @@ func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, bo
 			return nil
 		}
 		ts := s.d.Store.Tx(tx)
-		refundable, action, err := s.endActions(ctx, tx, cur, payers, e)
+		if e.Guard != nil {
+			held, err := e.Guard(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if held {
+				if err := e.hold(true); err != nil {
+					return err
+				}
+			}
+			e.Guard = nil
+		}
+		refundable, action, err := s.endActions(ctx, tx, cur, payers, &e)
 		if err != nil {
 			return err
 		}
@@ -259,16 +311,19 @@ func (s *Saga) markEnd(ctx context.Context, id uuid.UUID, e End) (bool, bool, bo
 				return err
 			}
 		}
-		moved = true
+		moved, decided = true, e
 		return nil
 	})
+	if moved {
+		*ep = decided
+	}
 	return moved, ended, taken, err
 }
 
 // endActions decides the end's refund and runs the wallet actions of its reason (CP 6.4),
 // naming the provider_signals action, empty for an end that is no provider signal
 func (s *Saga) endActions(
-	ctx context.Context, tx pgx.Tx, p store.Placement, payers []string, e End,
+	ctx context.Context, tx pgx.Tx, p store.Placement, payers []string, e *End,
 ) (bool, string, error) {
 	switch e.Reason {
 	case ReasonWalletBlocked:
@@ -276,7 +331,7 @@ func (s *Saga) endActions(
 	case ReasonOperator:
 		return e.Refundable, "", nil
 	case ReasonSandboxExited:
-		return false, signalAction(e, actionEnded), nil
+		return false, signalAction(*e, actionEnded), nil
 	}
 	if e.Held {
 		return e.Reason == ReasonProviderFailed, actionHeld, nil
@@ -285,7 +340,7 @@ func (s *Saga) endActions(
 	case ReasonAbuse:
 		n := 0
 		for _, payer := range payers {
-			ok, err := s.block(ctx, tx, p, payer, e)
+			ok, err := s.block(ctx, tx, p, payer, *e)
 			if err != nil {
 				return false, "", err
 			}
@@ -295,12 +350,26 @@ func (s *Saga) endActions(
 		}
 		return false, cond(n > 0, actionBlocked, actionEnded), nil
 	case ReasonControlLost:
-		n, err := s.strike(ctx, tx, p, payers, e)
+		n, err := s.strike(ctx, tx, p, payers, *e)
 		return false, cond(n > 0, actionStruck, actionEnded), err
 	}
 	// With no whole second left there is nothing to refund, so no daily refund is used up
 	if p.Deadline == nil || p.Deadline.Sub(s.now()) < time.Second {
 		return false, actionEnded, nil
+	}
+	// More provider_failed ends on one provider than the incident maximum inside its window are
+	// an outage: refundable outside the daily cap, no strike, and left out of the count
+	outage, err := s.outage(ctx, tx, p.Provider)
+	if err != nil {
+		return false, "", err
+	}
+	if outage {
+		ev, err := correlated(e.Evidence)
+		if err != nil {
+			return false, "", err
+		}
+		e.Evidence = ev
+		return true, actionEnded, nil
 	}
 	// provider_failed refunds its unused time while the start payer is under the daily cap
 	limit := s.w.FailedRefundsPerDay
@@ -314,8 +383,22 @@ func (s *Saga) endActions(
 	if n < limit {
 		return true, actionEnded, nil
 	}
-	struck, err := s.strike(ctx, tx, p, payers, e)
+	struck, err := s.strike(ctx, tx, p, payers, *e)
 	return false, cond(struck > 0, actionStruck, actionEnded), err
+}
+
+// outage reports whether this provider_failed end is one more than abuse.correlated_max of the
+// provider's inside abuse.correlated_window, counted under the provider's signal lock
+func (s *Saga) outage(ctx context.Context, tx pgx.Tx, prov string) (bool, error) {
+	if err := store.LockProviderSignals(ctx, tx, prov); err != nil {
+		return false, err
+	}
+	n, err := store.LostCount(ctx, tx, prov, []string{ReasonProviderFailed},
+		s.now().Add(-s.d.Abuse.CorrelatedWindow))
+	if err != nil {
+		return false, err
+	}
+	return n+1 > s.d.Abuse.CorrelatedMax, nil
 }
 
 // block blocks one payer for abuse and queues the end of its other live placements, reporting

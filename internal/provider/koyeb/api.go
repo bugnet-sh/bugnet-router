@@ -46,6 +46,19 @@ type serviceRecord struct {
 	Status             string    `json:"status"`
 	CreatedAt          time.Time `json:"created_at"`
 	LatestDeploymentID string    `json:"latest_deployment_id"`
+	LifeCycle          struct {
+		DeleteAfterCreate flexInt `json:"delete_after_create"`
+	} `json:"life_cycle"`
+}
+
+type instanceRecord struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+type instanceEvent struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 type deploymentRecord struct {
@@ -184,6 +197,28 @@ func (a *api) getService(ctx context.Context, id string) (serviceRecord, error) 
 func (a *api) getDeployment(ctx context.Context, id string) (deploymentRecord, error) {
 	return record[deploymentRecord](ctx, a, false, http.MethodGet,
 		"/v1/deployments/"+url.PathEscape(id), nil, nil, "deployment")
+}
+
+// newestInstance lists the newest instance of a deployment, false when it has none
+func (a *api) newestInstance(ctx context.Context, deployment string) (instanceRecord, bool, error) {
+	q := url.Values{"deployment_id": {deployment}, "limit": {"1"}, "order": {"desc"}}
+	pg, err := list[instanceRecord](ctx, a, "/v1/instances", q, "instances")
+	if err != nil || len(pg.items) == 0 {
+		return instanceRecord{}, false, err
+	}
+	return pg.items[0], true, nil
+}
+
+// newestInstanceEvent reads the newest event of an instance, false when it has none
+func (a *api) newestInstanceEvent(
+	ctx context.Context, instance string,
+) (instanceEvent, bool, error) {
+	q := url.Values{"instance_id": {instance}, "limit": {"1"}, "order": {"desc"}}
+	pg, err := list[instanceEvent](ctx, a, "/v1/instance_events", q, "events")
+	if err != nil || len(pg.items) == 0 {
+		return instanceEvent{}, false, err
+	}
+	return pg.items[0], true, nil
 }
 
 /* Requests */

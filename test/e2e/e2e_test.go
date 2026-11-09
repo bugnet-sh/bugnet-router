@@ -1003,6 +1003,7 @@ type event struct {
 		BilledSeconds int64      `json:"billed_seconds"`
 		Refundable    bool       `json:"refundable"`
 		Reason        string     `json:"reason"`
+		UnusedSeconds *int64     `json:"unused_seconds"`
 	} `json:"payload"`
 }
 

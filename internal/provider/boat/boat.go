@@ -314,6 +314,11 @@ type sandbox struct {
 	IP *string `json:"ip"`
 	// SSHEndpoint is set only when the machine has no public IPv4 of its own
 	SSHEndpoint *string `json:"sshEndpoint"`
+	// Health is degraded while Boat cannot reach a running machine
+	Health        api.SandboxHealth `json:"health"`
+	HealthReason  string            `json:"healthReason"`
+	DegradedSince string            `json:"degradedSince"`
+	ArchiveAfter  string            `json:"archiveAfter"`
 }
 
 type sandboxReply struct {
@@ -499,6 +504,50 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	return err
 }
 
+// inspectOf maps a sandbox's state and health, false for a state Boat added since
+func inspectOf(sb sandbox) (provider.Status, bool) {
+	st := provider.Status{Reason: sb.Error}
+	st.ExpiresAt, _ = parseTime(sb.ArchiveAfter)
+	switch sb.State {
+	case api.SandboxStateReady, api.SandboxStateIdle, api.SandboxStateRunning:
+		st.State = provider.StateRunning
+		if sb.Health == api.Degraded {
+			st.State, st.Reason = provider.StateDegraded, sb.HealthReason
+			st.Since, _ = parseTime(sb.DegradedSince)
+		}
+	case api.SandboxStateInit, api.SandboxStateProvisioning, api.SandboxStateProvisioned,
+		api.SandboxStateCloning:
+		st.State = provider.StateStarting
+	case api.SandboxStateArchiving, api.SandboxStateArchived, api.SandboxStateCancelled, "stopped":
+		st.State = provider.StateStopped
+	case api.SandboxStateError:
+		st.State = provider.StateFailed
+	default:
+		return provider.Status{}, false
+	}
+	return st, true
+}
+
+// Inspect reads the sandbox, a 404 meaning Boat no longer has it
+func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Status, error) {
+	id, err := sandboxID(ref)
+	if err != nil {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	sb, err := p.get(ctx, id)
+	if isCode(err, provider.CodeNotFound) {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	if err != nil {
+		return provider.Status{}, err
+	}
+	st, ok := inspectOf(sb)
+	if !ok {
+		return provider.Status{}, internal(fmt.Errorf("boat sandbox %s is %s", id, sb.State))
+	}
+	return st, nil
+}
+
 // ListOwned asks Boat for the sandboxes carrying every label, page by page
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
@@ -535,6 +584,9 @@ func (p *Provider) ListOwned(
 			s := provider.Summary{Labels: have}
 			s.CreatedAt, _ = parseTime(sb.CreatedAt)
 			s.Ref = newRef(sb.ID, s.CreatedAt)
+			if st, ok := inspectOf(sb); ok {
+				s.State, s.ExpiresAt = st.State, st.ExpiresAt
+			}
 			owned = append(owned, s)
 		}
 		next := page.PageInfo.NextCursor

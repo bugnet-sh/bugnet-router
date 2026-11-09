@@ -30,7 +30,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries, the health rollup, benchmark waves and retention, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries, the health rollup, `reconcile` and `hook_hint`, benchmark waves and retention, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands, internal certificates, benchmarks and the placement simulator |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
@@ -42,6 +42,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
 | `internal/probe` | The probe that starts, times and removes one sandbox, for canaries and benchmarks |
 | `internal/bench`, `internal/simulate` | Nearest-rank percentiles, benchmark cost estimates and start reports, and the placement simulator that replays recorded start samples |
+| `internal/reconcile` | `Classify` (the signal classes of CP 6.3), the correlation `Guard` and `Reconcile`, which ends the placements their provider lost |
 | `internal/health` | The provider health the replicas share through Postgres, its rollup rules and canary schedule, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
@@ -543,6 +544,8 @@ features that read them land one by one, and until then the settings only load a
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 | `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
 | `[bench]` | The estimate over which `bench start` needs `--yes`, and the most runs one benchmark may ask for |
+| `[abuse]` | How provider signals are classed: the class of E2B's `admin` kill and of a Boat sandbox degraded past `degraded_grace`, the word lists matched in Boat's stop text and Koyeb's instance events, the hourly `provider_failed` alert, the correlation guard (`correlated_max` ends in `correlated_window`) and the `late_window` in which a provider's abuse signal still blocks the payers of an ended placement |
+| `[reconcile]` | `ready_grace` (a listing may lag a fresh create), `max_per_sweep` (reconcile jobs one sweep inserts per provider) and `lifetime_drift` |
 | `[health]` | How often each provider gets a canary, the probe workers, the size a canary takes, the window and bounds that mark a provider `down` or `slow`, and when `/monitor` reports a provider down |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
@@ -2012,3 +2015,54 @@ batch after 90 s of work.
 | `source_facts` that no kept estimate refers to | `estimator.source_facts_keep` (7 days) after `used_at` |
 
 `wallets`, `wallet_events`, `catalogs` and `provider_cost_daily` are kept.
+listing. Start samples older than `samples_keep` are deleted by the retention job.
+
+### Reconciliation
+
+`Provider.Inspect` reads one sandbox into a `Status`: a `State` (`starting`, `running`, `degraded`,
+`stopped`, `failed` or `gone`), the provider's own words in `Reason`, E2B's kill reason in
+`KillReason` for a sandbox it no longer has, and `ExpiresAt`, the provider-side lifetime. A sandbox
+the provider answers 404 for is `gone` with a nil error. An unknown state or a failed call is an
+error, and an error never ends a placement. `Summary.State` and `Summary.ExpiresAt` carry the same
+from a listing where it says them. Koyeb cannot move a lifetime, so its drift is never fixed.
+
+`internal/reconcile` holds three pieces. `Classify` is the table of CP 6.3 as a pure function of
+the provider, the `Status`, the placement (`Live`) and the `[abuse]` settings. `Guard` is the
+correlation guard of CP 6.4: under a per-provider advisory lock it holds an end back when more than
+`correlated_max` placements of the provider got `abuse`, `control_lost` or `sandbox_exited` inside
+`correlated_window`, when the provider's account is blocked, or when its newest canary in the
+window failed. A held end becomes a refundable `provider_failed` with `correlated: true` in its
+evidence, and its wallet actions are recorded in `provider_signals` as `held`. `Reconcile` inspects
+a placement's sandbox, classifies the reading and ends the placement through `Saga.End`, or flags
+an ended one through `Saga.FlagEnded`. Only an `abuse` verdict acts on a placement that is
+terminating or ended.
+
+- A degraded sandbox sets `placements.degraded_since`. Past `degraded_grace` the setting's class
+  applies, and before it a scheduled `reconcile` job looks again. A healthy reading clears it.
+- A boxd machine `hibernated` or `suspended` is `provider_failed` only when its ref says
+  `hibernate_off = 1`, else `sandbox_exited`, since an idle machine hibernates on its own.
+- A word list matches as a lower-case substring. Boat's abuse words win over its provider words.
+  Koyeb's exit words win over its platform words, since a user causes an exit.
+- E2B's `request` kill on a placement still `ready` is `provider_failed` and raises the alert
+  `/monitor` shows. No sandbox holds an API key, so no guest can cause it.
+- A lifetime that differs from the deadline plus five minutes by more than `lifetime_drift` is set
+  again under the placement's row lock, which an extension holds until its new deadline commits,
+  and at most once per placement every 10 minutes (`reconcile:life:<placement>`).
+
+The sweep inserts a `reconcile{placement}` job for each placement ready on a provider for longer
+than `ready_grace` that its complete listing lacks or shows `degraded`, `stopped`, `failed` or
+`gone`. It inserts at most `max_per_sweep` new jobs per provider, and a listing cut short by an
+error inserts none. The job is unique per placement for 10 s and times out at 90 s. The
+`hook_hint` job (default queue, River's 60 s) finds the placement by the event's `placement`
+label, else by `(provider, provider_ref ->> 'id')` and then `placement_attempts.sandbox_id`. It
+drops a hint whose labels name another deployment, reconciles a ready or terminating placement,
+and for one that ended inside `late_window` acts only on an `abuse` verdict. With the worker
+registered, `hooks.providers` may list `e2b` and `boat`.
+
+`/monitor` adds `provider X: N sandboxes killed that no router asked for` and `provider X: N
+placements ended as provider_failed in the last hour` over `abuse.lost_alert_per_hour`.
+
+The live rows are `TestLiveControl/G1` (what `Inspect` reads after `sudo poweroff` and `sudo kill
+-9 1`), `R1` (`Inspect` after a destroy and `ExpiresAt` after `SetLifetime`), `H2` (E2B's kill
+event), and `H1` and `H3` (E2B's and Boat's deliveries, which need `--front vps` and the provider's
+webhook secret in the environment).

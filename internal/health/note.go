@@ -19,7 +19,15 @@ const noteWindow = 30 * time.Second
 func NoteAccount(
 	ctx context.Context, rc *river.Client[pgx.Tx], name string, code provider.Code,
 ) {
-	if rc == nil || provider.AccountBlock(code) == provider.BlockNone {
+	if provider.AccountBlock(code) == provider.BlockNone {
+		return
+	}
+	RequestAccountCheck(ctx, rc, name)
+}
+
+// RequestAccountCheck asks for an account check at once, one request per provider every 30 s
+func RequestAccountCheck(ctx context.Context, rc *river.Client[pgx.Tx], name string) {
+	if rc == nil {
 		return
 	}
 	_, err := rc.Insert(ctx, jobargs.AccountCheck{Provider: name, Now: true}, &river.InsertOpts{

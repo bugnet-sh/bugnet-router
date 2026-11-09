@@ -471,6 +471,78 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	return err
 }
 
+// stateOf maps E2B's sandbox state, a paused sandbox being stopped
+func stateOf(s api.SandboxState) provider.State {
+	switch s {
+	case api.Running:
+		return provider.StateRunning
+	case api.Paused:
+		return provider.StateStopped
+	}
+	return ""
+}
+
+// killedType is the lifecycle event E2B keeps for a killed sandbox for 7 days
+const killedType = "sandbox.lifecycle.killed"
+
+// Inspect reads the sandbox, and for one E2B no longer has also reads why it was killed
+func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Status, error) {
+	id, err := sandboxID(ref)
+	if err != nil {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	_, raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		return p.api.GetSandboxesSandboxID(ctx, id)
+	})
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		reason, rerr := p.killReason(ctx, id)
+		if rerr != nil {
+			return provider.Status{}, rerr
+		}
+		return provider.Status{State: provider.StateGone, KillReason: reason}, nil
+	}
+	if err != nil {
+		return provider.Status{}, err
+	}
+	var sb api.SandboxDetail
+	if err := json.Unmarshal(raw, &sb); err != nil {
+		return provider.Status{}, &provider.Error{
+			Code: provider.CodeInternal, Err: fmt.Errorf("e2b sandbox %s reply: %w", id, err),
+		}
+	}
+	st := stateOf(sb.State)
+	if st == "" {
+		return provider.Status{}, &provider.Error{
+			Code: provider.CodeInternal,
+			Err:  fmt.Errorf("e2b sandbox %s has state %q", id, sb.State),
+		}
+	}
+	return provider.Status{State: st, ExpiresAt: sb.EndAt.UTC()}, nil
+}
+
+// killReason reads the newest kill event's reason, empty when E2B keeps none, an error when the
+// events cannot be read
+func (p *Provider) killReason(ctx context.Context, id string) (string, error) {
+	params := &api.GetEventsSandboxesSandboxIDParams{
+		Types: &[]string{killedType}, Limit: new(int32(1)),
+	}
+	_, raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		return p.api.GetEventsSandboxesSandboxID(ctx, id, params)
+	})
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var events []api.SandboxEvent
+	if json.Unmarshal(raw, &events) != nil || len(events) == 0 || events[0].EventData == nil {
+		return "", nil
+	}
+	reason, _ := (*events[0].EventData)["kill_reason"].(string)
+	return reason, nil
+}
+
 // ListOwned pages through running and paused sandboxes whose metadata carries every label
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
@@ -504,6 +576,7 @@ func (p *Provider) ListOwned(
 			if hasLabels(md, labels) {
 				owned = append(owned, provider.Summary{
 					Ref: newRef(s.SandboxID), Labels: md, CreatedAt: s.StartedAt.UTC(),
+					State: stateOf(s.State), ExpiresAt: s.EndAt.UTC(),
 				})
 			}
 		}

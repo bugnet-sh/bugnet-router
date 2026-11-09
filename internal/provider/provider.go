@@ -99,6 +99,36 @@ type Summary struct {
 	Ref       Ref
 	Labels    map[string]string
 	CreatedAt time.Time
+	// State is empty when the listing does not say
+	State State
+	// ExpiresAt is the provider-side lifetime, zero when the listing does not say
+	ExpiresAt time.Time
+}
+
+// State is a provider-neutral reading of one sandbox
+type State string
+
+// Sandbox states adapters map their own to
+const (
+	StateStarting State = "starting"
+	StateRunning  State = "running"
+	StateDegraded State = "degraded" // runs, but the provider cannot reach it
+	StateStopped  State = "stopped"  // stopped, suspended, hibernated, paused or archived
+	StateFailed   State = "failed"
+	StateGone     State = "gone"
+)
+
+// Status is what the provider says about one sandbox now
+type Status struct {
+	State State
+	// Since is when the provider says the state began, zero when unknown
+	Since time.Time
+	// Reason holds the provider's words, kept as evidence and never shown to users
+	Reason string
+	// KillReason is why the provider ended a gone sandbox, E2B's kill_reason, else empty
+	KillReason string
+	// ExpiresAt is the provider-side lifetime, zero when unknown
+	ExpiresAt time.Time
 }
 
 // Provider is the port the router places sandboxes through
@@ -123,6 +153,8 @@ type Provider interface {
 	WriteFile(ctx context.Context, ref Ref, path string, data []byte, mode fs.FileMode) error
 	// ListFiles lists a directory down to depth levels, one being its children, into a Listing
 	ListFiles(ctx context.Context, ref Ref, path string, depth int, into *Listing) error
+	// Inspect reads one sandbox, StateGone with a nil error when the provider no longer has it
+	Inspect(ctx context.Context, ref Ref) (Status, error)
 	// ListOwned finds the sandboxes carrying every given label
 	ListOwned(ctx context.Context, labels map[string]string) ([]Summary, error)
 	// StatFile describes one path without following a final symlink
