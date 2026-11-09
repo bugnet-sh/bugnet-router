@@ -1,16 +1,18 @@
 # Production runbook
 
-How to deploy and redeploy Bugnet by hand, in order, with what each command prints. Every
-command comes from the scripts beside this file, the Payments and website deploy notes, or the
-production deploy of 2026-11-09. [README.md](README.md) explains why each piece is built the way
-it is; this file is the order of operations.
+How to deploy and redeploy Bugnet by hand, in order, with what each command prints. Commands come
+from the scripts beside this file, the Payments and website deploy notes, and the commands run in
+the production deploy of 2026-11-09. Where a command is adapted from one of those, the text names
+the form it follows. [README.md](README.md) explains why each piece is built the way it is; this
+file is the order of operations.
 
 Production is one VPS: Hostinger, Ubuntu 26.04.1 on x86_64, 1 vCPU, about 4 GB RAM, 48 GB disk,
 `62.72.21.74` and `2a02:4780:c:ab47::1`. It is also the test VPS that fronts the Mac on the
 `*.dev.bugnet.sh` names ([tunnel.md](tunnel.md)).
 
-Placeholders used below: `<v>` a version, `<old>` the version before it, `bugnet@62.72.21.74`
-the admin login.
+Placeholders used below: `<v>` a version, `<old>` the version before it, `<admin>` the admin
+login on the VPS. A path marked *workspace* is in the private Bugnet workspace, not in this
+repository.
 
 ## Owners
 
@@ -31,8 +33,9 @@ When this file says "Ask bugnet-<owner>", the fact is not written down anywhere 
 | bugnet-router, bugnet-edges, bugnet-run | `b1ce86f`, `5a65a06`, `944471e` (redeployed 04:08Z) |
 | Gateway | `b61aa2b` |
 | Payments | `25cbc55` |
-| Website | `c90a99c` |
-| Secret page, session page | bundles handed over: `cf4988b` (bugnet-gateway), `9e11d2a` (bugnet-website) |
+| Website | `7f61eac` (deployed about 07:58Z) |
+| Secret page | `cf4988b` (bugnet-gateway) |
+| Session page | `9e11d2a` (bugnet-website `packages/session-page/release/dist`); next: `release/7f61eac/dist`, copied with the next router and edges redeploy (5.5) |
 
 ## 1. What runs where
 
@@ -77,20 +80,21 @@ so [site.toml](site.toml) wins: admin SSH on 2222, the SSH gateway on 2201.
 
 On 2026-11-07 the founder made, on the VPS:
 
-1. The admin user `bugnet`, with passwordless sudo and the Mac's key `~/.ssh/bugnet_deploy`.
+1. An admin user with sudo, who logs in with the Mac's deploy key.
 2. Admin SSH on port 2222 only.
 3. ufw left inactive. `deploy.sh` turns it on later.
 
 The exact lines used for steps 1 and 2: Ask bugnet-d7.
 
-Check from the Mac. It must log in with no password prompt:
+`ship.sh` calls plain `ssh` and `scp`, so the Mac must offer the deploy key without flags. In the
+2026-11-09 deploy, two small wrapper scripts named `ssh` and `scp`, first in `PATH`, ran
+`/usr/bin/ssh` and `/usr/bin/scp` with `-i <deploy key> -o IdentitiesOnly=yes -o BatchMode=yes`.
+
+Check from the Mac, as that deploy did. It prints `ssh-ok` with no password prompt:
 
 ```sh
-ssh -p 2222 -i ~/.ssh/bugnet_deploy bugnet@62.72.21.74
+ssh -p 2222 <admin>@62.72.21.74 'echo ssh-ok'
 ```
-
-`ship.sh` calls plain `ssh` and `scp` with no `-i`, so this key must also be offered by default
-(ssh agent or `~/.ssh/config`). How the Mac is set up for that: Ask bugnet-d7.
 
 ### 2.2 Users and packages: made by the scripts
 
@@ -101,11 +105,12 @@ ssh -p 2222 -i ~/.ssh/bugnet_deploy bugnet@62.72.21.74
 | Website README | Caddy from its apt repository, user `bugnet-website` |
 
 The gateway user is made by hand. `check.sh` fails while a user in `site.toml`'s
-`gateway_users` does not exist, so make it before the first router deploy. Same form as the
-Payments README:
+`gateway_users` does not exist, so make it before the first router deploy. The line the
+2026-11-09 deploy ran:
 
 ```sh
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin bugnet-gateway
+sudo useradd --system --no-create-home --home-dir /var/lib/bugnet-gateway \
+    --shell /usr/sbin/nologin bugnet-gateway
 ```
 
 ### 2.3 The Mac
@@ -124,8 +129,8 @@ every request.
 
 1. Open https://dash.cloudflare.com, click **bugnet.sh**, then **DNS, Records, Import and
    Export, Import DNS records**.
-2. Choose the zone file below (kept as `docs/founder-decisions/bugnet-sh-production.zone` in the
-   Bugnet workspace).
+2. Choose the zone file below (also kept as `docs/founder-decisions/bugnet-sh-production.zone`,
+   *workspace*).
 3. Make sure **Proxy imported DNS records is unchecked**, then click **Import**.
 4. The list gains 26 records (12 names with A and AAAA, plus 2 CAA), all grey. Click any orange
    cloud to switch it to DNS only.
@@ -161,21 +166,27 @@ preview     300 IN CAA   0 issue "letsencrypt.org"
 preview     300 IN CAA   0 issuewild "letsencrypt.org; validationmethods=dns-01"
 ```
 
-Check from the Mac, a few minutes later. It prints `62.72.21.74`:
+Check from the Mac a few minutes later, with the `dig +short <name> A` form the 2026-11-09
+deploy used. It prints `62.72.21.74`:
 
 ```sh
-dig +short transfer.bugnet.sh
+dig +short transfer.bugnet.sh A
 ```
 
 The 16 dev records (`*.dev.bugnet.sh`) were imported on 2026-11-08 from
-`docs/founder-decisions/cloudflare-test-vps-records.txt` and stay.
+`docs/founder-decisions/cloudflare-test-vps-records.txt` (*workspace*) and stay.
 
 ### 3.2 bugnet.org
 
-`names.toml` sends `bugnet.org` and `www.bugnet.org` to the website backend, and its Caddy gets
-their certificate through the split, then redirects every path to `https://bugnet.sh`. So both
-names must point at the VPS, DNS only. Their MX records stay with the mail host
-(`support@bugnet.org`, `admin@bugnet.org`). The exact bugnet.org records as added: Ask bugnet-7f.
+`bugnet.org`'s DNS is at Spaceship (`launch1.spaceship.net`), not Cloudflare. `names.toml` sends
+`bugnet.org` and `www.bugnet.org` to the website backend, whose Caddy gets their certificate
+through the split and redirects every path to `https://bugnet.sh`.
+
+- `bugnet.org` has A `62.72.21.74` and AAAA `2a02:4780:c:ab47::1`, and already answers with a
+  301 to `https://bugnet.sh`.
+- `www.bugnet.org` had no records on 2026-11-09 (`dig @launch1.spaceship.net`). The founder adds
+  A `62.72.21.74` and AAAA `2a02:4780:c:ab47::1` at Spaceship (bugnet-d7 reminded him). Caddy
+  retries the certificate by itself once the name resolves.
 
 ### 3.3 The DNS token (once per server)
 
@@ -210,7 +221,7 @@ VPS, copied between files with `grep >>` (never printed), and edited with `sudoe
 | `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ5Uj5xh80oFhcYJCELNpDMzCVBjPg+RXdw/Dw6D0iK2` | The SSH gateway's host key. It must never change | `config/router.toml` `ssh.host_keys` | `ship.sh --keys` output |
 | `izQzPuN7A8R6WyD4+wT2h1lMf7VnvlsJU1gFWapvi1k=` | Box key `k1`: the bridge and the secret page seal secrets to it, egress opens them | `config/router.toml` `secrets.box_public_keys`; pinned in bugnet-gateway `packages/seal/src/pinned.ts` | `ship.sh --keys` output |
 | The router event public key | Checks the events the router signs for Payments | Payments `[router] event_public_key` (`vps-install.sh --event-key`) | `sudo bugnet-ops pubkey --event` |
-| `loAtatGXwc4DPBvSFHHjSShoEDhB/eam3sZCFuYHzHw=` | Payments' order token public key: the router checks order tokens with it | `config/router.toml` `order_token_public_key` | `sudo ./vps-install.sh --pubkeys` |
+| `loAtatGXwc4DPBvSFHHjSShoEDhB/eam3sZCFuYHzHw=` | Payments' order token public key: the router checks order tokens with it | `config/router.toml` `order_token_public_key` | `vps-install.sh --pubkeys` |
 | `AxsYqFSYfxJKJgj8iTCJhVWLi1mphAx6Sh3cMLMdqyyr` | Payments' fee payer, pays Solana fees | `config/router.toml` `wallets.facilitator_addresses`; fund 0.3 SOL | `--pubkeys` (`fee_payer=`) |
 | `4JJ6XsUTFKQSCdJ6Qo8AQENvexWLtm5uHLeinbv4AScD` | The founder's cold wallet, the payment recipient. Its key never touches the server | Payments `[solana] recipient` (`--recipient`) | `--pubkeys` (`recipient=`) |
 | `GWYeTu1JdQFJJGDx4Lobqka13iNxJk4qfvvWdJ2tDuqd` | Payments' hot refund wallet | fund $25 USDC | `--pubkeys` (`refund=`) |
@@ -251,15 +262,21 @@ One `ship.sh` run ships all of them: it builds `router-api`, `router-worker`, `b
    commits are on `main` and `feat/router-v1-rest`). A stale sibling broke production once
    (section 11.1).
 3. **Clean trees.** Commit everything. `ship.sh` builds what is checked out.
+4. **Head check.** Branch `fix/ship-same-head` (not merged on 2026-11-09) adds it to `ship.sh`.
+   Once it is merged, run `deploy/vps/ship.sh --check-heads` first: it checks the four checkouts
+   and builds nothing. Every ship runs the same check, prints one line per checkout and stops on
+   a mismatch. `--allow-mixed` ships anyway with a warning; use it only as a last resort. Until
+   then, read the first four lines of every ship (5.3).
 
 ### 5.2 First time only
 
-On the Mac, in `bugnet-router`:
+In the order the 2026-11-09 deploy followed. On the Mac, in `bugnet-router`, unless a step says
+the VPS:
 
 1. Keys, made on the VPS:
 
    ```sh
-   deploy/vps/ship.sh --keys bugnet@62.72.21.74
+   deploy/vps/ship.sh --keys <admin>@62.72.21.74
    ```
 
    It prints, after the build and copy lines:
@@ -293,11 +310,25 @@ On the Mac, in `bugnet-router`:
    sudoedit /etc/bugnet/router.env
    ```
 
-3. x402 mTLS, on the Mac:
+3. Postgres, on the VPS. `vps-install.sh` needs Postgres, which only the router's deploy
+   installs, and the router's deploy refuses to start without Payments' `order_token_public_key`.
+   The 2026-11-09 deploy broke that loop by installing Postgres by hand first:
+
+   ```sh
+   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q postgresql
+   ```
+
+   The router's first deploy takes it over: it adds its settings and replaces `pg_hba.conf` and
+   `pg_ident.conf` with its own, which also let `bugnet-payments` in.
+
+4. Payments. Install it (6.1, 6.2), put `order_token_public_key` and the fee payer (in
+   `wallets.facilitator_addresses`) into `config/router.toml`, and commit.
+
+5. x402 mTLS. The 2026-11-09 deploy made the CA on the Mac:
 
    ```sh
    go run ./cmd/bugnet-dev mtls init --out ~/bugnet-mtls
-   deploy/vps/ship.sh --mtls ~/bugnet-mtls bugnet@62.72.21.74
+   deploy/vps/ship.sh --mtls ~/bugnet-mtls <admin>@62.72.21.74
    rm -rf ~/bugnet-mtls
    ```
 
@@ -308,21 +339,17 @@ On the Mac, in `bugnet-router`:
    deploy.sh: installed the x402 mTLS files and deleted this copy of both keys
    ```
 
-   The CA key stays in `~/.local/state/bugnet-dev/mtls` on the Mac. The deploy notes also
-   mention making this CA on the VPS; which way production used: Ask bugnet-d7.
+   The CA key stays in `~/.local/state/bugnet-dev/mtls` on the Mac.
 
-4. Install Payments (section 6.2) so its public values exist. Put `order_token_public_key` and
-   the fee payer in `wallets.facilitator_addresses` into `config/router.toml`, and commit.
-   Production already has both. On a brand-new server there is a loop: `vps-install.sh` needs
-   Postgres, which the router's first deploy installs, and that deploy refuses to start without
-   `order_token_public_key`. How production got past it: Ask bugnet-d7.
+6. Page bundles (5.5).
 
-5. Make the gateway user (section 2.2), then ship (5.3).
+7. The gateway user (section 2.2), then ship (5.3). After the ship, start Payments (6.2 step 5)
+   and install the gateway (7.2).
 
 ### 5.3 Ship
 
 ```sh
-deploy/vps/ship.sh bugnet@62.72.21.74
+deploy/vps/ship.sh <admin>@62.72.21.74
 ```
 
 `ship.sh` takes port 2222 from `site.toml`. The version defaults to
@@ -335,7 +362,7 @@ bugnet-run <branch> <commit>
 bugnet-proto <branch> <commit>
 ship.sh: building linux/amd64 binaries
 ship.sh: rendering the HAProxy and bugnet-certs files from names.toml and .../deploy/vps/site.toml
-ship.sh: copying the bundle to bugnet@62.72.21.74:bugnet-deploy/<v> over port 2222
+ship.sh: copying the bundle to <admin>@62.72.21.74:bugnet-deploy/<v> over port 2222
 ship.sh: running on the VPS: cd ~/bugnet-deploy/<v> && sudo ./deploy.sh <v> ./bin
 deploy.sh: postgres takes peer logins on its socket only
 deploy.sh: <valkey-server|redis-server>.service listens on /run/valkey/valkey.sock only
@@ -364,7 +391,9 @@ deploy.sh: deployed <v>
 ```
 
 - **Read the first four lines before the build ends.** All four must be the head you meant, with
-  no `(uncommitted changes)`. If not, press Ctrl-C.
+  no `(uncommitted changes)`. If not, press Ctrl-C. With the head check of 5.1 step 4 merged,
+  these four lines become one line per checkout ending in `ok` or in what differs, and a
+  mismatch stops the ship before the build.
 - The last line must be `deployed <v>`. Anything else means the deploy failed.
 - On the first deploy, `ufw allows TCP 80 443 2200 2201 2222 and denies the rest, UDP 443
   included` replaces the `already` line, and `issuing the first wildcard pair into ...` can take a
@@ -381,7 +410,7 @@ deploy.sh: deployed <v>
 Copy without running, then run the printed command on the VPS yourself:
 
 ```sh
-deploy/vps/ship.sh --copy-only bugnet@62.72.21.74
+deploy/vps/ship.sh --copy-only <admin>@62.72.21.74
 ```
 
 ### 5.4 Check
@@ -404,20 +433,43 @@ Names: `all`, `stores`, `pool`, `units`, `ready`, `x402`, `timeouts`, `stats`.
 
 ### 5.5 Page bundles
 
-- **Session page** (bugnet-7f): the build in bugnet-website
-  `packages/session-page/release/dist` goes into `/srv/bugnet/session-page/`. The sessions role
-  reads it at start:
+The secrets route and the sessions role each read their page once, at start (bugnet-edges
+`internal/secretsroute/handler.go`, `internal/sessionsroute/bundle.go`). Until a bundle arrives,
+`deploy.sh` serves a placeholder page.
 
-  ```sh
-  sudo systemctl restart 'bugnet-sessions@*'
-  ```
+| Page | Owner | Build | On the VPS |
+| --- | --- | --- | --- |
+| Session page | bugnet-7f | bugnet-website `packages/session-page/release/<commit>/dist`; the live `9e11d2a` is `release/dist`, the next is `release/7f61eac/dist` | `/srv/bugnet/session-page/` |
+| Secret page | bugnet-ea | `pnpm --filter @bugnet/secret-page build` in bugnet-gateway; live `cf4988b` | `/srv/bugnet/secrets-page/` |
 
-- **Secret page** (bugnet-ea): `pnpm --filter @bugnet/secret-page build` in bugnet-gateway, into
-  `/srv/bugnet/secrets-page/`. Whether the secrets route needs a restart after a copy: Ask
-  bugnet-d7.
+bugnet-website keeps both session bundle folders until `release/7f61eac/dist` is live. It ships
+with the next router and edges redeploy, so the sessions role restarts once.
 
-Until a bundle arrives, `deploy.sh` serves a placeholder page. The copy command used for both:
-Ask bugnet-7f and bugnet-ea.
+Copy, as the 2026-11-09 deploy did. On the Mac, one `scp` per page you copy:
+
+```sh
+ssh -p 2222 <admin>@62.72.21.74 'rm -rf ~/pages && mkdir -p ~/pages'
+scp -q -r -P 2222 <session bundle folder> <admin>@62.72.21.74:pages/session-page
+scp -q -r -P 2222 <secret page folder> <admin>@62.72.21.74:pages/secrets-page
+```
+
+On the VPS, as the admin. A page that was not copied is skipped:
+
+```sh
+for p in session-page secrets-page; do
+    [ -d ~/pages/$p ] || continue
+    sudo sh -c "rm -rf /srv/bugnet/$p && cp -R $HOME/pages/$p /srv/bugnet/$p &&
+        chown -R root:root /srv/bugnet/$p && chmod -R a+rX,go-w /srv/bugnet/$p"
+done
+```
+
+On a running server, restart the role whose page changed. The sessions line is README's; the
+secrets line is the same form:
+
+```sh
+sudo systemctl restart 'bugnet-sessions@*'
+sudo systemctl restart 'bugnet-secrets@*'
+```
 
 ### 5.6 Settings and operator commands
 
@@ -440,7 +492,7 @@ Payments runs as `bugnet-payments@<v>` from `/opt/bugnet/payments/<v>`, with
 `/etc/bugnet/payments.toml` (no secrets) and `/etc/bugnet/payments.env` (root 0600). Full notes:
 bugnet-payments `deploy/README.md`. Start order: the router first, then Payments.
 
-### 6.1 Build the release tarball (Mac)
+### 6.1 Build and copy the release tarball (Mac)
 
 In a bugnet-payments checkout at the release commit, with `../bugnet-proto` beside it:
 
@@ -457,36 +509,56 @@ tar tzf "bugnet-payments-$v.tgz" | grep -c '/\._\|^\._'
 The last line must print `0`. Any other number: rebuild (section 11.3). bugnet-22 keeps built
 tarballs in `~/.local/state/bugnet-paid/release/`.
 
-Copy the tarball and `deploy/vps-install.sh` from the same commit to the VPS, for example with
-the `scp -P` form `ship.sh` uses:
+Copy the tarball, and on a first install the gateway release's
+`packages/gateway/src/x402/index.json`, the way the 2026-11-09 deploy did:
 
 ```sh
-scp -P 2222 "bugnet-payments-$v.tgz" deploy/vps-install.sh bugnet@62.72.21.74:
+ssh -p 2222 <admin>@62.72.21.74 'mkdir -p ~/bugnet-payments-release'
+scp -q -P 2222 "bugnet-payments-$v.tgz" <gateway release>/packages/gateway/src/x402/index.json \
+    <admin>@62.72.21.74:bugnet-payments-release/
+```
+
+On the VPS, take `vps-install.sh` from the same tarball. Every `vps-install.sh` line below runs
+in this folder:
+
+```sh
+cd ~/bugnet-payments-release
+tar -xzf bugnet-payments-<v>.tgz deploy/vps-install.sh
 ```
 
 ### 6.2 First install
 
-On the VPS, as root. Run it after `ship.sh --keys`, so `/etc/bugnet/router.env` exists:
+On the VPS, after `ship.sh --keys` (so `/etc/bugnet/router.env` exists) and after Postgres
+(5.2 step 3):
 
 ```sh
-sudo ./vps-install.sh bugnet-payments-<v>.tgz \
+sudo bash deploy/vps-install.sh bugnet-payments-<v>.tgz \
     --recipient 4JJ6XsUTFKQSCdJ6Qo8AQENvexWLtm5uHLeinbv4AScD \
-    --event-key <router event public key>
+    --event-key <router event public key> \
+    --router-url http://127.0.0.1:8080 \
+    --index index.json
 ```
 
-The router URL defaults to `http://127.0.0.1:8080`, router-api's address, so `--router-url` is
-not needed. It prints addresses and names only:
+`http://127.0.0.1:8080` is router-api's address and also the script's default. It prints
+addresses and names only:
 
 ```text
 == installing Node 26
+== installing pnpm 12.6.0
 == node v26..., pnpm 12.6.0
 == created user bugnet-payments
 == unpacking <v> into /opt/bugnet/payments/<v>
 == installing packages
+== created role bugnet_payments
+== created database bugnet_payments
+== added to /etc/postgresql/<n>/main/pg_hba.conf: local   bugnet_payments   bugnet_payments   peer map=bugnet
+== added to /etc/postgresql/<n>/main/pg_ident.conf: bugnet bugnet-payments bugnet_payments
 == generating any missing keys in /etc/bugnet/payments.env (addresses only)
+added=<the names it generated>
+<one name=address line per generated wallet>
 == BUGNET_PAYMENTS_ROUTER_TOKEN copied from /etc/bugnet/router.env
 == wrote /etc/bugnet/payments.toml
-== wrote an empty x402 index; pass --index with the gateway's index.json to fill it
+== installed the x402 index from index.json
 == bugnet-payments@<v> enabled, not started (run --start once the settings are complete)
 == public values (no secrets)
 order_token_public_key=...
@@ -497,12 +569,15 @@ recipient=4JJ6XsUTFKQSCdJ6Qo8AQENvexWLtm5uHLeinbv4AScD
 == next: fund the wallets, set BUGNET_SOLANA_RPC_URL in /etc/bugnet/payments.env (sudoedit), run --mtls, then --start
 ```
 
-The script drops the generated `BUGNET_RECIPIENT_KEY`: the recipient is the cold wallet.
+The four Postgres lines appear only before the router's first deploy; after it, the role,
+database and lines already exist. Without `--index`, the script writes an empty index instead
+(`wrote an empty x402 index; pass --index ...`). The script drops the generated
+`BUGNET_RECIPIENT_KEY`: the recipient is the cold wallet.
 
 Then, in order:
 
 1. **Router values.** `order_token_public_key` and `fee_payer` go into `config/router.toml`
-   (section 5.2 step 4). `sudo ./vps-install.sh --pubkeys` prints them again.
+   (section 5.2 step 4). `sudo bash deploy/vps-install.sh --pubkeys` prints them again.
 2. **Fund the wallets (founder).** From the founder's own wallet, on Solana mainnet:
    - `fee_payer`: 0.3 SOL. Boot refuses below 0.1 SOL.
    - `refund`: $25 USDC.
@@ -519,29 +594,22 @@ Then, in order:
    sudoedit /etc/bugnet/payments.env
    ```
 
-4. **mTLS.** Done by `ship.sh --mtls` (section 5.2 step 3). Without it, use the staging folder
-   of `bugnet-dev mtls init`:
+4. **mTLS.** `ship.sh --mtls` (5.2 step 5) installs both halves: Payments' server certificate and
+   `BUGNET_X402_TLS_KEY`, and egress's client pair, which the router's deploy needs.
+   `vps-install.sh --mtls <staging dir>` installs only Payments' half, so it does not replace
+   `ship.sh --mtls`.
+5. **Start**, once the router is deployed:
 
    ```sh
-   sudo ./vps-install.sh --mtls <staging dir>
-   ```
-
-5. **Gateway token.** Copy `BUGNET_PAYMENTS_TOKEN` to the gateway without printing it (the
-   README's copy pattern):
-
-   ```sh
-   sudo sh -c 'grep "^BUGNET_PAYMENTS_TOKEN=" /etc/bugnet/payments.env >> /etc/bugnet/gateway.env'
-   ```
-
-6. **Start**, once the router is deployed:
-
-   ```sh
-   sudo ./vps-install.sh --start
+   sudo bash deploy/vps-install.sh --start
    ```
 
    Expected: `== bugnet-payments@<v> is up on 8447 and 8450`. It refuses to start and names each
    gap (`/etc/bugnet/payments.env has no <NAME>`, `missing <file>`, `fill the <...> values in
    /etc/bugnet/payments.toml`).
+
+`BUGNET_PAYMENTS_TOKEN`, which Payments generated, goes to the gateway in 7.2 (First time,
+step 4).
 
 ### 6.3 Upgrade
 
@@ -549,8 +617,10 @@ On the Mac, build and copy the new tarball (6.1). On the VPS, with that release'
 `vps-install.sh`:
 
 ```sh
-sudo ./vps-install.sh bugnet-payments-<new>.tgz
-sudo ./vps-install.sh --start
+cd ~/bugnet-payments-release
+tar -xzf bugnet-payments-<new>.tgz deploy/vps-install.sh
+sudo bash deploy/vps-install.sh bugnet-payments-<new>.tgz
+sudo bash deploy/vps-install.sh --start
 ```
 
 Expected from `--start`:
@@ -581,16 +651,15 @@ Operator commands (`pcli`): Payments README section 8. x402 incidents: its secti
 
 `packages/gateway/src/x402/index.json` in the gateway release is the one reviewed list of x402
 services. Payments, the router and the gateway each keep a copy, updated in this order (x402
-spec 7.16, Payments README section 10, gateway `CONTRIBUTING.md`):
+spec 7.16, Payments README section 10, gateway `CONTRIBUTING.md`, README section 9):
 
 1. Payments, then `SIGHUP`.
 2. The router's `allowed_shared_hosts`, which rolls router-api.
 3. The gateway release.
 
-README section 9 and `deploy.sh`'s hint (`deploy the gateway, then run x402-index --router`) put
-the gateway before the router. Follow the order above.
-
-Copy the release's `index.json` to the VPS as `~/index.json`, then:
+On a first install Payments takes the index with `--index` (6.2), because `deploy.sh
+x402-index` needs a deployed router; after the router's first deploy, run step 2 below. For a
+new index later, copy the release's `index.json` to the VPS as `~/index.json`, then:
 
 ```sh
 sudo ~/bugnet-deploy/<v>/deploy.sh x402-index ~/index.json
@@ -600,7 +669,7 @@ sudo ~/bugnet-deploy/<v>/deploy.sh x402-index --router ~/index.json
 `<v>` is the router version deployed now. Expected:
 
 ```text
-deploy.sh: Payments has the index; deploy the gateway, then run x402-index --router
+deploy.sh: Payments has the index; run x402-index --router next, then deploy the gateway
 deploy.sh: router.toml: allowed_shared_hosts = [...]
 deploy.sh: starting router-api@<v>_r<timestamp>
 deploy.sh: stopping router-api@<v>, which drains on its own
@@ -617,58 +686,111 @@ The release is a self-contained esbuild bundle, no `node_modules`: a folder hold
 `src/x402/index.json`). How bugnet-ea builds it: Ask bugnet-ea. It needs Node 26 at
 `/usr/bin/node`, which the Payments install puts there.
 
-First time only:
+The gateway binds 8444 and 8787 without port sharing, so two versions cannot run at once. An
+upgrade stops the old version first, and `mcp.bugnet.sh` is down for the few seconds between the
+two commands of Every release step 4.
+
+**Copy the release** (first time and every release), as the 2026-11-09 deploy did. On the Mac:
+
+```sh
+ssh -p 2222 <admin>@62.72.21.74 'rm -rf ~/gw && mkdir -p ~/gw'
+scp -q -r -P 2222 <release folder> <admin>@62.72.21.74:gw/release
+```
+
+The first time, also copy the settings, `docs/mcp-gateway/gateway-production.toml`
+(*workspace*):
+
+```sh
+scp -q -P 2222 <workspace>/docs/mcp-gateway/gateway-production.toml \
+    <admin>@62.72.21.74:gw/gateway.toml
+```
+
+First time only, on the VPS:
 
 1. `mcp.bugnet.sh` resolves to the VPS (section 3). The gateway gets its certificate by
    TLS-ALPN-01 through HAProxy's passthrough.
 2. User `bugnet-gateway` (section 2.2).
-3. Settings: the private `docs/mcp-gateway/gateway-production.toml` (Bugnet workspace) becomes
-   `/etc/bugnet/gateway.toml`, owner `root:bugnet-gateway`, mode 0640.
-4. Secrets, root 0600:
+3. Settings, owner `root:bugnet-gateway`, mode 0640:
 
    ```sh
-   sudo install -o root -g root -m 0600 /dev/null /etc/bugnet/gateway.env
-   sudo sh -c 'grep "^BUGNET_INTERNAL_TOKEN=" /etc/bugnet/router.env >> /etc/bugnet/gateway.env'
+   sudo install -o root -g bugnet-gateway -m 0640 ~/gw/gateway.toml /etc/bugnet/gateway.toml
    ```
 
-   Plus `BUGNET_PAYMENTS_TOKEN` (section 6.2 step 5), and `BUGNET_QUOTE_KEY`, a new base64
-   value of 32 or more bytes (how it was made: Ask bugnet-ea). Optional: `GITHUB_TOKEN` and
-   `HF_TOKEN`, read access to public data only.
-
-Every release:
-
-1. Copy the release folder to `/opt/bugnet/gateway/<v>/` (the notes say `rsync -a`; the exact
-   command: Ask bugnet-ea).
-2. Install the units from it, same form as Payments:
+4. Secrets. Create the file once, root 0600, then copy each value in without printing it. These
+   lines follow README section 6's `grep >>` form, with a guard so a rerun changes nothing that
+   is already set. `BUGNET_QUOTE_KEY` is a new random value, made the way the 2026-11-09 deploy
+   made it (`openssl rand -base64 32`):
 
    ```sh
-   sudo cp deploy/bugnet-gateway@.service deploy/bugnet-x402-crawl@.service \
-       deploy/bugnet-x402-crawl@.timer /etc/systemd/system/
+   sudo sh -c '[ -f /etc/bugnet/gateway.env ] ||
+       install -o root -g root -m 0600 /dev/null /etc/bugnet/gateway.env'
+   sudo sh -c 'grep -q "^BUGNET_INTERNAL_TOKEN=." /etc/bugnet/gateway.env ||
+       grep "^BUGNET_INTERNAL_TOKEN=" /etc/bugnet/router.env >> /etc/bugnet/gateway.env'
+   sudo sh -c 'grep -q "^BUGNET_PAYMENTS_TOKEN=." /etc/bugnet/gateway.env ||
+       grep "^BUGNET_PAYMENTS_TOKEN=" /etc/bugnet/payments.env >> /etc/bugnet/gateway.env'
+   sudo sh -c 'grep -q "^BUGNET_QUOTE_KEY=." /etc/bugnet/gateway.env ||
+       printf "BUGNET_QUOTE_KEY=%s\n" "$(openssl rand -base64 32)" >> /etc/bugnet/gateway.env'
+   sudo ls -l /etc/bugnet/gateway.env
+   sudo cut -d= -f1 /etc/bugnet/gateway.env
+   ```
+
+   The `ls` line must show `-rw-------` and `root root`. The last line prints the names only:
+   `BUGNET_INTERNAL_TOKEN`, `BUGNET_PAYMENTS_TOKEN`, `BUGNET_QUOTE_KEY`. Optional, with
+   `sudoedit`: `GITHUB_TOKEN` and `HF_TOKEN`, read access to public data only.
+
+Every release, on the VPS:
+
+1. Install the copied release and its units, with the lines the 2026-11-09 deploy ran
+   (`${v:?}` stops the line when `v` is empty):
+
+   ```sh
+   v=<v>
+   sudo install -d -o root -g root -m 0755 /opt/bugnet/gateway
+   sudo sh -c "rm -rf /opt/bugnet/gateway/${v:?} && cp -R $HOME/gw/release /opt/bugnet/gateway/$v"
+   sudo chown -R root:root /opt/bugnet/gateway/$v
+   sudo chmod -R a+rX,go-w /opt/bugnet/gateway/$v
+   sudo install -o root -g root -m 0644 /opt/bugnet/gateway/$v/deploy/bugnet-gateway@.service \
+       /opt/bugnet/gateway/$v/deploy/bugnet-x402-crawl@.service \
+       /opt/bugnet/gateway/$v/deploy/bugnet-x402-crawl@.timer /etc/systemd/system/
    sudo systemctl daemon-reload
    ```
 
-3. The index (7.1), steps 1 and 2.
-4. Start the new version and its crawl timer, then stop the previous version's:
+2. The index (7.1), steps 1 and 2, when the release changed it.
+3. The first time, start it (as the 2026-11-09 deploy did) and skip step 4:
 
    ```sh
+   sudo systemctl enable --now bugnet-gateway@<v> bugnet-x402-crawl@<v>.timer
+   ```
+
+4. An upgrade: stop the old version, then start the new one. The crawl timer moves the way
+   `CONTRIBUTING.md` says, the new one on, then the old one off:
+
+   ```sh
+   sudo systemctl disable --now bugnet-gateway@<old>
    sudo systemctl enable --now bugnet-gateway@<v>
    sudo systemctl enable --now bugnet-x402-crawl@<v>.timer
-   sudo systemctl disable --now bugnet-gateway@<old>
    sudo systemctl disable --now bugnet-x402-crawl@<old>.timer
    ```
 
-   Whether two gateway versions can run side by side on 8444 and 8787: Ask bugnet-ea.
-5. Check. It answers 200:
+5. Check on the VPS, then from the Mac. `is-active` prints `active`, and both `curl` lines
+   answer 200:
+
+   ```sh
+   systemctl is-active bugnet-gateway@<v>
+   curl -fsS http://127.0.0.1:8787/healthz
+   ```
 
    ```sh
    curl -fsS https://mcp.bugnet.sh/healthz
    ```
 
+   If the new version is not `active`, go back at once (10.3).
+
 ## 8. Website
 
-Owner: bugnet-7f, who runs every website deploy. Runbook: `internal/deploy/website/README.md` in
-the Bugnet workspace (Caddy setup, `deploy.sh --dry-run` first, `BUGNET_DEPLOY_PORT=2222`, roll
-back). The router side it needs is already in place: the `names.toml` lines for `bugnet.sh`,
+Owner: bugnet-7f, who runs every website deploy. Runbook: `internal/deploy/website/README.md`
+(*workspace*): Caddy setup, `deploy.sh --dry-run` first, `BUGNET_DEPLOY_PORT=2222`, roll back.
+The router side it needs is already in place: the `names.toml` lines for `bugnet.sh`,
 `www.bugnet.sh`, `pay.bugnet.sh`, `bugnet.org` and `www.bugnet.org`, and `backend website` on
 `127.0.0.1:8446`. `pay.bugnet.sh` is served by the website's Caddy, which ends TLS and proxies to
 Payments on 8450.
@@ -686,7 +808,9 @@ steps:
    npm login
    ```
 
-3. In bugnet-gateway at the release commit, in `packages/bridge`, a dry run, then the publish:
+3. In bugnet-gateway at the release commit, in `packages/bridge`, a dry run (bugnet-ea ran one
+   before each bridge release; `--dry-run` is the flag added to the publish line), then the
+   publish:
 
    ```sh
    pnpm publish --access public --dry-run
@@ -714,12 +838,13 @@ bugnet-d7.
 
 ### 10.2 Payments
 
-With the old tarball still on the VPS, the script switches back (it skips unpacking a version
-already in `/opt/bugnet/payments/`):
+With the old tarball still in `~/bugnet-payments-release`, the script switches back (it skips
+unpacking a version already in `/opt/bugnet/payments/`):
 
 ```sh
-sudo ./vps-install.sh bugnet-payments-<old>.tgz
-sudo ./vps-install.sh --start
+cd ~/bugnet-payments-release
+sudo bash deploy/vps-install.sh bugnet-payments-<old>.tgz
+sudo bash deploy/vps-install.sh --start
 ```
 
 Or by hand, which leaves `/etc/bugnet/payments.release` naming the newer version, so a later
@@ -736,21 +861,25 @@ Before rolling back across a Payments migration: Ask bugnet-22.
 
 ### 10.3 Gateway
 
+The old version's folder stays in `/opt/bugnet/gateway/<old>`:
+
 ```sh
 sudo systemctl disable --now bugnet-gateway@<new>
-sudo systemctl disable --now bugnet-x402-crawl@<new>.timer
 sudo systemctl enable --now bugnet-gateway@<old>
 sudo systemctl enable --now bugnet-x402-crawl@<old>.timer
-curl -fsS https://mcp.bugnet.sh/healthz
+sudo systemctl disable --now bugnet-x402-crawl@<new>.timer
+curl -fsS http://127.0.0.1:8787/healthz
 ```
 
 If the index changed with that release, put the old `index.json` back in the 7.1 order.
 
 ### 10.4 Website, pages
 
-- Website: the Roll back section of `internal/deploy/website/README.md` (bugnet-7f).
-- Session and secret pages: copy the previous build back (5.5). Where previous builds are kept:
-  Ask bugnet-7f and bugnet-ea.
+- Website: the Roll back section of `internal/deploy/website/README.md` (*workspace*,
+  bugnet-7f).
+- Session page: copy the previous bundle back with 5.5's lines. bugnet-website keeps each one
+  under `packages/session-page/release/`.
+- Secret page: where previous builds are kept: Ask bugnet-ea.
 
 ## 11. Incidents and lessons (2026-11-09)
 
@@ -762,7 +891,8 @@ If the index changed with that release, put the old `index.json` back in the 7.1
 - **Fix.** Redeployed at 04:08Z with router `b1ce86f`, edges `5a65a06`, run `944471e`. The
   rerun passed.
 - **Lesson.** Build all four sibling repos at the same integration head, and read `ship.sh`'s
-  first four lines every time (5.3). A guard inside `ship.sh` is a follow-up.
+  first four lines every time (5.3). The head check on branch `fix/ship-same-head` makes
+  `ship.sh` refuse mixed checkouts once it is merged (5.1 step 4).
 
 ### 11.2 Payments code folder 0700
 
@@ -790,12 +920,9 @@ If the index changed with that release, put the old `index.json` back in the 7.1
   `bed54a3` accepted them after Payments' own 4 instructions, but the next payment was refused
   (`instructions_length`): Phantom adds them before the transfer too.
 - **Fix.** `20454a2` finds the transfer after leading assertions and passed a real Phantom payment
-  on the test host. Review found a hole: Lighthouse `MemoryWrite` (discriminator 0) and
-  `MemoryClose` (1) take a signer payer, so letting them name the fee payer lets a buyer make it
-  fund memory accounts. The founder ruled that only Lighthouse assertions (discriminator 2 or
-  more) may name the fee payer. `25cbc55` does that and is live.
-- **Open.** The next Payments release applies the same rule to the skipped leading Lighthouse
-  instructions.
+  on the test host. The founder then ruled that only Lighthouse assertions (discriminator 2 or
+  more) may name the fee payer, never `MemoryWrite` or `MemoryClose`. `25cbc55` does that and is
+  live.
 - **Lesson.** Test any change to the payment checks with a real Phantom payment on the test host
   before production. Refused payments log their transaction (`1c48a36`); payment headers are
   redacted, so payloads are never stored.
@@ -805,7 +932,8 @@ If the index changed with that release, put the old `index.json` back in the 7.1
 Before:
 
 - [ ] No filming freeze (founder or bugnet-65).
-- [ ] The four Go repos on one integration head, trees clean.
+- [ ] The four Go repos on one integration head, trees clean (`ship.sh --check-heads` once
+      merged).
 - [ ] Payments tarball: `grep -c` printed `0`.
 
 Router side:
@@ -819,7 +947,9 @@ Payments, gateway, website:
 - [ ] `vps-install.sh --start` printed `is up on 8447 and 8450`.
 - [ ] Wallets funded: fee payer 0.3 SOL, refund $25 USDC, allowance $0.01 USDC.
 - [ ] Index in order: Payments, router, gateway.
-- [ ] `curl -fsS https://mcp.bugnet.sh/healthz` answers.
+- [ ] `/etc/bugnet/gateway.env` is `-rw-------` `root root` and holds the three names.
+- [ ] `systemctl is-active bugnet-gateway@<v>` is `active`, and
+      `curl -fsS https://mcp.bugnet.sh/healthz` answers.
 - [ ] Website deployed by bugnet-7f; `pay.bugnet.sh` and `bugnet.org` answer through it.
 
 After:
