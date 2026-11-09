@@ -136,6 +136,9 @@ const (
 	heartbeatEvery   = 10 * time.Second
 )
 
+// LifetimeSlack is how long a sandbox outlives its placement's deadline at the provider
+const LifetimeSlack = lifetimeSlack
+
 // EndTimeout bounds one End's destroy, which runs on past its caller's context
 const EndTimeout = terminateTimeout
 
@@ -585,6 +588,12 @@ func (s *Saga) attempt(
 	})
 	smp.CreateMS = int(s.now().Sub(started).Milliseconds())
 	smp.SandboxID = ref.ID
+	if err == nil {
+		rec.SandboxID = ref.ID
+		if err := s.recordAttempt(ctx, rec); err != nil {
+			s.d.Log.Error("record attempt sandbox", "placement", p.ID, "err", err)
+		}
+	}
 	if err != nil {
 		if s.providerFailed(ctx, name, err, true) {
 			s.d.Tracker.RecordFailure(name)

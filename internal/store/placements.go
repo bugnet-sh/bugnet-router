@@ -75,6 +75,8 @@ type Placement struct {
 	SourceUnread string
 	// EgressSource is where the provider says the sandbox's tunnels come from
 	EgressSource EgressSource
+	// DegradedSince is when the provider first reported the sandbox degraded, nil while it is not
+	DegradedSince *time.Time
 }
 
 // PlacementSource is the resolved source of an estimate, which a placement copies at create
@@ -145,6 +147,8 @@ type Attempt struct {
 	State          string
 	ErrorCode      string
 	Error          string
+	// SandboxID is the provider's id once Create returned, empty before
+	SandboxID string
 }
 
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
@@ -160,7 +164,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 		where o.placement_id = placements.id
 			and not (placements.state = 'failed' and placements.refundable)),
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
-	egress_source_read_at`
+	egress_source_read_at, degraded_since`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -176,7 +180,8 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.EstimateID,
 		&p.SourceKind, &p.SourceCanonical, &p.SourceRef, &p.SourceRevision, &p.SourceRead,
 		&p.SourceUnread,
-		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt)
+		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
+		&p.DegradedSince)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -203,6 +208,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	p.SagaHeartbeat = utcPtr(p.SagaHeartbeat)
 	p.TerminatingAt = utcPtr(p.TerminatingAt)
 	p.GateReadyAt = utcPtr(p.GateReadyAt)
+	p.DegradedSince = utcPtr(p.DegradedSince)
 	return p, nil
 }
 
@@ -386,13 +392,16 @@ func (s *Store) InsertPlacement(ctx context.Context, p NewPlacement) (Placement,
 func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 	_, err := s.q.Exec(ctx, `
 		insert into placement_attempts
-			(placement_id, attempt, provider, idempotency_key, state, error_code, error)
-		values ($1, $2, $3, $4, $5, $6, $7)
+			(placement_id, attempt, provider, idempotency_key, state, error_code, error,
+				sandbox_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8)
 		on conflict (placement_id, attempt) do update set provider = excluded.provider,
 			idempotency_key = excluded.idempotency_key, state = excluded.state,
-			error_code = excluded.error_code, error = excluded.error`,
+			error_code = excluded.error_code, error = excluded.error,
+			sandbox_id = coalesce(excluded.sandbox_id, placement_attempts.sandbox_id)`,
 		a.PlacementID, a.Attempt, nullIfEmpty(a.Provider), nullIfEmpty(a.IdempotencyKey),
-		nullIfEmpty(a.State), nullIfEmpty(a.ErrorCode), nullIfEmpty(a.Error))
+		nullIfEmpty(a.State), nullIfEmpty(a.ErrorCode), nullIfEmpty(a.Error),
+		nullIfEmpty(a.SandboxID))
 	if err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
@@ -403,7 +412,8 @@ func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt, error) {
 	rows, err := s.q.Query(ctx, `
 		select placement_id, attempt, coalesce(provider, ''), coalesce(idempotency_key, ''),
-			coalesce(state, ''), coalesce(error_code, ''), coalesce(error, '')
+			coalesce(state, ''), coalesce(error_code, ''), coalesce(error, ''),
+			coalesce(sandbox_id, '')
 		from placement_attempts where placement_id = $1 order by attempt`, placementID)
 	if err != nil {
 		return nil, fmt.Errorf("select attempts: %w", err)
@@ -411,7 +421,7 @@ func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt,
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Attempt, error) {
 		var a Attempt
 		err := r.Scan(&a.PlacementID, &a.Attempt, &a.Provider, &a.IdempotencyKey, &a.State,
-			&a.ErrorCode, &a.Error)
+			&a.ErrorCode, &a.Error, &a.SandboxID)
 		return a, err
 	})
 	if err != nil {
