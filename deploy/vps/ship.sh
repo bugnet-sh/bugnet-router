@@ -5,8 +5,9 @@
 # go.mod replace lines), renders the HAProxy and bugnet-certs files with `bugnet-dev deploy maps`,
 # and copies them with the units and settings to ~/bugnet-deploy/<version>/ on the VPS. It never
 # makes, reads or prints a secret: the env files are made on the VPS (README.md). Before building
-# it requires the four checkouts clean, on the router's branch and at that branch's tip, and the
-# bundle's COMMITS records each repo:sha.
+# it requires the four checkouts clean and on the router's branch, the canonical checkout at its
+# last-fetched origin/<branch>, and another worktree at or after the canonical checkout's HEAD and
+# at origin/<branch> when that exists. The bundle's COMMITS records each repo:sha.
 #
 #   deploy/vps/ship.sh [flags] [<user@host>]
 #     --port N        admin SSH port, default site.toml's admin_ssh_port
@@ -43,7 +44,7 @@ site_value() {
 
 # heads prints a line per checkout, keeps its repo:sha in commits, and fails on any mismatch
 heads() {
-	local want canon name dir branch sha ref expected why bad=0
+	local want canon name dir branch sha origin base cbranch expected why n note bad=0
 	want=$(git -C "$router" branch --show-current)
 	canon=$(git -C "$router" worktree list --porcelain | sed -n '1s/^worktree //p')
 	canon=$(dirname "$canon")
@@ -53,24 +54,46 @@ heads() {
 		[[ $name != bugnet-router ]] || dir=$router
 		branch=$(git -C "$dir" branch --show-current)
 		sha=$(git -C "$dir" rev-parse HEAD)
-		ref=refs/heads/$want
-		# the canonical checkout ships what origin has; a worktree ships its canonical branch tip
-		if [[ $(git -C "$dir" rev-parse --show-toplevel) == \
-			"$(git -C "$canon/$name" rev-parse --show-toplevel 2>/dev/null)" ]]; then
-			ref=refs/remotes/origin/$want
-		fi
-		expected=$(git -C "$canon/$name" rev-parse -q --verify "$ref^{commit}" 2>/dev/null) ||
-			expected=none
+		origin=""
+		[[ -z $want ]] ||
+			origin=$(git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$want^{commit}") ||
+			origin=""
 		why=""
 		[[ -z $(git --no-optional-locks -C "$dir" status --porcelain -uno) ]] ||
 			why="$why, uncommitted changes"
+		git -C "$dir" ls-files -v | awk '/^[a-zS] /{f=1} END{exit f}' ||
+			why="$why, files marked skip-worktree or assume-unchanged"
 		[[ -n $want && $branch == "$want" ]] || why="$why, not on ${want:-a branch}"
-		[[ -z $want || $sha == "$expected" ]] || why="$why, not at ${ref#refs/*/}"
+		if [[ $(git -C "$dir" rev-parse --show-toplevel) == \
+			"$(git -C "$canon/$name" rev-parse --show-toplevel 2>/dev/null)" ]]; then
+			# the canonical checkout ships origin's tip as last fetched
+			expected="origin/$want ${origin:0:12}"
+			[[ -n $origin ]] || expected="origin/$want none"
+			[[ -z $want || $sha == "$origin" ]] || why="$why, not at origin/$want"
+		else
+			# another worktree ships the canonical checkout's HEAD or a commit after it
+			base=$(git -C "$canon/$name" rev-parse -q --verify HEAD 2>/dev/null) || base=""
+			cbranch=$(git -C "$canon/$name" branch --show-current 2>/dev/null) || cbranch=""
+			cbranch=${cbranch:-canonical HEAD}
+			expected="$cbranch ${base:0:12} or later"
+			[[ -n $base ]] || expected="$cbranch none"
+			git -C "$dir" merge-base --is-ancestor "${base:-none}" HEAD 2>/dev/null ||
+				why="$why, behind $cbranch"
+			if [[ -n $origin ]]; then
+				expected="origin/$want ${origin:0:12}"
+				[[ $sha == "$origin" ]] || why="$why, not at origin/$want"
+			fi
+		fi
 		why=${why#, }
 		[[ -z $why ]] || bad=1
-		printf '%s %s %s %s expected %s %s\n' "$name" "$dir" "${branch:-detached}" "${sha:0:12}" \
-			"${expected:0:12}" "${why:-ok}"
-		commits="$commits$name:$sha ${branch:-detached} ${why:-ok}"$'\n'
+		# untracked build files go into the binaries, so COMMITS notes them without refusing
+		n=$(git -C "$dir" ls-files --others --exclude-standard |
+			grep -c -E '(\.go|(^|/)(go\.mod|go\.sum|Makefile))$') || true
+		note=""
+		[[ $n == 0 ]] || note=", untracked build files ($n)"
+		printf '%s %s %s %s expected %s %s%s\n' "$name" "$dir" "${branch:-detached}" \
+			"${sha:0:12}" "$expected" "${why:-ok}" "$note"
+		commits="$commits$name:$sha ${branch:-detached} ${why:-ok}$note"$'\n'
 	done
 	return $bad
 }
@@ -96,8 +119,8 @@ for d in "$edges" "$run" "$proto"; do
 	[[ -d $d ]] || die "$d is missing; ship.sh builds from the checkouts beside bugnet-router"
 done
 if ! heads; then
-	[[ -n $mixed ]] || die "the checkouts above are not one branch's tips; commit, switch or" \
-		"pull each, or pass --allow-mixed"
+	[[ -n $mixed ]] || die "the checkouts above failed the head check; commit, switch, pull or" \
+		"push each, or pass --allow-mixed"
 	printf 'ship.sh: WARNING: --allow-mixed ships the mismatched checkouts above\n' >&2
 fi
 [[ $mode != heads ]] || exit 0

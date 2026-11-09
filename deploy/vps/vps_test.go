@@ -179,9 +179,21 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 	}
 	check(canon, true, " main ")
 	check(lane, true, " lane ")
-	git(filepath.Join(tmp, "lane", "bugnet-run"), "checkout", "-q", "-b", "old", "HEAD~1")
+	laneProto, laneRun := filepath.Join(tmp, "lane", "bugnet-proto"), filepath.Join(tmp, "lane",
+		"bugnet-run")
+	git(laneProto, "update-ref", "refs/remotes/origin/lane", "HEAD~1")
+	check(lane, false, "not at origin/lane")
+	git(laneProto, "update-ref", "-d", "refs/remotes/origin/lane")
+	git(laneRun, "reset", "-q", "--hard", "HEAD~1")
+	check(lane, false, "behind main")
+	git(laneRun, "checkout", "-q", "-b", "old")
 	check(lane, false, " old ")
 	check(lane, true, "WARNING", "--allow-mixed")
+	err := os.WriteFile(filepath.Join(tmp, "bugnet-proto", "x.go"), []byte("package x\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(canon, true, "ok, untracked build files (1)")
 	git(filepath.Join(tmp, "bugnet-edges"), "commit", "-q", "--allow-empty", "-m", "three")
 	check(canon, false, "not at origin/main")
 }
