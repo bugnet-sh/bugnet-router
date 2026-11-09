@@ -137,6 +137,7 @@ func RetentionNext(t time.Time) time.Time { return dailyAt(retentionHour).Next(t
 func (w *Worker) BenchWave(ctx context.Context, a jobargs.Bench) (bool, error) {
 	return w.benchWave(ctx, a)
 }
+
 // SweepAll runs one sweep's provider pass and its leftovers
 func (w *Worker) SweepAll(ctx context.Context) {
 	w.sweepSandboxes(ctx)

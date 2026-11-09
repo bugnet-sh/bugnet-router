@@ -215,7 +215,7 @@ func serve(
 		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent, Health: cfg.Health,
 		EstimatesKeep: cfg.Estimator.EstimatesKeep, SourceFactsKeep: cfg.Estimator.SourceFactsKeep,
 		ObservationsKeep: cfg.Estimator.ObservationsKeep,
-		Abuse: cfg.Abuse, Reconcile: cfg.Reconcile,
+		Abuse:            cfg.Abuse, Reconcile: cfg.Reconcile,
 	})
 	if err != nil {
 		return err

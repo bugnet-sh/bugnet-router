@@ -25,9 +25,10 @@
 // health_rollup job turns the last 15 minutes of samples into each provider's shared state every
 // 30 s. A bench job runs one wave of a benchmark at a time, queueing its probes and snoozing until
 // they have stored their samples. The retention job runs at start and daily at 04:00 UTC and
-// deletes old rows in batches of 10,000. The sweep inserts a reconcile job for each ready placement its listing lacks or shows
-// unwell, and the job reads the sandbox, classes the reading and ends the placement the provider
-// lost. A hook_hint job does the same for a sandbox a verified webhook names.
+// deletes old rows in batches of 10,000. The sweep inserts a reconcile job for each ready
+// placement its listing lacks or shows unwell, and the job reads the sandbox, classes the reading
+// and ends the placement the provider lost. A hook_hint job does the same for a sandbox a verified
+// webhook names.
 package worker
 
 import (

@@ -2015,7 +2015,6 @@ batch after 90 s of work.
 | `source_facts` that no kept estimate refers to | `estimator.source_facts_keep` (7 days) after `used_at` |
 
 `wallets`, `wallet_events`, `catalogs` and `provider_cost_daily` are kept.
-listing. Start samples older than `samples_keep` are deleted by the retention job.
 
 ### Reconciliation
 
