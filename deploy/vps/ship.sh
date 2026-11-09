@@ -4,7 +4,9 @@
 # beside this repository (bugnet-router, bugnet-edges, bugnet-run, with bugnet-proto through their
 # go.mod replace lines), renders the HAProxy and bugnet-certs files with `bugnet-dev deploy maps`,
 # and copies them with the units and settings to ~/bugnet-deploy/<version>/ on the VPS. It never
-# makes, reads or prints a secret: the env files are made on the VPS (README.md).
+# makes, reads or prints a secret: the env files are made on the VPS (README.md). Before building
+# it requires the four checkouts clean, on the router's branch and at that branch's tip, and the
+# bundle's COMMITS records each repo:sha.
 #
 #   deploy/vps/ship.sh [flags] [<user@host>]
 #     --port N        admin SSH port, default site.toml's admin_ssh_port
@@ -13,6 +15,8 @@
 #     --keys          run `deploy.sh keys` instead of a deploy, once before the first deploy
 #     --mtls DIR      copy `bugnet-dev mtls init --out DIR` and run `deploy.sh mtls` instead
 #     --copy-only     copy the bundle and print the command, run nothing
+#     --check-heads   check the four checkouts and exit, building nothing
+#     --allow-mixed   ship checkouts that fail that check, with a warning
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -20,6 +24,7 @@ router=$(cd "$here/../.." && pwd)
 root=$(dirname "$router")
 edges=$root/bugnet-edges
 run=$root/bugnet-run
+proto=$root/bugnet-proto
 
 die() {
 	printf 'ship.sh: %s\n' "$*" >&2
@@ -36,7 +41,41 @@ site_value() {
 		head -n 1
 }
 
-port="" site=$here/site.toml version="" mode=deploy mtls="" host=""
+# heads prints a line per checkout, keeps its repo:sha in commits, and fails on any mismatch
+heads() {
+	local want canon name dir branch sha ref expected why bad=0
+	want=$(git -C "$router" branch --show-current)
+	canon=$(git -C "$router" worktree list --porcelain | sed -n '1s/^worktree //p')
+	canon=$(dirname "$canon")
+	commits=""
+	for name in bugnet-proto bugnet-run bugnet-edges bugnet-router; do
+		dir=$root/$name
+		[[ $name != bugnet-router ]] || dir=$router
+		branch=$(git -C "$dir" branch --show-current)
+		sha=$(git -C "$dir" rev-parse HEAD)
+		ref=refs/heads/$want
+		# the canonical checkout ships what origin has; a worktree ships its canonical branch tip
+		if [[ $(git -C "$dir" rev-parse --show-toplevel) == \
+			"$(git -C "$canon/$name" rev-parse --show-toplevel 2>/dev/null)" ]]; then
+			ref=refs/remotes/origin/$want
+		fi
+		expected=$(git -C "$canon/$name" rev-parse -q --verify "$ref^{commit}" 2>/dev/null) ||
+			expected=none
+		why=""
+		[[ -z $(git --no-optional-locks -C "$dir" status --porcelain -uno) ]] ||
+			why="$why, uncommitted changes"
+		[[ -n $want && $branch == "$want" ]] || why="$why, not on ${want:-a branch}"
+		[[ -z $want || $sha == "$expected" ]] || why="$why, not at ${ref#refs/*/}"
+		why=${why#, }
+		[[ -z $why ]] || bad=1
+		printf '%s %s %s %s expected %s %s\n' "$name" "$dir" "${branch:-detached}" "${sha:0:12}" \
+			"${expected:0:12}" "${why:-ok}"
+		commits="$commits$name:$sha ${branch:-detached} ${why:-ok}"$'\n'
+	done
+	return $bad
+}
+
+port="" site=$here/site.toml version="" mode=deploy mtls="" host="" mixed=""
 while (($# > 0)); do
 	case $1 in
 	--port) port=${2:?--port needs a value} && shift ;;
@@ -45,16 +84,25 @@ while (($# > 0)); do
 	--keys) mode=keys ;;
 	--mtls) mode=mtls mtls=${2:?--mtls needs a directory} && shift ;;
 	--copy-only) mode=copy ;;
+	--check-heads) mode=heads ;;
+	--allow-mixed) mixed=1 ;;
 	-*) die "unknown flag $1" ;;
 	*) host=$1 ;;
 	esac
 	shift
 done
 
-[[ -f $site ]] || die "$site is missing"
-for d in "$edges" "$run" "$root/bugnet-proto"; do
+for d in "$edges" "$run" "$proto"; do
 	[[ -d $d ]] || die "$d is missing; ship.sh builds from the checkouts beside bugnet-router"
 done
+if ! heads; then
+	[[ -n $mixed ]] || die "the checkouts above are not one branch's tips; commit, switch or" \
+		"pull each, or pass --allow-mixed"
+	printf 'ship.sh: WARNING: --allow-mixed ships the mismatched checkouts above\n' >&2
+fi
+[[ $mode != heads ]] || exit 0
+
+[[ -f $site ]] || die "$site is missing"
 [[ -n $port ]] || port=$(site_value admin_ssh_port)
 [[ -n $host ]] || host=$(site_value ipv4)
 [[ -n $host ]] || die "give <user@host>, or write the VPS's address into site.toml's ipv4"
@@ -66,13 +114,7 @@ done
 bundle=$(mktemp -d)
 trap 'rm -rf "$bundle"' EXIT
 mkdir -p "$bundle/bin" "$bundle/maps" "$bundle/config"
-
-for repo in "$router" "$edges" "$run" "$root/bugnet-proto"; do
-	dirty=""
-	[[ -z $(git -C "$repo" status --porcelain) ]] || dirty=" (uncommitted changes)"
-	printf '%s %s %s%s\n' "$(basename "$repo")" "$(git -C "$repo" branch --show-current)" \
-		"$(git -C "$repo" rev-parse --short HEAD)" "$dirty"
-done | tee "$bundle/COMMITS"
+printf '%s' "$commits" >"$bundle/COMMITS"
 
 say "building linux/amd64 binaries"
 export GOWORK=off CGO_ENABLED=0
