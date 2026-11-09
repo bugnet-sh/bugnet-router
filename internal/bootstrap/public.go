@@ -39,6 +39,15 @@ func publicArgv(sp sourceParts, dir string) []string {
 	return []string{"sh", "-c", publicScript, "sh", sp.owner, sp.repo, sp.target(), dir}
 }
 
+// cloneDisplay is how the session record shows the clone, never the script itself
+func cloneDisplay(sp sourceParts) []string {
+	argv := []string{"git", "clone", "https://github.com/" + sp.owner + "/" + sp.repo}
+	if t := sp.target(); t != "" {
+		argv = append(argv, "@"+t)
+	}
+	return argv
+}
+
 // startPublic starts the clone job under the next _bootstrap key
 func (s *Service) startPublic(
 	ctx context.Context, p store.Placement, prov provider.Provider, sp sourceParts,
@@ -56,7 +65,8 @@ func (s *Service) startPublic(
 		return s.reread(ctx, p)
 	}
 	h := home(prov, p)
-	res, err := s.d.Jobs.Exec(ctx, p, publicArgv(sp, s.dest(sp)), h,
+	shown := jobs.WithDisplay(ctx, cloneDisplay(sp))
+	res, err := s.d.Jobs.Exec(shown, p, publicArgv(sp, s.dest(sp)), h,
 		map[string]string{"GIT_TERMINAL_PROMPT": "0"}, reservedKey+strconv.Itoa(to.Attempt),
 		startWait, jobs.Until{})
 	if err != nil {

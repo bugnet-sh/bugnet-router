@@ -214,7 +214,8 @@ func (s *Service) deliver(
 		return failed(ReasonFetchFailed, "write the archive into the sandbox: %w", err)
 	}
 	argv := []string{"sh", "-c", unpackScript, "sh", path.Join(archiveDir, archiveName), s.dest(sp)}
-	res, err := s.d.Jobs.Exec(ctx, p, argv, h, nil,
+	shown := jobs.WithDisplay(ctx, []string{"unpack", sp.owner + "/" + sp.repo})
+	res, err := s.d.Jobs.Exec(shown, p, argv, h, nil,
 		reservedKey+"p"+strconv.Itoa(at.PrivateAttempts), startWait, jobs.Until{})
 	if err != nil {
 		return failed(ReasonCloneFailed, "start the unpack job: %w", err)

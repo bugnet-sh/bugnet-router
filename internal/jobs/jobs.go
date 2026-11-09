@@ -292,7 +292,7 @@ func (s *Service) start(
 		return err
 	}
 	if created && c != nil {
-		s.d.Sessions.StartJob(ctx, p, nj.ID, c.argv)
+		s.d.Sessions.StartJob(ctx, p, nj.ID, shownArgv(ctx, c.argv))
 	}
 	if job.State == store.JobRunning {
 		s.own(lease, p, prov, c)
@@ -1278,4 +1278,20 @@ func deref(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// displayKey holds the argv a session record shows in place of the command a job runs
+type displayKey struct{}
+
+// WithDisplay makes the job Exec starts under ctx show argv in the session record
+func WithDisplay(ctx context.Context, argv []string) context.Context {
+	return context.WithValue(ctx, displayKey{}, argv)
+}
+
+// shownArgv is the argv the session record shows, the display argv when ctx carries one
+func shownArgv(ctx context.Context, argv []string) []string {
+	if d, ok := ctx.Value(displayKey{}).([]string); ok && len(d) > 0 {
+		return d
+	}
+	return argv
 }
