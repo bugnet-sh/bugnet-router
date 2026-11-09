@@ -218,7 +218,8 @@ func serve(
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk), sources.Providers()))
+		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk),
+		sources.Providers()))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

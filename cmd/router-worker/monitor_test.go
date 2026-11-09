@@ -51,7 +51,8 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{}, nil, limitsCheck{}, nil)(rec,
+	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{}, nil, limitsCheck{},
+		nil)(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -256,7 +257,8 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 		bad:                               "the mining pool list cannot be read\n",
 	} {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{}, nil, limitsCheck{}, nil)(rec,
+		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{}, nil, limitsCheck{},
+			nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
@@ -271,7 +273,8 @@ func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	ask := func() (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{}, nil, limitsCheck{}, nil)(rec,
+		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{}, nil, limitsCheck{},
+			nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -296,7 +299,8 @@ func TestMonitorShowsStaleStats(t *testing.T) {
 	vk, _ := testenv.Valkey(t)
 	ask := func(feed feedCheck) (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, testPools, feed, nil, limitsCheck{}, nil)(rec,
+		monitor(discard, st, vk, testPrefix, healthy, testPools, feed, nil, limitsCheck{},
+			nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -381,7 +385,8 @@ func TestMonitorEgressSourcesLine(t *testing.T) {
 	}
 	ask := func(providers ...string) (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, limitsCheck{}, providers)(rec,
+		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
+			limitsCheck{}, providers)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
