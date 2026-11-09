@@ -219,6 +219,16 @@ row that needs python3 or node and finds none says so.
 | X5 | Needs `--front vps`. A tunnel from outside with no token, then with a placeholder as the token, gets 401, and the placeholder at the echo host stays inert |
 | X6 | Needs `--front vps`. `curl -X TRACE` to a secret host through the tunnel answers 405 |
 | KOYEB5 | Koyeb only, needs `--front vps`. The `/etc/hosts` block maps the secret hosts and a second secret rewrites it in place, the mount entry logged |
+| SRC1 | Boat only, needs `--front vps`. Five sandboxes each get a stored source that holds Boat's `ip`, and their own tunnels are admitted. Logs each `ip`, `sshEndpoint` and interface addresses, and how many had an IPv4 of their own |
+| SRC2 | Boat only, needs `--front vps`. A sandbox's tunnel token and placeholder, run through `bugnet-run forward` on the Mac and in a second sandbox, get 403 at the upgrade while the sandbox's own tunnels keep working |
+| SRC3 | Boat only, needs `--front vps`. After `systemctl reboot` the secret host works within 70 s of the sandbox being back, and the log says whether `ip` changed |
+| SRC4 | Boat only, needs `--front vps` and `BUGNET_LIVE_SOURCE_MODE=report`. SRC2's copies are served and logged as `tunnel_source_unmatched` |
+| SRC5 | Boat only, needs `--front vps` and the VPS's IPv6. A second sandbox takes the first one's IPv6 address and dials with it bound. A 403, no route or no answer passes, and a served tunnel is evidence for the founder |
+
+The SRC rows run the dev router with `secrets.source_check.modes.boat` set to
+`BUGNET_LIVE_SOURCE_MODE` (`enforce` when empty), so SRC1 to SRC3 and SRC5 run with the default and
+SRC4 in its own run. `BUGNET_LIVE_EGRESS_FAMILIES` (a comma list) sets `boat.egress_families` for a
+run that tests one family. A row skips when the mode is not its own.
 
 `TestLiveControl` holds CP 15's rows. N1, on every provider, checks `harden` left
 `/etc/bugnet/firewall.rules` and that port 25 on a public host, `169.254.169.254:80` and
@@ -1569,6 +1579,11 @@ Running it again changes nothing. It:
    `/etc/bugnet/certs.env` empty, root's and 0600 when it is missing, and never reads it;
 6. resets ufw to allow TCP 80, 443, 2200 and `admin_ssh_port` only, denying UDP 443 too. A
    ufw that already holds exactly those rules is left alone, since a reset lifts it briefly.
+7. loads `nftables/dev-front.nft` through `bugnet-nft.service`, a oneshot that loads every file in
+   `/etc/bugnet/nftables/` at boot and never flushes the ruleset. Only `haproxy` may connect to
+   `127.0.0.1:19443`, the tunnel's VPS end, so no other local user can write a PROXY header that
+   names a sandbox's address (DP 10.12.7.1). The production deploy adds `egress.nft` the same way,
+   for `127.0.0.1:9443` and the users `haproxy` and `bugnet-router`.
 
 The dev wildcard's directory is `bugnet-certs:<reader> 2750`. `<reader>` is the primary group of
 the admin user who ran `sudo`, or `BUGNET_CERTS_READER` when set. The setgid bit gives each new
@@ -1583,7 +1598,7 @@ The steps, from bugnet-router on the Mac. `<admin>` is the VPS's admin user, `<v
 out=$(mktemp -d)/bugnet-front
 go run ./cmd/bugnet-dev deploy maps --front --names deploy/vps/names.toml \
   --site deploy/vps/site.toml --out "$out"
-cp -R deploy/vps/front.sh deploy/vps/systemd "$out"/
+cp -R deploy/vps/front.sh deploy/vps/systemd deploy/vps/nftables "$out"/
 cp ~/.ssh/bugnet_tunnel.pub "$out"/tunnel.pub
 (cd ../bugnet-edges && CGO_ENABLED=0 GOOS=linux GOARCH=<arch> \
   go build -o "$out"/bugnet-certs ./cmd/bugnet-certs)
@@ -1620,6 +1635,9 @@ with `limactl` (`brew install lima`). It needs no VPS, provider or DNS token. It
 - `tunnel` has no shell, and may listen on the five tunnel ports and nowhere else, with no `-L`,
   `-W` or command, while other users keep their sshd settings;
 - ufw allows TCP 80, 443, 2200 and the admin port alone, and drops UDP 443;
+- `nft list table inet bugnet_dev_front_lo` shows the rule, and with a listener on
+  `127.0.0.1:19443` the user `haproxy` connects while `nobody` and root are refused, again after a
+  reboot of the VM;
 - the unit, its user and `certs.toml` work, since a run without the token stops at `dns_env`, and
   the staging command hands back that exit status;
 - a file `bugnet-certs` writes in the dev wildcard's directory takes the reader's group, and the

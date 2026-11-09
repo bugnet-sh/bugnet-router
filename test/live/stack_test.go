@@ -298,8 +298,10 @@ type stack struct {
 	sessionsAddr string
 	tlsDir       string // the local mode's TLS pair, made once
 	egress       egressFiles
-	procs        []*proc
-	fronts       []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
+	// egressMetrics is where the proxy's metrics listen, which the source rows read
+	egressMetrics string
+	procs         []*proc
+	fronts        []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
 	// sshAddr is where SSH clients connect, and sshKnown their known_hosts file
 	sshAddr  string
 	sshKnown string
@@ -382,6 +384,7 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	s.waitReady(t, "http://"+sessionsMetrics+"/readyz")
 	s.edgeAddr, s.secretsAddr, s.sessionsAddr = edge, secrets, sessions
 	egressMetrics := freeAddr(t)
+	s.egressMetrics = egressMetrics
 	s.startWith(t, append(slices.Clone(s.env), "CREDENTIALS_DIRECTORY="+s.egress.credDir),
 		"bugnet-egress", "serve", "-config", s.egressSettings(t, egressMetrics))
 	s.waitReady(t, "http://"+egressMetrics+"/readyz")
@@ -465,6 +468,7 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	if s.provider != "local" {
 		secrets["providers"] = []string{s.provider}
 	}
+	s.sourceCheckSettings(m)
 	table(m, "fetch")["egress_addr"] = s.egress.listen
 	if s.mode == "local" {
 		// The local proxy's outer certificate is self-signed, so the fetcher trusts that one

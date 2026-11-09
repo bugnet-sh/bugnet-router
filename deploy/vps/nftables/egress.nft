@@ -1,0 +1,12 @@
+# Only haproxy and the fetcher may connect to the egress proxy's listener (DP 10.12.7.1)
+# The empty declaration lets the delete work on a first load, so a reload never stacks rules
+table inet bugnet_egress_lo
+delete table inet bugnet_egress_lo
+table inet bugnet_egress_lo {
+    chain output {
+        type filter hook output priority 0; policy accept;
+        ip daddr 127.0.0.1 tcp dport 9443 meta skuid "haproxy" accept
+        ip daddr 127.0.0.1 tcp dport 9443 meta skuid "bugnet-router" accept
+        ip daddr 127.0.0.1 tcp dport 9443 reject with tcp reset
+    }
+}

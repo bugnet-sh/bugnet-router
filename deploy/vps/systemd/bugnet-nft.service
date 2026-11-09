@@ -1,0 +1,17 @@
+# bugnet-nft loads the loopback rules of DP 10.12.7.1 at boot, one table per file
+# It never flushes the ruleset, so ufw's own rules stay. front.sh installs dev-front.nft and
+# the production deploy installs egress.nft, and a file that fails to load fails the unit.
+[Unit]
+Description=Bugnet loopback rules for the egress proxy and the dev tunnel
+Documentation=file:///etc/bugnet/nftables
+Before=haproxy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for f in /etc/bugnet/nftables/*.nft; do /usr/sbin/nft -f "$f" || exit 1; done'
+ExecReload=/bin/sh -c 'for f in /etc/bugnet/nftables/*.nft; do /usr/sbin/nft -f "$f" || exit 1; done'
+ExecStop=/bin/sh -c 'for t in bugnet_egress_lo bugnet_dev_front_lo; do /usr/sbin/nft delete table inet $t 2>/dev/null; done; exit 0'
+
+[Install]
+WantedBy=multi-user.target

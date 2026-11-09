@@ -3,8 +3,9 @@
 #
 #   deploy/vps/test/vm-test.sh front
 #
-# front builds the dev front's bundle, runs front.sh twice and checks the result with
-# front-checks.sh. KEEP_VM=1 keeps the VM afterwards. The first run downloads Ubuntu's cloud image.
+# front builds the dev front's bundle, runs front.sh twice, checks the result with
+# front-checks.sh and checks the loopback rule again after a reboot of the VM. KEEP_VM=1 keeps the
+# VM afterwards. The first run downloads Ubuntu's cloud image.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -35,7 +36,7 @@ bundle() {
 	(cd "$repo" && go run ./cmd/bugnet-dev deploy maps --names deploy/vps/names.toml \
 		--site "$site" --out "$dir" "$@" >/dev/null)
 	cp "$repo/deploy/vps/front.sh" "$dir/"
-	cp -R "$repo/deploy/vps/systemd" "$dir/"
+	cp -R "$repo/deploy/vps/systemd" "$repo/deploy/vps/nftables" "$dir/"
 	cp "$work/tunnel.pub" "$dir/tunnel.pub"
 	cp "$work/bugnet-certs" "$dir/bugnet-certs"
 }
@@ -53,7 +54,9 @@ in_vm() {
 digest() {
 	in_vm sudo bash -c 'sha256sum /etc/haproxy/haproxy.cfg /etc/haproxy/*.map \
 		/home/tunnel/.ssh/authorized_keys /etc/ssh/sshd_config.d/bugnet-tunnel.conf \
-		/etc/bugnet/certs.toml /etc/bugnet/certs-staging.toml /etc/systemd/system/bugnet-certs.*
+		/etc/bugnet/certs.toml /etc/bugnet/certs-staging.toml /etc/systemd/system/bugnet-certs.* \
+		/etc/bugnet/nftables/dev-front.nft /etc/systemd/system/bugnet-nft.service
+		nft list table inet bugnet_dev_front_lo
 		readlink /opt/bugnet/certs/current
 		stat -c "%n %U:%G %a" /var/lib/bugnet-certs /var/lib/bugnet-certs/* /etc/bugnet/certs.env
 		ufw status verbose'
@@ -103,6 +106,12 @@ $(diff <(echo "$first") <(echo "$second") || true)"
 
 	in_vm sudo bash /tmp/vm-test/front-checks.sh /tmp/vm-test/front /tmp/vm-test/tunnel \
 		"$(in_vm id -un)"
+
+	say "rebooting $vm"
+	limactl stop "$vm" >/dev/null
+	limactl start --tty=false "$vm" >/dev/null
+	in_vm sudo bash /tmp/vm-test/front-checks.sh /tmp/vm-test/front /tmp/vm-test/tunnel \
+		"$(in_vm id -un)" loopback
 }
 
 cleanup() {
