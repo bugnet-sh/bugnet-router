@@ -9,7 +9,9 @@
 // transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
 // public key, refusing a private key file before anything is sent. revoke-preview, wallet and
 // session hold call OperatorService with BUGNET_OPERATOR_TOKEN instead, and session rotate moves a
-// placement's session link on. deploy maps renders the VPS's HAProxy and bugnet-certs files from
+// placement's session link on. bench start and bench report call it too, bench router times
+// orders through the API, and simulate replays the start samples it reads from
+// BUGNET_DATABASE_URL. deploy maps renders the VPS's HAProxy and bugnet-certs files from
 // deploy/vps. mtls init makes the internal CA and the egress to Payments certificate pairs, renews
 // them for their existing keys, or makes a development set.
 package main
@@ -112,6 +114,23 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   estimate --replay ID                   fetch a stored estimate and run the rules locally on its
                                          inputs and catalog, comparing the floor and the
                                          recommendation byte for byte
+  bench start --provider P [--size S] [--runs 30] [--concurrency 3] [--yes]
+        [--allow-paid-starts] [--actor A]
+                                         start a probe benchmark in the worker and print its id
+                                         and estimated cost, --yes accepting an estimate over
+                                         bench.confirm_above_micros
+  bench report [--bench-id ID | --since 24h] [--kind bench,canary,placement]
+        [--provider P] [--json]
+                                         print the start timings of a benchmark or a window,
+                                         one table per provider, size and kind
+  bench router --package P [--runs 20] [--concurrency 2] [--json]
+                                         time orders from CreatePlacement to the first command
+                                         against a development router, with dev order tokens
+  simulate [--since 7d] [--budget-seconds 30[,N...]] [--providers A,B] [--orders 1000]
+        [--json]
+                                         replay the recorded start samples through the saga's
+                                         failover rules, the samples read from the database at
+                                         BUGNET_DATABASE_URL
   session hold --placement ID            print a held session record, as OperatorService
                                          serves it to operators
   session rotate --handle H              end a placement's session link and print its new one
@@ -145,8 +164,9 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
-  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, estimate and session hold,
-                            which call OperatorService
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, estimate, bench start and
+                            report, and session hold, which call OperatorService
+  BUGNET_DATABASE_URL       Postgres URL, read only by simulate
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
 
@@ -201,7 +221,8 @@ func run(
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
 		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls, "estimate": c.estimate,
 		"session":      c.session,
-		"fetch-source": c.fetchSource, "hooks": c.hooks,
+		"fetch-source": c.fetchSource, "hooks": c.hooks, "bench": c.benchCmd,
+		"simulate": c.simulate,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")
