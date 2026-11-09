@@ -222,6 +222,15 @@ func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return provider.Size{}, false
 }
 
+// Sizes lists the machine types as sizes
+func (p *Provider) Sizes() []provider.Size {
+	out := make([]provider.Size, 0, len(p.sizes))
+	for _, s := range p.sizes {
+		out = append(out, provider.Size{Name: s.name, Resources: s.typ.resources})
+	}
+	return out
+}
+
 // HourlyCostMicros prices a size at its type's rate, and an unknown size as the dearest type
 func (p *Provider) HourlyCostMicros(sz provider.Size) int64 {
 	if s, ok := p.size(sz.Name); ok {
