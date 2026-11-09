@@ -351,7 +351,8 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 		rec := httptest.NewRecorder()
 		disk := func(context.Context) (int64, error) { return percent, nil }
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, disk,
-			limitsCheck{}, nil, canaryCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+			limitsCheck{}, nil, canaryCheck{})(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if want == "" {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("at %d%% /monitor gave %d: %s", percent, rec.Code, rec.Body)
@@ -365,7 +366,8 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 	rec := httptest.NewRecorder()
 	failing := func(context.Context) (int64, error) { return 0, errors.New("no size") }
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, failing,
-		limitsCheck{}, nil, canaryCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		limitsCheck{}, nil, canaryCheck{})(rec,
+		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("an unread size gave %d: %s", rec.Code, rec.Body)
 	}
@@ -386,7 +388,7 @@ func TestMonitorEgressSourcesLine(t *testing.T) {
 	ask := func(providers ...string) (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
-			limitsCheck{}, providers)(rec,
+			limitsCheck{}, providers, canaryCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
