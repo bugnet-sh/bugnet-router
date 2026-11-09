@@ -253,6 +253,21 @@ account_every_blocked = "1m"  # while a provider is blocked
 reserve_slots = 1             # placements leave this many slots free for probes
 stale_after = 5               # missed polls before /monitor reports old limits
 
+[health]
+canary_every = "5m"           # a canary a provider, with 20% jitter
+canary_every_down = "1m"      # while the provider is down
+boat_canary_every = "30m"     # every Boat create spends one of its included starts
+passive_window = "5m"         # a placement ready this recently stands in for a canary
+probe_workers = 4             # 1 to 64, the probes queue
+canary_vcpu = 1               # the canary takes the cheapest size covering these
+canary_memory_mib = 512
+window = "15m"                # the samples the rollup counts
+min_samples = 5               # fewest samples that mark a provider down or slow
+down_below = 0.5              # Wilson lower bound under which a provider is down
+slow_ready_p95 = "10s"        # ready time over which a provider is slow
+down_alert_after = "10m"      # /monitor reports a provider down for this long
+samples_keep = "720h"         # how long a start sample is kept
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
