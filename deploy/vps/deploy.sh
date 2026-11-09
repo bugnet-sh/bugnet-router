@@ -714,7 +714,7 @@ cmd_x402_index() {
 		install -o "$owner" -g "$owner" -m 0644 "$index" "$etc/payments/x402-index.json"
 		systemctl kill -s HUP --kill-whom=main 'bugnet-payments@*' ||
 			say "warning: no bugnet-payments unit took SIGHUP"
-		say "Payments has the index; deploy the gateway, then run x402-index --router"
+		say "Payments has the index; run x402-index --router next, then deploy the gateway"
 		return
 	fi
 	install -o root -g root -m 0644 "$index" "$etc/router-x402-index.json"

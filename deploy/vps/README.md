@@ -217,13 +217,13 @@ VPS. The previous copy of each changed file is kept in `/etc/bugnet/previous/`. 
   `openssl x509 -checkend 2592000` on both leaves and the CA, egress `payments_timeout` (3s) above
   Payments' `sign_timeout` (2s), and `allowed_shared_hosts` equal to
   `bugnet-dev x402 allowed-hosts` for the deployed index.
-- The reviewed index, in XS 7.16's order: Payments, the gateway, then the router. Copy the
+- The reviewed index, in XS 7.16's order: Payments, the router, then the gateway. Copy the
   gateway release's `packages/gateway/src/x402/index.json` to the VPS, then:
 
   ```sh
   sudo ~/bugnet-deploy/<version>/deploy.sh x402-index ~/index.json            # Payments, SIGHUP
-  # the gateway team deploys its release
   sudo ~/bugnet-deploy/<version>/deploy.sh x402-index --router ~/index.json   # router-api rolls
+  # the gateway team deploys its release
   ```
 
   Later deploys keep the router's line, generated from `/etc/bugnet/router-x402-index.json`.
