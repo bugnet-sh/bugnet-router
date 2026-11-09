@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"time"
 )
 
@@ -45,4 +48,19 @@ func AsError(err error) (*Error, bool) {
 	var e *Error
 	ok := errors.As(err, &e)
 	return e, ok
+}
+
+// ErrBadSignature marks a webhook whose signature, timestamp or body failed the check
+var ErrBadSignature = errors.New("provider: the webhook signature is not valid")
+
+// DecodeStrict reads one JSON value from body, allowing unknown fields and refusing trailing data
+func DecodeStrict(body []byte, into any) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(into); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("provider: data follows the JSON value")
+	}
+	return nil
 }

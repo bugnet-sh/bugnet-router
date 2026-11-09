@@ -53,10 +53,12 @@ type Config struct {
 	RunnerLinuxAMD64    string
 	RunnerLinuxARM64    string
 	ProviderKeys        map[string]string
-	LocalEnabled        bool
-	LocalRoot           string
-	LocalRunnerPath     string // host build of bugnet-run the local provider runs
-	LocalHourlyMicros   int64
+	// HookSecrets are the webhook signing secrets by provider, from the environment
+	HookSecrets       map[string]HookSecret
+	LocalEnabled      bool
+	LocalRoot         string
+	LocalRunnerPath   string // host build of bugnet-run the local provider runs
+	LocalHourlyMicros int64
 	// JobOutputBudget is what one job's output may cost its Valkey stream, in bytes
 	JobOutputBudget int64
 	// PlacementOutputBudget is what a placement's job streams may cost together, in bytes
@@ -170,6 +172,7 @@ type Names struct {
 	SSHHost       string `toml:"ssh_host"`
 	SSHPort       int    `toml:"ssh_port"` // known_hosts names the port when it is not 22
 	EgressHost    string `toml:"egress_host"`
+	HooksHost     string `toml:"hooks_host"` // provider webhooks arrive here
 }
 
 // EdgeBudget bounds one placement's previews, transfers and SSH together, and its egress apart
@@ -292,7 +295,22 @@ type Bootstrap struct {
 // Hooks holds the provider webhook settings
 type Hooks struct {
 	// Providers lists the providers whose webhooks are verified
-	Providers []string `toml:"providers"`
+	Providers []string
+	// BoatWindow is how far Boat's X-Ascii-Timestamp may be from now
+	BoatWindow time.Duration
+	// HintUnique folds the hints for one sandbox inside this window into one job
+	HintUnique time.Duration
+}
+
+// HookSecret is one provider's webhook signing secret and the one it replaced
+type HookSecret struct {
+	Current, Previous []byte
+}
+
+type hooksFile struct {
+	Providers  []string `toml:"providers"`
+	BoatWindow string   `toml:"boat_window"`
+	HintUnique string   `toml:"hint_unique"`
 }
 
 // Localrun holds the settings only a localrun build reads, for the x402 local run
@@ -332,7 +350,7 @@ type file struct {
 	Secrets             secretFile    `toml:"secrets"`
 	Fetch               fetchFile     `toml:"fetch"`
 	Bootstrap           bootstrapFile `toml:"bootstrap"`
-	Hooks               Hooks         `toml:"hooks"`
+	Hooks               hooksFile     `toml:"hooks"`
 	X402                x402File      `toml:"x402"`
 	Hardening           hardeningFile `toml:"hardening"`
 	Wallets             walletsFile   `toml:"wallets"`
@@ -536,6 +554,7 @@ func defaults() file {
 			// A clone, since go-toml decodes a list into the slice it finds
 			SharedHostingSuffixes: slices.Clone(sharedHostingSuffixes),
 		},
+		Hooks:     hooksFile{BoatWindow: "5m", HintUnique: "10s"},
 		Hardening: defaultHardening(),
 		Wallets:   defaultWallets(),
 		Stats:     defaultStats(),
@@ -885,7 +904,21 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 			c.ProviderKeys[pk.name] = v
 		}
 	}
+	c.HookSecrets = map[string]HookSecret{}
+	for _, hk := range hookSecretVars {
+		if v := get(hk.env); v != "" {
+			c.HookSecrets[hk.name] = HookSecret{
+				Current: []byte(v), Previous: []byte(get(hk.env + "_PREVIOUS")),
+			}
+		}
+	}
 	return nil
+}
+
+// hookSecretVars name the environment variable of each provider's webhook secret
+var hookSecretVars = []struct{ name, env string }{
+	{"e2b", "E2B_WEBHOOK_SECRET"},
+	{"boat", "BOAT_WEBHOOK_SECRET"},
 }
 
 // callerTokens are the environment variables of the callers' bearer tokens, in order

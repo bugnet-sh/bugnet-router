@@ -59,7 +59,7 @@ func TestDataPlaneDefaults(t *testing.T) {
 			eq(t, c.Fetch, Fetch{MaxBytes: 2 << 30, EgressAddr: "127.0.0.1:9443"})
 			eq(t, c.Bootstrap, Bootstrap{
 				Dir: "src", HeartbeatStale: time.Minute, MaxPrivateAttempts: 2, MaxConcurrent: 4})
-			eq(t, c.Hooks, Hooks{})
+			eq(t, c.Hooks, Hooks{BoatWindow: 5 * time.Minute, HintUnique: 10 * time.Second})
 			eq(t, c.DataplaneWorkers, 8)
 			eq(t, c.DefaultWorkers, 20)
 			eq(t, c.Boxd.GateRoute, "default")
@@ -75,7 +75,7 @@ func TestExampleNamesAreTheProductionSet(t *testing.T) {
 	eq(t, loadExample(t).Names, Names{
 		PreviewDomain: "preview.bugnet.sh", TransferHost: "transfer.bugnet.sh",
 		SecretsHost: "secrets.bugnet.sh", SSHHost: "ssh.bugnet.sh", SSHPort: 2222,
-		EgressHost: "egress.bugnet.sh",
+		EgressHost: "egress.bugnet.sh", HooksHost: "hooks.bugnet.sh",
 	})
 }
 
@@ -155,7 +155,9 @@ max_bytes = "3GiB"
 egress_addr = "[::1]:9444"
 
 [hooks]
-providers = ["e2b"]
+providers = ["e2b", "boat"]
+boat_window = "2m"
+hint_unique = "30s"
 
 [local]
 sshd_path = "/opt/sshd"
@@ -210,7 +212,10 @@ ssh_path = "native"
 		LinksPerHour: 11, PutsPerHour: 12, ApplyWait: 20 * time.Second,
 	})
 	eq(t, c.Fetch, Fetch{MaxBytes: 3 << 30, EgressAddr: "[::1]:9444"})
-	eq(t, c.Hooks, Hooks{Providers: []string{"e2b"}})
+	eq(t, c.Hooks, Hooks{
+		Providers: []string{"e2b", "boat"}, BoatWindow: 2 * time.Minute,
+		HintUnique: 30 * time.Second,
+	})
 	eq(t, c.LocalSSHDPath, "/opt/sshd")
 	eq(t, c.Boxd.GateRoute, "subdomain")
 	eq(t, c.Boat.SSHPath, "native")
@@ -297,6 +302,12 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"empty ssh provider", "[ssh]\nproviders = [\"\"]", "ssh.providers has an empty entry"},
 		{"unknown hook provider", "[hooks]\nproviders = [\"e2b\", \"x\"]",
 			"hooks.providers entry 2 is not one of"},
+		{"boat window zero", "[hooks]\nboat_window = \"0s\"",
+			"hooks.boat_window must be a positive Go duration"},
+		{"hint unique word", "[hooks]\nhint_unique = \"soon\"",
+			"hooks.hint_unique must be a positive Go duration"},
+		{"hooks host with a port", "[names]\nhooks_host = \"h.example.com:443\"",
+			"names.hooks_host"},
 		{"gate port zero", "[previews]\ngate_port = 0", "previews.gate_port must be a port"},
 		{"no previews", "[previews]\nmax_per_placement = 0", "previews.max_per_placement"},
 		{"url ttl in words", "[transfers]\nurl_ttl = \"ten minutes\"",

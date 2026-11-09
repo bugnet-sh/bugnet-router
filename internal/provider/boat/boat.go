@@ -120,6 +120,8 @@ type Options struct {
 	// Valkey shares the count of starts with other replicas under Prefix, none when nil
 	Valkey valkey.Client
 	Prefix string
+	// HookWindow is how far a webhook's timestamp may be from now, five minutes when zero
+	HookWindow time.Duration
 }
 
 // Provider places sandboxes on Boat, keeping only what it knows about the next start's fee
@@ -137,7 +139,10 @@ type Provider struct {
 	reattachWait time.Duration
 	idleTimeout  time.Duration
 	limitsTTL    time.Duration
-	fees         fees
+	hookWindow   time.Duration
+	// now replaces the clock in tests, nil meaning time.Now
+	now  func() time.Time
+	fees fees
 }
 
 // New checks the options and makes no call to Boat
@@ -167,6 +172,7 @@ func New(opts Options) (*Provider, error) {
 		sizes:        sizes,
 		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
+		hookWindow: cmp.Or(opts.HookWindow, defaultHookWindow),
 	}
 	if opts.Valkey != nil {
 		p.fees.shared = &sharedStarts{c: opts.Valkey, key: opts.Prefix + "boat:starts"}

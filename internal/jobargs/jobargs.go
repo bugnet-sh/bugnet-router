@@ -116,3 +116,28 @@ type SessionExpiry struct{}
 
 // Kind returns the River job kind
 func (SessionExpiry) Kind() string { return "session_expiry" }
+
+// HookHint asks the worker to re-read one sandbox after a verified provider webhook
+type HookHint struct {
+	Provider  string `json:"provider" river:"unique"`
+	SandboxID string `json:"sandbox_id" river:"unique"`
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	// PlacementLabel and DeploymentLabel are the sandbox's labels when the event carries them
+	PlacementLabel  string `json:"placement_label,omitempty"`
+	DeploymentLabel string `json:"deployment_label,omitempty"`
+}
+
+// Kind returns the River job kind
+func (HookHint) Kind() string { return "hook_hint" }
+
+// InsertOpts runs it once per provider and sandbox while one waits, the API folding the rest
+func (HookHint) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueDataplane,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRetryable,
+			rivertype.JobStateRunning, rivertype.JobStateScheduled,
+		}},
+	}
+}

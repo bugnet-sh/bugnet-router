@@ -43,6 +43,7 @@ secrets_host = "secrets.bugnet.sh"
 ssh_host = "ssh.bugnet.sh"
 ssh_port = 2222                        # known_hosts uses [host]:port when this is not 22
 egress_host = "egress.bugnet.sh"
+hooks_host = "hooks.bugnet.sh"         # bugnet-dev builds https://<host>/hooks/<provider>/<secret>
 
 [edge_budget]
 bytes_per_10_minutes = "2GiB"          # previews, transfers and SSH, scaled by paid minutes
@@ -109,7 +110,9 @@ max_private_attempts = 2               # private fetches per placement
 max_concurrent = 4                     # private fetches at once per replica
 
 [hooks]
-providers = []                         # providers whose webhooks are verified
+providers = []                         # providers whose webhooks are verified, e2b and boat
+boat_window = "5m"                     # accepted distance of X-Ascii-Timestamp from now
+hint_unique = "10s"                    # hints for one sandbox inside this window run once
 
 [x402]
 enabled = false                        # the kill switch, false refuses EnableX402 and stops paying

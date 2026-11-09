@@ -244,6 +244,12 @@ when one of its five ports is taken, when the wildcard pair in
 and it says which. The live stack needs the Linux build of `bugnet-run` from
 `make -C ../bugnet-run build`.
 
+`bugnet-dev hooks register e2b|boat` registers this deployment's endpoint
+`https://<names.hooks_host>/hooks/<provider>/<path secret>` and prints the signing secret once,
+with `team_id` for E2B. `hooks list` hides the path secret, `hooks rotate` prints a new secret
+(move the old one to `..._PREVIOUS` for a day) and `hooks delete PROVIDER ID` removes an endpoint.
+A verified webhook queues a `hook_hint` job per provider and sandbox.
+
 `bugnet-dev owned PROVIDER` prints the count and ids on its own, reading the provider's key from
 the environment, so `set -a; . ./.env; set +a` first.
 
@@ -436,7 +442,9 @@ does not know.
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
 | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more. `router-worker` sends it to Payments' totals call while the stats feed is on |
 | `BUGNET_SESSIONS_TOKEN` | `router-api`, and `bugnet-edge --role sessions`, the bearer token of `SessionPageService`, empty or 32 characters or more |
-| `BUGNET_HOOK_PATH_SECRET` | The edge only, base64url of 32 bytes in the provider webhook path |
+| `BUGNET_HOOK_PATH_SECRET` | The edge, and `bugnet-dev hooks`, base64url of 32 bytes in the provider webhook path |
+| `E2B_WEBHOOK_SECRET`, `BOAT_WEBHOOK_SECRET` | `router-api`, the signing secret `bugnet-dev hooks register` prints once, needed for each provider in `hooks.providers`. The same name with `_PREVIOUS` holds the replaced secret for a day after `hooks rotate` |
+| `BOAT_ADMIN_API_KEY` | `bugnet-dev hooks` for Boat only, typed at its prompt with echo off when unset, never in a service |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
 of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
@@ -515,7 +523,7 @@ features that read them land one by one, and until then the settings only load a
 | `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
 | `[fetch]` | The private repository fetch's byte cap, the egress proxy's listener and the PEM roots its outer certificate is checked against, the system roots when empty |
 | `[bootstrap]` | Where `FetchSource` puts repositories under the exec user's home, how long a silent private fetch lives, and its attempts per placement and fetches per replica |
-| `[hooks]` | `providers` whose webhooks are verified |
+| `[hooks]` | `providers` whose webhooks are verified (`e2b`, `boat`), `boat_window` for the timestamp check and `hint_unique` for folding hints of one sandbox. `router-api` refuses to start when a listed provider has no secret or no verifier |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
