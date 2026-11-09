@@ -37,18 +37,15 @@ providers = ["boat", "e2b", "boxd"]
 
 [ssh]
 providers = []                # a provider joins once its SSH rows pass on production
-host_keys = []                # TODO(keys): the line deploy.sh keys prints, "ssh-ed25519 AAAA..."
+host_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ5Uj5xh80oFhcYJCELNpDMzCVBjPg+RXdw/Dw6D0iK2"]
 
 [secrets]
-# Off until the production CA is in the images (Task 39 step 8): router-api refuses providers
-# without ca_cert_file. Then providers = ["boat", "boxd"], ca_cert_file =
-# "/etc/bugnet/egress-ca.pem", and egress_ips the VPS's addresses from site.toml. x402 pays only
-# on providers listed here.
-providers = []
-egress_ips = []
-ca_cert_file = ""
+# x402 pays only on providers listed here
+providers = ["boat", "boxd"]  # E2B joins once its templates carry this CA
+egress_ips = ["62.72.21.74", "2a02:4780:c:ab47::1"]
+ca_cert_file = "/etc/bugnet/egress-ca.pem"
 ca_version = 1
-box_public_keys = []          # TODO(keys): [{ id = "k1", key = "<deploy.sh keys prints it>" }]
+box_public_keys = [{ id = "k1", key = "izQzPuN7A8R6WyD4+wT2h1lMf7VnvlsJU1gFWapvi1k=" }]
 
 [fetch]
 egress_addr = "127.0.0.1:9443"
