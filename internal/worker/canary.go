@@ -112,7 +112,7 @@ func (pw *probeWorker) Work(ctx context.Context, j *river.Job[jobargs.Probe]) er
 	a := j.Args
 	m, ran, err := pw.w.probe.Run(ctx, probe.Spec{
 		Kind: store.SampleKind(a.Sample), Provider: a.Provider, Size: a.Size, BenchID: a.BenchID,
-		Run: a.Run,
+		Run: a.Run, AllowPaid: a.AllowPaid,
 	})
 	switch {
 	case err != nil:

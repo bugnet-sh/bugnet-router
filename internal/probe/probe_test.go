@@ -325,10 +325,16 @@ func TestProbeCanaryNeverPaysForAStart(t *testing.T) {
 	eq(t, ran, false)
 	eq(t, err, nil)
 	eq(t, len(r.prov.creates), 0)
-	// A benchmark is asked for, so it pays
-	m, ran, err := r.probe.Run(t.Context(), probe.Spec{
+	// A benchmark pays only when told to
+	spec := probe.Spec{
 		Kind: store.SampleBench, Provider: "boat", Size: small, BenchID: "b1", Run: 1,
-	})
+	}
+	_, ran, err = r.probe.Run(t.Context(), spec)
+	eq(t, ran, false)
+	eq(t, err, nil)
+	eq(t, len(r.prov.creates), 0)
+	spec.AllowPaid = true
+	m, ran, err := r.probe.Run(t.Context(), spec)
 	if err != nil || !ran {
 		t.Fatalf("bench Run = %v, %v", ran, err)
 	}

@@ -23,7 +23,9 @@
 // queues a probe for each provider whose canary is due. A probe starts a tiny sandbox the way a
 // placement does, times it, removes it and stores a start sample, on a queue of its own. The
 // health_rollup job turns the last 15 minutes of samples into each provider's shared state every
-// 30 s.
+// 30 s. A bench job runs one wave of a benchmark at a time, queueing its probes and snoozing until
+// they have stored their samples. The retention job runs at start and daily at 04:00 UTC and
+// deletes old rows in batches of 10,000.
 package worker
 
 import (
@@ -106,6 +108,9 @@ type Deps struct {
 	MaxConcurrent map[string]int
 	// Health sets the canaries and the health rollup, each zero value at its default
 	Health config.Health
+	// EstimatesKeep, SourceFactsKeep and ObservationsKeep are how long retention keeps the
+	// estimator's rows, each zero at its default
+	EstimatesKeep, SourceFactsKeep, ObservationsKeep time.Duration
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -160,6 +165,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	if d.Health == (config.Health{}) {
 		d.Health = config.DefaultHealth()
 	}
+	d.EstimatesKeep = cmp.Or(d.EstimatesKeep, defaultEstimatesKeep)
+	d.SourceFactsKeep = cmp.Or(d.SourceFactsKeep, defaultSourceFactsKeep)
+	d.ObservationsKeep = cmp.Or(d.ObservationsKeep, defaultObservationsKeep)
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -197,6 +205,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &canaryTickWorker{w: w})
 	river.AddWorker(workers, &probeWorker{w: w})
 	river.AddWorker(workers, &healthRollupWorker{w: w})
+	river.AddWorker(workers, &benchWorker{w: w})
+	river.AddWorker(workers, &retentionWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -254,7 +264,8 @@ func (w *Worker) Saga() *saga.Saga { return w.saga }
 func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
 // periodicJobs runs the sweep, watch, outbox and wallet expiry at start and on their intervals,
-// one at a time, and a limits poll and an account check for each provider that can give them
+// and retention at start and daily, one at a time, and a limits poll and an account check for
+// each provider that can give them
 func periodicJobs(d Deps, reg *provider.Registry) []*river.PeriodicJob {
 	single := singleRun()
 	var out []*river.PeriodicJob
@@ -263,6 +274,9 @@ func periodicJobs(d Deps, reg *provider.Registry) []*river.PeriodicJob {
 			func() (river.JobArgs, *river.InsertOpts) { return p.args, single },
 			&river.PeriodicJobOpts{RunOnStart: true}))
 	}
+	out = append(out, river.NewPeriodicJob(dailyAt(retentionHour),
+		func() (river.JobArgs, *river.InsertOpts) { return jobargs.Retention{}, single },
+		&river.PeriodicJobOpts{RunOnStart: true}))
 	for _, p := range polls(d, reg) {
 		// The job's own unique options keep one run of each kind per provider
 		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),

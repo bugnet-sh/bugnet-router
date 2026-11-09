@@ -205,6 +205,8 @@ type Probe struct {
 	Size     provider.Size `json:"size"`
 	BenchID  string        `json:"bench_id,omitempty" river:"unique"`
 	Run      int           `json:"run,omitempty" river:"unique"`
+	// AllowPaid lets a benchmark probe start a sandbox that costs a fee
+	AllowPaid bool `json:"allow_paid,omitempty"`
 }
 
 // Kind returns the River job kind
@@ -227,5 +229,37 @@ func (HealthRollup) Kind() string { return "health_rollup" }
 
 // InsertOpts runs it once on the default queue, since the next rollup comes 30 s later
 func (HealthRollup) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
+
+// Bench asks the worker to run one wave of a benchmark and queue the next, Wave counting from 0
+type Bench struct {
+	BenchID string `json:"bench_id" river:"unique"`
+	Wave    int    `json:"wave" river:"unique"`
+	// AllowPaid lets the wave start sandboxes that cost a fee
+	AllowPaid bool `json:"allow_paid,omitempty"`
+}
+
+// Kind returns the River job kind
+func (Bench) Kind() string { return "bench" }
+
+// InsertOpts runs a wave on the default queue, three attempts for a failed read of the database,
+// and one at a time per benchmark and wave
+func (Bench) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 3,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
+
+// Retention asks the worker to delete one batch of rows past their age, and to queue itself again
+// while more are left
+type Retention struct{}
+
+// Kind returns the River job kind
+func (Retention) Kind() string { return "retention" }
+
+// InsertOpts runs it once on the default queue, since the next run comes the next day
+func (Retention) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
 }

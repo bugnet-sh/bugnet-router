@@ -218,6 +218,7 @@ type env struct {
 	keys       dpkeys.Keys
 	worker     *worker.Worker
 	catalog    *catalog.Catalog
+	registry   *provider.Registry
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -333,6 +334,7 @@ func newEnv(t *testing.T, o options) *env {
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
 		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys, worker: w, catalog: cat,
+		registry: reg,
 	}
 }
 
