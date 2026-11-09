@@ -23,7 +23,9 @@
 // queues a probe for each provider whose canary is due. A probe starts a tiny sandbox the way a
 // placement does, times it, removes it and stores a start sample, on a queue of its own. The
 // health_rollup job turns the last 15 minutes of samples into each provider's shared state every
-// 30 s.
+// 30 s. The sweep inserts a reconcile job for each ready placement its listing lacks or shows
+// unwell, and the job reads the sandbox, classes the reading and ends the placement the provider
+// lost. A hook_hint job does the same for a sandbox a verified webhook names.
 package worker
 
 import (
@@ -47,6 +49,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/probe"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/reconcile"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -106,6 +109,10 @@ type Deps struct {
 	MaxConcurrent map[string]int
 	// Health sets the canaries and the health rollup, each zero value at its default
 	Health config.Health
+	// Abuse sets how provider signals are classed, each zero value at its default
+	Abuse config.Abuse
+	// Reconcile sets the lost-placement check and the drift bound, each zero value at its default
+	Reconcile config.Reconcile
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -136,6 +143,8 @@ type Worker struct {
 	checksMu sync.Mutex
 	checks   map[string]failedChecks
 	probe    *probe.Probe
+	// reconciler ends the placements their provider lost
+	reconciler *reconcile.Reconciler
 	// probeAges is the age of each provider's oldest probe sandbox at the last sweep
 	probesMu  sync.Mutex
 	probeAges map[string]time.Duration
@@ -159,6 +168,10 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	}
 	if d.Health == (config.Health{}) {
 		d.Health = config.DefaultHealth()
+	}
+	d.Abuse = d.Abuse.OrDefaults()
+	if d.Reconcile == (config.Reconcile{}) {
+		d.Reconcile = config.DefaultReconcile()
 	}
 	if sd.Log == nil {
 		sd.Log = slog.Default()
@@ -197,6 +210,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &canaryTickWorker{w: w})
 	river.AddWorker(workers, &probeWorker{w: w})
 	river.AddWorker(workers, &healthRollupWorker{w: w})
+	river.AddWorker(workers, &reconcileWorker{w: w})
+	river.AddWorker(workers, &hookHintWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -211,6 +226,10 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	sd.River = rc
 	w.river = rc
 	w.saga = saga.New(sd)
+	w.reconciler = reconcile.New(reconcile.Deps{
+		Saga: w.saga, Store: sd.Store, Registry: sd.Registry, River: rc, Valkey: sd.Valkey,
+		Prefix: sd.Prefix, Abuse: d.Abuse, Settings: d.Reconcile, Now: d.Now, Log: sd.Log,
+	})
 	w.probe = probe.New(probe.Deps{
 		Registry: sd.Registry, Store: sd.Store, Saga: w.saga, Replica: sd.ReplicaID,
 		Now: d.Now, Log: sd.Log,

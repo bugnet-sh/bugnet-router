@@ -69,9 +69,13 @@ func (w *Worker) sweepLeftovers(ctx context.Context) {
 
 // sweepProvider destroys every sandbox of this deployment on prov that no placement needs
 func (w *Worker) sweepProvider(ctx context.Context, prov provider.Provider) {
+	listStarted := w.now()
 	lctx, cancel := context.WithTimeout(ctx, callTimeout)
 	owned, err := prov.ListOwned(lctx, w.saga.OwnedLabels())
 	cancel()
+	if err == nil {
+		w.queueLost(ctx, prov, owned, listStarted)
+	}
 	if err != nil {
 		// A listing cut short still names sandboxes that exist, so they are judged all the same
 		w.log.Error("sweep list sandboxes", "provider", prov.Name(), "listed", len(owned),

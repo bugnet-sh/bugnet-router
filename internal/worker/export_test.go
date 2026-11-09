@@ -9,6 +9,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/reconcile"
 )
 
 // SingleRunOpts are the insert options of the periodic sweep and outbox jobs
@@ -110,3 +111,20 @@ func CanaryTimeouts() [3]time.Duration {
 		(*healthRollupWorker).Timeout(nil, nil),
 	}
 }
+
+// SweepAll runs one sweep's provider pass and its leftovers
+func (w *Worker) SweepAll(ctx context.Context) {
+	w.sweepSandboxes(ctx)
+	w.sweepLeftovers(ctx)
+}
+
+// ReconcileTimeout is the run time of one reconcile job
+func ReconcileTimeout() time.Duration { return (*reconcileWorker).Timeout(nil, nil) }
+
+// HookHintWork runs one hook_hint job's work
+func (w *Worker) HookHintWork(ctx context.Context, args jobargs.HookHint) error {
+	return (&hookHintWorker{w: w}).Work(ctx, &river.Job[jobargs.HookHint]{Args: args})
+}
+
+// Reconciler returns the reconciler the reconcile and hook_hint jobs work through
+func (w *Worker) Reconciler() *reconcile.Reconciler { return w.reconciler }
