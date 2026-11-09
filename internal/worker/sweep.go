@@ -78,6 +78,7 @@ func (w *Worker) sweepProvider(ctx context.Context, prov provider.Provider) {
 			"err", err)
 		w.noteAccount(ctx, prov.Name(), err)
 	}
+	w.noteProbes(prov.Name(), owned)
 	for i, o := range owned {
 		if ctx.Err() != nil {
 			w.log.Warn("sweep ran out of time, the next sweep goes on", "provider", prov.Name(),

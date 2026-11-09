@@ -156,6 +156,16 @@ func serve(
 		return err
 	}
 
+	// Probes boot sandboxes as placements do, so the worker needs the runner builds and the same
+	// harden settings router-api reads
+	runners, err := providers.Runners(cfg, reg)
+	if err != nil {
+		return err
+	}
+	boot, err := saga.LoadBootSettings(log, cfg)
+	if err != nil {
+		return err
+	}
 	st := openStore(pool, cfg, log)
 	tracker := placement.NewTracker(time.Now)
 	w, err := worker.New(pool, saga.Deps{
@@ -171,6 +181,8 @@ func serve(
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,
 		DeploymentID:  cfg.DeploymentID,
+		Runners:       runners,
+		Boot:          boot,
 		Log:           log,
 		Events:        edgeevents.New(vk, cfg.ValkeyPrefix, log),
 		Budget:        cfg.EdgeBudget,
@@ -191,7 +203,7 @@ func serve(
 			Listen: cfg.Localrun.ForwardListen, Port: cfg.Localrun.EgressPort,
 		},
 		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions,
-		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent,
+		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent, Health: cfg.Health,
 	})
 	if err != nil {
 		return err
@@ -209,7 +221,8 @@ func serve(
 	mux.HandleFunc("GET /readyz", readyz(log, st, vk))
 	feed := feedCheck{on: cfg.Stats.Enabled(), noToken: cfg.PaymentsToken == ""}
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
-		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk)))
+		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk),
+		canariesOf(cfg, reg, w)))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()
@@ -308,6 +321,22 @@ func limitsOf(cfg config.Config, reg *provider.Registry, vk valkey.Client) limit
 			c.rate = func(ctx context.Context) (boat.RateLeft, bool, error) {
 				return boat.ReadRateLeft(ctx, vk, cfg.ValkeyPrefix)
 			}
+		}
+	}
+	return c
+}
+
+// canariesOf lists what /monitor reads of the canaries, from the providers that get them
+func canariesOf(cfg config.Config, reg *provider.Registry, w *worker.Worker) canaryCheck {
+	c := canaryCheck{
+		every: map[string]time.Duration{}, downAfter: cfg.Health.DownAlertAfter,
+		since: time.Now(), oldProbes: w.OldProbes,
+		due: w.CanaryStartFree,
+	}
+	for _, p := range reg.Ordered() {
+		c.every[p.Name()] = cfg.Health.CanaryEvery
+		if _, costly := p.(provider.StartCoster); costly {
+			c.every[p.Name()] = cfg.Health.BoatCanaryEvery
 		}
 	}
 	return c
