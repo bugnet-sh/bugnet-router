@@ -1,0 +1,83 @@
+# router-api and router-worker on the production VPS, /etc/bugnet/router.toml (DP 15, CP 13.5)
+# Secrets live only in /etc/bugnet/router.env. config/example.toml lists every setting. deploy.sh
+# installs this file on every deploy, so a change goes here and ships, never edited on the VPS.
+
+# TODO(Payments): the public half of Payments' BUGNET_ORDER_PRIVATE_KEY, from `pnpm cli keys
+# pubkey` (bugnet-payments deploy/README.md section 5). router-api refuses to start while empty.
+order_token_public_key = "loAtatGXwc4DPBvSFHHjSShoEDhB/eam3sZCFuYHzHw="
+packages_file = "/etc/bugnet/packages.json"
+providers = ["boat", "e2b", "boxd"]
+deployment_id = "main"
+events_url = "http://127.0.0.1:8447/v1/events"
+
+[api]
+listen_addr = "127.0.0.1:8080"
+reuse_port = true             # the new version binds beside the draining one (DP 15.7)
+
+[worker]
+listen_addr = "127.0.0.1:8081"
+
+[valkey]
+addr = "unix:///run/valkey/valkey.sock"
+prefix = "bn:"
+
+[runner]
+linux_amd64 = "/opt/bugnet/run/current/bugnet-run-linux-amd64"
+
+[names]
+preview_domain = "preview.bugnet.sh"
+transfer_host = "transfer.bugnet.sh"
+secrets_host = "secrets.bugnet.sh"
+ssh_host = "ssh.bugnet.sh"
+ssh_port = 2201               # this VPS keeps admin SSH on 2222, so the SSH gateway takes 2201
+egress_host = "egress.bugnet.sh"
+
+[previews]
+providers = ["boat", "e2b", "boxd"]
+
+[ssh]
+providers = []                # a provider joins once its SSH rows pass on production
+host_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ5Uj5xh80oFhcYJCELNpDMzCVBjPg+RXdw/Dw6D0iK2"]
+
+[secrets]
+# x402 pays only on providers listed here
+providers = ["boat", "boxd"]  # E2B joins once its templates carry this CA
+egress_ips = ["62.72.21.74", "2a02:4780:c:ab47::1"]
+ca_cert_file = "/etc/bugnet/egress-ca.pem"
+ca_version = 1
+box_public_keys = [{ id = "k1", key = "izQzPuN7A8R6WyD4+wT2h1lMf7VnvlsJU1gFWapvi1k=" }]
+
+[fetch]
+egress_addr = "127.0.0.1:9443"
+
+[x402]
+enabled = true
+allowed_shared_hosts = []     # deploy.sh writes this line from the reviewed index, never by hand
+
+[wallets]
+use_payer = true
+require_payer = false
+emit_events = true
+# TODO(Payments): the fee payer's address from `pnpm cli keys show`
+facilitator_addresses = ["AxsYqFSYfxJKJgj8iTCJhVWLi1mphAx6Sh3cMLMdqyyr"]
+
+[stats]
+listen_addr = "127.0.0.1:8082"
+payments_url = "http://127.0.0.1:8447"
+
+[sessions]
+base_url = "https://sessions.bugnet.sh"
+
+[[e2b.templates]]
+size = "2x2"
+template = "bugnet-2x2"
+vcpu = 2
+memory_mib = 2048
+disk_gib = 10
+
+[[e2b.templates]]
+size = "4x8"
+template = "bugnet-4x8"
+vcpu = 4
+memory_mib = 8192
+disk_gib = 10

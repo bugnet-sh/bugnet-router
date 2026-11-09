@@ -23,13 +23,16 @@ import (
 
 // site is deploy/vps/site.toml, the VPS's facts that are not secret and the founder's answers
 type site struct {
-	IPv4         string   `toml:"ipv4"`
-	IPv6         string   `toml:"ipv6"`
-	AdminSSHPort int      `toml:"admin_ssh_port"`
-	SSHGatewayIP string   `toml:"ssh_gateway_ip"`
-	EgressIP     string   `toml:"egress_ip"`
-	DNSProvider  string   `toml:"dns_provider"`
-	DNSEnv       []string `toml:"dns_env"`
+	IPv4           string   `toml:"ipv4"`
+	IPv6           string   `toml:"ipv6"`
+	AdminSSHPort   int      `toml:"admin_ssh_port"`
+	SSHGatewayIP   string   `toml:"ssh_gateway_ip"`
+	SSHGatewayPort int      `toml:"ssh_gateway_port"`
+	EgressIP       string   `toml:"egress_ip"`
+	DNSProvider    string   `toml:"dns_provider"`
+	DNSEnv         []string `toml:"dns_env"`
+	// GatewayUsers are the gateway team's Unix users, which check.sh keeps off the data stores
+	GatewayUsers []string `toml:"gateway_users"`
 }
 
 // publicName is one line of deploy/vps/names.toml
@@ -70,6 +73,7 @@ var frontPorts = []int{80, 443, 2200}
 var (
 	providerName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 	envName      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	unixUser     = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	certName     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	// reservedCerts are the directories under certsRoot that hold no live pair
 	reservedCerts = []string{"acme", "staging"}
@@ -184,12 +188,13 @@ func haproxyConfig(s site, front bool) (string, error) {
 		d.EgressIP = s.EgressIP
 		d.TLSMaxconn, d.EgressMaxconn = tlsMaxconn/2, tlsMaxconn/2
 	}
+	port := strconv.Itoa(s.SSHGatewayPort)
 	switch {
 	case front:
 	case s.SSHGatewayIP != "":
-		d.SSHBinds = []string{s.SSHGatewayIP + ":22"}
+		d.SSHBinds = []string{s.SSHGatewayIP + ":" + port}
 	default:
-		d.SSHBinds = []string{":22", ":::22 v6only"}
+		d.SSHBinds = []string{":" + port, ":::" + port + " v6only"}
 	}
 	t, err := template.New("haproxy.cfg").Option("missingkey=error").Parse(vps.HAProxyTemplate)
 	if err != nil {
@@ -268,9 +273,11 @@ func deployEnv(s site, n names, front bool) string {
 	} else {
 		staging = dirs(slices.Concat(n.Production, n.Dev), true)
 	}
-	return fmt.Sprintf("# What front.sh reads, from names.toml and site.toml\n"+
-		"ADMIN_SSH_PORT=%d\nPRODUCTION_CERT_DIRS=%s\nDEV_CERT_DIRS=%s\nSTAGING_CERT_DIRS=%s\n",
-		s.AdminSSHPort, production, dirs(n.Dev, false), staging)
+	return fmt.Sprintf("# What front.sh and deploy.sh read, from names.toml and site.toml\n"+
+		"ADMIN_SSH_PORT=%d\nPRODUCTION_CERT_DIRS=%s\nDEV_CERT_DIRS=%s\nSTAGING_CERT_DIRS=%s\n"+
+		"SSH_GATEWAY_PORT=%d\nGATEWAY_USERS=%s\n",
+		s.AdminSSHPort, production, dirs(n.Dev, false), staging, s.SSHGatewayPort,
+		strings.Join(s.GatewayUsers, " "))
 }
 
 /* Deploy settings files */
@@ -314,7 +321,8 @@ func decodeStrict(path string, v any) error {
 // loadSite reads site.toml strictly over its defaults and checks each value it holds
 func loadSite(path string) (site, error) {
 	s := site{
-		AdminSSHPort: 2222, DNSProvider: defaultDNSProvider, DNSEnv: slices.Clone(defaultDNSEnv),
+		AdminSSHPort: 2222, SSHGatewayPort: 22, DNSProvider: defaultDNSProvider,
+		DNSEnv: slices.Clone(defaultDNSEnv),
 	}
 	if err := decodeStrict(path, &s); err != nil {
 		return site{}, err
@@ -346,6 +354,10 @@ func (s site) check() error {
 		return errors.New("ssh_gateway_ip must be an IPv4 address, or empty")
 	case s.SSHGatewayIP != "" && s.SSHGatewayIP == s.IPv4:
 		return errors.New("ssh_gateway_ip must be a second address, not ipv4")
+	case s.SSHGatewayPort < 1 || s.SSHGatewayPort > 65535:
+		return errors.New("ssh_gateway_port must be 1 to 65535")
+	case slices.Contains(frontPorts, s.SSHGatewayPort):
+		return fmt.Errorf("ssh_gateway_port %d is a port the front serves", s.SSHGatewayPort)
 	case s.EgressIP != "" && !ipv4(s.EgressIP):
 		return errors.New("egress_ip must be an IPv4 address, or empty")
 	case s.EgressIP != "" && s.EgressIP == s.IPv4:
@@ -363,6 +375,11 @@ func (s site) check() error {
 			return fmt.Errorf("dns_env entry %d must be a variable name", i+1)
 		}
 	}
+	for i, name := range s.GatewayUsers {
+		if !unixUser.MatchString(name) || slices.Contains(s.GatewayUsers[:i], name) {
+			return fmt.Errorf("gateway_users entry %d must be a Unix user name, listed once", i+1)
+		}
+	}
 	return nil
 }
 
@@ -371,9 +388,10 @@ func (s site) usable(path string, front bool) error {
 	switch {
 	case s.IPv4 == "":
 		return fmt.Errorf("%s: ipv4 is empty, write the VPS's address there first", path)
-	case !front && s.AdminSSHPort == 22 && s.SSHGatewayIP == "":
-		return fmt.Errorf("%s: admin SSH on 22 needs ssh_gateway_ip, the gateway's own "+
-			"address (DP question 1 b), or admin SSH on another port (a)", path)
+	case !front && s.AdminSSHPort == s.SSHGatewayPort && s.SSHGatewayIP == "":
+		return fmt.Errorf("%s: admin SSH on %d needs ssh_gateway_ip, the gateway's own "+
+			"address (DP question 1 b), or the gateway on another ssh_gateway_port (c), or "+
+			"admin SSH on another port (a)", path, s.AdminSSHPort)
 	}
 	return nil
 }

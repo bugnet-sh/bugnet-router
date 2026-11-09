@@ -7,6 +7,9 @@ sessions.bugnet.sh          sessions
 mcp.bugnet.sh               mcp
 bugnet.sh                   website
 www.bugnet.sh               website
+pay.bugnet.sh               website
+bugnet.org                  website
+www.bugnet.org              website
 egress.bugnet.sh            egress
 preview.dev.bugnet.sh       edge_dev
 transfer.dev.bugnet.sh      edge_dev

@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
 // x402 runs x402 check, enable or list
@@ -25,9 +29,68 @@ func (c *cli) x402(args []string) error {
 			return c.x402List(args[1:])
 		case "seller-check":
 			return c.x402SellerCheck(args[1:])
+		case "allowed-hosts":
+			return c.x402AllowedHosts(args[1:])
 		}
 	}
-	return fmt.Errorf("%w: x402 takes check, enable, list or seller-check", errUsage)
+	return fmt.Errorf("%w: x402 takes check, enable, list, seller-check or allowed-hosts",
+		errUsage)
+}
+
+// x402Index is the reviewed index's part that allowed-hosts reads (XS 5.1)
+type x402Index struct {
+	V        int `json:"v"`
+	Services []struct {
+		Host string `json:"host"`
+	} `json:"services"`
+}
+
+// x402AllowedHosts prints the router's allowed_shared_hosts line for a reviewed index: its hosts
+// under one of the settings file's shared_hosting_suffixes, sorted and listed once (XS 6.16)
+func (c *cli) x402AllowedHosts(args []string) error {
+	fs := newFlags("x402 allowed-hosts")
+	index := fs.String("index", "", "the reviewed index, x402-index.json")
+	settings := fs.String("config", "", "the router's settings file")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	for _, f := range [][2]string{{"index", *index}, {"config", *settings}} {
+		if err := required(f[0], f[1]); err != nil {
+			return err
+		}
+	}
+	cfg, err := config.LoadFile(*settings)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*index)
+	if err != nil {
+		return err
+	}
+	var idx x402Index
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return fmt.Errorf("%s: %w", *index, err)
+	}
+	if idx.V != 1 {
+		return fmt.Errorf("%s: v must be 1", *index)
+	}
+	var hosts []string
+	for _, s := range idx.Services {
+		host := strings.TrimSuffix(strings.ToLower(s.Host), ".")
+		for _, suffix := range cfg.X402.SharedHostingSuffixes {
+			if host == suffix || strings.HasSuffix(host, "."+suffix) {
+				hosts = append(hosts, host)
+				break
+			}
+		}
+	}
+	slices.Sort(hosts)
+	quotedHosts := make([]string, 0, len(hosts))
+	for _, h := range slices.Compact(hosts) {
+		quotedHosts = append(quotedHosts, strconv.Quote(h))
+	}
+	_, err = fmt.Fprintf(c.stdout, "allowed_shared_hosts = [%s]\n", strings.Join(quotedHosts, ", "))
+	return err
 }
 
 // x402Check runs CheckX402, with no handle only the checks that need no placement

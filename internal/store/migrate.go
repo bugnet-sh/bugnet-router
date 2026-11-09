@@ -20,7 +20,11 @@ const migrateLockKey int64 = 0x62756e6e65746d67
 
 // Migrate applies the router migrations and then River's, safe to call from several processes
 func Migrate(ctx context.Context, databaseURL string) error {
-	lock, err := pgx.Connect(ctx, databaseURL)
+	cfg, err := connConfig(databaseURL)
+	if err != nil {
+		return err
+	}
+	lock, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -29,17 +33,23 @@ func Migrate(ctx context.Context, databaseURL string) error {
 		return fmt.Errorf("advisory lock: %w", err)
 	}
 
-	if err := gooseUp(ctx, databaseURL); err != nil {
+	if err := gooseUp(ctx, cfg); err != nil {
 		return err
 	}
 	return riverUp(ctx, databaseURL)
 }
 
-func gooseUp(ctx context.Context, databaseURL string) error {
-	cfg, err := pgx.ParseConfig(databaseURL)
+// connConfig parses the URL as the pool does, so pool settings such as pool_max_conns, which
+// BUGNET_DATABASE_URL carries for router-worker, never reach Postgres as runtime parameters
+func connConfig(databaseURL string) (*pgx.ConnConfig, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
+		return nil, fmt.Errorf("parse url: %w", err)
 	}
+	return cfg.ConnConfig, nil
+}
+
+func gooseUp(ctx context.Context, cfg *pgx.ConnConfig) error {
 	db := stdlib.OpenDB(*cfg)
 	defer func() { _ = db.Close() }()
 	return runGoose(ctx, db)

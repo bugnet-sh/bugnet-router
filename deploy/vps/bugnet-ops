@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Runs bugnet-dev on the VPS as bugnet-router with the router's environment, so operator commands
+# (CP 3.4, 12.3) use the router's tokens and nobody reads or prints /etc/bugnet/router.env.
+# deploy.sh installs it as /usr/local/bin/bugnet-ops. Run it with sudo:
+#
+#   sudo bugnet-ops wallet show <payer>
+#   sudo bugnet-ops pubkey --event
+set -euo pipefail
+exec systemd-run --wait --pipe --quiet --collect -p User=bugnet-router \
+	-p EnvironmentFile=/etc/bugnet/router.env \
+	/opt/bugnet/router/current/bugnet-dev --config /etc/bugnet/router.toml "$@"

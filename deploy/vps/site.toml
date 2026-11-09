@@ -1,11 +1,19 @@
-# The VPS's facts that are not secret, and the founder's answers to DP questions 1, 2 and 11.
-# bugnet-dev deploy maps reads it with names.toml. An unknown key fails. An answer changes a value
-# here, never a script.
+# The production VPS's facts that are not secret, and the founder's answers to DP questions 1, 2
+# and 11. bugnet-dev deploy maps reads it with names.toml, ship.sh its address and admin port. An
+# unknown key fails. An answer changes a value here, never a script.
 
-ipv4 = ""                    # the VPS's address, from the founder, required by deploy maps
-ipv6 = ""                    # empty without IPv6
-admin_ssh_port = 2222        # DP question 1, option (a), and 22 under option (b)
-ssh_gateway_ip = ""          # empty binds every address (a), the second IPv4 under (b)
+# TODO(founder): the production VPS's addresses. The controller writes them here before ship.sh;
+# deploy maps refuses an empty ipv4. ipv6 stays empty without IPv6 (DP question 15).
+ipv4 = "62.72.21.74"         # the test VPS, production since 2026-11-09
+ipv6 = "2a02:4780:c:ab47::1"
+# DP question 1, answered (c) on 2026-11-07: admin SSH stays on 22, HAProxy's frontend ssh binds
+# 2222, and the router's names.ssh_port is 2222. The dev front's test VPS runs front.sh with its
+# admin SSH on 2222, so a front render there passes --site with admin_ssh_port = 2222.
+admin_ssh_port = 2222        # this VPS keeps admin SSH on 2222
+ssh_gateway_port = 2201      # off the admin port; ssh.providers is empty until SSH rows pass
+ssh_gateway_ip = ""          # empty binds every address, the second IPv4 under (b)
 egress_ip = ""               # empty shares the address (X8), or DP question 11's own address
 dns_provider = "cloudflare"  # DP question 2, any lego DNS provider
 dns_env = ["CF_DNS_API_TOKEN"]   # the variables dns_provider reads from /etc/bugnet/certs.env
+# TODO(gateway team): their Unix users, which check.sh keeps off Postgres and Valkey (DP 15.3, 17)
+gateway_users = ["bugnet-gateway"]

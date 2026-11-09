@@ -450,7 +450,9 @@ does not know.
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
 of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
 its own service. `bugnet-dev keys` prints fresh values for all of them, and `dev-up.sh` adds the
-ones an older `.env.keys` lacks.
+ones an older `.env.keys` lacks. `bugnet-dev keys --production` leaves out
+`BUGNET_ORDER_PRIVATE_KEY`, which Payments holds in production, and `bugnet-dev pubkey --event`
+prints the public half of `BUGNET_EVENT_SIGNING_KEY` from the environment for Payments.
 
 `BUGNET_DATA_PLANE_KEYS` derives the data plane's preview tokens, gate keys, SSH grant ids,
 transfer and link tokens, put grants, pairing codes and placeholders, so the router stores none
@@ -472,7 +474,8 @@ a deadline still ends the placement and frees its slot. Only a call that uses th
 fails.
 
 `router-api migrate` and `router-worker outbox-redrive` read only `BUGNET_DATABASE_URL` and need
-no settings file.
+no settings file. `migrate` drops `pool_max_conns` and the other pool settings from the URL, so
+the production URL serves both.
 
 Each River worker of `router-worker` holds a Postgres connection while it runs a job, so the pool
 needs more connections than its workers together: `worker.default_workers` (20) and
@@ -1497,7 +1500,8 @@ liveness answer and `/readyz` checks only that Postgres and Valkey answer.
 
 The founder's VPS is the public front (DP 15). HAProxy splits TCP 443 by SNI and never decrypts.
 Until the production deploy, the VPS fronts the Mac through a reverse SSH tunnel for live tests
-(DP 15.6). `deploy/vps` holds its files.
+(DP 15.6). `deploy/vps` holds its files. `deploy/vps/README.md` is the production deploy's
+runbook: `ship.sh` on the Mac, `deploy.sh`, `check.sh` and `bugnet-ops` on the VPS.
 
 | Path | What it holds |
 | --- | --- |
@@ -1521,7 +1525,7 @@ It writes six files into `DIR`:
 | `haproxy.cfg` | `/etc/haproxy/` | DP 15.2's config |
 | `certs.toml` | `/etc/bugnet/` | `bugnet-certs` settings, each suffix's wildcard, its DNS host |
 | `certs-staging.toml` | `/etc/bugnet/` | The same against Let's Encrypt staging |
-| `deploy.env` | Read by `front.sh` | The admin SSH port and the wildcard directories |
+| `deploy.env` | Read by `front.sh`, `deploy.sh` | The SSH ports, the wildcard directories, `gateway_users` |
 
 - A new public name is one line in `names.toml`. A suffix line names its certificate directory
   under `/var/lib/bugnet-certs/` with `cert`.
@@ -1543,6 +1547,7 @@ Each answer changes a value in `site.toml`, never a script.
 | --- | --- | --- | --- |
 | DP 1 | (a) admin SSH on 2222 | `admin_ssh_port = 2222` | `frontend ssh` binds `:22`, `:::22` |
 | DP 1 | (b) a second IPv4 | `admin_ssh_port = 22`, `ssh_gateway_ip` | It binds 22 there only |
+| DP 1 | (c), answered 2026-11-07 | `admin_ssh_port = 22`, `ssh_gateway_port = 2222` | It binds `:2222`, `:::2222` |
 | DP 2 | (a) or (b) | `dns_provider`, `dns_env` | No change |
 | DP 11 | The proxy shares the IP | `egress_ip = ""` | Unknown names go to `egress` |
 | DP 11 | The proxy's own IPv4 | `egress_ip` | `frontend egress_ip` sends all to `egress` |

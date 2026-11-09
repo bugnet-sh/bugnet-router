@@ -1,0 +1,13 @@
+# bugnet-edge --role sessions on the production VPS, /etc/bugnet/sessions.toml (SP 7.1)
+# Its one secret comes only from /etc/bugnet/sessions.env: BUGNET_SESSIONS_TOKEN
+
+router_url = "http://127.0.0.1:8080"
+tls_listen_addr = "127.0.0.1:8448"
+metrics_listen_addr = "127.0.0.1:9105"
+proxy_protocol_from = ["127.0.0.1/32", "::1/128"]
+host = "sessions.bugnet.sh"
+page_dir = "/srv/bugnet/session-page"   # bugnet-website's session page build, read at start
+acme_enabled = true
+acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
+acme_dir = "/var/lib/bugnet-sessions/acme"
+acme_email = ""

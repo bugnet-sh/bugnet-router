@@ -1,0 +1,33 @@
+# router-api, beside the old version on deploy with api.reuse_port (DP 15.3, 15.7). Its old process
+# drains transfer streams up to transfers.max_duration, 30 minutes
+[Unit]
+Description=Bugnet router API %i
+After=network-online.target postgresql.service valkey-server.service redis-server.service
+Wants=network-online.target
+
+[Service]
+User=bugnet-router
+Group=bugnet-router
+SupplementaryGroups=valkey
+ExecStart=/opt/bugnet/router/%i/router-api -config /etc/bugnet/router.toml
+EnvironmentFile=/etc/bugnet/router.env
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=65536
+LimitCORE=0
+TimeoutStopSec=31min
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

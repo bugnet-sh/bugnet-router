@@ -168,11 +168,13 @@ cert_metrics = []
 names = ["*.preview.dev.bugnet.sh"]
 dir = "/var/lib/bugnet-certs/preview-dev"
 `)
-	eq(t, f["deploy.env"], `# What front.sh reads, from names.toml and site.toml
+	eq(t, f["deploy.env"], `# What front.sh and deploy.sh read, from names.toml and site.toml
 ADMIN_SSH_PORT=2222
 PRODUCTION_CERT_DIRS=
 DEV_CERT_DIRS=/var/lib/bugnet-certs/preview-dev
 STAGING_CERT_DIRS=/var/lib/bugnet-certs/staging/preview-dev
+SSH_GATEWAY_PORT=22
+GATEWAY_USERS=
 `)
 
 	// Under DP question 1 (b) the gateway's address joins in Task 39, so the front needs none
@@ -215,11 +217,13 @@ dir = "/var/lib/bugnet-certs/staging/preview"
 names = ["*.preview.dev.bugnet.sh"]
 dir = "/var/lib/bugnet-certs/staging/preview-dev"
 `)
-	eq(t, f["deploy.env"], `# What front.sh reads, from names.toml and site.toml
+	eq(t, f["deploy.env"], `# What front.sh and deploy.sh read, from names.toml and site.toml
 ADMIN_SSH_PORT=22
 PRODUCTION_CERT_DIRS=/var/lib/bugnet-certs/preview
 DEV_CERT_DIRS=/var/lib/bugnet-certs/preview-dev
 STAGING_CERT_DIRS=/var/lib/bugnet-certs/staging/preview /var/lib/bugnet-certs/staging/preview-dev
+SSH_GATEWAY_PORT=22
+GATEWAY_USERS=
 `)
 }
 

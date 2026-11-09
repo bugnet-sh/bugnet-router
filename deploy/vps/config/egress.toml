@@ -1,0 +1,25 @@
+# bugnet-egress on the production VPS, /etc/bugnet/egress.toml (DP 10.8, XS 6.17)
+# Its secrets come only from /etc/bugnet/egress.env: BUGNET_EGRESS_TOKEN and
+# BUGNET_EGRESS_FETCH_TOKEN. The CA key, the box key and the x402 client key are credentials
+
+router_url = "http://127.0.0.1:8080"
+listen_addr = "127.0.0.1:9443"
+metrics_listen_addr = "127.0.0.1:9103"
+proxy_protocol_from = ["127.0.0.1/32", "::1/128"]
+egress_host = "egress.bugnet.sh"
+acme_enabled = true
+acme_directory = "https://acme-v02.api.letsencrypt.org/directory"
+acme_dir = "/var/lib/bugnet-egress/acme"
+acme_email = ""
+ca_credential = "egress_ca_key"
+ca_cert_file = "/etc/bugnet/egress-ca.pem"
+ca_version = 1
+box_keys = [{ id = "k1", credential = "egress_box_k1" }]
+
+[x402]
+payments_url = "https://127.0.0.1:8449"               # Payments' x402 signer, mTLS, loopback only
+payments_server_name = "bugnet-payments.internal"
+payments_ca_file = "/etc/bugnet/internal-ca.pem"
+payments_client_cert_file = "/etc/bugnet/egress-x402-client.pem"
+payments_client_key_credential = "egress_x402_client_key"
+payments_timeout = "3s"                                 # above Payments' sign_timeout, 2s

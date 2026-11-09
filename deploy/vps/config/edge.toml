@@ -1,0 +1,25 @@
+# bugnet-edge on the production VPS, /etc/bugnet/edge.toml (DP 8.8, 15.3)
+# Secrets come only from /etc/bugnet/edge.env: BUGNET_EDGE_TOKEN and BUGNET_HOOK_PATH_SECRET
+
+router_url = "http://127.0.0.1:8080"
+tls_listen_addr = "127.0.0.1:8443"
+redirect_listen_addr = ":80"
+metrics_listen_addr = "127.0.0.1:9101"
+proxy_protocol_from = ["127.0.0.1/32", "::1/128"]
+drain = "5m"
+
+[names]
+preview_domain = "preview.bugnet.sh"
+transfer_host = "transfer.bugnet.sh"
+hooks_host = "hooks.bugnet.sh"
+
+[previews]
+abuse_contact = "support@bugnet.org"   # DP question 3, the default until answered
+boat_requests_per_minute = 0           # off: live BOAT4 (2026-11-08) saw no 429 at 12,000 a minute
+
+[acme]
+enabled = true
+directory = "https://acme-v02.api.letsencrypt.org/directory"
+email = ""
+state_dir = "/var/lib/bugnet-edge"
+wildcard_dir = "/var/lib/bugnet-certs/preview"

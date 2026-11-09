@@ -1,0 +1,38 @@
+# The egress proxy (DP 15.3) and its x402 client toward Payments (XS 6.17). Its keys reach it only
+# as credentials. reload re-reads the x402 client certificate and the internal CA
+[Unit]
+Description=Bugnet egress proxy %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bugnet-egress
+Group=bugnet-egress
+ExecStart=/opt/bugnet/egress/%i/bugnet-egress serve -config /etc/bugnet/egress.toml
+ExecReload=/bin/kill -HUP $MAINPID
+EnvironmentFile=/etc/bugnet/egress.env
+StateDirectory=bugnet-egress
+LoadCredential=egress_ca_key:/etc/bugnet/keys/egress-ca.key
+LoadCredential=egress_x402_client_key:/etc/bugnet/keys/egress-x402-client.key
+LoadCredential=egress_box_k1:/etc/bugnet/keys/egress_box_k1
+CapabilityBoundingSet=
+ProtectProc=invisible
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=65536
+LimitCORE=0
+TimeoutStopSec=330
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

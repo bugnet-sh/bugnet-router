@@ -1,0 +1,32 @@
+# router-worker, one process, restarted on deploy: River retries its jobs (DP 15.7)
+[Unit]
+Description=Bugnet router worker
+After=network-online.target postgresql.service valkey-server.service redis-server.service
+Wants=network-online.target
+
+[Service]
+User=bugnet-router
+Group=bugnet-router
+SupplementaryGroups=valkey
+ExecStart=/opt/bugnet/router/current/router-worker -config /etc/bugnet/router.toml
+EnvironmentFile=/etc/bugnet/router.env
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=65536
+LimitCORE=0
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
