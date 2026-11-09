@@ -265,6 +265,15 @@ func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return provider.Size{}, false
 }
 
+// Sizes lists the instance types as sizes
+func (p *Provider) Sizes() []provider.Size {
+	out := make([]provider.Size, 0, len(p.sizes))
+	for _, s := range p.sizes {
+		out = append(out, provider.Size{Name: s.name, Resources: s.typ.resources})
+	}
+	return out
+}
+
 // HourlyCostMicros is the instance type's per second price over an hour, 0 for a size not sold
 func (p *Provider) HourlyCostMicros(sz provider.Size) int64 {
 	if s, ok := p.size(sz.Name); ok {

@@ -161,6 +161,9 @@ type Deps struct {
 	SSHPort int
 	// Wallets are the payer and wallet settings, a zero limit taking its default
 	Wallets config.Wallets
+	// Bench and Health bound StartBench, each zero value at its default
+	Bench  config.Bench
+	Health config.Health
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
 	// Estimator answers Estimate and gives a placement its source, Estimate lists packages alone
@@ -220,6 +223,12 @@ var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
 func New(deps Deps) *Server {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
+	}
+	if deps.Bench == (config.Bench{}) {
+		deps.Bench = config.DefaultBench()
+	}
+	if deps.Health == (config.Health{}) {
+		deps.Health = config.DefaultHealth()
 	}
 	ops := ratelimit.New(deps.Valkey, deps.Prefix, deps.SandboxOpsPerSecond, deps.SandboxOpsBurst)
 	life, end := context.WithCancel(context.Background())

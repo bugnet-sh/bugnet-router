@@ -274,6 +274,10 @@ slow_ready_p95 = "10s"        # ready time over which a provider is slow
 down_alert_after = "10m"      # /monitor reports a provider down for this long
 samples_keep = "720h"         # how long a start sample is kept
 
+[bench]
+confirm_above_micros = 500000 # a benchmark estimated over this needs --yes ($0.50)
+max_runs = 200                # the most runs one benchmark may ask for
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint

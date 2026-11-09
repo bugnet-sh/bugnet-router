@@ -211,6 +211,15 @@ func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return provider.Size{}, false
 }
 
+// Sizes lists the machine sizes boxd sells
+func (p *Provider) Sizes() []provider.Size {
+	out := make([]provider.Size, 0, len(sizes))
+	for _, s := range sizes {
+		out = append(out, s.size)
+	}
+	return out
+}
+
 // HourlyCostMicros prices a size at its maximum running rate, and an unknown size as the dearest
 func (p *Provider) HourlyCostMicros(size provider.Size) int64 {
 	eur := sizes[len(sizes)-1].eurPerHour

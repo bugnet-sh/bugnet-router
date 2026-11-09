@@ -254,6 +254,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		SSHHost:             cfg.Names.SSHHost,
 		SSHPort:             cfg.Names.SSHPort,
 		Wallets:             cfg.Wallets,
+		Bench:               cfg.Bench,
+		Health:              cfg.Health,
 		ProviderOps:         cfg.ProviderOps,
 		Estimator:           est,
 		Sessions:            cfg.Sessions,

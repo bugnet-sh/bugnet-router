@@ -110,3 +110,29 @@ func CanaryTimeouts() [3]time.Duration {
 		(*healthRollupWorker).Timeout(nil, nil),
 	}
 }
+
+// SetBenchPoll sets how long a bench wave waits between looks and returns a function that
+// restores it
+func SetBenchPoll(d time.Duration) (restore func()) {
+	old := benchPoll
+	benchPoll = d
+	return func() { benchPoll = old }
+}
+
+// BenchTimeouts are the run times of the bench and retention jobs
+func BenchTimeouts() [2]time.Duration {
+	return [2]time.Duration{
+		(*benchWorker).Timeout(nil, nil), (*retentionWorker).Timeout(nil, nil),
+	}
+}
+
+// Retain runs one retention pass and reports whether rows were left over
+func (w *Worker) Retain(ctx context.Context) bool { return w.retain(ctx) }
+
+// RetentionNext is when the retention schedule fires after t
+func RetentionNext(t time.Time) time.Time { return dailyAt(retentionHour).Next(t) }
+
+// BenchWave runs one look at a wave of a benchmark and reports whether it waits
+func (w *Worker) BenchWave(ctx context.Context, a jobargs.Bench) (bool, error) {
+	return w.benchWave(ctx, a)
+}

@@ -86,6 +86,13 @@ const (
 	reasonFacilitatorAddress = "FACILITATOR_ADDRESS"
 )
 
+// Benchmark reasons, named as CP 13.1 names them
+const (
+	reasonCostUnconfirmed = "COST_UNCONFIRMED"
+	reasonProviderBlocked = "PROVIDER_BLOCKED"
+	reasonBenchUnknown    = "BENCH_UNKNOWN"
+)
+
 // Preview reasons, named as DP 11.3 names them
 const (
 	reasonPortRefused     = "PORT_REFUSED"

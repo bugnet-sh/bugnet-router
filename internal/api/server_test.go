@@ -219,6 +219,8 @@ type options struct {
 	ssh config.SSH
 	// wallets are the saga's and API server's wallet settings, each zero limit at its default
 	wallets config.Wallets
+	// bench sets the benchmark settings, the defaults when zero
+	bench config.Bench
 	// providerOps is each provider account's operations a second
 	providerOps map[string]int
 	// x402 changes the API server's [x402] settings from x402Of's
@@ -413,8 +415,9 @@ func newEnv(t *testing.T, opts options) *env {
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
 		Secrets: secretsOf(opts), SecretsHost: secretsHost, EgressHost: egressHost,
 		X402: x402Of(opts), HostRules: hostRules(x402Of(opts)), SSH: sshSettings(opts.ssh),
-		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, ProviderOps: opts.providerOps,
-		Sessions: sess, SessionWriter: writer,
+		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, Bench: opts.bench,
+		ProviderOps: opts.providerOps,
+		Sessions:    sess, SessionWriter: writer,
 		Bootstrap: opts.bootstrap, Fetch: opts.fetch, FetchToken: opts.fetchToken,
 		Images: opts.images, Upstream: opts.upstream, Hooks: opts.hooks,
 		HookSecrets: opts.hookSecrets,

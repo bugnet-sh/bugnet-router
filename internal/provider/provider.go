@@ -171,6 +171,11 @@ type StartCoster interface {
 	StartCostMicros(size Size) (int64, bool)
 }
 
+// Sizer is a provider that lists the sizes it sells, smallest first
+type Sizer interface {
+	Sizes() []Size
+}
+
 // EgressSource is where a provider says a sandbox's outbound connections leave from
 type EgressSource struct {
 	// Prefix is masked, a /32 for IPv4 and the adapter's width for IPv6

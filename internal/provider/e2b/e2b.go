@@ -285,6 +285,15 @@ func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return provider.Size{}, false
 }
 
+// Sizes lists the templates as sizes
+func (p *Provider) Sizes() []provider.Size {
+	out := make([]provider.Size, 0, len(p.templates))
+	for _, t := range p.templates {
+		out = append(out, t.size())
+	}
+	return out
+}
+
 // HourlyCostMicros prices the size's vCPUs and memory while it runs, disk is free
 func (p *Provider) HourlyCostMicros(size provider.Size) int64 {
 	return hourlyMicros(size.Resources)

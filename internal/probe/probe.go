@@ -38,6 +38,9 @@ const (
 	fileSize = 4 << 10
 	// filePath is where the probe's file lives inside the sandbox
 	filePath = "/tmp/bugnet-probe.bin"
+	// tokenWait is how long a benchmark probe waits for a create token, polling every tokenPoll
+	tokenWait = 10 * time.Second
+	tokenPoll = 100 * time.Millisecond
 )
 
 // Spec is one probe run
@@ -47,6 +50,8 @@ type Spec struct {
 	Size     provider.Size
 	BenchID  string // empty for canaries
 	Run      int
+	// AllowPaid lets a benchmark probe start a sandbox that costs a fee
+	AllowPaid bool
 }
 
 // Runner is the part of the saga a probe starts a sandbox with
@@ -86,14 +91,18 @@ func New(d Deps) *Probe {
 	return &Probe{d: d}
 }
 
-// Run stores and returns one sample. It reports false, and writes nothing, when the provider has
-// no free slot, no create token or a paused create, or when a canary would pay for a start.
+// Run stores and returns one sample. A canary reports false, and writes nothing, when the provider
+// has no free slot, no create token or a paused create, or when it would pay for a start. A
+// benchmark probe waits a few seconds for a create token and writes a capacity or rate_limited
+// sample for a full or paused provider, so every run of a benchmark is counted. It reports false
+// when it would pay for a start without AllowPaid.
 func (p *Probe) Run(ctx context.Context, s Spec) (store.StartSample, bool, error) {
 	prov, ok := p.d.Registry.Get(s.Provider)
 	if !ok {
 		return store.StartSample{}, false, fmt.Errorf("probe: unknown provider %q", s.Provider)
 	}
-	if s.Kind == store.SampleCanary && !StartFree(prov, s.Size) {
+	bench := s.Kind == store.SampleBench
+	if (!bench || !s.AllowPaid) && !StartFree(prov, s.Size) {
 		return store.StartSample{}, false, nil
 	}
 	runID := uuid.New()
@@ -102,13 +111,63 @@ func (p *Probe) Run(ctx context.Context, s Spec) (store.StartSample, bool, error
 		return store.StartSample{}, false, fmt.Errorf("probe: reserve a slot: %w", err)
 	}
 	if !slot {
-		return store.StartSample{}, false, nil
+		return p.refused(ctx, s, store.OutcomeCapacity)
 	}
 	defer p.release(ctx, s.Provider, runID)
-	if p.d.Saga.CreatesPaused(ctx, s.Provider) || !p.d.Saga.TakeCreate(ctx, s.Provider) {
-		return store.StartSample{}, false, nil
+	if p.d.Saga.CreatesPaused(ctx, s.Provider) {
+		return p.refused(ctx, s, store.OutcomeRateLimited)
+	}
+	if !p.takeCreate(ctx, s) {
+		return p.refused(ctx, s, store.OutcomeRateLimited)
 	}
 	m := p.run(ctx, prov, s, runID)
+	if err := p.d.Store.InsertStartSample(context.WithoutCancel(ctx), m); err != nil {
+		return m, true, fmt.Errorf("probe: store the sample: %w", err)
+	}
+	return m, true, nil
+}
+
+// takeCreate takes a create token, a benchmark probe waiting up to tokenWait for one
+func (p *Probe) takeCreate(ctx context.Context, s Spec) bool {
+	if p.d.Saga.TakeCreate(ctx, s.Provider) {
+		return true
+	}
+	if s.Kind != store.SampleBench {
+		return false
+	}
+	deadline := time.NewTimer(tokenWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(tokenPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
+			if p.d.Saga.TakeCreate(ctx, s.Provider) {
+				return true
+			}
+		}
+	}
+}
+
+// refused stores the sample of a benchmark probe that could not start, and writes nothing for
+// any other kind
+func (p *Probe) refused(
+	ctx context.Context, s Spec, outcome string,
+) (store.StartSample, bool, error) {
+	if s.Kind != store.SampleBench {
+		return store.StartSample{}, false, nil
+	}
+	m := store.StartSample{
+		Kind: s.Kind, BenchID: s.BenchID, Provider: s.Provider, SizeName: s.Size.Name,
+		StartedAt: p.d.Now().UTC(), Replica: p.d.Replica, Outcome: outcome,
+		CreateMS: store.NoStep, ReadyMS: store.NoStep, RunnerMS: store.NoStep,
+		GateMS: store.NoStep, FirstCmdMS: store.NoStep, WarmCmdMS: store.NoStep,
+		DestroyMS: store.NoStep,
+	}
 	if err := p.d.Store.InsertStartSample(context.WithoutCancel(ctx), m); err != nil {
 		return m, true, fmt.Errorf("probe: store the sample: %w", err)
 	}

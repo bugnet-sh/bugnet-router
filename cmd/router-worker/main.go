@@ -213,6 +213,8 @@ func serve(
 		},
 		Stats: feedDeps(cfg, cat), Sessions: cfg.Sessions, Sources: sources,
 		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent, Health: cfg.Health,
+		EstimatesKeep: cfg.Estimator.EstimatesKeep, SourceFactsKeep: cfg.Estimator.SourceFactsKeep,
+		ObservationsKeep: cfg.Estimator.ObservationsKeep,
 	})
 	if err != nil {
 		return err

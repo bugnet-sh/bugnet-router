@@ -30,8 +30,8 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries and the health rollup, `router-worker outbox-redrive` sends stuck events at once |
-| `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands and internal certificates |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries, the health rollup, benchmark waves and retention, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands, internal certificates, benchmarks and the placement simulator |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
 | `internal/vkclient` | Valkey connections at `host:port` or a `unix://` socket path |
@@ -41,6 +41,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
 | `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
 | `internal/probe` | The probe that starts, times and removes one sandbox, for canaries and benchmarks |
+| `internal/bench`, `internal/simulate` | Nearest-rank percentiles, benchmark cost estimates and start reports, and the placement simulator that replays recorded start samples |
 | `internal/health` | The provider health the replicas share through Postgres, its rollup rules and canary schedule, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
@@ -541,6 +542,7 @@ features that read them land one by one, and until then the settings only load a
 | `[hooks]` | `providers` whose webhooks are verified (`e2b`, `boat`), `boat_window` for the timestamp check and `hint_unique` for folding hints of one sandbox. `router-api` refuses to start when a listed provider has no secret or no verifier |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 | `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
+| `[bench]` | The estimate over which `bench start` needs `--yes`, and the most runs one benchmark may ask for |
 | `[health]` | How often each provider gets a canary, the probe workers, the size a canary takes, the window and bounds that mark a provider `down` or `slow`, and when `/monitor` reports a provider down |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
@@ -1948,4 +1950,65 @@ The local breaker still closes a provider at 3 failures in 60 s without the roll
 `/monitor` also reports `provider X is down for N minutes` past `down_alert_after`, `provider X
 has had no canary for N minutes` when a canary is 3 intervals late and no placement got ready
 there, and `provider X has a probe sandbox N minutes old` past 15 minutes, from the sweep's
-listing. Start samples older than `samples_keep` are deleted by the retention job of Task 38.
+listing. Start samples older than `samples_keep` are deleted by the retention job.
+
+### Benchmarks, the placement simulator and retention
+
+`bugnet-dev bench start --provider P [--size S] [--runs 30] [--concurrency 3] [--yes]
+[--allow-paid-starts]` calls `StartBench` with `BUGNET_OPERATOR_TOKEN`. The router checks that the
+provider is configured and its account is not blocked (`PROVIDER_BLOCKED`), takes the named size
+or the provider's smallest, and estimates the cost as runs times 30 s at the hourly rate, rounded
+up to the billing increment, plus the provider's start fee. Over `bench.confirm_above_micros`
+(500000, $0.50) it refuses with `COST_UNCONFIRMED` and the estimate in the error's
+`estimated_cost_micros` metadata unless `confirm_cost_micros` covers it. `bugnet-dev` prints the
+estimate and sends it back with `--yes`. `runs` is 1 to `bench.max_runs` (200) and `concurrency`
+is 1 to `health.probe_workers`. The call writes a `benches` row and queues `bench{bench_id,
+wave: 0}`.
+
+A `bench` job runs one wave. The first time it sees a wave it queues up to `concurrency` `probe`
+jobs of kind `bench` on the probes queue, numbered from `wave * concurrency`, and snoozes 15 s at
+a time while any is out. When none is, it counts the samples stored under the benchmark and queues
+the next wave, or finishes the row once the runs are stored, so a probe that was rescued and lost
+is made up by the next wave. A benchmark probe waits up to 10 s for a create token, so a provider's
+create rate holds. It stores a `capacity` sample for a provider with no free slot and a
+`rate_limited` sample for a paused one, and the benchmark goes on. On a provider that charges per
+start, a wave has one probe and the benchmark ends when the next start would cost a fee, unless
+`--allow-paid-starts` is set. The worker's own keys do the work, so the numbers come from where
+the worker runs.
+
+`bugnet-dev bench report [--bench-id ID | --since 24h] [--kind bench,canary,placement]
+[--provider P] [--json]` calls `ReportStarts`, which groups the samples by provider, size and kind.
+Each table gives the ok, failed and refused counts, the success rate with its 95 percent Wilson
+lower bound, and the nearest-rank p50, p90 and p99 of create, ready, runner, gate, first command,
+warm command, destroy and total (ready, runner, gate and first command added), then the measured
+cost beside the estimate. Refused counts capacity, rate limit and quota answers, which are not
+failures.
+
+`bugnet-dev bench router --package P [--runs 20] [--concurrency 2] [--json]` orders through
+`CreatePlacement` with dev order tokens, runs `true` through `Exec` and stops the placement, and
+times it on the client. It reports `start_path: cold`. It needs `BUGNET_INTERNAL_TOKEN` and
+`BUGNET_ORDER_PRIVATE_KEY`, so it runs against a development router only.
+
+`bugnet-dev simulate [--since 7d] [--budget-seconds 30[,N...]] [--providers A,B] [--orders 1000]
+[--json]` replays the recorded start samples (`internal/simulate`, pure Go) through the saga's
+failover rules: providers are tried in the order given, at most 3 attempts, within the placing
+budget, and each attempt draws a recorded start of the provider it tries. It prints per budget the
+share of orders ready, the share that failed over, the share refunded for no candidate, and the p50
+and p90 time to ready. `ReportStarts` answers aggregates only, so `simulate` reads the samples
+from Postgres at `BUGNET_DATABASE_URL`.
+
+The `retention` job runs at start and daily at 04:00 UTC, one at a time, with a 120 s timeout. It
+deletes up to 10,000 rows of a table a batch and queues itself again when a table still had a full
+batch after 90 s of work.
+
+| Rows | Deleted after |
+| --- | --- |
+| `start_samples` | `health.samples_keep` (30 days) |
+| `benches` | 90 days |
+| `transfer_index` | 30 days |
+| `probe_slots` | 10 minutes, the slot's capacity given back |
+| `usage_observations` | `estimator.observations_keep` (90 days) |
+| `estimates` that no placement or observation refers to | `estimator.estimates_keep` (7 days) after `served_at` |
+| `source_facts` that no kept estimate refers to | `estimator.source_facts_keep` (7 days) after `used_at` |
+
+`wallets`, `wallet_events`, `catalogs` and `provider_cost_daily` are kept.

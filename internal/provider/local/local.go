@@ -143,6 +143,9 @@ func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return provider.Size{}, false
 }
 
+// Sizes lists the configured sizes
+func (p *Provider) Sizes() []provider.Size { return slices.Clone(p.opts.Sizes) }
+
 // HourlyCostMicros returns the one configured cost for every size
 func (p *Provider) HourlyCostMicros(provider.Size) int64 { return p.opts.HourlyCostMicros }
 
