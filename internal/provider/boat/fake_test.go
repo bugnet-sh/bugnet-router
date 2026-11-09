@@ -74,6 +74,9 @@ type fakeSandbox struct {
 	procs        map[int]*fakeProc
 	ip           any
 	sshEndpoint  any
+	// degradedSince and stopText set Boat's health and error fields, empty for none
+	degradedSince time.Time
+	stopText      string
 }
 
 // fakeProc is one detached command, its logs kept whole so every attach can replay them
@@ -426,6 +429,13 @@ func (f *fakeBoat) sandboxJSON(s *fakeSandbox) map[string]any {
 		"desktopAvailable": false, "snapshotAvailable": false, "snapshots": false,
 		"monitoring": false, "hydration": nil, "team": nil, "access": "owner",
 		"health": "ok", "lastReboot": nil, "futureField": map[string]any{"nested": []any{1}},
+	}
+	if !s.degradedSince.IsZero() {
+		sb["health"], sb["healthReason"] = "degraded", "tunnel unreachable"
+		sb["degradedSince"] = f.when(s.degradedSince)
+	}
+	if s.stopText != "" {
+		sb["error"] = s.stopText
 	}
 	if s.sshEndpoint != nil {
 		sb["sshEndpoint"] = s.sshEndpoint
@@ -1773,4 +1783,18 @@ func (f *fakeBoat) setState(id, state string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sandboxes[id].state = state
+}
+
+// degrade makes Boat report a sandbox degraded since then
+func (f *fakeBoat) degrade(id string, since time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].degradedSince = since
+}
+
+// stopWith moves a sandbox to a state with Boat's stop text
+func (f *fakeBoat) stopWith(id, state, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].state, f.sandboxes[id].stopText = state, text
 }

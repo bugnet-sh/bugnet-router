@@ -779,6 +779,11 @@ func (p *Provider) ListOwned(
 			}
 			p.remember(s, sum)
 		}
+		// The state and lifetime change under a cached summary, so each listing reads them anew
+		if st, ok := serviceStatus(s.Status); ok {
+			sum.State = st
+		}
+		sum.ExpiresAt = expiresAt(s)
 		if hasLabels(sum.Labels, labels) {
 			owned = append(owned, sum)
 		}
@@ -787,6 +792,76 @@ func (p *Provider) ListOwned(
 		p.forgetAllBut(items)
 	}
 	return owned, listErr
+}
+
+// expiresAt is when the service's backstop deletes it, zero when Koyeb gives none
+func expiresAt(s serviceRecord) time.Time {
+	if s.LifeCycle.DeleteAfterCreate <= 0 {
+		return time.Time{}
+	}
+	return s.CreatedAt.Add(time.Duration(s.LifeCycle.DeleteAfterCreate) * time.Second).UTC()
+}
+
+// serviceStatus maps a service or deployment status, false for one Koyeb added since
+func serviceStatus(status string) (provider.State, bool) {
+	switch status {
+	case "PENDING", "PROVISIONING", "SCHEDULED", "ALLOCATING", "STARTING", "RESUMING":
+		return provider.StateStarting, true
+	case "HEALTHY", "DEGRADED":
+		return provider.StateRunning, true
+	case "UNHEALTHY":
+		return provider.StateDegraded, true
+	case "STOPPING", "STOPPED", "CANCELING", "CANCELED", "PAUSING", "PAUSED", "SLEEPING",
+		"STASHED":
+		return provider.StateStopped, true
+	case "ERRORING", "ERROR":
+		return provider.StateFailed, true
+	}
+	return "", false
+}
+
+// Inspect reads the service and its newest deployment, a service Koyeb no longer has being gone
+func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Status, error) {
+	if _, err := appID(ref); err != nil {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	svc, err := p.service(ctx, ref)
+	if isCode(err, provider.CodeNotFound) {
+		return provider.Status{State: provider.StateGone}, nil
+	}
+	if err != nil {
+		return provider.Status{}, err
+	}
+	dep, err := p.deployment(ctx, svc.LatestDeploymentID)
+	if err != nil {
+		return provider.Status{}, err
+	}
+	state, ok := serviceStatus(dep.Status)
+	if !ok {
+		return provider.Status{}, internal(fmt.Errorf("koyeb deployment %s is %s", dep.ID,
+			dep.Status))
+	}
+	st := provider.Status{State: state, Reason: dep.Status, ExpiresAt: expiresAt(svc)}
+	if state == provider.StateFailed || state == provider.StateStopped {
+		// The event says whether the platform or the process ended it, and may be missing
+		if msg := p.lastEvent(ctx, dep.ID); msg != "" {
+			st.Reason = msg
+		}
+	}
+	return st, nil
+}
+
+// lastEvent is the type and message of the newest instance event, empty when it cannot be read
+func (p *Provider) lastEvent(ctx context.Context, deployment string) string {
+	inst, ok, err := p.api.newestInstance(ctx, deployment)
+	if err != nil || !ok {
+		return ""
+	}
+	ev, ok, err := p.api.newestInstanceEvent(ctx, inst.ID)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(ev.Type + " " + ev.Message)
 }
 
 // knownSummary returns a copy of what an earlier listing read from the service's deployment

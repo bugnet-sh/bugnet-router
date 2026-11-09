@@ -207,6 +207,8 @@ type fakeKoyeb struct {
 	quotaOrg string
 	// refuseBinds answers every bind_port with a 500
 	refuseBinds bool
+	// instanceEvents is the newest instance event message of each deployment, by deployment id
+	instanceEvents map[string]string
 	// stealBind is a port another client binds right after each unbind_port
 	stealBind string
 	binds     []string
@@ -219,6 +221,7 @@ func newFake(t *testing.T) *fakeKoyeb {
 		deployments: map[string]*fakeDeployment{}, procs: map[string]*fakeProc{},
 		faults: map[string]*fault{}, calls: map[string]int{}, stamps: map[string][]time.Time{},
 		fileFaults: map[string][]*fileFault{}, sessions: map[string]*fakeUpload{},
+		instanceEvents: map[string]string{},
 	}
 	api := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -230,6 +233,8 @@ func newFake(t *testing.T) *fakeKoyeb {
 		"GET /v1/services":                        f.listServices,
 		"GET /v1/services/{id}":                   f.getService,
 		"GET /v1/deployments/{id}":                f.getDeployment,
+		"GET /v1/instances":                       f.listInstances,
+		"GET /v1/instance_events":                 f.listInstanceEvents,
 		"GET /v1/account/organization":            f.organization,
 		"GET /v1/quotas/organizations/{id}/usage": f.quotaUsage,
 	} {
@@ -717,6 +722,29 @@ func (f *fakeKoyeb) getDeployment(w http.ResponseWriter, r *http.Request) {
 		}, "proxy_ports": []any{}}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deployment": dep})
+}
+
+// listInstances lists one instance for a deployment that has an event, its id the deployment's
+func (f *fakeKoyeb) listInstances(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	dep := r.URL.Query().Get("deployment_id")
+	instances := []map[string]any{}
+	if _, ok := f.instanceEvents[dep]; ok {
+		instances = append(instances, map[string]any{"id": "inst-" + dep, "status": "STOPPED"})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"instances": instances, "count": "1"})
+}
+
+func (f *fakeKoyeb) listInstanceEvents(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	dep := strings.TrimPrefix(r.URL.Query().Get("instance_id"), "inst-")
+	events := []map[string]any{}
+	if msg, ok := f.instanceEvents[dep]; ok {
+		events = append(events, map[string]any{"type": "INSTANCE_EVENT", "message": msg})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "count": "1"})
 }
 
 // setDeployment changes the deployment of the app's live service

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -113,8 +114,10 @@ type fakeE2B struct {
 	// gzipBody labels downloads gzip encoded like a proxy that ignores Accept-Encoding
 	gzipBody atomic.Bool
 
-	mu       sync.Mutex
-	boxes    map[string]*fakeSandbox
+	mu    sync.Mutex
+	boxes map[string]*fakeSandbox
+	// kills holds the kill reason of each sandbox that was killed, which E2B keeps 7 days
+	kills    map[string]string
 	nextID   int
 	idem     map[string]*idemEntry
 	faults   map[string]*fault
@@ -142,7 +145,8 @@ type fakeE2B struct {
 func newFake(t *testing.T) *fakeE2B {
 	t.Helper()
 	f := &fakeE2B{
-		t: t, boxes: map[string]*fakeSandbox{}, idem: map[string]*idemEntry{},
+		t: t, boxes: map[string]*fakeSandbox{}, kills: map[string]string{},
+		idem:   map[string]*idemEntry{},
 		faults: map[string]*fault{}, calls: map[string]int{},
 	}
 	rest := http.NewServeMux()
@@ -154,6 +158,7 @@ func newFake(t *testing.T) *fakeE2B {
 		"POST /sandboxes/{id}/timeout":    f.timeout,
 		"POST /v2/sandboxes/{id}/connect": f.connect,
 		"GET /teams/{team}/metrics/max":   f.teamMetrics,
+		"GET /events/sandboxes/{id}":      f.events,
 	} {
 		rest.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -568,7 +573,34 @@ func (f *fakeE2B) kill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(f.boxes, id)
+	f.kills[id] = "request"
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// killedBy removes a sandbox as E2B would for a reason, keeping the kill event
+func (f *fakeE2B) killedBy(id, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.boxes, id)
+	if reason != "" {
+		f.kills[id] = reason
+	}
+}
+
+func (f *fakeE2B) events(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := r.PathValue("id")
+	reason, ok := f.kills[id]
+	if !ok || !slices.Equal(r.URL.Query()["types"], []string{"sandbox.lifecycle.killed"}) {
+		writeJSON(w, http.StatusOK, []api.SandboxEvent{})
+		return
+	}
+	data := map[string]interface{}{"kill_reason": reason}
+	writeJSON(w, http.StatusOK, []api.SandboxEvent{{
+		Id: openapi_types.UUID{1}, SandboxId: id, Type: "sandbox.lifecycle.killed",
+		Timestamp: time.Now(), Version: "v1", EventData: &data,
+	}})
 }
 
 func (f *fakeE2B) timeout(w http.ResponseWriter, r *http.Request) {
