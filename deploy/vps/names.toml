@@ -17,6 +17,7 @@ production = [
   { name = "mcp.bugnet.sh",      kind = "exact",  backend = "mcp" },
   { name = "bugnet.sh",          kind = "exact",  backend = "website" },
   { name = "www.bugnet.sh",      kind = "exact",  backend = "website" },
+  { name = "pay.bugnet.sh",      kind = "exact",  backend = "website" },
   { name = "egress.bugnet.sh",   kind = "exact",  backend = "egress" },
   { name = "preview.bugnet.sh",  kind = "suffix", backend = "edge", cert = "preview" },
 ]
