@@ -54,8 +54,8 @@ func allow(h ...string) option {
 	return func(_ *routerv1.SecretSpec, c *Context) { c.EgressAllow = h }
 }
 
-// context is the router's default context, custom hosts on and no egress allowlist
-func context() Context {
+// validContext is the router's default context, custom hosts on and no egress allowlist
+func validContext() Context {
 	r := hostrules.New(config.X402{SharedHostingSuffixes: []string{"workers.dev"}},
 		config.Names{PreviewDomain: "preview.bugnet.sh", SecretsHost: "secrets.bugnet.sh"}, "")
 	return Context{Hosts: r.ForSecrets(), CustomHosts: true}
@@ -65,7 +65,7 @@ func context() Context {
 func validate(t *testing.T, opts ...option) error {
 	t.Helper()
 	spec := &routerv1.SecretSpec{Name: "HF_TOKEN", Hosts: []string{"huggingface.co"}}
-	c := context()
+	c := validContext()
 	for _, o := range opts {
 		o(spec, &c)
 	}

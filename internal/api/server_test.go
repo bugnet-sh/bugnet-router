@@ -55,6 +55,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
@@ -224,6 +225,9 @@ type options struct {
 	x402 func(*config.X402)
 	// egressControl has the provider report EgressControl, so restricted packages place
 	egressControl bool
+	// sourcer makes the provider report an egress source, checked as sourceSettings says
+	sourcer        *sourceFake
+	sourceSettings func(*secrets.SourceSettings)
 	// tracer sees every query of the test's pool
 	tracer pgx.QueryTracer
 	// estimator gives the API server an estimator over the fake GitHub, tuned by estimatorTune
@@ -238,6 +242,9 @@ type options struct {
 	fetchToken string
 	images     map[string]config.ImageTools
 	upstream   bootstrap.Upstream
+	// hooks and hookSecrets set the webhook providers and their secrets
+	hooks       config.Hooks
+	hookSecrets map[string]config.HookSecret
 }
 
 type env struct {
@@ -255,6 +262,7 @@ type env struct {
 	apiVK     valkey.Client // the API server's own Valkey client
 	apiVKName string        // client name of the API server's own Valkey connections
 	prefix    string
+	registry  *provider.Registry
 	root      string
 	priv      ed25519.PrivateKey
 	handleKey []byte
@@ -313,6 +321,10 @@ func newEnv(t *testing.T, opts options) *env {
 	}
 	if opts.wrap != nil {
 		listed = opts.wrap(prov, root)
+	}
+	if opts.sourcer != nil {
+		opts.sourcer.Provider = listed
+		listed = opts.sourcer
 	}
 	if _, gater := listed.(provider.Gater); gater && !opts.noPreviews {
 		features.Preview = []string{name}
@@ -387,7 +399,12 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.estimator {
 		est, gh = newEstimator(t, st, apiVK, prefix, apiCat, opts)
 	}
+	var sources *secrets.Sources
+	if opts.sourcer != nil {
+		sources = newSources(t, opts, reg, st, apiVK, prefix, rc)
+	}
 	srv := api.New(api.Deps{
+		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
 		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
@@ -399,14 +416,15 @@ func newEnv(t *testing.T, opts options) *env {
 		SSHHost: apiSSHHost, SSHPort: 22, Wallets: opts.wallets, ProviderOps: opts.providerOps,
 		Sessions: sess, SessionWriter: writer,
 		Bootstrap: opts.bootstrap, Fetch: opts.fetch, FetchToken: opts.fetchToken,
-		Images: opts.images, Upstream: opts.upstream,
+		Images: opts.images, Upstream: opts.upstream, Hooks: opts.hooks,
+		HookSecrets: opts.hookSecrets,
 	})
 	t.Cleanup(srv.Close)
 
 	e := &env{
 		api: srv, gh: gh, saga: sg, dbURL: dbURL, pool: pool, store: st, jobs: js, vk: vk,
 		tracker: tracker, apiVK: apiVK, apiVKName: apiName, prefix: prefix, root: root,
-		priv: priv, handleKey: handleKey, dpKeys: keys,
+		priv: priv, handleKey: handleKey, dpKeys: keys, registry: reg,
 	}
 	mux := http.NewServeMux()
 	api.Mount(mux, srv.Servers(), allTokens)

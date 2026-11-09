@@ -39,7 +39,8 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
-| `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy and session expiry |
+| `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
+| `internal/health` | The provider health the replicas share through Postgres, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
@@ -244,6 +245,12 @@ when one of its five ports is taken, when the wildcard pair in
 and it says which. The live stack needs the Linux build of `bugnet-run` from
 `make -C ../bugnet-run build`.
 
+`bugnet-dev hooks register e2b|boat` registers this deployment's endpoint
+`https://<names.hooks_host>/hooks/<provider>/<path secret>` and prints the signing secret once,
+with `team_id` for E2B. `hooks list` hides the path secret, `hooks rotate` prints a new secret
+(move the old one to `..._PREVIOUS` for a day) and `hooks delete PROVIDER ID` removes an endpoint.
+A verified webhook queues a `hook_hint` job per provider and sandbox.
+
 `bugnet-dev owned PROVIDER` prints the count and ids on its own, reading the provider's key from
 the environment, so `set -a; . ./.env; set +a` first.
 
@@ -436,7 +443,9 @@ does not know.
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
 | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more. `router-worker` sends it to Payments' totals call while the stats feed is on |
 | `BUGNET_SESSIONS_TOKEN` | `router-api`, and `bugnet-edge --role sessions`, the bearer token of `SessionPageService`, empty or 32 characters or more |
-| `BUGNET_HOOK_PATH_SECRET` | The edge only, base64url of 32 bytes in the provider webhook path |
+| `BUGNET_HOOK_PATH_SECRET` | The edge, and `bugnet-dev hooks`, base64url of 32 bytes in the provider webhook path |
+| `E2B_WEBHOOK_SECRET`, `BOAT_WEBHOOK_SECRET` | `router-api`, the signing secret `bugnet-dev hooks register` prints once, needed for each provider in `hooks.providers`. The same name with `_PREVIOUS` holds the replaced secret for a day after `hooks rotate` |
+| `BOAT_ADMIN_API_KEY` | `bugnet-dev hooks` for Boat only, typed at its prompt with echo off when unset, never in a service |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
 of `BUGNET_INTERNAL_TOKEN` and the caller tokens may be equal, since each admits one caller to
@@ -516,13 +525,18 @@ features that read them land one by one, and until then the settings only load a
 | `[transfers]` | The start window, per-file cap and duration, per-placement counts, claims per URL and Koyeb's part buffers |
 | `[ssh]` | `providers` whose SSH live test passed, the gateway's host keys, sshd ports and the per-placement limits and timeouts |
 | `[secrets]` | `providers` whose secret live test passed, the egress proxy's addresses, CA and box keys, and the link and put limits |
+| `[secrets.source_check]` | The source check's mode per provider (`off`, `report` or `enforce`), `on_unknown` (`allow` or `refuse`), the read interval and its timeout |
 | `[fetch]` | The private repository fetch's byte cap, the egress proxy's listener and the PEM roots its outer certificate is checked against, the system roots when empty |
 | `[bootstrap]` | Where `FetchSource` puts repositories under the exec user's home, how long a silent private fetch lives, and its attempts per placement and fetches per replica |
-| `[hooks]` | `providers` whose webhooks are verified |
+| `[hooks]` | `providers` whose webhooks are verified (`e2b`, `boat`), `boat_window` for the timestamp check and `hint_unique` for folding hints of one sandbox. `router-api` refuses to start when a listed provider has no secret or no verifier |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
+| `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
-and `local.sshd_path` choose each provider's route. A `bn` subdomain proxy made after boot can
+and `local.sshd_path` choose each provider's route. `boat.egress_families` (`ipv6`, `ipv4`) and
+`boat.egress_ipv6_bits` (64 to 128) shape the egress source Boat reports. Both routers refuse to
+start when `secrets.source_check.modes` names a provider that is not listed or reports no
+address, or when `boat.egress_families` is empty while Boat's mode is not `off`. A `bn` subdomain proxy made after boot can
 lack its certificate for a while, so boxd's default is the machine's own name. Every provider
 list takes known provider names, each once. `secrets.providers` never takes `local`, whose
 sandboxes share the host.
@@ -1195,6 +1209,18 @@ X25519 key, and the router stores the box and the SHA-256 of its placeholder (DP
   preset (empty, with those hosts dropped from the secret, when `secrets.custom_hosts` is false).
   It answers `TOKEN_UNKNOWN` for an unknown token, `NOT_READY` for a placement that is not ready
   or has no CA version yet, and `BUDGET_SPENT` once the egress budget is spent.
+- **The source check.** Where a provider's API reports a sandbox's own address, only Boat, the
+  proxy accepts a tunnel only from it. `ResolveTunnel` takes the PROXY v2 source as `source_ip`
+  and answers `source_check`, a mode (`report` or `enforce`) and at most one allowed prefix. The
+  prefix comes from Boat's `ip` and is stored on the placement (`egress_source`), never from the
+  source the proxy saw. A source outside the stored prefix makes one provider read, at most once
+  per `refresh_interval` a placement across replicas (`egress:srcread:<id>`). A new address moves
+  `secrets_version`, writes `SecretsChanged` and inserts `apply_secrets`. `apply_secrets` reads
+  the address too unless a read is fresh, and writes `source` (`family` and `bind`) into the
+  spec when one is stored. With `on_unknown = "refuse"` and no address, it fails the secrets with
+  `SOURCE_UNKNOWN` and writes nothing. `/monitor` of `router-worker` lists the ready placements
+  with secrets and no usable address. `boat.egress_ipv6_bits` stays 128 unless each Boat sandbox
+  owns its own `/64`.
 - **Deletion.** The transaction ending a placement deletes its `secrets`, `secret_links` and
   `ssh_gateway_keys` rows and clears its tunnel token. The sweep deletes leftovers once the
   deadline is an hour past, and the `previews`, `ssh_keys` and `ssh_hosts` rows 7 days after
@@ -1748,6 +1774,34 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   comes from `GET /limits`. When the key cannot read it, the router prices the fee from the
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
+
+### Limits and account standing
+
+`limits_poll{provider}` reads each account's cap and use into `provider_capacity` every 60 s, and
+Boat's every 15 s. A placement reserves a slot only while `in_use + external_in_use +
+limits_poll.reserve_slots < max_concurrent`, so sandboxes other deployments hold on the account
+count, and one slot stays free for a probe. `max_concurrent` is the smaller of the provider's cap
+and the provider table's `max_concurrent`, 50 when neither is set. A create that meets the
+account's own cap (`CodeQuota`) asks for a poll at once. E2B's cap cannot be read with a key, so
+`e2b.max_concurrent` (20) is its cap, and `e2b.team_id` (printed by `bugnet-dev hooks register
+e2b`) lets its account check read the team's metrics. `koyeb.organization_id` is read from the
+account when empty.
+
+`account_check{provider}` runs every minute and reads the account when 5 minutes have passed
+since its last check, or 1 minute while the provider is blocked. A create, a call of the API or a
+sweep that sees `abuse_lock`, `unfunded` or `auth` asks for a check at once, at most one every 30
+s. A blocked provider (`banned`, `unfunded` or `auth`) is skipped by every replica's placement
+within 10 s, and each change writes a `provider_signals` row. A check that cannot read the account
+changes nothing. Boat's `GET /me` or `GET /limits` answering 403 means the key lacks
+`account.read`, which blocks nothing.
+
+Every provider table takes `creates_per_second`, 0 for no bucket (E2B's is 1). The saga takes a
+token from `rl:create:<provider>` before each create and fails over when none comes within 1 s.
+A `rate_limited` answer with a Retry-After pauses the provider's creates for that long, at most 5
+minutes. A rate limit or a quota refusal never counts against the provider's health.
+
+`/monitor` reports a blocked provider, limits not polled for `stale_after` intervals, and Boat's
+`RateLimit` header with under 20% of its window left.
 
 E2B's create blocks the IPv4 entries of `hardening.deny_ranges` outside the VM with
 `network.denyOut`. `harden` blocks the IPv6 entries inside the VM, all but `fe80::/10`, which

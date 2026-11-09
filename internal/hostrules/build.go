@@ -31,7 +31,7 @@ func New(x config.X402, n config.Names, e2bDomain string) Rules {
 		r.ProviderDomains = append(r.ProviderDomains, e2bDomain)
 	}
 	for _, name := range []string{
-		n.PreviewDomain, n.TransferHost, n.SecretsHost, n.SSHHost, n.EgressHost,
+		n.PreviewDomain, n.TransferHost, n.SecretsHost, n.SSHHost, n.EgressHost, n.HooksHost,
 	} {
 		if name == "" {
 			continue

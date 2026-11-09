@@ -197,6 +197,14 @@ func (c check) notFound(t *testing.T) {
 	path := "/tmp/bugnet-contract-gone.txt"
 
 	requireNotFound(t, "WaitReady", c.p.WaitReady(ctx, c.ref))
+	if es, ok := c.p.(provider.EgressSourcer); ok {
+		_, found, err := es.EgressSource(ctx, c.ref)
+		if err == nil && found {
+			t.Errorf("EgressSource on a destroyed sandbox gave a source")
+		} else if err != nil {
+			requireNotFound(t, "EgressSource", err)
+		}
+	}
 	requireNotFound(t, "SetLifetime", c.p.SetLifetime(ctx, c.ref, time.Now().Add(time.Minute)))
 	_, _, err := run(ctx, c.p, c.ref, provider.ExecSpec{Argv: []string{"sh", "-c", "true"}})
 	requireNotFound(t, "Exec", err)

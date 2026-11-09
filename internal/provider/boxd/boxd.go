@@ -90,6 +90,8 @@ func res(vcpu, memGiB int) provider.Resources {
 var (
 	routerLabelKey = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]{0,61}[a-z0-9])?$`)
 	rateWord       = regexp.MustCompile(`(?i)\brate(limit\w*)?\b`)
+	// machineLimitWord marks the organization's own machine limit, which a poll corrects
+	machineLimitWord = regexp.MustCompile(`(?i)machine limit`)
 	// goneStatus is how boxd refuses a call on a machine it keeps listed after destroying it
 	goneStatus = regexp.MustCompile(`status '(destroyed|destroying)'`)
 )
@@ -906,8 +908,11 @@ func classify(ctx context.Context, err error) error {
 	switch st.Code() {
 	case codes.ResourceExhausted:
 		e.Code = provider.CodeCapacity
-		if rateWord.MatchString(st.Message()) {
+		switch {
+		case rateWord.MatchString(st.Message()):
 			e.Code = provider.CodeRateLimited
+		case machineLimitWord.MatchString(st.Message()):
+			e.Code = provider.CodeQuota
 		}
 	case codes.Unauthenticated, codes.PermissionDenied:
 		e.Code = provider.CodeAuth
@@ -921,7 +926,7 @@ func classify(ctx context.Context, err error) error {
 	case codes.InvalidArgument, codes.AlreadyExists, codes.OutOfRange:
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
 	}
-	return e
+	return provider.Named(e, providerName)
 }
 
 // withCtx lets callers match the context error behind a cancelled or expired call

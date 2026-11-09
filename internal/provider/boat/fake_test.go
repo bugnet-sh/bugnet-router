@@ -72,6 +72,8 @@ type fakeSandbox struct {
 	startPolls   int
 	deleted      bool
 	procs        map[int]*fakeProc
+	ip           any
+	sshEndpoint  any
 }
 
 // fakeProc is one detached command, its logs kept whole so every attach can replay them
@@ -187,27 +189,33 @@ type fakeBoat struct {
 	limits       string
 	limitsStatus int
 	limitsCalls  int
-	streams      int
-	grow         map[string][]byte
-	swaps        map[string]func()
-	sandboxes    map[string]*fakeSandbox
-	order        []string
-	keys         map[string]keyRecord
-	faults       map[string]*fault
-	calls        map[string]int
-	creates      []createCall
-	commands     []commandCall
-	attaches     []attachCall
-	listed       []url.Values
-	kills        []int
-	uploads      []http.Header
-	bodies       map[string][]int
-	perms        []string
-	grants       map[string]uploadGrant
-	ttls         []int
-	downloads    []http.Header
-	moves        [][2]string
-	nextPID      int
+	// rateHeader is the RateLimit header of the GET /limits answer, none when empty
+	rateHeader string
+	// me is the GET /me reply, meStatus its status when not 200
+	me        string
+	meStatus  int
+	meCalls   int
+	streams   int
+	grow      map[string][]byte
+	swaps     map[string]func()
+	sandboxes map[string]*fakeSandbox
+	order     []string
+	keys      map[string]keyRecord
+	faults    map[string]*fault
+	calls     map[string]int
+	creates   []createCall
+	commands  []commandCall
+	attaches  []attachCall
+	listed    []url.Values
+	kills     []int
+	uploads   []http.Header
+	bodies    map[string][]int
+	perms     []string
+	grants    map[string]uploadGrant
+	ttls      []int
+	downloads []http.Header
+	moves     [][2]string
+	nextPID   int
 	// hosts holds the token of each hosted port by sandbox and port
 	hosts  map[string]string
 	hosted []string
@@ -257,6 +265,7 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/sshkey":               f.sshKey,
 		"DELETE " + sb + "/files":              f.deleteFile,
 		"GET /api/v1/limits":                   f.readLimits,
+		"GET /api/v1/me":                       f.readMe,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -411,12 +420,15 @@ func (f *fakeBoat) sandboxJSON(s *fakeSandbox) map[string]any {
 	sb := map[string]any{
 		"id": s.id, "name": "Sandbox " + s.created.Format("2006-01-02 15:04"), "state": s.state,
 		"labels": s.labels, "type": s.typ, "vcpu": shape[0], "memoryGB": shape[1],
-		"billingMultiplier": 1, "machineProvider": "baremetal", "url": nil, "ip": nil,
+		"billingMultiplier": 1, "machineProvider": "baremetal", "url": nil, "ip": s.ip,
 		"createdAt": f.when(s.created), "updatedAt": f.when(s.created),
 		"archiveAfter": f.when(s.archiveAfter), "ttlSeconds": s.ttl,
 		"desktopAvailable": false, "snapshotAvailable": false, "snapshots": false,
 		"monitoring": false, "hydration": nil, "team": nil, "access": "owner",
 		"health": "ok", "lastReboot": nil, "futureField": map[string]any{"nested": []any{1}},
+	}
+	if s.sshEndpoint != nil {
+		sb["sshEndpoint"] = s.sshEndpoint
 	}
 	if f.drift == "types" {
 		sb["error"] = map[string]any{"reason": "none"}
@@ -1721,5 +1733,44 @@ func (f *fakeBoat) readLimits(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	f.mu.Lock()
+	rate := f.rateHeader
+	f.mu.Unlock()
+	if rate != "" {
+		w.Header().Set("RateLimit", rate)
+	}
 	_, _ = io.WriteString(w, body)
+}
+
+func (f *fakeBoat) setMe(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.meStatus, f.me = status, body
+}
+
+func (f *fakeBoat) readMe(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	status, body := f.meStatus, f.me
+	f.meCalls++
+	f.mu.Unlock()
+	if status != 0 && status != http.StatusOK {
+		f.fail(w, status, "forbidden", "the key lacks account.read", nil, nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, body)
+}
+
+// setNetwork sets the ip and sshEndpoint a sandbox reports, nil for JSON null
+func (f *fakeBoat) setNetwork(id string, ip, sshEndpoint any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].ip, f.sandboxes[id].sshEndpoint = ip, sshEndpoint
+}
+
+// setState moves a sandbox to a state
+func (f *fakeBoat) setState(id, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].state = state
 }

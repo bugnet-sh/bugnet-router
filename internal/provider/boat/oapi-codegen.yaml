@@ -28,3 +28,10 @@ output-options:
     - deleteFile
     - hostPort
     - sshKey
+    - listWebhooks
+    - createWebhook
+    - getWebhook
+    - updateWebhook
+    - deleteWebhook
+    - rotateWebhookSigningSecret
+    - me

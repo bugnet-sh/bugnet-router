@@ -53,10 +53,12 @@ type Config struct {
 	RunnerLinuxAMD64    string
 	RunnerLinuxARM64    string
 	ProviderKeys        map[string]string
-	LocalEnabled        bool
-	LocalRoot           string
-	LocalRunnerPath     string // host build of bugnet-run the local provider runs
-	LocalHourlyMicros   int64
+	// HookSecrets are the webhook signing secrets by provider, from the environment
+	HookSecrets       map[string]HookSecret
+	LocalEnabled      bool
+	LocalRoot         string
+	LocalRunnerPath   string // host build of bugnet-run the local provider runs
+	LocalHourlyMicros int64
 	// JobOutputBudget is what one job's output may cost its Valkey stream, in bytes
 	JobOutputBudget int64
 	// PlacementOutputBudget is what a placement's job streams may cost together, in bytes
@@ -90,6 +92,7 @@ type Config struct {
 	Hooks         Hooks
 	X402          X402
 	Hardening     Hardening
+	LimitsPoll    LimitsPoll
 	Wallets       Wallets
 	Stats         Stats
 	Estimator     Estimator
@@ -102,7 +105,11 @@ type Config struct {
 	HFToken     string
 	// ProviderOps is each provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
-	Sessions    Sessions
+	// MaxConcurrent is each provider's own cap on concurrent sandboxes, absent for the account's
+	MaxConcurrent map[string]int
+	// CreatesPerSecond is each provider's create rate, absent for no bucket
+	CreatesPerSecond map[string]int
+	Sessions         Sessions
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -136,6 +143,8 @@ type E2B struct {
 	Domain      string        // e2b.app when empty
 	MaxLifetime time.Duration // the adapter's default when zero
 	Templates   []E2BTemplate
+	// TeamID names the team the account check reads, empty for the list call instead
+	TeamID string
 }
 
 // E2BTemplate is one template built on the E2B account, sold as the size Size
@@ -152,6 +161,8 @@ type Koyeb struct {
 	Region string `toml:"region"`
 	// InstanceTypes maps each size sold to its instance type, every fra type when empty
 	InstanceTypes map[string]string `toml:"instance_types"`
+	// OrganizationID is read from the account when empty
+	OrganizationID string `toml:"organization_id"`
 }
 
 // Boat holds the Boat adapter's settings
@@ -160,6 +171,10 @@ type Boat struct {
 	Types map[string]string `toml:"types"`
 	// SSHPath is gate for SSH through the bugnet-run gate, or native for Boat's own sshd
 	SSHPath string `toml:"ssh_path"`
+	// EgressFamilies are the families of Boat's ip taken as a sandbox's egress source
+	EgressFamilies []string `toml:"egress_families"`
+	// EgressIPv6Bits is the prefix width of an IPv6 egress source, 64 to 128
+	EgressIPv6Bits int `toml:"egress_ipv6_bits"`
 }
 
 // Names holds the public names the edges serve, each empty until a deployment sets it
@@ -170,6 +185,7 @@ type Names struct {
 	SSHHost       string `toml:"ssh_host"`
 	SSHPort       int    `toml:"ssh_port"` // known_hosts names the port when it is not 22
 	EgressHost    string `toml:"egress_host"`
+	HooksHost     string `toml:"hooks_host"` // provider webhooks arrive here
 }
 
 // EdgeBudget bounds one placement's previews, transfers and SSH together, and its egress apart
@@ -258,6 +274,20 @@ type Secrets struct {
 	LinksPerHour    int
 	PutsPerHour     int
 	ApplyWait       time.Duration
+	// SourceCheck is [secrets.source_check]
+	SourceCheck SourceCheck
+}
+
+// SourceCheck holds the source-address check settings of DP 10.12.9
+type SourceCheck struct {
+	// Modes is off, report or enforce by provider, a provider absent is off
+	Modes map[string]string
+	// RefuseUnknown is on_unknown = "refuse"
+	RefuseUnknown bool
+	// RefreshInterval allows at most one provider read per placement in this time
+	RefreshInterval time.Duration
+	// ReadTimeout bounds one provider read
+	ReadTimeout time.Duration
 }
 
 // BoxKey is one X25519 public key of the egress proxy, by its id
@@ -292,7 +322,22 @@ type Bootstrap struct {
 // Hooks holds the provider webhook settings
 type Hooks struct {
 	// Providers lists the providers whose webhooks are verified
-	Providers []string `toml:"providers"`
+	Providers []string
+	// BoatWindow is how far Boat's X-Ascii-Timestamp may be from now
+	BoatWindow time.Duration
+	// HintUnique folds the hints for one sandbox inside this window into one job
+	HintUnique time.Duration
+}
+
+// HookSecret is one provider's webhook signing secret and the one it replaced
+type HookSecret struct {
+	Current, Previous []byte
+}
+
+type hooksFile struct {
+	Providers  []string `toml:"providers"`
+	BoatWindow string   `toml:"boat_window"`
+	HintUnique string   `toml:"hint_unique"`
 }
 
 // Localrun holds the settings only a localrun build reads, for the x402 local run
@@ -307,40 +352,41 @@ type Localrun struct {
 
 // file is the settings file's schema, each struct type naming one table
 type file struct {
-	OrderTokenPublicKey string        `toml:"order_token_public_key"`
-	PackagesFile        string        `toml:"packages_file"`
-	Providers           *[]string     `toml:"providers"`
-	MarginFloor         float64       `toml:"margin_floor"`
-	DeploymentID        string        `toml:"deployment_id"`
-	ReplicaID           string        `toml:"replica_id"`
-	EventsURL           string        `toml:"events_url"`
-	API                 apiFile       `toml:"api"`
-	Worker              workerFile    `toml:"worker"`
-	Valkey              valkeyFile    `toml:"valkey"`
-	Runner              runnerFile    `toml:"runner"`
-	Limits              limitsFile    `toml:"limits"`
-	Local               localFile     `toml:"local"`
-	Boxd                boxdFile      `toml:"boxd"`
-	E2B                 e2bFile       `toml:"e2b"`
-	Koyeb               koyebFile     `toml:"koyeb"`
-	Boat                boatFile      `toml:"boat"`
-	Names               Names         `toml:"names"`
-	EdgeBudget          budgetFile    `toml:"edge_budget"`
-	Previews            Previews      `toml:"previews"`
-	Transfers           xferFile      `toml:"transfers"`
-	SSH                 sshFile       `toml:"ssh"`
-	Secrets             secretFile    `toml:"secrets"`
-	Fetch               fetchFile     `toml:"fetch"`
-	Bootstrap           bootstrapFile `toml:"bootstrap"`
-	Hooks               Hooks         `toml:"hooks"`
-	X402                x402File      `toml:"x402"`
-	Hardening           hardeningFile `toml:"hardening"`
-	Wallets             walletsFile   `toml:"wallets"`
-	Stats               statsFile     `toml:"stats"`
-	Estimator           estimatorFile `toml:"estimator"`
-	Images              imagesFile    `toml:"images"`
-	Sessions            sessionsFile  `toml:"sessions"`
-	Localrun            localrunFile  `toml:"localrun"`
+	OrderTokenPublicKey string         `toml:"order_token_public_key"`
+	PackagesFile        string         `toml:"packages_file"`
+	Providers           *[]string      `toml:"providers"`
+	MarginFloor         float64        `toml:"margin_floor"`
+	DeploymentID        string         `toml:"deployment_id"`
+	ReplicaID           string         `toml:"replica_id"`
+	EventsURL           string         `toml:"events_url"`
+	API                 apiFile        `toml:"api"`
+	Worker              workerFile     `toml:"worker"`
+	Valkey              valkeyFile     `toml:"valkey"`
+	Runner              runnerFile     `toml:"runner"`
+	Limits              limitsFile     `toml:"limits"`
+	Local               localFile      `toml:"local"`
+	Boxd                boxdFile       `toml:"boxd"`
+	E2B                 e2bFile        `toml:"e2b"`
+	Koyeb               koyebFile      `toml:"koyeb"`
+	Boat                boatFile       `toml:"boat"`
+	Names               Names          `toml:"names"`
+	EdgeBudget          budgetFile     `toml:"edge_budget"`
+	Previews            Previews       `toml:"previews"`
+	Transfers           xferFile       `toml:"transfers"`
+	SSH                 sshFile        `toml:"ssh"`
+	Secrets             secretFile     `toml:"secrets"`
+	Fetch               fetchFile      `toml:"fetch"`
+	Bootstrap           bootstrapFile  `toml:"bootstrap"`
+	Hooks               hooksFile      `toml:"hooks"`
+	X402                x402File       `toml:"x402"`
+	Hardening           hardeningFile  `toml:"hardening"`
+	LimitsPoll          limitsPollFile `toml:"limits_poll"`
+	Wallets             walletsFile    `toml:"wallets"`
+	Stats               statsFile      `toml:"stats"`
+	Estimator           estimatorFile  `toml:"estimator"`
+	Images              imagesFile     `toml:"images"`
+	Sessions            sessionsFile   `toml:"sessions"`
+	Localrun            localrunFile   `toml:"localrun"`
 }
 
 type apiFile struct {
@@ -388,6 +434,9 @@ type e2bFile struct {
 	HardenRequired bool          `toml:"harden_required"`
 	HardenAllow    []string      `toml:"harden_allow"`
 	OpsPerSecond   int64         `toml:"ops_per_second"`
+	TeamID         string        `toml:"team_id"`
+	MaxConcurrent  int64         `toml:"max_concurrent"`
+	CreatesPerSec  int64         `toml:"creates_per_second"`
 }
 
 type boxdFile struct {
@@ -397,6 +446,8 @@ type boxdFile struct {
 	HardenRequired bool     `toml:"harden_required"`
 	HardenAllow    []string `toml:"harden_allow"`
 	OpsPerSecond   int64    `toml:"ops_per_second"`
+	MaxConcurrent  int64    `toml:"max_concurrent"`
+	CreatesPerSec  int64    `toml:"creates_per_second"`
 }
 
 type koyebFile struct {
@@ -405,14 +456,21 @@ type koyebFile struct {
 	HardenRequired bool              `toml:"harden_required"`
 	HardenAllow    []string          `toml:"harden_allow"`
 	OpsPerSecond   int64             `toml:"ops_per_second"`
+	OrganizationID string            `toml:"organization_id"`
+	MaxConcurrent  int64             `toml:"max_concurrent"`
+	CreatesPerSec  int64             `toml:"creates_per_second"`
 }
 
 type boatFile struct {
 	Types          map[string]string `toml:"types"`
 	SSHPath        string            `toml:"ssh_path"`
+	EgressFamilies []string          `toml:"egress_families"`
+	EgressIPv6Bits int64             `toml:"egress_ipv6_bits"`
 	HardenRequired bool              `toml:"harden_required"`
 	HardenAllow    []string          `toml:"harden_allow"`
 	OpsPerSecond   int64             `toml:"ops_per_second"`
+	MaxConcurrent  int64             `toml:"max_concurrent"`
+	CreatesPerSec  int64             `toml:"creates_per_second"`
 }
 
 type budgetFile struct {
@@ -464,6 +522,14 @@ type secretFile struct {
 	LinksPerHour    int64        `toml:"links_per_hour"`
 	PutsPerHour     int64        `toml:"puts_per_hour"`
 	ApplyWait       string       `toml:"apply_wait"`
+	SourceCheck     sourceFile   `toml:"source_check"`
+}
+
+type sourceFile struct {
+	Modes           map[string]string `toml:"modes"`
+	OnUnknown       string            `toml:"on_unknown"`
+	RefreshInterval string            `toml:"refresh_interval"`
+	ReadTimeout     string            `toml:"read_timeout"`
 }
 
 type boxKeyFile struct {
@@ -501,9 +567,12 @@ func defaults() file {
 			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
 		},
 		Boxd:  boxdFile{Region: "fra", GateRoute: "default", HardenRequired: true},
-		E2B:   e2bFile{HardenRequired: true},
+		E2B:   e2bFile{HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1},
 		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
-		Boat:  boatFile{SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50},
+		Boat: boatFile{
+			SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50,
+			EgressFamilies: []string{"ipv6", "ipv4"}, EgressIPv6Bits: 128,
+		},
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
 			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
@@ -525,6 +594,9 @@ func defaults() file {
 		Secrets: secretFile{
 			CAVersion: 1, LinkTTL: "10m", PutGrantTTL: "10m", CustomHosts: true,
 			MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: "15s",
+			SourceCheck: sourceFile{
+				OnUnknown: "allow", RefreshInterval: "60s", ReadTimeout: "3s",
+			},
 		},
 		Fetch: fetchFile{MaxBytes: "2GiB", EgressAddr: "127.0.0.1:9443"},
 		Bootstrap: bootstrapFile{
@@ -536,11 +608,13 @@ func defaults() file {
 			// A clone, since go-toml decodes a list into the slice it finds
 			SharedHostingSuffixes: slices.Clone(sharedHostingSuffixes),
 		},
-		Hardening: defaultHardening(),
-		Wallets:   defaultWallets(),
-		Stats:     defaultStats(),
-		Estimator: defaultEstimator(),
-		Sessions:  defaultSessions(),
+		Hooks:      hooksFile{BoatWindow: "5m", HintUnique: "10s"},
+		Hardening:  defaultHardening(),
+		LimitsPoll: defaultLimitsPoll(),
+		Wallets:    defaultWallets(),
+		Stats:      defaultStats(),
+		Estimator:  defaultEstimator(),
+		Sessions:   defaultSessions(),
 	}
 }
 
@@ -642,13 +716,18 @@ func (f file) config() (Config, error) {
 			Region: cmp.Or(f.Boxd.Region, d.Boxd.Region), Endpoint: f.Boxd.Endpoint,
 			GateRoute: cmp.Or(f.Boxd.GateRoute, d.Boxd.GateRoute),
 		},
-		E2B: E2B{Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates)},
+		E2B: E2B{
+			Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates), TeamID: f.E2B.TeamID,
+		},
 		Koyeb: Koyeb{
-			Region:        cmp.Or(f.Koyeb.Region, d.Koyeb.Region),
-			InstanceTypes: maps.Clone(f.Koyeb.InstanceTypes),
+			Region:         cmp.Or(f.Koyeb.Region, d.Koyeb.Region),
+			InstanceTypes:  maps.Clone(f.Koyeb.InstanceTypes),
+			OrganizationID: f.Koyeb.OrganizationID,
 		},
 		Boat: Boat{
 			Types: maps.Clone(f.Boat.Types), SSHPath: cmp.Or(f.Boat.SSHPath, d.Boat.SSHPath),
+			EgressFamilies: slices.Clone(f.Boat.EgressFamilies),
+			EgressIPv6Bits: int(f.Boat.EgressIPv6Bits),
 		},
 		LocalSSHDPath: cmp.Or(f.Local.SSHDPath, d.Local.SSHDPath),
 		Names:         f.Names,
@@ -725,6 +804,9 @@ func (f file) config() (Config, error) {
 	if c.X402, err = f.X402.read(d.X402); err != nil {
 		return Config{}, err
 	}
+	if c.LimitsPoll, err = f.LimitsPoll.read(d.LimitsPoll); err != nil {
+		return Config{}, err
+	}
 	if c.Wallets, err = f.Wallets.read(d.Wallets); err != nil {
 		return Config{}, err
 	}
@@ -748,6 +830,9 @@ func (f file) config() (Config, error) {
 		if o.rate > 0 {
 			c.ProviderOps[o.name] = int(o.rate)
 		}
+	}
+	if err := f.providerCounts(&c); err != nil {
+		return Config{}, err
 	}
 	if c.Sessions, err = f.Sessions.read(d.Sessions); err != nil {
 		return Config{}, err
@@ -885,7 +970,21 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 			c.ProviderKeys[pk.name] = v
 		}
 	}
+	c.HookSecrets = map[string]HookSecret{}
+	for _, hk := range hookSecretVars {
+		if v := get(hk.env); v != "" {
+			c.HookSecrets[hk.name] = HookSecret{
+				Current: []byte(v), Previous: []byte(get(hk.env + "_PREVIOUS")),
+			}
+		}
+	}
 	return nil
+}
+
+// hookSecretVars name the environment variable of each provider's webhook secret
+var hookSecretVars = []struct{ name, env string }{
+	{"e2b", "E2B_WEBHOOK_SECRET"},
+	{"boat", "BOAT_WEBHOOK_SECRET"},
 }
 
 // callerTokens are the environment variables of the callers' bearer tokens, in order
@@ -963,4 +1062,35 @@ func defaultReplicaID() string {
 func knownList() string {
 	names := slices.Sorted(maps.Keys(knownProviders))
 	return strings.Join(names, ", ")
+}
+
+// providerCounts reads each provider's own cap and create rate, zero meaning the account's
+func (f file) providerCounts(c *Config) error {
+	c.MaxConcurrent, c.CreatesPerSecond = map[string]int{}, map[string]int{}
+	for _, o := range []struct {
+		name         string
+		max, creates int64
+	}{
+		{"e2b", f.E2B.MaxConcurrent, f.E2B.CreatesPerSec},
+		{"boxd", f.Boxd.MaxConcurrent, f.Boxd.CreatesPerSec},
+		{"koyeb", f.Koyeb.MaxConcurrent, f.Koyeb.CreatesPerSec},
+		{"boat", f.Boat.MaxConcurrent, f.Boat.CreatesPerSec},
+	} {
+		for _, n := range []struct {
+			key  string
+			raw  int64
+			into map[string]int
+		}{
+			{"max_concurrent", o.max, c.MaxConcurrent},
+			{"creates_per_second", o.creates, c.CreatesPerSecond},
+		} {
+			if n.raw < 0 || n.raw > maxProviderCount {
+				return fmt.Errorf("%s.%s must be 0 to %d", o.name, n.key, maxProviderCount)
+			}
+			if n.raw > 0 {
+				n.into[o.name] = int(n.raw)
+			}
+		}
+	}
+	return nil
 }

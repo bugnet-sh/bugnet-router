@@ -17,7 +17,9 @@
 // live placements a few at a time, and wallet_expiry lifts timed wallet blocks every 10 minutes.
 // With Deps.Stats set, stats_snapshot writes the public stats feed's row every 30 s. The session
 // copy moves an ended placement's job output into its session record, and session expiry runs at
-// start and hourly and deletes the records whose page ended and no hold keeps.
+// start and hourly and deletes the records whose page ended and no hold keeps. For each provider
+// that reports them, limits_poll writes the account's cap and use into the capacity row and
+// account_check stores whether the account may start sandboxes.
 package worker
 
 import (
@@ -41,6 +43,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
@@ -85,10 +88,16 @@ type Deps struct {
 	DefaultWorkers int
 	// Egress is where apply_secrets points every forwarder
 	Egress Egress
+	// Sources reads each placement's egress source for apply_secrets, off when nil
+	Sources *secrets.Sources
 	// Stats turns on the stats_snapshot job, off when nil
 	Stats *Stats
 	// Sessions sizes the session copy and its disk budget
 	Sessions config.Sessions
+	// LimitsPoll sets the limit polls and account checks, each zero value at its default
+	LimitsPoll config.LimitsPoll
+	// MaxConcurrent is each provider's own cap setting, absent for the account's
+	MaxConcurrent map[string]int
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -115,6 +124,9 @@ type Worker struct {
 	// bus reads job streams for the session copy
 	bus  *streams.Bus
 	disk diskGauge
+	// checks counts each provider's failed account checks in a row
+	checksMu sync.Mutex
+	checks   map[string]failedChecks
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -130,10 +142,14 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	d.Sessions.JobOutput = cmp.Or(d.Sessions.JobOutput, defaultJobOutput)
 	d.Sessions.PlacementOutput = cmp.Or(d.Sessions.PlacementOutput, defaultPlacementOutput)
 	d.Sessions.DiskBudget = cmp.Or(d.Sessions.DiskBudget, defaultDiskBudget)
+	if d.LimitsPoll == (config.LimitsPoll{}) {
+		d.LimitsPoll = config.DefaultLimitsPoll()
+	}
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
 	w := &Worker{
+		checks:   map[string]failedChecks{},
 		d:        d,
 		store:    sd.Store,
 		registry: sd.Registry,
@@ -161,10 +177,12 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &statsWorker{w: w})
 	river.AddWorker(workers, &sessionCopyWorker{w: w})
 	river.AddWorker(workers, &sessionExpiryWorker{w: w})
+	river.AddWorker(workers, &limitsPollWorker{w: w})
+	river.AddWorker(workers, &accountCheckWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
-		PeriodicJobs:         periodicJobs(d),
+		PeriodicJobs:         periodicJobs(d, sd.Registry),
 		JobTimeout:           jobTimeout,
 		RescueStuckJobsAfter: rescueAfter,
 		Logger:               sd.Log,
@@ -213,14 +231,42 @@ func (w *Worker) Saga() *saga.Saga { return w.saga }
 func (w *Worker) now() time.Time { return w.d.Now().UTC() }
 
 // periodicJobs runs the sweep, watch, outbox and wallet expiry at start and on their intervals,
-// one at a time
-func periodicJobs(d Deps) []*river.PeriodicJob {
+// one at a time, and a limits poll and an account check for each provider that can give them
+func periodicJobs(d Deps, reg *provider.Registry) []*river.PeriodicJob {
 	single := singleRun()
 	var out []*river.PeriodicJob
 	for _, p := range periodic(d) {
 		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),
 			func() (river.JobArgs, *river.InsertOpts) { return p.args, single },
 			&river.PeriodicJobOpts{RunOnStart: true}))
+	}
+	for _, p := range polls(d, reg) {
+		// The job's own unique options keep one run of each kind per provider
+		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),
+			func() (river.JobArgs, *river.InsertOpts) { return p.args, nil },
+			&river.PeriodicJobOpts{RunOnStart: true}))
+	}
+	return out
+}
+
+// polls lists the limits poll and account check of each provider that reads limits or accounts
+func polls(d Deps, reg *provider.Registry) []periodicJob {
+	var out []periodicJob
+	if reg == nil {
+		return nil
+	}
+	for _, p := range reg.Ordered() {
+		name := p.Name()
+		if _, ok := p.(provider.LimitsReader); ok {
+			every := d.LimitsPoll.Every
+			if name == "boat" {
+				every = d.LimitsPoll.BoatEvery
+			}
+			out = append(out, periodicJob{every, jobargs.LimitsPoll{Provider: name}})
+		}
+		if _, ok := p.(provider.AccountChecker); ok {
+			out = append(out, periodicJob{accountEvery, jobargs.AccountCheck{Provider: name}})
+		}
 	}
 	return out
 }

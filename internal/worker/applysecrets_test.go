@@ -51,6 +51,10 @@ type sentSpec struct {
 	GitPlaceholder string   `json:"git_placeholder"`
 	NPMPlaceholder string   `json:"npm_placeholder"`
 	X402Hosts      []string `json:"x402_hosts"`
+	Source         *struct {
+		Family string `json:"family"`
+		Bind   string `json:"bind"`
+	} `json:"source"`
 }
 
 type envVar struct {

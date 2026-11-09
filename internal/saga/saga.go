@@ -179,6 +179,8 @@ type Deps struct {
 	Budget config.EdgeBudget
 	// Keys are the data-plane roots, a new placement records the newest one's id
 	Keys dpkeys.Keys
+	// StatsMaxBytes is the largest stats file a stop reads, 4 KiB when zero
+	StatsMaxBytes int64
 	// Boot holds what each sandbox's setup and harden specs carry
 	Boot BootSettings
 	// SSH holds what each sandbox's ssh-up spec carries
@@ -191,6 +193,8 @@ type Deps struct {
 	SessionKeep time.Duration
 	// SessionAbuseHold keeps an abuse or operator end's record, 30 days when zero
 	SessionAbuseHold time.Duration
+	// CreatesPerSecond is each provider's create rate, absent for no bucket
+	CreatesPerSecond map[string]int
 }
 
 // Saga runs placements from order to teardown
@@ -476,6 +480,10 @@ func (s *Saga) place(
 			reason, detail = reasonNoRunner, "no "+caps.RunnerArch()+" build for "+name
 			continue
 		}
+		if s.createsPaused(ctx, name) {
+			reason, detail = reasonRateLimited, name+" asked for its creates to wait"
+			continue
+		}
 		reserved, err := s.reserve(ctx, p.ID, name)
 		if err != nil {
 			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
@@ -549,6 +557,12 @@ func (s *Saga) attempt(
 ) outcome {
 	prov := c.Provider
 	name := prov.Name()
+	if !s.takeCreate(ctx, name) {
+		s.release(ctx, p.ID)
+		return outcome{
+			failOver: true, reason: reasonRateLimited, detail: "no create token for " + name,
+		}
+	}
 	rec := store.Attempt{
 		PlacementID:    p.ID,
 		Attempt:        n,
@@ -569,7 +583,9 @@ func (s *Saga) attempt(
 		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
 	if err != nil {
-		s.d.Tracker.RecordFailure(name)
+		if s.providerFailed(ctx, name, err, true) {
+			s.d.Tracker.RecordFailure(name)
+		}
 		s.abandon(ctx, prov, rec, nil, err)
 		return outcome{
 			failOver: canFailOver(err), reason: createReason(err),
@@ -585,7 +601,9 @@ func (s *Saga) attempt(
 		reason := reasonNoRunner
 		if !noBuild {
 			reason = reasonBootFailed
-			s.d.Tracker.RecordFailure(name)
+			if s.providerFailed(ctx, name, err, false) {
+				s.d.Tracker.RecordFailure(name)
+			}
 		}
 		s.abandon(ctx, prov, rec, &ref, err)
 		return outcome{
@@ -1235,12 +1253,14 @@ func (s *Saga) terminate(
 		return store.Placement{}, err
 	}
 	// A stop retried while the destroy is in flight waits for it instead of calling the provider
-	_, err, _ = s.destroys.Do(p.ID.String(), func() (any, error) {
-		return nil, destroyRef(ctx, prov, ref)
+	shared, err, _ := s.destroys.Do(p.ID.String(), func() (any, error) {
+		// The stats come first, bounded so they never hold the deletion up
+		return s.readStats(ctx, p, prov, ref), destroyRef(ctx, prov, ref)
 	})
 	if err != nil {
 		return store.Placement{}, fmt.Errorf("destroy sandbox: %w", err)
 	}
+	rawStats, _ := shared.([]byte)
 
 	var ended store.Placement
 	var ev Event
@@ -1287,6 +1307,7 @@ func (s *Saga) terminate(
 	if !already {
 		s.publish(ctx, ev)
 		s.sessionEnded(ctx, p.ID)
+		s.observe(ctx, ended, prov, rawStats)
 	}
 	return ended, nil
 }

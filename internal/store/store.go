@@ -65,6 +65,8 @@ type Store struct {
 	maxEvents int
 	// maxJobs caps one session record's jobs, DefaultSessionMaxJobs when 0
 	maxJobs int
+	// reserveSlots is how many slots a placement leaves free on its provider for probes, none unset
+	reserveSlots int
 }
 
 // Option configures a Store
@@ -73,6 +75,11 @@ type Option func(*Store)
 // WithRefSealer seals the credential fields of the provider refs the store writes and opens them
 func WithRefSealer(r RefSealer) Option {
 	return func(s *Store) { s.sealer = r }
+}
+
+// WithReserveSlots sets how many slots placements leave free on a provider for probes
+func WithReserveSlots(n int) Option {
+	return func(s *Store) { s.reserveSlots = max(n, 0) }
 }
 
 // WithLogger sets where the store reports a credential it cannot open, slog.Default when unset
@@ -93,9 +100,15 @@ func New(pool *pgxpool.Pool, opts ...Option) *Store {
 	return s
 }
 
+// Querier is the pool or transaction the store runs its queries on
+func (s *Store) Querier() Querier { return s.q }
+
 // Tx returns a Store whose queries all run inside tx
 func (s *Store) Tx(tx pgx.Tx) *Store {
-	return &Store{q: tx, sealer: s.sealer, log: s.log, maxEvents: s.maxEvents}
+	return &Store{
+		q: tx, sealer: s.sealer, log: s.log, maxEvents: s.maxEvents,
+		reserveSlots: s.reserveSlots,
+	}
 }
 
 // WithTx runs fn in a transaction, committing when fn returns nil and rolling back otherwise

@@ -86,6 +86,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
@@ -143,6 +144,8 @@ type Deps struct {
 	River *river.Client[pgx.Tx]
 	// Secrets are the secret settings, a zero limit taking its default
 	Secrets config.Secrets
+	// Sources answers ResolveTunnel's source check, none when nil
+	Sources *secrets.Sources
 	// SecretsHost names secret links, CreateSecretLink refusing every call while it is empty
 	SecretsHost string
 	// EgressHost is the proxy's name, the secret writes refusing every call while it is empty
@@ -179,6 +182,9 @@ type Deps struct {
 	Images map[string]config.ImageTools
 	// Upstream names the hosts a private fetch talks to, the production ones when zero
 	Upstream bootstrap.Upstream
+	// Hooks and HookSecrets say which providers' webhooks DeliverHook verifies and with what
+	Hooks       config.Hooks
+	HookSecrets map[string]config.HookSecret
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler

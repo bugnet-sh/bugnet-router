@@ -42,12 +42,14 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -114,7 +116,8 @@ func migrateDatabase(ctx context.Context, log *slog.Logger) error {
 func openStore(pool *pgxpool.Pool, cfg config.Config, log *slog.Logger) *store.Store {
 	return store.New(pool, store.WithRefSealer(cfg.DataPlaneKeys), store.WithLogger(log),
 		store.WithSessionMaxEvents(cfg.Sessions.MaxEvents),
-		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs))
+		store.WithSessionMaxJobs(cfg.Sessions.MaxJobs),
+		store.WithReserveSlots(cfg.LimitsPoll.ReserveSlots))
 }
 
 func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo.Reader) error {
@@ -149,6 +152,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err != nil {
 		return err
 	}
+	if err := api.CheckHooks(cfg.Hooks, cfg.HookSecrets, reg); err != nil {
+		return err
+	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
 	runners, err := providers.Runners(cfg, reg)
 	if err != nil {
@@ -158,6 +164,15 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {
 		return fmt.Errorf("river client: %w", err)
+	}
+
+	events := edgeevents.New(vk, cfg.ValkeyPrefix, log)
+	sources, err := secrets.NewSources(secrets.SourcesDeps{
+		Settings: secrets.SourceSettingsOf(cfg), Registry: reg, Store: openStore(pool, cfg, log),
+		Valkey: vk, Prefix: cfg.ValkeyPrefix, Events: events, River: rc, Log: log,
+	})
+	if err != nil {
+		return err
 	}
 
 	// The live view's own client, so a crowd of page viewers never starves tool calls
@@ -172,33 +187,35 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	st := openStore(pool, cfg, log)
 	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)
 	tracker := placement.NewTracker(time.Now)
-	engine := placement.New(reg, tracker)
+	engine := placement.New(reg, health.NewShared(st, tracker, log))
 	sg := saga.New(saga.Deps{
-		Store:        st,
-		Engine:       engine,
-		Registry:     reg,
-		Catalog:      cat,
-		River:        rc,
-		Valkey:       vk,
-		Prefix:       cfg.ValkeyPrefix,
-		OrderKey:     cfg.OrderTokenPublicKey,
-		HandleKey:    cfg.HandleKey,
-		MarginFloor:  cfg.MarginFloor,
-		Tracker:      tracker,
-		ReplicaID:    cfg.ReplicaID,
-		DeploymentID: cfg.DeploymentID,
-		Runners:      runners,
-		Log:          log,
-		Events:       edgeevents.New(vk, cfg.ValkeyPrefix, log),
-		Budget:       cfg.EdgeBudget,
-		Keys:         cfg.DataPlaneKeys,
-		Boot:         boot,
-		SSH:          saga.SSHSettingsOf(cfg),
-		Wallets:      cfg.Wallets,
-		Sessions:     writer,
-		SessionKeep:  cfg.Sessions.Keep,
+		Store:         st,
+		Engine:        engine,
+		Registry:      reg,
+		Catalog:       cat,
+		River:         rc,
+		Valkey:        vk,
+		Prefix:        cfg.ValkeyPrefix,
+		OrderKey:      cfg.OrderTokenPublicKey,
+		HandleKey:     cfg.HandleKey,
+		MarginFloor:   cfg.MarginFloor,
+		Tracker:       tracker,
+		ReplicaID:     cfg.ReplicaID,
+		DeploymentID:  cfg.DeploymentID,
+		Runners:       runners,
+		Log:           log,
+		Events:        events,
+		Budget:        cfg.EdgeBudget,
+		Keys:          cfg.DataPlaneKeys,
+		Boot:          boot,
+		SSH:           saga.SSHSettingsOf(cfg),
+		Wallets:       cfg.Wallets,
+		Sessions:      writer,
+		SessionKeep:   cfg.Sessions.Keep,
+		StatsMaxBytes: cfg.Estimator.StatsMaxBytes,
 		// The hold of D-b (a), for abuse and operator ends
 		SessionAbuseHold: cfg.Sessions.AbuseHold,
+		CreatesPerSecond: cfg.CreatesPerSecond,
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {
@@ -231,6 +248,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Previews:            cfg.Previews,
 		River:               rc,
 		Secrets:             cfg.Secrets,
+		Sources:             sources,
 		SecretsHost:         cfg.Names.SecretsHost,
 		EgressHost:          cfg.Names.EgressHost,
 		X402:                cfg.X402,
@@ -248,6 +266,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Fetch:               cfg.Fetch,
 		FetchToken:          cfg.EgressFetchToken,
 		Images:              cfg.Images,
+		Hooks:               cfg.Hooks,
+		HookSecrets:         cfg.HookSecrets,
 	})
 	defer srv.Close()
 

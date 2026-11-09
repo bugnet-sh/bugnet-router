@@ -12,7 +12,7 @@ import (
 )
 
 // Version names the rule set, any change to a rule or a constant bumps it
-const Version = "est-2026.11.3"
+const Version = "est-2026.11.4"
 
 const (
 	mib = int64(1) << 20
@@ -132,15 +132,20 @@ type Request struct {
 	Partial bool `json:"partial,omitempty"`
 }
 
-// History is the observed peaks for a source, the zero value when there are none
+// History is the peaks past runs of a source reached, the zero value when there are none
 type History struct {
-	Observations  int      `json:"observations,omitempty"`
-	Payers        int      `json:"payers,omitempty"`
-	MemoryMiB     int      `json:"memory_mib,omitempty"`
-	DiskMiB       int      `json:"disk_mib,omitempty"`
-	GPUMemoryMiB  int      `json:"gpu_memory_mib,omitempty"`
-	ActiveMinutes int      `json:"active_minutes,omitempty"`
-	OOMPackages   []string `json:"oom_packages,omitempty"`
+	Observations  int `json:"observations,omitempty"`
+	Payers        int `json:"payers,omitempty"`
+	MemoryMiB     int `json:"memory_mib,omitempty"`
+	DiskMiB       int `json:"disk_mib,omitempty"`
+	GPUMemoryMiB  int `json:"gpu_memory_mib,omitempty"`
+	ActiveMinutes int `json:"active_minutes,omitempty"`
+	// OOMPackages are the packages whose memory counted payers ran out of
+	OOMPackages []string `json:"oom_packages,omitempty"`
+	// HeadroomPercent is the share added to a peak to make a floor, the memory_headroom setting
+	HeadroomPercent int `json:"headroom_percent,omitempty"`
+	// Lower says the rows reach the lowering thresholds and the settings allow lowering a floor
+	Lower bool `json:"lower,omitempty"`
 }
 
 // ImageTools is one provider's image manifest, a version, none, or empty when not measured
@@ -279,6 +284,11 @@ type eval struct {
 	downloadBytes  int64
 	docker         bool
 	model          *modelFloor
+	// historyUsed is set when history moved the floor, ranOut when an out of memory push did
+	historyUsed, ranOut bool
+	// ranOutPackage and ranOutMiB name the largest package the push cleared
+	ranOutPackage string
+	ranOutMiB     int
 	// lifetimeCapped is set when the lifetime alone keeps some package short on minutes
 	lifetimeCapped bool
 }
@@ -311,6 +321,7 @@ func Run(in Input) Output {
 		e.modelRules()
 	}
 	floor := e.floor()
+	floor = e.applyHistory(floor)
 	fits := e.fits(floor)
 	if fits == nil {
 		fits = []Fit{}
@@ -329,6 +340,12 @@ func Run(in Input) Output {
 	case e.high:
 		out.Confidence = ConfidenceHigh
 	}
+	if e.historyUsed {
+		out.Basis = BasisHistory
+		if !in.Request.Partial && !e.low && out.Confidence == ConfidenceLow {
+			out.Confidence = ConfidenceMedium
+		}
+	}
 	out.Warnings = e.gates(floor, fits)
 	return out
 }
@@ -340,6 +357,8 @@ func normalize(in Input) Input {
 	in.Request.Needs = slices.Clone(in.Request.Needs)
 	slices.Sort(in.Request.Needs)
 	in.Request.Needs = slices.Compact(in.Request.Needs)
+	in.History.OOMPackages = slices.Clone(in.History.OOMPackages)
+	slices.Sort(in.History.OOMPackages)
 	in.Request.Hints.Tools = slices.Clone(in.Request.Hints.Tools)
 	slices.Sort(in.Request.Hints.Tools)
 	if in.Request.DefaultContextTokens <= 0 {

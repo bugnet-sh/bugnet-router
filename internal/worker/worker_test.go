@@ -39,6 +39,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
@@ -192,6 +193,13 @@ type options struct {
 	now func() time.Time
 	// sessions sets Deps.Sessions, each zero size at its default
 	sessions config.Sessions
+	// limitsPoll and maxConcurrent set the limit polls and account checks
+	limitsPoll    config.LimitsPoll
+	maxConcurrent map[string]int
+	// sources turns on the source check with these settings
+	sources *secrets.SourceSettings
+	// sourcesClock is the source check's clock, the real one when nil
+	sourcesClock *clock
 }
 
 type env struct {
@@ -284,7 +292,19 @@ func newEnv(t *testing.T, o options) *env {
 	wd := worker.Deps{
 		EventsURL: o.eventsURL, SigningKey: o.eventKey, DataplaneWorkers: o.dataplaneWorkers,
 		Egress: o.egress, DefaultWorkers: o.defaultWorkers, Stats: o.stats,
-		Sessions: o.sessions,
+		Sessions: o.sessions, LimitsPoll: o.limitsPoll, MaxConcurrent: o.maxConcurrent,
+	}
+	if o.sources != nil {
+		sdeps := secrets.SourcesDeps{
+			Settings: *o.sources, Registry: reg, Store: st, Valkey: vk, Prefix: prefix,
+			Events: sd.Events, Log: sd.Log,
+		}
+		if o.sourcesClock != nil {
+			sdeps.Now = o.sourcesClock.Now
+		}
+		if wd.Sources, err = secrets.NewSources(sdeps); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now

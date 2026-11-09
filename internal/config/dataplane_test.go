@@ -55,11 +55,17 @@ func TestDataPlaneDefaults(t *testing.T) {
 				CAVersion: 1, LinkTTL: 10 * time.Minute, PutGrantTTL: 10 * time.Minute,
 				CustomHosts: true, MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30,
 				ApplyWait: 15 * time.Second,
+				SourceCheck: SourceCheck{
+					Modes: map[string]string{"boat": "report"}, RefreshInterval: time.Minute,
+					ReadTimeout: 3 * time.Second,
+				},
 			})
+			eq(t, c.Boat.EgressFamilies, []string{"ipv6", "ipv4"})
+			eq(t, c.Boat.EgressIPv6Bits, 128)
 			eq(t, c.Fetch, Fetch{MaxBytes: 2 << 30, EgressAddr: "127.0.0.1:9443"})
 			eq(t, c.Bootstrap, Bootstrap{
 				Dir: "src", HeartbeatStale: time.Minute, MaxPrivateAttempts: 2, MaxConcurrent: 4})
-			eq(t, c.Hooks, Hooks{})
+			eq(t, c.Hooks, Hooks{BoatWindow: 5 * time.Minute, HintUnique: 10 * time.Second})
 			eq(t, c.DataplaneWorkers, 8)
 			eq(t, c.DefaultWorkers, 20)
 			eq(t, c.Boxd.GateRoute, "default")
@@ -75,7 +81,7 @@ func TestExampleNamesAreTheProductionSet(t *testing.T) {
 	eq(t, loadExample(t).Names, Names{
 		PreviewDomain: "preview.bugnet.sh", TransferHost: "transfer.bugnet.sh",
 		SecretsHost: "secrets.bugnet.sh", SSHHost: "ssh.bugnet.sh", SSHPort: 2222,
-		EgressHost: "egress.bugnet.sh",
+		EgressHost: "egress.bugnet.sh", HooksHost: "hooks.bugnet.sh",
 	})
 }
 
@@ -155,7 +161,9 @@ max_bytes = "3GiB"
 egress_addr = "[::1]:9444"
 
 [hooks]
-providers = ["e2b"]
+providers = ["e2b", "boat"]
+boat_window = "2m"
+hint_unique = "30s"
 
 [local]
 sshd_path = "/opt/sshd"
@@ -165,6 +173,14 @@ gate_route = "subdomain"
 
 [boat]
 ssh_path = "native"
+egress_families = ["ipv6"]
+egress_ipv6_bits = 64
+
+[secrets.source_check]
+modes = { boat = "enforce" }
+on_unknown = "refuse"
+refresh_interval = "30s"
+read_timeout = "2s"
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -208,9 +224,18 @@ ssh_path = "native"
 		},
 		LinkTTL: 15 * time.Minute, PutGrantTTL: 5 * time.Minute, MaxPerPlacement: 7,
 		LinksPerHour: 11, PutsPerHour: 12, ApplyWait: 20 * time.Second,
+		SourceCheck: SourceCheck{
+			Modes: map[string]string{"boat": "enforce"}, RefuseUnknown: true,
+			RefreshInterval: 30 * time.Second, ReadTimeout: 2 * time.Second,
+		},
 	})
+	eq(t, c.Boat.EgressFamilies, []string{"ipv6"})
+	eq(t, c.Boat.EgressIPv6Bits, 64)
 	eq(t, c.Fetch, Fetch{MaxBytes: 3 << 30, EgressAddr: "[::1]:9444"})
-	eq(t, c.Hooks, Hooks{Providers: []string{"e2b"}})
+	eq(t, c.Hooks, Hooks{
+		Providers: []string{"e2b", "boat"}, BoatWindow: 2 * time.Minute,
+		HintUnique: 30 * time.Second,
+	})
 	eq(t, c.LocalSSHDPath, "/opt/sshd")
 	eq(t, c.Boxd.GateRoute, "subdomain")
 	eq(t, c.Boat.SSHPath, "native")
@@ -297,6 +322,12 @@ func TestDataPlaneValidation(t *testing.T) {
 		{"empty ssh provider", "[ssh]\nproviders = [\"\"]", "ssh.providers has an empty entry"},
 		{"unknown hook provider", "[hooks]\nproviders = [\"e2b\", \"x\"]",
 			"hooks.providers entry 2 is not one of"},
+		{"boat window zero", "[hooks]\nboat_window = \"0s\"",
+			"hooks.boat_window must be a positive Go duration"},
+		{"hint unique word", "[hooks]\nhint_unique = \"soon\"",
+			"hooks.hint_unique must be a positive Go duration"},
+		{"hooks host with a port", "[names]\nhooks_host = \"h.example.com:443\"",
+			"names.hooks_host"},
 		{"gate port zero", "[previews]\ngate_port = 0", "previews.gate_port must be a port"},
 		{"no previews", "[previews]\nmax_per_placement = 0", "previews.max_per_placement"},
 		{"url ttl in words", "[transfers]\nurl_ttl = \"ten minutes\"",
@@ -374,6 +405,23 @@ func TestDataPlaneValidation(t *testing.T) {
 			`boxd.gate_route must be "subdomain" or "default"`},
 		{"ssh path unknown", "[boat]\nssh_path = \"direct\"",
 			`boat.ssh_path must be "gate" or "native"`},
+		{"source mode unknown", "[secrets.source_check]\nmodes = { boat = \"block\" }",
+			"secrets.source_check.modes.boat must be off, report or enforce"},
+		{"source mode for an unlisted provider",
+			"providers = [\"e2b\"]\n[secrets.source_check]\nmodes = { boat = \"report\" }",
+			"secrets.source_check.modes names boat, which is not in providers"},
+		{"on unknown in words", "[secrets.source_check]\non_unknown = \"maybe\"",
+			`secrets.source_check.on_unknown must be "allow" or "refuse"`},
+		{"refresh interval zero", "[secrets.source_check]\nrefresh_interval = \"0s\"",
+			"secrets.source_check.refresh_interval"},
+		{"read timeout in words", "[secrets.source_check]\nread_timeout = \"soon\"",
+			"secrets.source_check.read_timeout"},
+		{"egress family unknown", "[boat]\negress_families = [\"ipx\"]",
+			"boat.egress_families may hold only"},
+		{"no egress family while on", "[boat]\negress_families = []",
+			"boat.egress_families may not be empty"},
+		{"ipv6 bits too short", "[boat]\negress_ipv6_bits = 63", "boat.egress_ipv6_bits"},
+		{"ipv6 bits too long", "[boat]\negress_ipv6_bits = 129", "boat.egress_ipv6_bits"},
 		{"hooks with another key", "[hooks]\nsecret = \"x\"", "hooks.secret is not a setting"},
 	}
 	for _, c := range cases {
@@ -484,4 +532,23 @@ func TestCallerTokensInTheFileAreSecrets(t *testing.T) {
 			t.Errorf("%s in the file gave %q, want %q", c.key, msg, want)
 		}
 	}
+}
+
+func TestSourceCheckModesDefaultOnlyForAListedBoat(t *testing.T) {
+	c, err := LoadFile(writeFile(t, `providers = ["e2b"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Secrets.SourceCheck.Modes, map[string]string{})
+	c, err = LoadFile(writeFile(t, "[secrets.source_check]\nmodes = {}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Secrets.SourceCheck.Modes, map[string]string{})
+	c, err = LoadFile(writeFile(t, "[boat]\negress_families = []\n[secrets.source_check]\n"+
+		"modes = { boat = \"off\" }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Secrets.SourceCheck.Modes, map[string]string{"boat": "off"})
 }

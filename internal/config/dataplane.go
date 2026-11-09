@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -132,6 +133,8 @@ func (f file) dataPlane(c *Config) error {
 		{"secrets.apply_wait", k.ApplyWait, dk.ApplyWait, &c.Secrets.ApplyWait},
 		{"bootstrap.heartbeat_stale", f.Bootstrap.HeartbeatStale, d.Bootstrap.HeartbeatStale,
 			&c.Bootstrap.HeartbeatStale},
+		{"hooks.boat_window", f.Hooks.BoatWindow, d.Hooks.BoatWindow, &c.Hooks.BoatWindow},
+		{"hooks.hint_unique", f.Hooks.HintUnique, d.Hooks.HintUnique, &c.Hooks.HintUnique},
 	} {
 		v, err := time.ParseDuration(cmp.Or(t.raw, t.def))
 		if err != nil || v <= 0 {
@@ -176,6 +179,9 @@ func (f file) dataPlane(c *Config) error {
 		return err
 	}
 	if err := c.Secrets.read(k); err != nil {
+		return err
+	}
+	if err := c.readSourceCheck(k.SourceCheck); err != nil {
 		return err
 	}
 	c.Fetch.EgressAddr = cmp.Or(f.Fetch.EgressAddr, df.EgressAddr)
@@ -246,7 +252,7 @@ func checkNames(n Names) error {
 	for _, h := range []struct{ key, name string }{
 		{"names.preview_domain", n.PreviewDomain}, {"names.transfer_host", n.TransferHost},
 		{"names.secrets_host", n.SecretsHost}, {"names.ssh_host", n.SSHHost},
-		{"names.egress_host", n.EgressHost},
+		{"names.egress_host", n.EgressHost}, {"names.hooks_host", n.HooksHost},
 	} {
 		if h.name == "" {
 			continue
@@ -334,4 +340,61 @@ func (b Bootstrap) OrDefaults() Bootstrap {
 func (f Fetch) OrDefaults() Fetch {
 	f.MaxBytes = cmp.Or(f.MaxBytes, 2<<30)
 	return f
+}
+
+// sourceModes are the values of a provider in secrets.source_check.modes
+var sourceModes = []string{"off", "report", "enforce"}
+
+// readSourceCheck checks DP 10.12.9's settings that need no provider, Boat's two keys included
+func (c *Config) readSourceCheck(f sourceFile) error {
+	sc := SourceCheck{Modes: maps.Clone(f.Modes)}
+	if f.Modes == nil {
+		sc.Modes = map[string]string{}
+		if slices.Contains(c.Providers, "boat") {
+			sc.Modes["boat"] = "report"
+		}
+	}
+	for name, mode := range sc.Modes {
+		if !slices.Contains(sourceModes, mode) {
+			return fmt.Errorf("secrets.source_check.modes.%s must be off, report or enforce", name)
+		}
+		if !slices.Contains(c.Providers, name) {
+			return fmt.Errorf("secrets.source_check.modes names %s, which is not in providers",
+				name)
+		}
+	}
+	switch f.OnUnknown {
+	case "allow":
+	case "refuse":
+		sc.RefuseUnknown = true
+	default:
+		return errors.New(`secrets.source_check.on_unknown must be "allow" or "refuse"`)
+	}
+	for _, t := range []struct {
+		key, raw string
+		into     *time.Duration
+	}{
+		{"secrets.source_check.refresh_interval", f.RefreshInterval, &sc.RefreshInterval},
+		{"secrets.source_check.read_timeout", f.ReadTimeout, &sc.ReadTimeout},
+	} {
+		v, err := time.ParseDuration(t.raw)
+		if err != nil || v <= 0 {
+			return fmt.Errorf("%s must be a positive Go duration such as 60s or 3s", t.key)
+		}
+		*t.into = v
+	}
+	c.Secrets.SourceCheck = sc
+	for _, fam := range c.Boat.EgressFamilies {
+		if fam != "ipv6" && fam != "ipv4" {
+			return errors.New(`boat.egress_families may hold only "ipv6" and "ipv4"`)
+		}
+	}
+	if len(c.Boat.EgressFamilies) == 0 && sc.Modes["boat"] != "" && sc.Modes["boat"] != "off" {
+		return errors.New("boat.egress_families may not be empty while the boat source check " +
+			"is on")
+	}
+	if c.Boat.EgressIPv6Bits < 64 || c.Boat.EgressIPv6Bits > 128 {
+		return errors.New("boat.egress_ipv6_bits must be 64 to 128")
+	}
+	return nil
 }

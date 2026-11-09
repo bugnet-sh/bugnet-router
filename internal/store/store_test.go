@@ -189,7 +189,7 @@ func TestReserveCapacityStopsAtMax(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, want := range []bool{true, true, false} {
-		ok, err := s.ReserveCapacity(ctx, "p")
+		ok, err := s.ReserveCapacity(ctx, "p", 0)
 		if err != nil || ok != want {
 			t.Fatalf("reserve %d = %v, %v", i, ok, err)
 		}
@@ -197,7 +197,7 @@ func TestReserveCapacityStopsAtMax(t *testing.T) {
 	if err := s.ReleaseCapacity(ctx, "p"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.ReserveCapacity(ctx, "p"); err != nil || !ok {
+	if ok, err := s.ReserveCapacity(ctx, "p", 0); err != nil || !ok {
 		t.Fatalf("reserve after release = %v, %v", ok, err)
 	}
 
@@ -210,7 +210,7 @@ func TestReserveCapacityStopsAtMax(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, err := s.ReserveCapacity(ctx, "q")
+			ok, err := s.ReserveCapacity(ctx, "q", 0)
 			if err != nil {
 				t.Error(err)
 			}
@@ -228,7 +228,7 @@ func TestReserveCapacityStopsAtMax(t *testing.T) {
 func TestReserveCapacityDefaultsAndReleaseFloor(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	ctx := context.Background()
-	if ok, err := s.ReserveCapacity(ctx, "fresh"); err != nil || !ok {
+	if ok, err := s.ReserveCapacity(ctx, "fresh", 0); err != nil || !ok {
 		t.Fatalf("reserve = %v, %v", ok, err)
 	}
 	var maxConc, inUse int
