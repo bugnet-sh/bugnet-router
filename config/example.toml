@@ -274,6 +274,24 @@ slow_ready_p95 = "10s"        # ready time over which a provider is slow
 down_alert_after = "10m"      # /monitor reports a provider down for this long
 samples_keep = "720h"         # how long a start sample is kept
 
+[abuse]
+e2b_admin_kill = "abuse"      # abuse blocks the payers, control_lost gives a strike
+boat_degraded = "control_lost"  # abuse, control_lost or provider_failed
+degraded_grace = "3m"         # a degraded sandbox gets this long to recover
+boat_abuse_words = ["abuse", "terms", "violation", "fraud"]  # in Boat's stop text
+boat_provider_words = ["boat", "plan", "limit", "capacity", "maintenance", "host"]
+koyeb_platform_words = ["platform", "host", "maintenance", "capacity", "node", "evict"]
+koyeb_exit_words = ["exit", "exited", "code", "oom", "killed", "crash"]
+lost_alert_per_hour = 3       # provider_failed ends on one provider before /monitor alerts
+correlated_max = 3            # more such ends on one provider in the window are held
+correlated_window = "10m"
+late_window = "24h"           # provider abuse on an ended placement still blocks
+
+[reconcile]
+ready_grace = "30s"           # a listing may lag a fresh create this long
+max_per_sweep = 200           # reconcile jobs one sweep inserts per provider
+lifetime_drift = "2m"         # a provider lifetime this far from the deadline is set again
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
