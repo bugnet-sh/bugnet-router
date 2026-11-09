@@ -117,3 +117,68 @@ func TestReadyP95FollowsTheLocalTracker(t *testing.T) {
 		t.Fatalf("ready p95 = %v, want the tracker's 3s", got)
 	}
 }
+
+func writeState(t *testing.T, st *store.Store, name, state string, samples int, p95 time.Duration) {
+	t.Helper()
+	_, err := st.WriteHealth(context.Background(), name, store.HealthState{
+		State: state, Samples: samples, SuccessLB: 0.4, ReadyP95: p95,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDownRowSeenByAnotherReplicaWithin10s(t *testing.T) {
+	st, _ := open(t)
+	c := newClock()
+	replicaA := health.NewShared(st, c.tracker(), nil, health.WithClock(c.Now))
+	replicaB := health.NewShared(st, c.tracker(), nil, health.WithClock(c.Now))
+	eq(t, replicaA.Healthy("a") && replicaB.Healthy("a"), true)
+	// The rollup that runs on replica A writes the row both replicas read
+	writeState(t, st, "a", store.HealthDown, 8, 0)
+	c.add(health.DefaultEvery)
+	eq(t, replicaB.Healthy("a"), false)
+	eq(t, replicaA.Healthy("a"), false)
+	eq(t, replicaB.Healthy("b"), true)
+	// A slow provider is still tried, only a down one is skipped
+	writeState(t, st, "a", store.HealthSlow, 8, 12*time.Second)
+	c.add(health.DefaultEvery)
+	eq(t, replicaB.Healthy("a"), true)
+	writeState(t, st, "a", store.HealthOK, 8, time.Second)
+	c.add(health.DefaultEvery)
+	eq(t, replicaB.Healthy("a"), true)
+}
+
+func TestLocalBreakerStillTripsAlone(t *testing.T) {
+	st, _ := open(t)
+	c := newClock()
+	tracker := c.tracker()
+	shared := health.NewShared(st, tracker, nil, health.WithClock(c.Now))
+	writeState(t, st, "a", store.HealthOK, 8, time.Second)
+	c.add(health.DefaultEvery)
+	eq(t, shared.Healthy("a"), true)
+	for range 3 {
+		tracker.RecordFailure("a")
+	}
+	// No rollup ran, and the row still says ok
+	eq(t, shared.Healthy("a"), false)
+	eq(t, shared.Healthy("b"), true)
+}
+
+func TestReadyP95PrefersTheSharedReading(t *testing.T) {
+	st, _ := open(t)
+	c := newClock()
+	tracker := c.tracker()
+	for range 6 {
+		tracker.RecordReady("a", 2*time.Second)
+	}
+	shared := health.NewShared(st, tracker, nil, health.WithClock(c.Now))
+	eq(t, shared.ReadyP95("a"), 2*time.Second)
+	// Under 5 samples the shared figure does not count
+	writeState(t, st, "a", store.HealthSlow, 4, 30*time.Second)
+	c.add(health.DefaultEvery)
+	eq(t, shared.ReadyP95("a"), 2*time.Second)
+	writeState(t, st, "a", store.HealthSlow, 5, 30*time.Second)
+	c.add(health.DefaultEvery)
+	eq(t, shared.ReadyP95("a"), 30*time.Second)
+}

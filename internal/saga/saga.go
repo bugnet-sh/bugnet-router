@@ -575,6 +575,7 @@ func (s *Saga) attempt(
 		return outcome{reason: reasonInternal, detail: err.Error()}
 	}
 	started := s.now()
+	smp := s.sampleOf(p, prov, c.Size, started)
 	ref, err := s.create(budget, prov, provider.CreateRequest{
 		IdempotencyKey: rec.IdempotencyKey,
 		Size:           c.Size,
@@ -582,10 +583,13 @@ func (s *Saga) attempt(
 		Lifetime:       time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
 		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
+	smp.CreateMS = int(s.now().Sub(started).Milliseconds())
+	smp.SandboxID = ref.ID
 	if err != nil {
 		if s.providerFailed(ctx, name, err, true) {
 			s.d.Tracker.RecordFailure(name)
 		}
+		s.recordSample(ctx, prov, c.Size, smp, err)
 		s.abandon(ctx, prov, rec, nil, err)
 		return outcome{
 			failOver: canFailOver(err), reason: createReason(err),
@@ -596,6 +600,10 @@ func (s *Saga) attempt(
 		Placement: p.ID, KeyID: p.KeyID, NeedPreview: req.Preview, NeedSSH: req.SSH,
 		Restricted: pkg.EgressAllow,
 	})
+	if boot.ReadyMS >= 0 {
+		smp.ReadyMS = smp.CreateMS + boot.ReadyMS
+	}
+	smp.RunnerMS, smp.GateMS = boot.RunnerMS, boot.GateMS
 	if err != nil {
 		noBuild := errors.Is(err, errNoRunnerBuild)
 		reason := reasonNoRunner
@@ -604,12 +612,14 @@ func (s *Saga) attempt(
 			if s.providerFailed(ctx, name, err, false) {
 				s.d.Tracker.RecordFailure(name)
 			}
+			s.recordSample(ctx, prov, c.Size, smp, err)
 		}
 		s.abandon(ctx, prov, rec, &ref, err)
 		return outcome{
 			failOver: !noBuild, reason: reason, detail: fmt.Sprintf("boot on %s: %v", name, err),
 		}
 	}
+	s.recordSample(ctx, prov, c.Size, smp, nil)
 	return s.commitReady(ctx, p, pkg, c, rec, ref, boot, started)
 }
 

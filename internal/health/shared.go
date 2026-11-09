@@ -1,4 +1,5 @@
-// Package health shares what the replicas know about each provider's account through Postgres
+// Package health shares what the replicas know about each provider through Postgres, from its
+// account checks and its start samples
 package health
 
 import (
@@ -28,11 +29,22 @@ type Shared struct {
 	log   *slog.Logger
 
 	mu         sync.Mutex
-	blocked    map[string]bool
+	rows       map[string]row
 	readAt     time.Time // when a read last worked
 	next       time.Time // when the next read may start
 	refreshing bool
 }
+
+// row is what one reading holds of a provider
+type row struct {
+	// out says the account is blocked or the shared state is down
+	out      bool
+	samples  int
+	readyP95 time.Duration
+}
+
+// minSamples is the fewest rollup samples that make the shared ready p95 count
+const minSamples = 5
 
 // Option configures a Shared
 type Option func(*Shared)
@@ -65,19 +77,24 @@ func NewShared(
 	return s
 }
 
-// Healthy is the local tracker's answer and a provider whose account is not blocked
+// Healthy is the local tracker's answer and a provider that is neither blocked nor down
 func (s *Shared) Healthy(name string) bool {
 	if !s.local.Healthy(name) {
 		return false
 	}
-	return !s.view()[name]
+	return !s.view()[name].out
 }
 
-// ReadyP95 is the local tracker's reading, until the shared one comes with the start samples
-func (s *Shared) ReadyP95(name string) time.Duration { return s.local.ReadyP95(name) }
+// ReadyP95 is the shared reading with at least 5 samples, else the local tracker's
+func (s *Shared) ReadyP95(name string) time.Duration {
+	if r := s.view()[name]; r.samples >= minSamples && r.readyP95 > 0 {
+		return r.readyP95
+	}
+	return s.local.ReadyP95(name)
+}
 
-// view returns the blocked providers of the last reading, none once it is over a minute old
-func (s *Shared) view() map[string]bool {
+// view returns the providers of the last reading, none once it is over a minute old
+func (s *Shared) view() map[string]row {
 	now := s.now()
 	s.mu.Lock()
 	due := !s.refreshing && !now.Before(s.next)
@@ -93,7 +110,7 @@ func (s *Shared) view() map[string]bool {
 	if now.Sub(s.readAt) > staleAfter {
 		return nil
 	}
-	return s.blocked
+	return s.rows
 }
 
 // read replaces the reading from provider_health, a failed read keeping the last one
@@ -109,9 +126,12 @@ func (s *Shared) read(now time.Time) {
 		s.log.Warn("cannot read the shared provider health", "err", err)
 		return
 	}
-	blocked := make(map[string]bool, len(rows))
+	seen := make(map[string]row, len(rows))
 	for _, r := range rows {
-		blocked[r.Provider] = r.Blocked != ""
+		seen[r.Provider] = row{
+			out:     r.Blocked != "" || r.State == store.HealthDown,
+			samples: r.Samples, readyP95: r.ReadyP95,
+		}
 	}
-	s.blocked, s.readAt = blocked, now
+	s.rows, s.readAt = seen, now
 }

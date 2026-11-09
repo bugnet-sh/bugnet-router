@@ -285,6 +285,7 @@ func TestWalletExpiryRunsEveryTenMinutes(t *testing.T) {
 	eq(t, worker.Periodic(), map[string]time.Duration{
 		"sweep": time.Minute, "watch": 30 * time.Second, "outbox": time.Second,
 		"wallet_expiry": 10 * time.Minute, "session_expiry": time.Hour,
+		"canary_tick": time.Minute, "health_rollup": 30 * time.Second,
 	})
 }
 
@@ -293,7 +294,7 @@ func TestDefaultQueueHasTwentyWorkers(t *testing.T) {
 	eq(t, q[river.QueueDefault].MaxWorkers, 20)
 	eq(t, worker.Queues(worker.Deps{DefaultWorkers: 3})[river.QueueDefault].MaxWorkers, 3)
 	e := newEnv(t, options{})
-	eq(t, e.worker.Workers(), 28)
+	eq(t, e.worker.Workers(), 32)
 	e = newEnv(t, options{defaultWorkers: 5, dataplaneWorkers: 2})
-	eq(t, e.worker.Workers(), 7)
+	eq(t, e.worker.Workers(), 11)
 }

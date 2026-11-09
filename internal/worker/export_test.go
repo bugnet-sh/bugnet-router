@@ -96,3 +96,17 @@ func PollEvery(d Deps, ps ...provider.Provider) map[string]time.Duration {
 	}
 	return out
 }
+
+// CanaryTick runs one canary_tick's work
+func (w *Worker) CanaryTick(ctx context.Context) { w.canaryTick(ctx) }
+
+// HealthRollup runs one health_rollup's work
+func (w *Worker) HealthRollup(ctx context.Context) { w.healthRollup(ctx) }
+
+// CanaryTimeouts are the run times of canary_tick, probe and health_rollup
+func CanaryTimeouts() [3]time.Duration {
+	return [3]time.Duration{
+		(*canaryTickWorker).Timeout(nil, nil), (*probeWorker).Timeout(nil, nil),
+		(*healthRollupWorker).Timeout(nil, nil),
+	}
+}

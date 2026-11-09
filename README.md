@@ -30,7 +30,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets` and session jobs, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries and the health rollup, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands and internal certificates |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
@@ -40,7 +40,8 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
 | `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
-| `internal/health` | The provider health the replicas share through Postgres, and the requests for an account check or a limits poll |
+| `internal/probe` | The probe that starts, times and removes one sandbox, for canaries and benchmarks |
+| `internal/health` | The provider health the replicas share through Postgres, its rollup rules and canary schedule, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
@@ -489,8 +490,7 @@ the production URL serves both.
 
 Each River worker of `router-worker` holds a Postgres connection while it runs a job, so the pool
 needs more connections than its workers together: `worker.default_workers` (20) and
-`worker.dataplane_workers` (8) today, and `health.probe_workers` (4) once the canaries land, 32
-in all. Put `pool_max_conns=48` in `BUGNET_DATABASE_URL`, for example
+`worker.dataplane_workers` (8) and `health.probe_workers` (4), 32 in all. Put `pool_max_conns=48` in `BUGNET_DATABASE_URL`, for example
 `postgres://host:5432/bugnet_router?sslmode=require&pool_max_conns=48`. pgx's own default is 4
 or the number of CPUs, whichever is larger. At start `router-worker` logs a warning naming
 `pool_max_conns` when the pool's size is not above its workers.
@@ -541,6 +541,7 @@ features that read them land one by one, and until then the settings only load a
 | `[hooks]` | `providers` whose webhooks are verified (`e2b`, `boat`), `boat_window` for the timestamp check and `hint_unique` for folding hints of one sandbox. `router-api` refuses to start when a listed provider has no secret or no verifier |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 | `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
+| `[health]` | How often each provider gets a canary, the probe workers, the size a canary takes, the window and bounds that mark a provider `down` or `slow`, and when `/monitor` reports a provider down |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
 and `local.sshd_path` choose each provider's route. `boat.egress_families` (`ipv6`, `ipv4`) and
@@ -1388,7 +1389,7 @@ one function:
 
 | Value | Until | Goes out as | Function |
 | --- | --- | --- | --- |
-| `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | `null` | `statsStartSamples` in `internal/store/stats.go` |
+| `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | Built | `statsStartSamples` in `internal/store/stats.go` reads kind `placement` samples, the percentiles `null` under 5 |
 | `spentMicros` in the totals and each day | Task 35's cost meter | `null` | `statsSpent` in `internal/store/stats.go` |
 | `wallet.bytes_per_day` | Task 29's byte cap | Left out | `walletBytesPerDay` in `internal/stats/sources.go` |
 
@@ -1909,3 +1910,42 @@ refused before a call. `StatFile` describes the two directories themselves, whic
 Boat's file info has no type, so `StatFile` asks the shell whether a path is a regular file. Boat
 answers a file call on a missing path with a 400 `sandbox_direct_failed` whose message starts
 `No such file or directory`, which the adapter reads as `not_found`.
+
+### Start samples, shared health and canaries
+
+Every attempt of the saga that called the provider writes one `start_samples` row of kind
+`placement` in its own transaction with `synchronous_commit = off`, off the attempt's path. It
+holds `create_ms`, `ready_ms` (create to the provider answering ready), `runner_ms` (upload and
+ping, null where the runner is baked in), `gate_ms`, the outcome, the provider's error code and an
+estimated cost. An attempt skipped for an empty create bucket or a pause writes none. The outcome
+is `ok` or `failed`, or `capacity`, `rate_limited` or `quota`, which say nothing against the
+provider and are left out of its health. A failed write only logs.
+
+`canary_tick` runs every minute and queues a `probe` job for each provider that is due. It is due
+when its last canary is older than `health.canary_every` (5 minutes, spread over 80 to 120 percent
+by a hash of the provider and the last canary), `canary_every_down` (1 minute) while it is down, or
+`boat_canary_every` (30 minutes) for a provider that charges per start, and no placement got ready
+there within `passive_window`, its account is not blocked, and the next start of the canary's size
+is free. The canary's size is the cheapest one covering `canary_vcpu` and `canary_memory_mib`.
+
+A probe (`internal/probe`) takes a slot with no margin and records it in `probe_slots`, takes a
+create token, creates the size with the labels `bugnet=1`, `bugnet_deployment`,
+`bugnet_probe=<kind>` and `probe=<run id>`, no `placement` label, a 5-minute lifetime and the key
+`probe-<run id>`, boots it with `Saga.Boot` (so `harden` and the gate run as for a placement),
+times the runner's `ping` once cold and three times warm, writes and reads 4 KiB, destroys it and
+stores one sample. `router-worker` loads the `[runner]` builds and `hardening.pool_list` for this,
+as `router-api` does. The probes queue has `health.probe_workers` workers, a probe runs once and
+times out at 2 minutes.
+
+`health_rollup` runs every 30 s. Over the last `health.window` (15 minutes) a provider is `down`
+when its last two counted canaries failed, or it has at least `min_samples` samples and a Wilson
+lower bound under `down_below`, `slow` when its ready p95 is over `slow_ready_p95`, else `ok`.
+When canary failures alone would mark every one of two or more providers down, the rollup keeps
+each state and logs at error level. Every replica reads `provider_health` every 10 s: a provider
+is skipped when it is `down` or blocked, and the shared ready p95 stands with at least 5 samples.
+The local breaker still closes a provider at 3 failures in 60 s without the rollup.
+
+`/monitor` also reports `provider X is down for N minutes` past `down_alert_after`, `provider X
+has had no canary for N minutes` when a canary is 3 intervals late and no placement got ready
+there, and `provider X has a probe sandbox N minutes old` past 15 minutes, from the sweep's
+listing. Start samples older than `samples_keep` are deleted by the retention job of Task 38.

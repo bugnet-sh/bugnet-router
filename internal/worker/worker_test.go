@@ -200,6 +200,8 @@ type options struct {
 	sources *secrets.SourceSettings
 	// sourcesClock is the source check's clock, the real one when nil
 	sourcesClock *clock
+	// canaries lets the canary tick find a size, which no test but the canary ones wants
+	canaries bool
 }
 
 type env struct {
@@ -305,6 +307,11 @@ func newEnv(t *testing.T, o options) *env {
 		if wd.Sources, err = secrets.NewSources(sdeps); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if !o.canaries {
+		// No size covers this, so a periodic canary_tick starts no probe beside the test's own
+		wd.Health = config.DefaultHealth()
+		wd.Health.CanaryVCPU = 1 << 10
 	}
 	if o.workerClock != nil {
 		wd.Now = o.workerClock.Now
@@ -1505,8 +1512,8 @@ func TestOutboxAlertsOnceTheTenthFailureIsRecorded(t *testing.T) {
 
 func TestDataplaneQueueHasEightWorkers(t *testing.T) {
 	q := worker.Queues(worker.Deps{})
-	if q[jobargs.QueueDataplane].MaxWorkers != 8 || len(q) != 2 {
-		t.Fatalf("queues %+v, want dataplane at 8 workers beside default", q)
+	if q[jobargs.QueueDataplane].MaxWorkers != 8 || len(q) != 3 {
+		t.Fatalf("queues %+v, want dataplane at 8 workers beside default and probes", q)
 	}
 	three := worker.Queues(worker.Deps{DataplaneWorkers: 3})
 	if three[jobargs.QueueDataplane].MaxWorkers != 3 {

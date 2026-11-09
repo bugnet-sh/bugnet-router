@@ -81,6 +81,12 @@ func (s *Store) Capacities(ctx context.Context) ([]Capacity, error) {
 // ProviderHealth is one provider's shared health row
 type ProviderHealth struct {
 	Provider string
+	// State is ok, slow or down, from the start samples
+	State      string
+	StateSince time.Time
+	// Samples and ReadyP95 are the rollup window's count and ready p95
+	Samples  int
+	ReadyP95 time.Duration
 	// Blocked is banned, unfunded or auth, empty while the account works
 	Blocked       string
 	BlockedDetail string
@@ -93,8 +99,8 @@ type ProviderHealth struct {
 // ProviderHealths returns every provider's shared health row
 func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 	rows, err := s.q.Query(ctx, `
-		select provider, coalesce(blocked, ''), blocked_detail, blocked_since,
-			account_checked_at, updated_at
+		select provider, state, state_since, samples, ready_p95_ms, coalesce(blocked, ''),
+			blocked_detail, blocked_since, account_checked_at, updated_at
 		from provider_health order by provider`)
 	if err != nil {
 		return nil, fmt.Errorf("select provider health: %w", err)
@@ -102,7 +108,11 @@ func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (ProviderHealth, error) {
 		var h ProviderHealth
 		var since, checked *time.Time
-		err := r.Scan(&h.Provider, &h.Blocked, &h.BlockedDetail, &since, &checked, &h.UpdatedAt)
+		var p95 int
+		err := r.Scan(&h.Provider, &h.State, &h.StateSince, &h.Samples, &p95, &h.Blocked,
+			&h.BlockedDetail, &since, &checked, &h.UpdatedAt)
+		h.StateSince = utc(h.StateSince)
+		h.ReadyP95 = time.Duration(p95) * time.Millisecond
 		if since != nil {
 			h.BlockedSince = utc(*since)
 		}

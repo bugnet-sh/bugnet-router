@@ -393,11 +393,40 @@ func readProviders(ctx context.Context, tx pgx.Tx, t time.Time) ([]StatsProvider
 	return out, nil
 }
 
-// statsStartSamples is Task 33's switch point, knowing no start_samples until Task 33 merges
+// statsStartSamples reads the cold path's p50 and p95 and the failed starts of the last 7 days
 func statsStartSamples(
-	_ context.Context, _ pgx.Tx, _ time.Time,
+	ctx context.Context, tx pgx.Tx, t time.Time,
 ) (map[string]startStats, bool, error) {
-	return nil, false, nil
+	rows, err := tx.Query(ctx, `
+		select provider,
+			case when count(*) filter (where outcome = 'ok') >= 5 then
+				percentile_disc(0.5) within group
+					(order by ready_ms + coalesce(runner_ms, 0) + coalesce(gate_ms, 0))
+					filter (where outcome = 'ok' and ready_ms is not null) end,
+			case when count(*) filter (where outcome = 'ok') >= 5 then
+				percentile_disc(0.95) within group
+					(order by ready_ms + coalesce(runner_ms, 0) + coalesce(gate_ms, 0))
+					filter (where outcome = 'ok' and ready_ms is not null) end,
+			count(*) filter (where outcome = 'failed')
+		from start_samples
+		where kind = 'placement' and started_at > $1::timestamptz - interval '7 days'
+			and started_at <= $1
+		group by provider`, t)
+	if err != nil {
+		return nil, false, err
+	}
+	out := map[string]startStats{}
+	var name string
+	var st startStats
+	_, err = pgx.ForEachRow(rows, []any{&name, &st.p50, &st.p95, &st.failed}, func() error {
+		out[name] = st
+		st = startStats{}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
 }
 
 // statsSpent is Task 35's switch point, knowing no placements.cost_micros until Task 35 merges

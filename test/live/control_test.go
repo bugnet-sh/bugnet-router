@@ -48,6 +48,7 @@ func init() {
 		row{id: "L2", providers: []string{"boat"}, run: rowLimits},
 		row{id: "L3", providers: []string{"boxd"}, run: rowLimits},
 		row{id: "L4", providers: []string{"koyeb"}, run: rowLimits},
+		row{id: "P1", run: rowProbeLifetime},
 	)
 }
 
@@ -197,7 +198,7 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
 	ids2 := []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2"}
-	ids2 = append(ids2, "L1", "L2", "L3", "L4")
+	ids2 = append(ids2, "L1", "L2", "L3", "L4", "P1")
 	for _, id := range ids2 {
 		eq(t, slices.Contains(ids, id), true)
 	}
@@ -436,4 +437,50 @@ func rowE9(t *testing.T, s *stack) {
 		version("python3", `python3 --version | cut -d' ' -f2`),
 		version("node", `node --version | tr -d v`),
 		version("docker", `docker --version | cut -d' ' -f3 | tr -d ,`))
+}
+
+// probeGoneWithin is how long a leaked probe may live, its sweep at 10 minutes plus a minute
+const probeGoneWithin = 11 * time.Minute
+
+// rowProbeLifetime is CP P1, a probe's sandbox that nobody destroys. The provider's 5-minute
+// lifetime ends it where the provider honours one, and the stack's sweep destroys it at 10
+// minutes otherwise. The data-plane rows have a P1 of their own in TestLiveDataplane.
+func rowProbeLifetime(t *testing.T, s *stack) {
+	p := liveAdapter(t, s.provider)
+	cfg, err := config.LoadFile(s.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, ok := p.SizeFor(provider.Resources{
+		VCPU: cfg.Health.CanaryVCPU, MemoryMiB: cfg.Health.CanaryMemoryMiB,
+	})
+	if !ok {
+		t.Fatalf("%s has no size for the canary", s.provider)
+	}
+	run := fmt.Sprintf("p1-%d", time.Now().UnixNano())
+	labels := map[string]string{
+		"bugnet": "1", "bugnet_deployment": cfg.DeploymentID, "bugnet_probe": "canary",
+		"probe": run,
+	}
+	ctx := t.Context()
+	ref, err := p.Create(ctx, provider.CreateRequest{
+		IdempotencyKey: "probe-" + run, Size: size, Labels: labels, Lifetime: 5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Destroy(context.WithoutCancel(ctx), ref) })
+	start := time.Now()
+	for time.Since(start) < probeGoneWithin {
+		owned, err := p.ListOwned(ctx, map[string]string{"probe": run})
+		if err != nil {
+			t.Fatalf("ListOwned: %v", err)
+		}
+		if len(owned) == 0 {
+			t.Logf("P1: the probe sandbox was gone after %s", time.Since(start).Round(time.Second))
+			return
+		}
+		time.Sleep(15 * time.Second)
+	}
+	t.Fatalf("P1: the probe sandbox was still there after %s", probeGoneWithin)
 }

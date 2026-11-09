@@ -45,6 +45,7 @@ type health struct {
 	// sessions is the session tables' share of their disk budget, -1 when unread
 	sessions int64
 	limits   limitsHealth
+	canaries canaryHealth
 }
 
 // sourceGap is the ready placements of one provider with secrets and no stored egress source
@@ -81,6 +82,7 @@ const (
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
 	poolList string, feed feedCheck, disk diskPercent, limits limitsCheck, sourced []string,
+	canaries canaryCheck,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -95,6 +97,7 @@ func monitor(
 		wg.Go(func() { h.sessions = checkSessions(ctx, log, disk) })
 		wg.Go(func() { h.limits = checkLimits(ctx, log, st, limits) })
 		wg.Go(func() { h.noSource = checkSources(ctx, log, st, sourced) })
+		wg.Go(func() { h.canaries = checkCanaries(ctx, log, st, canaries) })
 		wg.Wait()
 		problems := h.problems()
 		if len(problems) == 0 {
@@ -293,6 +296,7 @@ func (h health) problems() []string {
 		out = append(out, "the mining pool list cannot be read")
 	}
 	out = append(out, h.limits.problems()...)
+	out = append(out, h.canaries.problems()...)
 	return append(out, h.feed.problems()...)
 }
 

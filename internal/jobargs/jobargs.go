@@ -7,10 +7,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // QueueDataplane is the River queue of every data-plane job, apart from the default queue
 const QueueDataplane = "dataplane"
+
+// QueueProbes is the River queue of the probes
+const QueueProbes = "probes"
 
 // Deadline asks the worker to end a placement once its paid deadline has passed
 type Deadline struct {
@@ -180,4 +185,47 @@ func (AccountCheck) InsertOpts() river.InsertOpts {
 		Queue: river.QueueDefault, MaxAttempts: 1,
 		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
 	}
+}
+
+// CanaryTick asks the worker to queue a canary for each provider that is due one
+type CanaryTick struct{}
+
+// Kind returns the River job kind
+func (CanaryTick) Kind() string { return "canary_tick" }
+
+// InsertOpts runs it once on the default queue, since the next tick comes a minute later
+func (CanaryTick) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
+
+// Probe asks the worker to start one sandbox, time it and remove it, Sample being its kind
+type Probe struct {
+	Sample   string        `json:"sample" river:"unique"`
+	Provider string        `json:"provider" river:"unique"`
+	Size     provider.Size `json:"size"`
+	BenchID  string        `json:"bench_id,omitempty" river:"unique"`
+	Run      int           `json:"run,omitempty" river:"unique"`
+}
+
+// Kind returns the River job kind
+func (Probe) Kind() string { return "probe" }
+
+// InsertOpts runs it once on the probes queue and never again, since a second run would start
+// a second sandbox, and one at a time per provider, kind, benchmark and run
+func (Probe) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: QueueProbes, MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
+
+// HealthRollup asks the worker to write every provider's shared health row
+type HealthRollup struct{}
+
+// Kind returns the River job kind
+func (HealthRollup) Kind() string { return "health_rollup" }
+
+// InsertOpts runs it once on the default queue, since the next rollup comes 30 s later
+func (HealthRollup) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
 }

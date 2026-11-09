@@ -19,7 +19,11 @@
 // copy moves an ended placement's job output into its session record, and session expiry runs at
 // start and hourly and deletes the records whose page ended and no hold keeps. For each provider
 // that reports them, limits_poll writes the account's cap and use into the capacity row and
-// account_check stores whether the account may start sandboxes.
+// account_check stores whether the account may start sandboxes. canary_tick runs every minute and
+// queues a probe for each provider whose canary is due. A probe starts a tiny sandbox the way a
+// placement does, times it, removes it and stores a start sample, on a queue of its own. The
+// health_rollup job turns the last 15 minutes of samples into each provider's shared state every
+// 30 s.
 package worker
 
 import (
@@ -41,6 +45,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/probe"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
@@ -68,6 +73,7 @@ const (
 const (
 	dataplaneWorkers = 8
 	defaultWorkers   = 20
+	probeWorkers     = 4
 )
 
 // The session settings' defaults, for Deps that leave them unset
@@ -98,6 +104,8 @@ type Deps struct {
 	LimitsPoll config.LimitsPoll
 	// MaxConcurrent is each provider's own cap setting, absent for the account's
 	MaxConcurrent map[string]int
+	// Health sets the canaries and the health rollup, each zero value at its default
+	Health config.Health
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -127,6 +135,10 @@ type Worker struct {
 	// checks counts each provider's failed account checks in a row
 	checksMu sync.Mutex
 	checks   map[string]failedChecks
+	probe    *probe.Probe
+	// probeAges is the age of each provider's oldest probe sandbox at the last sweep
+	probesMu  sync.Mutex
+	probeAges map[string]time.Duration
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -144,6 +156,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	d.Sessions.DiskBudget = cmp.Or(d.Sessions.DiskBudget, defaultDiskBudget)
 	if d.LimitsPoll == (config.LimitsPoll{}) {
 		d.LimitsPoll = config.DefaultLimitsPoll()
+	}
+	if d.Health == (config.Health{}) {
+		d.Health = config.DefaultHealth()
 	}
 	if sd.Log == nil {
 		sd.Log = slog.Default()
@@ -179,6 +194,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &sessionExpiryWorker{w: w})
 	river.AddWorker(workers, &limitsPollWorker{w: w})
 	river.AddWorker(workers, &accountCheckWorker{w: w})
+	river.AddWorker(workers, &canaryTickWorker{w: w})
+	river.AddWorker(workers, &probeWorker{w: w})
+	river.AddWorker(workers, &healthRollupWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -193,6 +211,10 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	sd.River = rc
 	w.river = rc
 	w.saga = saga.New(sd)
+	w.probe = probe.New(probe.Deps{
+		Registry: sd.Registry, Store: sd.Store, Saga: w.saga, Replica: sd.ReplicaID,
+		Now: d.Now, Log: sd.Log,
+	})
 	ws := sd.Wallets.OrDefaults()
 	w.wallets = wallets.New(sd.Store, wallets.Settings{
 		Facilitators: ws.FacilitatorAddresses, StrikeThreshold: ws.StrikeThreshold,
@@ -207,6 +229,7 @@ func queues(d Deps) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		river.QueueDefault:     {MaxWorkers: cmp.Or(d.DefaultWorkers, defaultWorkers)},
 		jobargs.QueueDataplane: {MaxWorkers: cmp.Or(d.DataplaneWorkers, dataplaneWorkers)},
+		jobargs.QueueProbes:    {MaxWorkers: cmp.Or(d.Health.ProbeWorkers, probeWorkers)},
 	}
 }
 
@@ -284,6 +307,8 @@ func periodic(d Deps) []periodicJob {
 		{outboxEvery, jobargs.Outbox{}},
 		{expiryEvery, jobargs.WalletExpiry{}},
 		{sessionExpiryEvery, jobargs.SessionExpiry{}},
+		{canaryEvery, jobargs.CanaryTick{}},
+		{rollupEvery, jobargs.HealthRollup{}},
 	}
 	if d.Stats != nil {
 		out = append(out, periodicJob{statsEvery, jobargs.StatsSnapshot{}})
