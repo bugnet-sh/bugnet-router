@@ -106,16 +106,37 @@ func step(ms int) any {
 	return ms
 }
 
+// startSampleColumns are the columns collectSamples reads
+const startSampleColumns = `id, kind, coalesce(bench_id, ''), placement_id, provider, size_name,
+	sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms, warm_cmd_ms,
+	destroy_ms, outcome, error_code, error, cost_micros, replica`
+
 // StartSamples returns the samples of provider since a time, oldest first
 func (s *Store) StartSamples(
 	ctx context.Context, provider string, since time.Time,
 ) ([]StartSample, error) {
-	rows, err := s.q.Query(ctx, `
-		select id, kind, coalesce(bench_id, ''), placement_id, provider, size_name, sandbox_id,
-			started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms, warm_cmd_ms,
-			destroy_ms, outcome, error_code, error, cost_micros, replica
-		from start_samples where provider = $1 and started_at >= $2 order by started_at`,
-		provider, utc(since))
+	return s.SampleQuery(ctx, SampleFilter{Provider: provider, Since: since})
+}
+
+// SampleFilter picks start samples, each empty field matching every sample
+type SampleFilter struct {
+	BenchID  string
+	Provider string
+	Kinds    []SampleKind
+	Since    time.Time
+}
+
+// SampleQuery returns the samples f picks, oldest first
+func (s *Store) SampleQuery(ctx context.Context, f SampleFilter) ([]StartSample, error) {
+	kinds := make([]string, len(f.Kinds))
+	for i, k := range f.Kinds {
+		kinds[i] = string(k)
+	}
+	rows, err := s.q.Query(ctx, `select `+startSampleColumns+`
+		from start_samples
+		where ($1 = '' or bench_id = $1) and ($2 = '' or provider = $2)
+			and (cardinality($3::text[]) = 0 or kind = any($3)) and started_at >= $4
+		order by started_at, id`, f.BenchID, f.Provider, kinds, utc(f.Since))
 	if err != nil {
 		return nil, fmt.Errorf("select start samples: %w", err)
 	}
