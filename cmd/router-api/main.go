@@ -49,6 +49,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -165,6 +166,15 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return fmt.Errorf("river client: %w", err)
 	}
 
+	events := edgeevents.New(vk, cfg.ValkeyPrefix, log)
+	sources, err := secrets.NewSources(secrets.SourcesDeps{
+		Settings: secrets.SourceSettingsOf(cfg), Registry: reg, Store: openStore(pool, cfg, log),
+		Valkey: vk, Prefix: cfg.ValkeyPrefix, Events: events, River: rc, Log: log,
+	})
+	if err != nil {
+		return err
+	}
+
 	// The live view's own client, so a crowd of page viewers never starves tool calls
 	var liveVK valkey.Client
 	if cfg.Sessions.Live.Enabled {
@@ -194,7 +204,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		DeploymentID:  cfg.DeploymentID,
 		Runners:       runners,
 		Log:           log,
-		Events:        edgeevents.New(vk, cfg.ValkeyPrefix, log),
+		Events:        events,
 		Budget:        cfg.EdgeBudget,
 		Keys:          cfg.DataPlaneKeys,
 		Boot:          boot,
@@ -238,6 +248,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Previews:            cfg.Previews,
 		River:               rc,
 		Secrets:             cfg.Secrets,
+		Sources:             sources,
 		SecretsHost:         cfg.Names.SecretsHost,
 		EgressHost:          cfg.Names.EgressHost,
 		X402:                cfg.X402,

@@ -200,6 +200,7 @@ func buildBoat(
 	}
 	p, err := boat.New(boat.Options{
 		APIKey: key, TypeBySize: cfg.Types, Valkey: vk, Prefix: prefix, HookWindow: window,
+		EgressFamilies: cfg.EgressFamilies, EgressIPv6Bits: cfg.EgressIPv6Bits,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("boat.types: %w", err)

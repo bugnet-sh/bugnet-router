@@ -171,6 +171,10 @@ type Boat struct {
 	Types map[string]string `toml:"types"`
 	// SSHPath is gate for SSH through the bugnet-run gate, or native for Boat's own sshd
 	SSHPath string `toml:"ssh_path"`
+	// EgressFamilies are the families of Boat's ip taken as a sandbox's egress source
+	EgressFamilies []string `toml:"egress_families"`
+	// EgressIPv6Bits is the prefix width of an IPv6 egress source, 64 to 128
+	EgressIPv6Bits int `toml:"egress_ipv6_bits"`
 }
 
 // Names holds the public names the edges serve, each empty until a deployment sets it
@@ -270,6 +274,20 @@ type Secrets struct {
 	LinksPerHour    int
 	PutsPerHour     int
 	ApplyWait       time.Duration
+	// SourceCheck is [secrets.source_check]
+	SourceCheck SourceCheck
+}
+
+// SourceCheck holds the source-address check settings of DP 10.12.9
+type SourceCheck struct {
+	// Modes is off, report or enforce by provider, a provider absent is off
+	Modes map[string]string
+	// RefuseUnknown is on_unknown = "refuse"
+	RefuseUnknown bool
+	// RefreshInterval allows at most one provider read per placement in this time
+	RefreshInterval time.Duration
+	// ReadTimeout bounds one provider read
+	ReadTimeout time.Duration
 }
 
 // BoxKey is one X25519 public key of the egress proxy, by its id
@@ -446,6 +464,8 @@ type koyebFile struct {
 type boatFile struct {
 	Types          map[string]string `toml:"types"`
 	SSHPath        string            `toml:"ssh_path"`
+	EgressFamilies []string          `toml:"egress_families"`
+	EgressIPv6Bits int64             `toml:"egress_ipv6_bits"`
 	HardenRequired bool              `toml:"harden_required"`
 	HardenAllow    []string          `toml:"harden_allow"`
 	OpsPerSecond   int64             `toml:"ops_per_second"`
@@ -502,6 +522,14 @@ type secretFile struct {
 	LinksPerHour    int64        `toml:"links_per_hour"`
 	PutsPerHour     int64        `toml:"puts_per_hour"`
 	ApplyWait       string       `toml:"apply_wait"`
+	SourceCheck     sourceFile   `toml:"source_check"`
+}
+
+type sourceFile struct {
+	Modes           map[string]string `toml:"modes"`
+	OnUnknown       string            `toml:"on_unknown"`
+	RefreshInterval string            `toml:"refresh_interval"`
+	ReadTimeout     string            `toml:"read_timeout"`
 }
 
 type boxKeyFile struct {
@@ -541,7 +569,10 @@ func defaults() file {
 		Boxd:  boxdFile{Region: "fra", GateRoute: "default", HardenRequired: true},
 		E2B:   e2bFile{HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1},
 		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
-		Boat:  boatFile{SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50},
+		Boat: boatFile{
+			SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50,
+			EgressFamilies: []string{"ipv6", "ipv4"}, EgressIPv6Bits: 128,
+		},
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
 			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
@@ -563,6 +594,9 @@ func defaults() file {
 		Secrets: secretFile{
 			CAVersion: 1, LinkTTL: "10m", PutGrantTTL: "10m", CustomHosts: true,
 			MaxPerPlacement: 20, LinksPerHour: 10, PutsPerHour: 30, ApplyWait: "15s",
+			SourceCheck: sourceFile{
+				OnUnknown: "allow", RefreshInterval: "60s", ReadTimeout: "3s",
+			},
 		},
 		Fetch: fetchFile{MaxBytes: "2GiB", EgressAddr: "127.0.0.1:9443"},
 		Bootstrap: bootstrapFile{
@@ -692,6 +726,8 @@ func (f file) config() (Config, error) {
 		},
 		Boat: Boat{
 			Types: maps.Clone(f.Boat.Types), SSHPath: cmp.Or(f.Boat.SSHPath, d.Boat.SSHPath),
+			EgressFamilies: slices.Clone(f.Boat.EgressFamilies),
+			EgressIPv6Bits: int(f.Boat.EgressIPv6Bits),
 		},
 		LocalSSHDPath: cmp.Or(f.Local.SSHDPath, d.Local.SSHDPath),
 		Names:         f.Names,

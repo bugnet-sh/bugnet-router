@@ -72,6 +72,8 @@ type fakeSandbox struct {
 	startPolls   int
 	deleted      bool
 	procs        map[int]*fakeProc
+	ip           any
+	sshEndpoint  any
 }
 
 // fakeProc is one detached command, its logs kept whole so every attach can replay them
@@ -418,12 +420,15 @@ func (f *fakeBoat) sandboxJSON(s *fakeSandbox) map[string]any {
 	sb := map[string]any{
 		"id": s.id, "name": "Sandbox " + s.created.Format("2006-01-02 15:04"), "state": s.state,
 		"labels": s.labels, "type": s.typ, "vcpu": shape[0], "memoryGB": shape[1],
-		"billingMultiplier": 1, "machineProvider": "baremetal", "url": nil, "ip": nil,
+		"billingMultiplier": 1, "machineProvider": "baremetal", "url": nil, "ip": s.ip,
 		"createdAt": f.when(s.created), "updatedAt": f.when(s.created),
 		"archiveAfter": f.when(s.archiveAfter), "ttlSeconds": s.ttl,
 		"desktopAvailable": false, "snapshotAvailable": false, "snapshots": false,
 		"monitoring": false, "hydration": nil, "team": nil, "access": "owner",
 		"health": "ok", "lastReboot": nil, "futureField": map[string]any{"nested": []any{1}},
+	}
+	if s.sshEndpoint != nil {
+		sb["sshEndpoint"] = s.sshEndpoint
 	}
 	if f.drift == "types" {
 		sb["error"] = map[string]any{"reason": "none"}
@@ -1754,4 +1759,18 @@ func (f *fakeBoat) readMe(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, body)
+}
+
+// setNetwork sets the ip and sshEndpoint a sandbox reports, nil for JSON null
+func (f *fakeBoat) setNetwork(id string, ip, sshEndpoint any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].ip, f.sandboxes[id].sshEndpoint = ip, sshEndpoint
+}
+
+// setState moves a sandbox to a state
+func (f *fakeBoat) setState(id, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandboxes[id].state = state
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,6 +73,8 @@ type Placement struct {
 	SourceRead                                             bool
 	// SourceUnread is why the estimator did not read the source, empty when it did
 	SourceUnread string
+	// EgressSource is where the provider says the sandbox's tunnels come from
+	EgressSource EgressSource
 }
 
 // PlacementSource is the resolved source of an estimate, which a placement copies at create
@@ -156,11 +159,15 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	(select coalesce(sum(o.amount_micros), 0)::bigint from orders o
 		where o.placement_id = placements.id
 			and not (placements.state = 'failed' and placements.refundable)),
-	end_evidence, coalesce(end_actor, '')`
+	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
+	egress_source_read_at`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var ref []byte
+	var src *netip.Prefix
+	var bind *netip.Addr
+	var readAt *time.Time
 	err := row.Scan(&p.ID, &p.HandleSHA256, &p.OrderID, &p.PackageID, &p.State, &p.Provider,
 		&ref, &p.SizeName, &p.Deadline, &p.CreatedAt, &p.ReadyAt, &p.TerminatedAt,
 		&p.FailureReason, &p.Refundable, &p.SagaOwner, &p.SagaHeartbeat, &p.CapacityProvider,
@@ -169,12 +176,18 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.GateReadyAt, &p.AppliedHosts, &p.NeedsSecrets, &p.Payer, &p.EstimateID,
 		&p.SourceKind, &p.SourceCanonical, &p.SourceRef, &p.SourceRevision, &p.SourceRead,
 		&p.SourceUnread,
-		&p.PaidMicros, &p.EndEvidence, &p.EndActor)
+		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
 	if err != nil {
 		return Placement{}, err
+	}
+	if src != nil && bind != nil {
+		p.EgressSource = EgressSource{Prefix: *src, Bind: *bind}
+		if readAt != nil {
+			p.EgressSource.ReadAt = readAt.UTC()
+		}
 	}
 	if ref != nil {
 		p.ProviderRef = &provider.Ref{}

@@ -98,6 +98,12 @@ links_per_hour = 10
 puts_per_hour = 30
 apply_wait = "15s"
 
+[secrets.source_check]
+modes = { boat = "report" }            # off, report or enforce per provider, absent is off
+on_unknown = "allow"                   # allow: the token alone, as with no check; or refuse
+refresh_interval = "60s"               # at most one provider read per placement in this time
+read_timeout = "3s"                    # one provider read
+
 [fetch]
 max_bytes = "2GiB"                     # private repository tarballs, counted as egress
 egress_addr = "127.0.0.1:9443"         # the proxy's listener, dialled directly with PROXY v2
@@ -302,6 +308,8 @@ creates_per_second = 0        # creates a second on the account, 0 for no bucket
 
 [boat]
 ssh_path = "gate"             # or "native", only if the gate path fails on Boat
+egress_families = ["ipv6", "ipv4"]   # families of Boat's ip taken as the egress source
+egress_ipv6_bits = 128        # prefix width of an IPv6 source, 64 to 128, 128 kept
 harden_required = true
 harden_allow = []
 ops_per_second = 50           # 3,000 a minute, inside Boat's 10,000 per 60 s per IP with previews

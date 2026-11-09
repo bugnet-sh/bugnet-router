@@ -123,6 +123,10 @@ type Options struct {
 	Prefix string
 	// HookWindow is how far a webhook's timestamp may be from now, five minutes when zero
 	HookWindow time.Duration
+	// EgressFamilies are the families of Boat's ip taken as an egress source, "ipv6" and "ipv4"
+	EgressFamilies []string
+	// EgressIPv6Bits is the prefix width of an IPv6 source, 64 to 128, 128 when zero
+	EgressIPv6Bits int
 }
 
 // Provider places sandboxes on Boat, keeping only what it knows about the next start's fee
@@ -146,6 +150,9 @@ type Provider struct {
 	fees           fees
 	limitsShared   *sharedLimits
 	unreadableOnce sync.Once
+	// egressFamilies and egressBits shape EgressSource's prefix
+	egressFamilies []string
+	egressBits     int
 }
 
 // New checks the options and makes no call to Boat
@@ -156,6 +163,15 @@ func New(opts Options) (*Provider, error) {
 	sizes, err := sizesFor(opts.TypeBySize)
 	if err != nil {
 		return nil, err
+	}
+	bits := cmp.Or(opts.EgressIPv6Bits, defaultIPv6Bits)
+	if bits < 64 || bits > 128 {
+		return nil, errors.New("boat: egress_ipv6_bits needs a value from 64 to 128")
+	}
+	for _, f := range opts.EgressFamilies {
+		if f != FamilyIPv6 && f != FamilyIPv4 {
+			return nil, fmt.Errorf("boat: egress family %q needs ipv6 or ipv4", f)
+		}
 	}
 	key := opts.APIKey
 	base := strings.TrimSuffix(cmp.Or(opts.BaseURL, defaultBaseURL), "/")
@@ -172,7 +188,7 @@ func New(opts Options) (*Provider, error) {
 	p := &Provider{
 		api: client, control: control, baseURL: base, key: key,
 		direct: &http.Client{CheckRedirect: provider.NoRedirect}, streams: newStreamClient(),
-		sizes:        sizes,
+		sizes: sizes, egressFamilies: slices.Clone(opts.EgressFamilies), egressBits: bits,
 		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 		hookWindow: cmp.Or(opts.HookWindow, defaultHookWindow),
@@ -285,6 +301,10 @@ type sandbox struct {
 	Error     string            `json:"error"`
 	CreatedAt string            `json:"createdAt"`
 	Labels    map[string]string `json:"labels"`
+	// IP is Boat's machine address, which may be IPv4 or IPv6
+	IP *string `json:"ip"`
+	// SSHEndpoint is set only when the machine has no public IPv4 of its own
+	SSHEndpoint *string `json:"sshEndpoint"`
 }
 
 type sandboxReply struct {

@@ -43,6 +43,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
+	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
@@ -87,6 +88,8 @@ type Deps struct {
 	DefaultWorkers int
 	// Egress is where apply_secrets points every forwarder
 	Egress Egress
+	// Sources reads each placement's egress source for apply_secrets, off when nil
+	Sources *secrets.Sources
 	// Stats turns on the stats_snapshot job, off when nil
 	Stats *Stats
 	// Sessions sizes the session copy and its disk budget

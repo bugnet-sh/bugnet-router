@@ -18,7 +18,7 @@ import (
 
 func askLimits(st *store.Store, vk valkey.Client, lc limitsCheck) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, lc)(rec,
+	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, lc, nil)(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
@@ -49,7 +51,7 @@ func migrated(t *testing.T) *pgxpool.Pool {
 // probe asks /monitor once and returns its status and body
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
-	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{}, nil, limitsCheck{})(rec,
+	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{}, nil, limitsCheck{}, nil)(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -82,7 +84,7 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
 		monitor(discard, store.New(pool), vk, testPrefix, hung, testPools, feedCheck{}, nil,
-			limitsCheck{})(rec, req)
+			limitsCheck{}, nil)(rec, req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -254,7 +256,7 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 		bad:                               "the mining pool list cannot be read\n",
 	} {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{}, nil, limitsCheck{})(rec,
+		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{}, nil, limitsCheck{}, nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
@@ -269,7 +271,7 @@ func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	ask := func() (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{}, nil, limitsCheck{})(rec,
+		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{}, nil, limitsCheck{}, nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -294,7 +296,7 @@ func TestMonitorShowsStaleStats(t *testing.T) {
 	vk, _ := testenv.Valkey(t)
 	ask := func(feed feedCheck) (int, string) {
 		rec := httptest.NewRecorder()
-		monitor(discard, st, vk, testPrefix, healthy, testPools, feed, nil, limitsCheck{})(rec,
+		monitor(discard, st, vk, testPrefix, healthy, testPools, feed, nil, limitsCheck{}, nil)(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -345,7 +347,7 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 		rec := httptest.NewRecorder()
 		disk := func(context.Context) (int64, error) { return percent, nil }
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, disk,
-			limitsCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+			limitsCheck{}, nil)(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if want == "" {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("at %d%% /monitor gave %d: %s", percent, rec.Code, rec.Body)
@@ -359,8 +361,58 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 	rec := httptest.NewRecorder()
 	failing := func(context.Context) (int64, error) { return 0, errors.New("no size") }
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, failing,
-		limitsCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		limitsCheck{}, nil)(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("an unread size gave %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMonitorEgressSourcesLine(t *testing.T) {
+	pool := migrated(t)
+	st := store.New(pool)
+	vk, _ := testenv.Valkey(t)
+	id := uuid.New()
+	_, err := pool.Exec(t.Context(), `insert into placements
+		(id, handle_sha256, order_id, package_id, state, deadline, provider)
+		values ($1, $2, $3, 'pkg', $4, now() + interval '1 hour', 'boat')`,
+		id, id[:], id.String(), store.PlacementReady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(providers ...string) (int, string) {
+		rec := httptest.NewRecorder()
+		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, limitsCheck{}, providers)(rec,
+			httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		return rec.Code, rec.Body.String()
+	}
+	// Without secrets there is nothing a missing address would hurt
+	if code, body := ask("boat"); code != http.StatusOK {
+		t.Fatalf("no secrets: %d %s", code, body)
+	}
+	_, _, err = st.PutSecret(t.Context(), store.Secret{
+		ID: uuid.New(), PlacementID: id, Name: "HF_TOKEN", Hosts: []string{"huggingface.co"},
+		PlaceholderSHA256: []byte("ph"), Sealed: []byte("box"), KeyID: "k1",
+		Source: store.SourceGateway, State: store.SecretActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "egress sources: 1 ready boat placements with secrets and no usable address\n"
+	if code, body := ask("boat"); code != http.StatusServiceUnavailable || body != want {
+		t.Fatalf("secrets and no address: %d %q, want 503 %q", code, body, want)
+	}
+	// A provider with no source check is never counted
+	if code, body := ask(); code != http.StatusOK {
+		t.Fatalf("check off: %d %s", code, body)
+	}
+	src := netip.MustParseAddr("2001:db8::5")
+	_, err = st.SetEgressSource(t.Context(), id, provider.EgressSource{
+		Prefix: netip.PrefixFrom(src, 128), Bind: src,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := ask("boat"); code != http.StatusOK {
+		t.Fatalf("address stored: %d %s", code, body)
 	}
 }
