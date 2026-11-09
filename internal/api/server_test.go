@@ -690,6 +690,22 @@ func wantNoInfo(t *testing.T, err error) {
 	}
 }
 
+// hasReason reports whether err carries a google.rpc.ErrorInfo with this reason
+func hasReason(err error, reason string) bool {
+	var ce *connect.Error
+	if !errors.As(err, &ce) {
+		return false
+	}
+	for _, d := range ce.Details() {
+		if v, _ := d.Value(); v != nil {
+			if info, ok := v.(*errdetails.ErrorInfo); ok {
+				return info.GetReason() == reason
+			}
+		}
+	}
+	return false
+}
+
 // wantRetry checks that err carries a google.rpc.RetryInfo and returns its delay
 func wantRetry(t *testing.T, err error) time.Duration {
 	t.Helper()

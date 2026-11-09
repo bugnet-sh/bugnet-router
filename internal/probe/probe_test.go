@@ -256,6 +256,8 @@ func TestProbeWritesAFullSample(t *testing.T) {
 		t.Fatalf("samples %+v, want one", got)
 	}
 	m.ID = got[0].ID
+	// Postgres keeps microseconds
+	m.StartedAt = m.StartedAt.Truncate(time.Microsecond)
 	eq(t, got[0], m)
 
 	// Nothing is left: no row, no slot, no sandbox

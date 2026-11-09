@@ -123,11 +123,15 @@ func (f *flaky) Destroy(ctx context.Context, ref provider.Ref) error {
 type clock struct {
 	mu     sync.Mutex
 	offset time.Duration
+	at     time.Time // when set, the clock stands still there and only the offset moves it
 }
 
 func (c *clock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.at.IsZero() {
+		return c.at.Add(c.offset)
+	}
 	return time.Now().Add(c.offset)
 }
 
@@ -1262,7 +1266,8 @@ func TestOutboxRetriesOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clk := &clock{}
+	// A stopped clock keeps the first retry from coming due while a run waits for River
+	clk := &clock{at: time.Now()}
 	var logs syncBuffer
 	recv := newReceiver(t, pub, http.StatusServiceUnavailable)
 	e := newEnv(t, options{

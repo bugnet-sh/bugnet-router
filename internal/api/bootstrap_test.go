@@ -503,7 +503,8 @@ func TestFetchSourcePrivate(t *testing.T) {
 	done := pe.bootstrapIs(t, pe.h, routerv1.BootstrapState_BOOTSTRAP_STATE_DONE)
 	eq(t, done.GetRevision(), "0123456")
 	out := pe.exec(t, sh(pe.h, "wc -c < ~/src/priv/secret.txt; ls ~/.bugnet"))
-	eq(t, string(out.GetStdoutTail()), "    8000\n")
+	// BSD wc pads the count and GNU wc does not
+	eq(t, strings.TrimLeft(string(out.GetStdoutTail()), " "), "8000\n")
 	// Every streamed byte is in the counter
 	if got := pe.egressUsed(t); got < 100 {
 		t.Fatalf("egress counter is %d", got)

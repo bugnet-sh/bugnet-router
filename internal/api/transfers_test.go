@@ -496,7 +496,8 @@ func TestReadWithholdsUntilVerified(t *testing.T) {
 }
 
 func TestDownloadResumeChecksTheFile(t *testing.T) {
-	e := newEnv(t, options{})
+	// The router sends its first 256 KiB once it has read 512 KiB, then waits for the cut
+	e := slowEnv(t, &slowFiles{hold: 512 << 10}, config.Transfers{})
 	h, _ := e.readyPlacement(t)
 	data := strings.Repeat("z", 600<<10)
 	e.put(t, h, "/root/d", data)
@@ -512,9 +513,11 @@ func TestDownloadResumeChecksTheFile(t *testing.T) {
 	got := len(stream.Msg().GetData())
 	cancel()
 	_ = stream.Close()
+	// The claim stays in use until the router sees the cut and releases it
 	var resumed *routerv1.OpenTransferResponse
 	for range 50 {
-		if resumed, err = e.openWith(t, tokenOf(t, m), fromSandbox, false); err == nil {
+		resumed, err = e.openWith(t, tokenOf(t, m), fromSandbox, false)
+		if err == nil || !hasReason(err, "IN_USE") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -739,6 +742,8 @@ type slowFiles struct {
 	stall  bool          // reads and writes block until their stream's context ends
 	fail   bool          // Commit fails after its pause
 	aborts *atomic.Int32 // the writers' Abort calls
+	hold   int64         // the first reader serves this many bytes, then blocks as stall does
+	held   atomic.Bool   // a reader took the hold
 }
 
 // wait takes pause, or blocks until ctx ends as a provider body that stops moving does
@@ -768,7 +773,27 @@ func (s *slowFiles) OpenReader(
 	if err != nil {
 		return nil, err
 	}
+	if s.hold > 0 && s.held.CompareAndSwap(false, true) {
+		return &heldReader{FileReader: r, ctx: ctx, left: s.hold}, nil
+	}
 	return slowReader{FileReader: r, s: s, ctx: ctx}, nil
+}
+
+// heldReader serves left more bytes, then blocks until its stream's context ends
+type heldReader struct {
+	provider.FileReader
+	ctx  context.Context
+	left int64
+}
+
+func (r *heldReader) Read(p []byte) (int, error) {
+	if r.left <= 0 {
+		<-r.ctx.Done()
+		return 0, r.ctx.Err()
+	}
+	n, err := r.FileReader.Read(p[:min(int64(len(p)), r.left)])
+	r.left -= int64(n)
+	return n, err
 }
 
 type slowReader struct {
