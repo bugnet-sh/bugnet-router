@@ -430,7 +430,15 @@ type stackOptions struct {
 	catalog string
 	// payments is the Payments URL that turns the stats feed on, each process on its own port
 	payments string
+	// health holds the lines of every process's [health] table, no canary size when empty
+	health string
+	// beforeWorker runs after the router-api replicas start and before router-worker does
+	beforeWorker func(*testing.T, *stack)
 }
+
+// quietHealth asks for a canary size no sandbox has, so a stack's worker starts no canaries
+const quietHealth = `canary_vcpu = 64
+canary_memory_mib = 1048576`
 
 func startStack(t *testing.T) *stack {
 	t.Helper()
@@ -475,6 +483,9 @@ func startStackWith(t *testing.T, o stackOptions) *stack {
 	t.Cleanup(func() { s.stop(t) })
 	s.a = s.start(t, logs, "api-a", bin.api, "api")
 	s.b = s.start(t, logs, "api-b", bin.api, "api")
+	if o.beforeWorker != nil {
+		o.beforeWorker(t, s)
+	}
 	s.worker = s.start(t, logs, "worker", bin.worker, "worker")
 	for _, p := range s.procs {
 		p.waitReady(t)
@@ -527,12 +538,16 @@ prefix = %q
 transfer_host = "transfer.e2e.example"
 preview_domain = "preview.e2e.example"
 
+[health]
+%s
+
 [local]
 enabled = true
 root = %q
 runner = %q
 %s`, base64.StdEncoding.EncodeToString(pub), s.packages, name, s.events.url, table, addr,
-		lines, s.opts.valkey, s.prefix, s.root, bin.runner, extra)
+		lines, s.opts.valkey, s.prefix, cmp.Or(s.opts.health, quietHealth), s.root, bin.runner,
+		extra)
 	path := filepath.Join(t.TempDir(), name+".toml")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
