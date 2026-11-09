@@ -56,24 +56,30 @@ jobs:
           path: bugnet-router
           persist-credentials: false
 
-      # Siblings use the branch of the same name when it exists there, else main
+      # Siblings use the branch of the same name, else the pull request's base, else main
       - name: Pick sibling branches
         id: siblings
         env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD: ${{ github.head_ref || github.ref_name }}
+          BASE: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           pick() {
-            local status=0
-            git ls-remote --exit-code --heads "https://github.com/bugnet-sh/$1.git" \
-              "refs/heads/$BRANCH" > /dev/null || status=$?
-            if [ "$status" -eq 0 ]; then
-              echo "$BRANCH"
-            elif [ "$status" -eq 2 ]; then
-              echo main
-            else
-              return "$status"
-            fi
+            local ref status
+            for ref in "$HEAD" "$BASE" main; do
+              [ -n "$ref" ] || continue
+              status=0
+              git ls-remote --exit-code --heads "https://github.com/bugnet-sh/$1.git" \
+                "refs/heads/$ref" > /dev/null || status=$?
+              if [ "$status" -eq 0 ]; then
+                echo "$ref"
+                return 0
+              elif [ "$status" -ne 2 ]; then
+                return "$status"
+              fi
+            done
+            echo "no branch of $1 to check out" >&2
+            return 1
           }
           proto=$(pick bugnet-proto)
           run=$(pick bugnet-run)
