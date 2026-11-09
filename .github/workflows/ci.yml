@@ -131,15 +131,6 @@ jobs:
           version: v2.14.0
           working-directory: bugnet-router
 
-      # Temporary: repeats the tests this branch made deterministic
-      - name: Repeat the changed tests
-        run: |
-          set -euo pipefail
-          {
-            go test -count=20 -run '^TestDownloadResumeChecksTheFile$' ./internal/api/
-            go test -count=20 -run '^TestOutboxRetriesOnFailure$' ./internal/worker/
-          } 2>&1 | tee "$RUNNER_TEMP/go-test.log"
-
       # Live provider, stack and x402local tests skip without their keys and BUGNET_TEST_* flags
       - name: go test
         run: |
