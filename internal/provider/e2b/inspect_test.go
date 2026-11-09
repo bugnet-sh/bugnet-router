@@ -56,17 +56,15 @@ func TestE2BInspectReadsTheKillReasonOfAGoneSandbox(t *testing.T) {
 	eq(t, got, provider.Status{State: provider.StateGone, KillReason: "request"})
 }
 
-func TestE2BInspectKeepsGoneWhenTheEventsCannotBeRead(t *testing.T) {
+func TestE2BInspectErrorsWhenTheEventsCannotBeRead(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, fakeKey)
 	ref := f.add(map[string]string{"bugnet": "1"})
 	f.killedBy(ref.ID, "admin")
 	f.inject("GET /events/sandboxes/{id}", fault{status: 500, times: 10})
-	got, err := p.Inspect(t.Context(), ref)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := p.Inspect(t.Context(), ref); err == nil {
+		t.Fatal("a failed events read answered gone")
 	}
-	eq(t, got, provider.Status{State: provider.StateGone})
 }
 
 func TestE2BListingCarriesStateAndExpiry(t *testing.T) {

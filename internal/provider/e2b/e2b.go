@@ -486,7 +486,11 @@ func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Stat
 		return p.api.GetSandboxesSandboxID(ctx, id)
 	})
 	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
-		return provider.Status{State: provider.StateGone, KillReason: p.killReason(ctx, id)}, nil
+		reason, rerr := p.killReason(ctx, id)
+		if rerr != nil {
+			return provider.Status{}, rerr
+		}
+		return provider.Status{State: provider.StateGone, KillReason: reason}, nil
 	}
 	if err != nil {
 		return provider.Status{}, err
@@ -507,23 +511,27 @@ func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Stat
 	return provider.Status{State: st, ExpiresAt: sb.EndAt.UTC()}, nil
 }
 
-// killReason reads the newest kill event's reason, empty when E2B keeps none or cannot be read
-func (p *Provider) killReason(ctx context.Context, id string) string {
+// killReason reads the newest kill event's reason, empty when E2B keeps none, an error when the
+// events cannot be read
+func (p *Provider) killReason(ctx context.Context, id string) (string, error) {
 	params := &api.GetEventsSandboxesSandboxIDParams{
 		Types: &[]string{killedType}, Limit: new(int32(1)),
 	}
 	_, raw, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
 		return p.api.GetEventsSandboxesSandboxID(ctx, id, params)
 	})
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return "", nil
+	}
 	if err != nil {
-		return ""
+		return "", err
 	}
 	var events []api.SandboxEvent
 	if json.Unmarshal(raw, &events) != nil || len(events) == 0 || events[0].EventData == nil {
-		return ""
+		return "", nil
 	}
 	reason, _ := (*events[0].EventData)["kill_reason"].(string)
-	return reason
+	return reason, nil
 }
 
 // ListOwned pages through running and paused sandboxes whose metadata carries every label
