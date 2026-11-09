@@ -174,12 +174,15 @@ deploy/vps/ship.sh --check-heads                  # check the four checkouts, bu
 ```
 
 Before building, `ship.sh` checks the four checkouts it builds from (`bugnet-proto`, `bugnet-run`,
-`bugnet-edges` beside `bugnet-router`): each is clean, on the router's branch, and at that branch's
-tip, `origin/<branch>` for the canonical checkout and the canonical checkout's branch for another
-worktree. On a mismatch it prints one line per checkout (repo, path, branch, commit, expected
-commit, what differs) and stops. `--allow-mixed` ships anyway with a warning. The bundle's
-`COMMITS`, `~/bugnet-deploy/<version>/COMMITS` on the VPS, records each `repo:sha` with its branch
-and result.
+`bugnet-edges` beside `bugnet-router`). Each must be clean, with no changed tracked files and none
+marked skip-worktree or assume-unchanged, and on the router's branch. The canonical checkout (the
+repository's main worktree) must be at `origin/<branch>` as last fetched; `ship.sh` never fetches,
+so run `git fetch` first. Another worktree, such as a deploy lane, must contain the canonical
+checkout's current commit, and must be at `origin/<branch>` when that ref exists. On a mismatch it
+prints one line per checkout (repo, path, branch, commit, expected commit, what differs) and stops.
+`--allow-mixed` ships anyway with a warning. The bundle's `COMMITS`,
+`~/bugnet-deploy/<version>/COMMITS` on the VPS, records each `repo:sha` with its branch and
+result, and notes untracked `.go`, `go.mod`, `go.sum` and `Makefile` files, which the build uses.
 
 `deploy.sh` migrates the database with the new `router-api`, then starts each new instance
 beside the old one (`SO_REUSEPORT`), waits until its `/readyz` answers ten times in a row, and
