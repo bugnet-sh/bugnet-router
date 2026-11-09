@@ -354,9 +354,10 @@ func TestStatsFigures(t *testing.T) {
 			MedianSeconds: 1200},
 		{Day: day(8), Sandboxes: 1, ComputeSeconds: 3600, PeakActive: 1},
 	})
+	none := int64(0)
 	eq(t, f.Providers, []store.StatsProvider{
-		{Provider: "boat", Sandboxes7d: 3, Active: 1},
-		{Provider: "e2b", Sandboxes7d: 1},
+		{Provider: "boat", Sandboxes7d: 3, Active: 1, Failed7d: &none},
+		{Provider: "e2b", Sandboxes7d: 1, Failed7d: &none},
 	})
 }
 
@@ -371,7 +372,8 @@ func TestPeakActiveCountsCarriedIn(t *testing.T) {
 		{Day: day(8)},
 	})
 	// An old run outside the 7 days keeps no provider row
-	eq(t, f.Providers, []store.StatsProvider{{Provider: "boat", Sandboxes7d: 1}})
+	none := int64(0)
+	eq(t, f.Providers, []store.StatsProvider{{Provider: "boat", Sandboxes7d: 1, Failed7d: &none}})
 }
 
 func TestPeakActiveEndsFirstAtEqualTimes(t *testing.T) {
@@ -419,4 +421,48 @@ func TestStatsFiguresWithNoStartedPlacement(t *testing.T) {
 	eq(t, f.Days, []store.StatsDay{})
 	eq(t, f.Providers, []store.StatsProvider{})
 	eq(t, f.Active, map[string]int64{})
+}
+
+func TestStatsStartFiguresComeFromPlacementSamples(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := t.Context()
+	add := func(
+		name string, kind store.SampleKind, outcome string, ago time.Duration, ready, gate int,
+	) {
+		t.Helper()
+		err := s.InsertStartSample(ctx, store.StartSample{
+			Kind: kind, Provider: name, StartedAt: figuresAt.Add(-ago), Outcome: outcome,
+			CreateMS: 10, ReadyMS: ready, RunnerMS: store.NoStep, GateMS: gate,
+			FirstCmdMS: store.NoStep, WarmCmdMS: store.NoStep, DestroyMS: store.NoStep,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Five ok starts of 1000 to 5000 ms and a gate of 100 ms each, and a failed one
+	for i := 1; i <= 5; i++ {
+		add("boat", store.SamplePlacement, "ok", time.Duration(i)*time.Hour, i*1000, 100)
+	}
+	add("boat", store.SamplePlacement, "failed", time.Hour, 0, store.NoStep)
+	// Canaries, capacity answers and old samples are not real starts of the last 7 days
+	add("boat", store.SampleCanary, "failed", time.Hour, 0, store.NoStep)
+	add("boat", store.SamplePlacement, "capacity", time.Hour, 0, store.NoStep)
+	add("boat", store.SamplePlacement, "failed", 8*24*time.Hour, 0, store.NoStep)
+	// Four ok starts are too few for a percentile
+	for i := 1; i <= 4; i++ {
+		add("e2b", store.SamplePlacement, "ok", time.Hour, 500, store.NoStep)
+	}
+	run(t, pool, "boat", clock(7, 10, 0, 0, 0), time.Time{})
+	f := figures(t, s)
+	byName := map[string]store.StatsProvider{}
+	for _, p := range f.Providers {
+		byName[p.Provider] = p
+	}
+	boat, e2b := byName["boat"], byName["e2b"]
+	// The nearest-rank p50 of 1100..5100 is the third, and the p95 the fifth
+	eq(t, *boat.StartP50Ms, int64(3100))
+	eq(t, *boat.StartP95Ms, int64(5100))
+	eq(t, *boat.Failed7d, int64(1))
+	eq(t, e2b.StartP50Ms == nil && e2b.StartP95Ms == nil, true)
+	eq(t, *e2b.Failed7d, int64(0))
 }
