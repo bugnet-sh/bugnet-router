@@ -137,3 +137,63 @@ func TestNftUnitLoadsEveryFileAndNeverFlushes(t *testing.T) {
 		}
 	}
 }
+
+func TestShipRefusesMixedHeads(t *testing.T) {
+	tmp := t.TempDir()
+	git := func(dir string, args ...string) {
+		t.Helper()
+		args = append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t",
+			"-c", "commit.gpgsign=false"}, args...)
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	ship := func(checkout string) string {
+		path := filepath.Join(checkout, "deploy", "vps", "ship.sh")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(read(t, "ship.sh")), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, name := range []string{"bugnet-proto", "bugnet-run", "bugnet-edges", "bugnet-router"} {
+		canon := filepath.Join(tmp, name)
+		git(tmp, "init", "-q", "-b", "main", canon)
+		git(canon, "commit", "-q", "--allow-empty", "-m", "one")
+		git(canon, "commit", "-q", "--allow-empty", "-m", "two")
+		git(canon, "update-ref", "refs/remotes/origin/main", "HEAD")
+		git(canon, "worktree", "add", "-q", "-b", "lane", filepath.Join(tmp, "lane", name))
+	}
+	canon, lane := ship(filepath.Join(tmp, "bugnet-router")), ship(filepath.Join(tmp, "lane",
+		"bugnet-router"))
+	check := func(script string, pass bool, want string, flags ...string) {
+		t.Helper()
+		cmd := exec.Command("bash", append([]string{script, "--check-heads"}, flags...)...)
+		out, err := cmd.CombinedOutput()
+		if (err == nil) != pass || !strings.Contains(string(out), want) {
+			t.Errorf("%s %v: passed %v, want %v and %q:\n%s", script, flags, err == nil, pass,
+				want, out)
+		}
+	}
+	check(canon, true, " main ")
+	check(lane, true, " lane ")
+	laneProto, laneRun := filepath.Join(tmp, "lane", "bugnet-proto"), filepath.Join(tmp, "lane",
+		"bugnet-run")
+	git(laneProto, "update-ref", "refs/remotes/origin/lane", "HEAD~1")
+	check(lane, false, "not at origin/lane")
+	git(laneProto, "update-ref", "-d", "refs/remotes/origin/lane")
+	git(laneRun, "reset", "-q", "--hard", "HEAD~1")
+	check(lane, false, "behind main")
+	git(laneRun, "checkout", "-q", "-b", "old")
+	check(lane, false, " old ")
+	check(lane, true, "WARNING", "--allow-mixed")
+	err := os.WriteFile(filepath.Join(tmp, "bugnet-proto", "x.go"), []byte("package x\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(canon, true, "ok, untracked build files (1)")
+	git(filepath.Join(tmp, "bugnet-edges"), "commit", "-q", "--allow-empty", "-m", "three")
+	check(canon, false, "not at origin/main")
+}
