@@ -122,6 +122,22 @@ type SessionExpiry struct{}
 // Kind returns the River job kind
 func (SessionExpiry) Kind() string { return "session_expiry" }
 
+// Reconcile asks the worker to read one live placement's sandbox and act on what the provider says
+type Reconcile struct {
+	PlacementID uuid.UUID `json:"placement_id"`
+}
+
+// Kind returns the River job kind
+func (Reconcile) Kind() string { return "reconcile" }
+
+// InsertOpts runs it once per placement in 10 s, the sweep and the hints folding together
+func (Reconcile) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: 10 * time.Second},
+	}
+}
+
 // HookHint asks the worker to re-read one sandbox after a verified provider webhook
 type HookHint struct {
 	Provider  string `json:"provider" river:"unique"`
@@ -139,7 +155,7 @@ func (HookHint) Kind() string { return "hook_hint" }
 // InsertOpts runs it once per provider and sandbox while one waits, the API folding the rest
 func (HookHint) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: QueueDataplane,
+		Queue: river.QueueDefault,
 		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{
 			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRetryable,
 			rivertype.JobStateRunning, rivertype.JobStateScheduled,
