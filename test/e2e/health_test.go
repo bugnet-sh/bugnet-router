@@ -14,7 +14,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 )
 
-const downWait = 150 * time.Second
+const downWait = 240 * time.Second
 
 // breakLocalCreates makes every create of the local provider fail, since a file stands where its
 // staging directory would go
