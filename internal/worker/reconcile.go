@@ -10,6 +10,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/reconcile"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -37,8 +38,9 @@ func (rw *reconcileWorker) Work(ctx context.Context, job *river.Job[jobargs.Reco
 	return rw.w.reconciler.Reconcile(ctx, p, nil)
 }
 
-// queueLost inserts a reconcile job for each ready placement the listing lacks or shows unwell,
-// at most max_per_sweep new jobs, and only for a listing that finished (CP 10.3)
+// queueLost inserts a reconcile job for each ready placement the listing lacks, shows unwell or
+// shows with a lifetime off its deadline (CP 10.4), at most max_per_sweep new jobs, and only for
+// a listing that finished (CP 10.3)
 func (w *Worker) queueLost(
 	ctx context.Context, prov provider.Provider, owned []provider.Summary, listStarted time.Time,
 ) {
@@ -55,7 +57,8 @@ func (w *Worker) queueLost(
 	var ids []uuid.UUID
 	for _, rs := range ready {
 		o, ok := listed[rs.SandboxID]
-		if !ok || unwell(o.State) {
+		if !ok || unwell(o.State) ||
+			reconcile.Drifted(prov.Name(), o.ExpiresAt, rs.Deadline, set.LifetimeDrift) {
 			ids = append(ids, rs.PlacementID)
 		}
 	}

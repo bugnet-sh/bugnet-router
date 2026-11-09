@@ -19,6 +19,12 @@ import (
 // fakeE2BKill serves the three calls Inspect and the end make on a sandbox E2B killed for a reason
 func fakeE2BKill(t *testing.T, reason string) (*e2b.Provider, *atomic.Int32) {
 	t.Helper()
+	return fakeE2B(t, reason, false)
+}
+
+// fakeE2B is fakeE2BKill whose kill events can fail with a 500
+func fakeE2B(t *testing.T, reason string, eventsFail bool) (*e2b.Provider, *atomic.Int32) {
+	t.Helper()
 	var asked atomic.Int32
 	rest := http.NewServeMux()
 	notFound := func(w http.ResponseWriter, _ *http.Request) {
@@ -30,6 +36,10 @@ func fakeE2BKill(t *testing.T, reason string) (*e2b.Provider, *atomic.Int32) {
 	rest.HandleFunc("DELETE /sandboxes/{id}", notFound)
 	rest.HandleFunc("GET /events/sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		asked.Add(1)
+		if eventsFail {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		if got := r.URL.Query()["types"]; len(got) != 1 || got[0] != "sandbox.lifecycle.killed" {
 			t.Errorf("events asked for types %v, want the killed event alone", got)
 		}
@@ -90,6 +100,28 @@ func TestE2EAdminKillEndsAsAbuse(t *testing.T) {
 	}
 	eq(t, evidence["kill_reason"], any("admin"))
 	eq(t, evidence["event_id"], any("evt-1"))
+	// The abuse verdict asks for an account check at once
+	var checks int
+	err := e.pool.QueryRow(t.Context(),
+		`select count(*) from river_job
+		where kind = 'account_check' and args->>'provider' = 'e2b'`).Scan(&checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, checks, 1)
+}
+
+// A kill event E2B fails to serve leaves the placement ready, since the reason is unknown
+func TestFailedKillEventsReadLeavesThePlacementReady(t *testing.T) {
+	prov, _ := fakeE2B(t, "admin", true)
+	e := newEnv(t, options{providers: []provider.Provider{prov}})
+	p := e.paidPlacement(t, payerA, false)
+	e.start(t)
+	e.run(t, jobargs.HookHint{Provider: "e2b", SandboxID: p.ProviderRef.ID, EventID: "evt-3"})
+
+	eq(t, e.reload(t, p.ID).State, store.PlacementReady)
+	eq(t, e.blocked(t, payerA), false)
+	eq(t, len(e.signals(t, p.ID)), 0)
 }
 
 // A kill E2B says a request made, on a placement no stop is ending, is the provider's doing and

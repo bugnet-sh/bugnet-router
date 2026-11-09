@@ -26,6 +26,7 @@ type inspecting struct {
 	mu        sync.Mutex
 	status    map[string]provider.Status // by sandbox id, the real reading when absent
 	states    map[string]provider.State  // by sandbox id, the state a listing shows
+	expiries  map[string]time.Time       // by sandbox id, the expiry a listing shows
 	err       error
 	inspects  int
 	lifetimes []time.Time
@@ -35,7 +36,7 @@ func newInspecting(t *testing.T, name string) *inspecting {
 	t.Helper()
 	return &inspecting{
 		Provider: newLocal(t, name), status: map[string]provider.Status{},
-		states: map[string]provider.State{},
+		states: map[string]provider.State{}, expiries: map[string]time.Time{},
 	}
 }
 
@@ -62,6 +63,9 @@ func (i *inspecting) ListOwned(
 	defer i.mu.Unlock()
 	for n := range owned {
 		owned[n].State = i.states[owned[n].Ref.ID]
+		if at, ok := i.expiries[owned[n].Ref.ID]; ok {
+			owned[n].ExpiresAt = at
+		}
 	}
 	return owned, err
 }
@@ -451,4 +455,34 @@ func TestDriftWithinTheBoundChangesNothing(t *testing.T) {
 
 func TestReconcileJobTimeoutIsNinetySeconds(t *testing.T) {
 	eq(t, worker.ReconcileTimeout(), 90*time.Second)
+}
+
+func TestListedLifetimeDriftIsCorrectedBySweep(t *testing.T) {
+	prov := newInspecting(t, "e2b")
+	e := newEnv(t, options{workerClock: aMinuteLater(), providers: []provider.Provider{prov}})
+	now := time.Now()
+	p, ref := e.readyPlacement(t, prov, now, now.Add(10*time.Minute))
+	healthy, href := e.readyPlacement(t, prov, now, now.Add(10*time.Minute))
+	drifted := p.Deadline.Add(saga.LifetimeSlack + time.Hour)
+	prov.mu.Lock()
+	prov.expiries[ref.ID] = drifted
+	prov.expiries[href.ID] = healthy.Deadline.Add(saga.LifetimeSlack)
+	prov.mu.Unlock()
+	prov.set(ref.ID, provider.Status{State: provider.StateRunning, ExpiresAt: drifted})
+	e.start(t)
+
+	e.run(t, jobargs.Sweep{})
+
+	// The reconcile job may finish before the sweep's own event arrives, so poll its effect
+	var lifetimes []time.Time
+	for stop := time.Now().Add(20 * time.Second); len(lifetimes) == 0; {
+		if time.Now().After(stop) {
+			t.Fatal("the sweep never corrected the drifted lifetime")
+		}
+		time.Sleep(50 * time.Millisecond)
+		_, lifetimes = prov.counts()
+	}
+	eq(t, e.reconcileJobs(t), 1)
+	eq(t, len(lifetimes), 1)
+	eq(t, e.reload(t, p.ID).State, store.PlacementReady)
 }

@@ -59,6 +59,7 @@ func (s *Store) PlacementBySandbox(
 type ReadySandbox struct {
 	PlacementID uuid.UUID
 	SandboxID   string
+	Deadline    *time.Time
 }
 
 // ReadySandboxes lists the placements ready on a provider since before the given time
@@ -66,7 +67,7 @@ func (s *Store) ReadySandboxes(
 	ctx context.Context, provider string, readyBefore time.Time,
 ) ([]ReadySandbox, error) {
 	rows, err := s.q.Query(ctx, `
-		select id, provider_ref ->> 'id' from placements
+		select id, provider_ref ->> 'id', deadline from placements
 		where provider = $1 and state = $2 and ready_at < $3 and provider_ref is not null
 		order by ready_at, id`, provider, PlacementReady, utc(readyBefore))
 	if err != nil {
@@ -74,7 +75,7 @@ func (s *Store) ReadySandboxes(
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (ReadySandbox, error) {
 		var rs ReadySandbox
-		return rs, r.Scan(&rs.PlacementID, &rs.SandboxID)
+		return rs, r.Scan(&rs.PlacementID, &rs.SandboxID, &rs.Deadline)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("select ready sandboxes: %w", err)
