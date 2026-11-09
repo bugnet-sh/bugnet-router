@@ -477,6 +477,10 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	// The gateway's host key goes into the known_hosts lines the router hands out
 	table(m, "ssh")["providers"] = []string{s.provider}
 	table(m, "ssh")["host_keys"] = []string{s.sshHost}
+	// A registered webhook secret turns the provider's hooks on, for the reconciliation rows
+	if env, ok := hookEnv[s.provider]; ok && s.mode == "vps" && os.Getenv(env) != "" {
+		table(m, "hooks")["providers"] = []string{s.provider}
+	}
 	// The stack offers previews on its provider, so the preview rows can earn its place there
 	table(m, "previews")["providers"] = []string{s.provider}
 	out, err := toml.Marshal(m)
