@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -75,6 +76,7 @@ func (w *Worker) sweepProvider(ctx context.Context, prov provider.Provider) {
 		// A listing cut short still names sandboxes that exist, so they are judged all the same
 		w.log.Error("sweep list sandboxes", "provider", prov.Name(), "listed", len(owned),
 			"err", err)
+		w.noteAccount(ctx, prov.Name(), err)
 	}
 	for i, o := range owned {
 		if ctx.Err() != nil {
@@ -144,7 +146,15 @@ func (w *Worker) destroy(ctx context.Context, prov provider.Provider, ref provid
 	if err != nil {
 		w.log.Error("sweep destroy sandbox", "provider", prov.Name(), "sandbox", ref.ID,
 			"err", err)
+		w.noteAccount(ctx, prov.Name(), err)
 		return
 	}
 	w.log.Info("sweep destroyed sandbox", "provider", prov.Name(), "sandbox", ref.ID)
+}
+
+// noteAccount asks for an account check when a call to name failed with an account code
+func (w *Worker) noteAccount(ctx context.Context, name string, err error) {
+	if e, ok := provider.AsError(err); ok {
+		health.NoteAccount(ctx, w.river, name, e.Code)
+	}
 }

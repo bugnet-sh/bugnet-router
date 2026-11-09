@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -141,8 +142,10 @@ type Provider struct {
 	limitsTTL    time.Duration
 	hookWindow   time.Duration
 	// now replaces the clock in tests, nil meaning time.Now
-	now  func() time.Time
-	fees fees
+	now            func() time.Time
+	fees           fees
+	limitsShared   *sharedLimits
+	unreadableOnce sync.Once
 }
 
 // New checks the options and makes no call to Boat
@@ -176,6 +179,7 @@ func New(opts Options) (*Provider, error) {
 	}
 	if opts.Valkey != nil {
 		p.fees.shared = &sharedStarts{c: opts.Valkey, key: opts.Prefix + "boat:starts"}
+		p.limitsShared = &sharedLimits{c: opts.Valkey, key: opts.Prefix + sharedLimitsKey}
 	}
 	return p, nil
 }
@@ -659,7 +663,7 @@ func apiError(status int, h http.Header, raw []byte, eff effect) error {
 		// Boat could not tell whether the command started, and retryable true means it did not
 		e.Code = provider.CodeOutcomeUnknown
 	}
-	return e
+	return provider.Named(e, providerName)
 }
 
 // waitHint reads Boat's wait from the body, its details, then Retry-After, in seconds

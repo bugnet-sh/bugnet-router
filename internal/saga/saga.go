@@ -193,6 +193,8 @@ type Deps struct {
 	SessionKeep time.Duration
 	// SessionAbuseHold keeps an abuse or operator end's record, 30 days when zero
 	SessionAbuseHold time.Duration
+	// CreatesPerSecond is each provider's create rate, absent for no bucket
+	CreatesPerSecond map[string]int
 }
 
 // Saga runs placements from order to teardown
@@ -478,6 +480,10 @@ func (s *Saga) place(
 			reason, detail = reasonNoRunner, "no "+caps.RunnerArch()+" build for "+name
 			continue
 		}
+		if s.createsPaused(ctx, name) {
+			reason, detail = reasonRateLimited, name+" asked for its creates to wait"
+			continue
+		}
 		reserved, err := s.reserve(ctx, p.ID, name)
 		if err != nil {
 			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
@@ -551,6 +557,12 @@ func (s *Saga) attempt(
 ) outcome {
 	prov := c.Provider
 	name := prov.Name()
+	if !s.takeCreate(ctx, name) {
+		s.release(ctx, p.ID)
+		return outcome{
+			failOver: true, reason: reasonRateLimited, detail: "no create token for " + name,
+		}
+	}
 	rec := store.Attempt{
 		PlacementID:    p.ID,
 		Attempt:        n,
@@ -571,7 +583,9 @@ func (s *Saga) attempt(
 		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
 	if err != nil {
-		s.d.Tracker.RecordFailure(name)
+		if s.providerFailed(ctx, name, err, true) {
+			s.d.Tracker.RecordFailure(name)
+		}
 		s.abandon(ctx, prov, rec, nil, err)
 		return outcome{
 			failOver: canFailOver(err), reason: createReason(err),
@@ -587,7 +601,9 @@ func (s *Saga) attempt(
 		reason := reasonNoRunner
 		if !noBuild {
 			reason = reasonBootFailed
-			s.d.Tracker.RecordFailure(name)
+			if s.providerFailed(ctx, name, err, false) {
+				s.d.Tracker.RecordFailure(name)
+			}
 		}
 		s.abandon(ctx, prov, rec, &ref, err)
 		return outcome{

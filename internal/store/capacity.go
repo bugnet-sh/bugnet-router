@@ -9,14 +9,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ReserveCapacity takes one slot on provider, reporting false when it is full
-func (s *Store) ReserveCapacity(ctx context.Context, provider string) (bool, error) {
+// ReserveCapacity takes one slot and leaves margin free, counting what others use on the account
+func (s *Store) ReserveCapacity(ctx context.Context, provider string, margin int) (bool, error) {
 	var inUse int
 	err := s.q.QueryRow(ctx, `
 		insert into provider_capacity (provider, max_concurrent, in_use) values ($1, $2, 1)
 		on conflict (provider) do update set in_use = provider_capacity.in_use + 1
-		where provider_capacity.in_use < provider_capacity.max_concurrent
-		returning in_use`, provider, DefaultMaxConcurrent).Scan(&inUse)
+		where provider_capacity.in_use + provider_capacity.external_in_use + $3
+			< provider_capacity.max_concurrent
+		returning in_use`, provider, DefaultMaxConcurrent, margin).Scan(&inUse)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -66,7 +67,7 @@ func (s *Store) ReservePlacementCapacity(
 		if err != nil {
 			return err
 		}
-		ok, err := ts.ReserveCapacity(ctx, provider)
+		ok, err := ts.ReserveCapacity(ctx, provider, s.reserveSlots)
 		if err == nil && !ok {
 			return errFull
 		}

@@ -39,7 +39,8 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/saga` | Start, extend and stop of placements |
 | `internal/placement` | Provider choice by price, margin and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
-| `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy and session expiry |
+| `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
+| `internal/health` | The provider health the replicas share through Postgres, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
 | `internal/config`, `internal/catalog` | Settings file, secrets and the package catalog |
@@ -525,6 +526,7 @@ features that read them land one by one, and until then the settings only load a
 | `[bootstrap]` | Where `FetchSource` puts repositories under the exec user's home, how long a silent private fetch lives, and its attempts per placement and fetches per replica |
 | `[hooks]` | `providers` whose webhooks are verified (`e2b`, `boat`), `boat_window` for the timestamp check and `hint_unique` for folding hints of one sandbox. `router-api` refuses to start when a listed provider has no secret or no verifier |
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
+| `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
 and `local.sshd_path` choose each provider's route. A `bn` subdomain proxy made after boot can
@@ -1751,6 +1753,34 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   comes from `GET /limits`. When the key cannot read it, the router prices the fee from the
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
+
+### Limits and account standing
+
+`limits_poll{provider}` reads each account's cap and use into `provider_capacity` every 60 s, and
+Boat's every 15 s. A placement reserves a slot only while `in_use + external_in_use +
+limits_poll.reserve_slots < max_concurrent`, so sandboxes other deployments hold on the account
+count, and one slot stays free for a probe. `max_concurrent` is the smaller of the provider's cap
+and the provider table's `max_concurrent`, 50 when neither is set. A create that meets the
+account's own cap (`CodeQuota`) asks for a poll at once. E2B's cap cannot be read with a key, so
+`e2b.max_concurrent` (20) is its cap, and `e2b.team_id` (printed by `bugnet-dev hooks register
+e2b`) lets its account check read the team's metrics. `koyeb.organization_id` is read from the
+account when empty.
+
+`account_check{provider}` runs every minute and reads the account when 5 minutes have passed
+since its last check, or 1 minute while the provider is blocked. A create, a call of the API or a
+sweep that sees `abuse_lock`, `unfunded` or `auth` asks for a check at once, at most one every 30
+s. A blocked provider (`banned`, `unfunded` or `auth`) is skipped by every replica's placement
+within 10 s, and each change writes a `provider_signals` row. A check that cannot read the account
+changes nothing. Boat's `GET /me` or `GET /limits` answering 403 means the key lacks
+`account.read`, which blocks nothing.
+
+Every provider table takes `creates_per_second`, 0 for no bucket (E2B's is 1). The saga takes a
+token from `rl:create:<provider>` before each create and fails over when none comes within 1 s.
+A `rate_limited` answer with a Retry-After pauses the provider's creates for that long, at most 5
+minutes. A rate limit or a quota refusal never counts against the provider's health.
+
+`/monitor` reports a blocked provider, limits not polled for `stale_after` intervals, and Boat's
+`RateLimit` header with under 20% of its window left.
 
 E2B's create blocks the IPv4 entries of `hardening.deny_ranges` outside the VM with
 `network.denyOut`. `harden` blocks the IPv6 entries inside the VM, all but `fe80::/10`, which

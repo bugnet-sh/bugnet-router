@@ -32,6 +32,8 @@ type Error struct {
 	RetryAfter  time.Duration
 	CanFailOver bool
 	Err         error
+	// Provider names the adapter on an account code, so any caller can ask for its account check
+	Provider string
 }
 
 func (e *Error) Error() string {
@@ -63,4 +65,35 @@ func DecodeStrict(body []byte, into any) error {
 		return errors.New("provider: data follows the JSON value")
 	}
 	return nil
+}
+
+// AccountBlock maps a code that says the account cannot work to its Block, BlockNone otherwise
+func AccountBlock(c Code) Block {
+	switch c {
+	case CodeAbuseLock:
+		return BlockBanned
+	case CodeUnfunded:
+		return BlockUnfunded
+	case CodeAuth:
+		return BlockAuth
+	}
+	return BlockNone
+}
+
+// AccountReading reads an error answer that names a block as the account, any other error stays
+func AccountReading(err error) (Account, error) {
+	if e, ok := AsError(err); ok {
+		if b := AccountBlock(e.Code); b != BlockNone {
+			return Account{Block: b, Detail: e.Error()}, nil
+		}
+	}
+	return Account{}, err
+}
+
+// Named stamps the adapter's name on an error that carries an account code, and returns it
+func Named(e *Error, name string) *Error {
+	if AccountBlock(e.Code) != BlockNone {
+		e.Provider = name
+	}
+	return e
 }

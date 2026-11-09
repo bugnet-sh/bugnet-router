@@ -144,6 +144,8 @@ type Options struct {
 	MaxLifetime time.Duration
 	// DenyOut are the ranges every sandbox's network.denyOut blocks, IPv6 ones dropped
 	DenyOut []netip.Prefix
+	// TeamID names the team whose metrics the account check reads, the list call stands in if empty
+	TeamID string
 	// BinaryCodec talks to envd in binary protobuf instead of the JSON the SDKs use
 	BinaryCodec bool
 	BaseURL     string
@@ -163,6 +165,7 @@ type Provider struct {
 	templates    []Template
 	denyOut      []string
 	maxLifetime  time.Duration
+	teamID       string
 	codec        []connect.ClientOption
 	pollInterval time.Duration
 	retryBase    time.Duration
@@ -193,6 +196,7 @@ func New(opts Options) (*Provider, error) {
 		templates:    byCost(opts.Templates),
 		denyOut:      ipv4Ranges(opts.DenyOut),
 		maxLifetime:  cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
+		teamID:       opts.TeamID,
 		pollInterval: defaultPoll,
 		retryBase:    defaultRetryBase,
 	}
@@ -655,7 +659,7 @@ func restError(status int, h http.Header, raw []byte) error {
 		(status >= 500 && capacityWord.MatchString(msg)):
 		e.Code, e.CanFailOver = provider.CodeCapacity, true
 	}
-	return e
+	return provider.Named(e, providerName)
 }
 
 /* envd */

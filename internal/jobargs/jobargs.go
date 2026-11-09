@@ -141,3 +141,43 @@ func (HookHint) InsertOpts() river.InsertOpts {
 		}},
 	}
 }
+
+// pendingStates are the job states a unique insert of a polling job skips on
+var pendingStates = []rivertype.JobState{
+	rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning,
+	rivertype.JobStateScheduled,
+}
+
+// LimitsPoll asks the worker to read one provider account's cap and use into its capacity row
+type LimitsPoll struct {
+	Provider string `json:"provider"`
+}
+
+// Kind returns the River job kind
+func (LimitsPoll) Kind() string { return "limits_poll" }
+
+// InsertOpts runs it once, one at a time per provider, since the next poll comes soon
+func (LimitsPoll) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
+
+// AccountCheck asks the worker to read one provider account's standing
+type AccountCheck struct {
+	Provider string `json:"provider"`
+	// Now checks at once, otherwise only when the last check is older than its interval
+	Now bool `json:"now,omitempty"`
+}
+
+// Kind returns the River job kind
+func (AccountCheck) Kind() string { return "account_check" }
+
+// InsertOpts runs it once, one at a time per provider and kind of request
+func (AccountCheck) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
