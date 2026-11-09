@@ -26,6 +26,7 @@ jobs:
     # internal/testenv gives unit tests a fresh Postgres database and Valkey prefix
     services:
       postgres:
+        # Ubuntu 26.04's postgresql, which deploy/vps/deploy.sh installs, is 18
         image: postgres:18
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
@@ -37,7 +38,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       valkey:
-        image: valkey/valkey:9
+        # Ubuntu 26.04's valkey-server is 9.0
+        image: valkey/valkey:9.0
         ports:
           - 6379:6379
         options: >-
