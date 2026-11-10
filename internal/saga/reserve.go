@@ -972,11 +972,20 @@ func (s *Saga) reservationFor(
 	if err != nil {
 		return nil, err
 	}
-	ok := fits(r, b.pkg, b.req) && !s.now().After(r.ExpiresAt.Add(s.d.Reserve.LapseGrace)) &&
-		s.d.Engine.Healthy(mem.Provider) && block == ""
-	if !ok {
+	why := ""
+	switch {
+	case !fits(r, b.pkg, b.req):
+		why = "differs"
+	case s.now().After(r.ExpiresAt.Add(s.d.Reserve.LapseGrace)):
+		why = "lapsed"
+	case !s.d.Engine.Healthy(mem.Provider):
+		why = "unhealthy"
+	case block != "":
+		why = "blocked"
+	}
+	if why != "" {
 		s.d.Log.Info("a reservation does not match its order, it is released",
-			"reservation", r.ID)
+			"reservation", r.ID, "provider", mem.Provider, "why", why)
 		return nil, s.endReservationTx(ctx, tx, r, store.ReservationReleased, "mismatch",
 			store.EndUnused)
 	}

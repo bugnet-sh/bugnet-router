@@ -618,8 +618,10 @@ func TestPreparedHoldsNoCredential(t *testing.T) {
 }
 
 func TestMismatchReleasesAndRetires(t *testing.T) {
+	var logs syncBuffer
 	a := newLocal(t, local.Options{Name: "a"})
 	e, _ := reserveEnv(t, reserveSettings("a"), func(d *saga.Deps) {
+		d.Log = slog.New(slog.NewTextHandler(&logs, nil))
 		reg, err := provider.NewRegistry([]provider.Provider{a},
 			provider.Features{Preview: []string{"a"}})
 		if err != nil {
@@ -639,6 +641,7 @@ func TestMismatchReleasesAndRetires(t *testing.T) {
 	eq(t, p.StartPath, "cold")
 	eq(t, p.ID == r.PlacementID, false)
 	eq(t, e.reservation(t, "q2.x").State, store.ReservationReleased)
+	eq(t, strings.Count(logs.String(), "provider=a why=differs"), 1)
 	eq(t, e.member(t, r.MemberID).State, store.MemberRetiring)
 	eq(t, e.retireJobs(t), 1)
 	// The released reservation's slot is still held until its job runs, and the order took its own
