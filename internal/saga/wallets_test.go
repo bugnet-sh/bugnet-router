@@ -296,6 +296,35 @@ func TestPayerOffCountsEveryOrderAsAnonymous(t *testing.T) {
 	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
 }
 
+// A deposit-address order carries only the deposit transfer's signature, no payer or fee payer
+func TestDepositOrderCountsAsAnonymous(t *testing.T) {
+	const (
+		firstTx = "36CpwVLKDRH7UU96nxCVFzCR8DNoDFCxNu19SKnFiTWW" +
+			"TgJUs3HQbSHTb2zHgh2uo8yqUVZz2MjWanciehRuemgr"
+		secondTx = "2GxEQDvUNB1J644jDee6TixtWGkyKRydgKnTXmVKohxq" +
+			"vUqm7uMfhRnnCWgiWyiqDTX1DAJ2fB2BU8dWS4E7moZ5"
+	)
+	e := walletEnv(t, func(w *config.Wallets) { w.AnonymousMaxConcurrent = 1 })
+	deposit := func(order, tx string) (store.Placement, error) {
+		p, _, err := e.saga.Create(t.Context(), e.token(t, ordertoken.Claims{
+			OrderID: order, Kind: ordertoken.KindStart, PackageID: smallPkg,
+			AmountMicros: smallPrice, Tx: tx,
+		}), placement.Requirements{})
+		return p, err
+	}
+	p, err := deposit("deposit-1", firstTx)
+	eq(t, err, nil)
+	eq(t, p.Payer, "")
+	o, err := e.store.OrderByID(t.Context(), "deposit-1")
+	eq(t, err, nil)
+	eq(t, o.Payer, "")
+	eq(t, o.FeePayer, "")
+	eq(t, o.Tx, firstTx)
+	// Deposit orders share the anonymous pool rather than any sending wallet's limits
+	_, err = deposit("deposit-2", secondTx)
+	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
+}
+
 func TestOrdersKeepThePayerClaim(t *testing.T) {
 	e := newEnvWith(t, func(d *saga.Deps) { d.Wallets = config.Wallets{UsePayer: false} },
 		newLocal(t, local.Options{Name: "a"}))
