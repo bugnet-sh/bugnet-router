@@ -85,4 +85,5 @@ disk_gib = 10
 
 [telemetry]
 traces = false
+otlp_endpoint = ""                     # the trace backend's OTLP/HTTP URL, which row TRACE3 exports to
 environment = "dev"

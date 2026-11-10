@@ -9,7 +9,8 @@
 # --timeout says otherwise. dataplane, control, leak, sessions and trace run TestLiveDataplane,
 # TestLiveControl, TestLiveLeak, TestLiveSessions and TestLiveTrace in test/live on a stack on
 # this Mac, 90 minutes unless --timeout says otherwise, behind the VPS's dev front with --front
-# vps. trace points the stack's otlp_endpoint at a receiver in the test. image runs
+# vps. trace points the stack's otlp_endpoint at a receiver in the test, except row TRACE3, which
+# exports to config/dev.toml's endpoint with BUGNET_OTLP_AUTHORIZATION and runs alone. image runs
 # TestLiveImage, CP 19.15.3's rows against the artifacts of deploy/image/builds, with no stack.
 # --run replaces the suite's test pattern. Keys come from .env and every other setting from
 # config/dev.toml. These suites end with bugnet-dev owned for each provider named and fail while

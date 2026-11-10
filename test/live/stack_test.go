@@ -312,6 +312,9 @@ type stack struct {
 	// previews is the preview rows' client, made once per stack
 	previews    *http.Client
 	previewOnce sync.Once
+	// telemetry is the router's [telemetry] table once traces are on, which every edge binary but
+	// the sessions role takes as its own
+	telemetry map[string]any
 }
 
 // startStack starts a stack on provider, or on local for the stack's own test
@@ -500,11 +503,34 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	for _, tweak := range s.tweaks {
 		tweak(s.provider, m)
 	}
+	if tel := table(m, "telemetry"); tel["traces"] == true {
+		s.telemetry = tel
+		// A backend that needs a credential is the only place the Authorization header goes
+		if ep, _ := tel["otlp_endpoint"].(string); strings.HasPrefix(ep, "https://") {
+			if v := os.Getenv("BUGNET_OTLP_AUTHORIZATION"); v != "" {
+				s.env = append(s.env, "BUGNET_OTLP_AUTHORIZATION="+v)
+			}
+		}
+	}
 	out, err := toml.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s.write(t, "router.toml", out)
+}
+
+// telemetryTOML is the router's [telemetry] table as an edge binary's file takes it, empty while
+// traces are off
+func (s *stack) telemetryTOML(t *testing.T) string {
+	t.Helper()
+	if s.telemetry == nil {
+		return ""
+	}
+	out, err := toml.Marshal(map[string]any{"telemetry": s.telemetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "\n" + string(out)
 }
 
 func table(m map[string]any, name string) map[string]any {
@@ -545,8 +571,8 @@ hooks_host = %q
 abuse_contact = %q
 
 [acme]
-%s`, s.apiURL, s.provider, listen, metrics, n.PreviewDomain, n.TransferHost,
-		n.HooksHost, s.f.Edge.AbuseContact, acme)
+%s%s`, s.apiURL, s.provider, listen, metrics, n.PreviewDomain, n.TransferHost,
+		n.HooksHost, s.f.Edge.AbuseContact, acme, s.telemetryTOML(t))
 	return s.write(t, "edge.toml", []byte(content))
 }
 
@@ -575,7 +601,7 @@ metrics_listen_addr = %q
 proxy_protocol_from = ["127.0.0.1/32"]
 host = %q
 page_dir = %q
-%s`, s.apiURL, listen, metrics, s.f.Names.SecretsHost, page, acme)
+%s%s`, s.apiURL, listen, metrics, s.f.Names.SecretsHost, page, acme, s.telemetryTOML(t))
 	return s.write(t, "secrets.toml", []byte(content))
 }
 
@@ -661,7 +687,7 @@ listen_addr = %q
 metrics_listen_addr = %q
 proxy_protocol_from = ["127.0.0.1/32"]
 drain_max = "1s"
-`, s.apiURL, s.provider, listen, metrics)
+%s`, s.apiURL, s.provider, listen, metrics, s.telemetryTOML(t))
 	s.start(t, "bugnet-ssh", "-config", s.write(t, "ssh.toml", []byte(content)))
 	s.waitReady(t, "http://"+metrics+"/readyz")
 	host, port := "127.0.0.1", ""
@@ -805,9 +831,9 @@ box_keys = [{ id = "k1", credential = "egress_box_k1" }]
 payments_url = %q
 payments_ca_file = %q
 payments_client_cert_file = %q
-`, s.apiURL, s.egress.listen, metrics, s.f.Names.EgressHost, s.egress.certFile, acme,
+%s`, s.apiURL, s.egress.listen, metrics, s.f.Names.EgressHost, s.egress.certFile, acme,
 		"https://"+freeAddr(t), filepath.Join(s.egress.credDir, "internal-ca.pem"),
-		filepath.Join(s.egress.credDir, "egress-x402-client.pem"))
+		filepath.Join(s.egress.credDir, "egress-x402-client.pem"), s.telemetryTOML(t))
 	return s.write(t, "egress.toml", []byte(content))
 }
 

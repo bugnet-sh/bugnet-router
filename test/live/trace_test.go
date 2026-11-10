@@ -1,10 +1,14 @@
 package live
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,12 +17,14 @@ import (
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
+	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry/telemetrytest"
 )
 
-// traceRows are DP 20.12.4's rows TRACE1 and TRACE2, TRACE3 and TRACE4 being Task 42B's
+// traceRows are DP 20.12.4's rows TRACE1 to TRACE4
 var traceRows []row
 
 // traceRun is the test the rows of one run share, which owns the receivers they point the
@@ -29,8 +35,8 @@ var traceRun struct {
 	recvs map[string]*telemetrytest.Receiver
 }
 
-// TestLiveTrace runs TRACE1 and TRACE2 on each provider named, the stack's spans going to a
-// receiver in the test
+// TestLiveTrace runs TRACE1, TRACE2 and TRACE4 on each provider named, the stack's spans going to
+// a receiver in the test, and TRACE3 alone, whose spans go to the dev settings' backend
 func TestLiveTrace(t *testing.T) {
 	traceRun.mu.Lock()
 	traceRun.t, traceRun.recvs = t, map[string]*telemetrytest.Receiver{}
@@ -49,20 +55,28 @@ func init() {
 			"batch_timeout": "200ms",
 		}
 	}
+	// TRACE3's settings come last, so its backend wins on a stack that a receiver row shares
 	traceRows = append(traceRows,
 		row{id: "TRACE1", settings: settings, run: rowTrace1},
 		row{id: "TRACE2", settings: settings, run: rowTrace2},
+		row{id: "TRACE4", vps: true, settings: settings, run: rowTrace4},
+		row{id: "TRACE3", vps: true, settings: trace3Settings, run: rowTrace3},
 	)
 }
 
-// traceReceiver is the receiver the provider's stack exports to
-func traceReceiver(t *testing.T, provider string) *telemetrytest.Receiver {
+// traceReceiver is the receiver the stack exports to, which fails the row when the stack's
+// settings point elsewhere, as TRACE3's do
+func traceReceiver(t *testing.T, s *stack) *telemetrytest.Receiver {
 	t.Helper()
 	traceRun.mu.Lock()
-	defer traceRun.mu.Unlock()
-	r := traceRun.recvs[provider]
+	r := traceRun.recvs[s.provider]
+	traceRun.mu.Unlock()
 	if r == nil {
-		t.Fatalf("live: no trace receiver for %s", provider)
+		t.Fatalf("live: no trace receiver for %s", s.provider)
+	}
+	if got, _ := s.telemetry["otlp_endpoint"].(string); got != r.URL() {
+		t.Fatalf("live: the stack exports to the dev settings' backend, not the test's receiver, " +
+			"run TRACE3 alone with --run 'LiveTrace/TRACE3'")
 	}
 	return r
 }
@@ -114,7 +128,7 @@ func waitSpan(t *testing.T, r *telemetrytest.Receiver, name string) []telemetryt
 
 // rowTrace1 is TRACE1, create, exec echo ok, read a file, stop, with derived headers
 func rowTrace1(t *testing.T, s *stack) {
-	recv := traceReceiver(t, s.provider)
+	recv := traceReceiver(t, s)
 	h := s.sandbox(t, xferPackage)
 	c := s.gatewayClient(h)
 	ctx := t.Context()
@@ -197,6 +211,193 @@ func rowTrace2(t *testing.T, s *stack) {
 	for _, name := range []string{"TRACEPARENT", "TRACESTATE", "OTEL_"} {
 		if strings.Contains(strings.ToUpper(string(res.Msg.GetStdoutTail())), name) {
 			t.Errorf("live: the job environment holds %s", name)
+		}
+	}
+}
+
+// trace3Settings points the stack at the dev settings' trace backend, its authorization coming
+// from the environment, and fails naming whichever of the two is empty
+func trace3Settings(_ string, m map[string]any) {
+	t := traceRun.t
+	raw, err := os.ReadFile(filepath.Join(repo(t), "config", "dev.toml"))
+	if err != nil {
+		t.Fatalf("live: %v", err)
+	}
+	var dev struct {
+		Telemetry struct {
+			OTLPEndpoint string `toml:"otlp_endpoint"`
+		} `toml:"telemetry"`
+	}
+	if err := toml.Unmarshal(raw, &dev); err != nil {
+		t.Fatalf("live: config/dev.toml: %v", err)
+	}
+	if dev.Telemetry.OTLPEndpoint == "" {
+		t.Fatalf("live: telemetry.otlp_endpoint is empty in config/dev.toml, TRACE3 needs the " +
+			"trace backend's URL there")
+	}
+	if os.Getenv("BUGNET_OTLP_AUTHORIZATION") == "" {
+		t.Fatalf("live: BUGNET_OTLP_AUTHORIZATION is empty in .env, TRACE3 needs the trace " +
+			"backend's Authorization header value there")
+	}
+	m["telemetry"] = map[string]any{
+		"traces": true, "otlp_endpoint": dev.Telemetry.OTLPEndpoint, "environment": "live",
+		"batch_timeout": "1s",
+	}
+}
+
+// rowTrace3 is TRACE3, one order driven with the gateway's derived headers while every process
+// exports to the dev settings' backend, which the founder reads in Grafana
+func rowTrace3(t *testing.T, s *stack) {
+	h := s.sandbox(t, xferPackage)
+	c := s.gatewayClient(h)
+	ctx := t.Context()
+	out, err := c.Exec(ctx, connect.NewRequest(&routerv1.ExecRequest{
+		Handle: h, Argv: []string{"echo", "ok"}, WaitMs: 30000,
+	}))
+	if err != nil || strings.TrimSpace(string(out.Msg.GetStdoutTail())) != "ok" {
+		t.Fatalf("live: exec echo ok: %v", err)
+	}
+	dir := t.TempDir()
+	local := randomFile(t, dir, "trace3", mib)
+	s.upload(t, h, local, "~/trace3.bin")
+	s.download(t, h, "~/trace3.bin", filepath.Join(dir, "down"))
+	s.dev(t, "stop", "--handle", h)
+	sum := sha256.Sum256([]byte(h))
+	tid, _ := telemetry.OrderIDs(sum[:])
+	t.Logf("live: TRACE3 order trace id %s, search it in the backend for the gateway's, "+
+		"router-api's, the worker's and the outbox's spans", tid)
+	// An export that failed logs once, after its retries run out
+	time.Sleep(15 * time.Second)
+	for _, p := range s.procs {
+		raw, err := os.ReadFile(p.log)
+		if err == nil && strings.Contains(string(raw), "trace export failed") {
+			t.Errorf("live: %s failed to export spans to the backend", p.name)
+		}
+	}
+}
+
+// named lists the spans with name
+func named(spans []telemetrytest.Span, name string) []telemetrytest.Span {
+	var out []telemetrytest.Span
+	for _, sp := range spans {
+		if sp.Name == name {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
+// strangerSpans counts the spans the edges and the router's edge-facing services made
+func strangerSpans(spans []telemetrytest.Span) int {
+	n := 0
+	for _, sp := range spans {
+		if strings.HasPrefix(sp.Name, "edge.") || strings.HasPrefix(sp.Name, "ssh.") ||
+			strings.HasPrefix(sp.Name, "egress.") ||
+			strings.HasPrefix(sp.Name, "bugnet.router.v1.EdgeService/") ||
+			strings.HasPrefix(sp.Name, "bugnet.router.v1.SshGatewayService/") ||
+			strings.HasPrefix(sp.Name, "bugnet.router.v1.EgressService/") {
+			n++
+		}
+	}
+	return n
+}
+
+// inOrder checks that sp is in the order trace under a span named parent, made by service
+func inOrder(
+	t *testing.T, sp telemetrytest.Span, tid string, byID map[string]telemetrytest.Span,
+	parent, service string,
+) {
+	t.Helper()
+	if sp.TraceID != tid {
+		t.Errorf("live: %s is in trace %s, not the order's %s", sp.Name, sp.TraceID, tid)
+	}
+	if got := byID[sp.ParentID].Name; got != parent {
+		t.Errorf("live: %s has the parent %q, want %q", sp.Name, got, parent)
+	}
+	if got, _ := sp.Resource["service.name"].(string); got != service {
+		t.Errorf("live: %s was made by %q, want %q", sp.Name, got, service)
+	}
+}
+
+// rowTrace4 is TRACE4, a download and an SSH session in the order trace behind the dev front, and
+// unknown transfer tokens and SSH aliases that add no span
+func rowTrace4(t *testing.T, s *stack) {
+	recv := traceReceiver(t, s)
+	h := s.sandbox(t, xferPackage)
+	sum := sha256.Sum256([]byte(h))
+	tid, _ := telemetry.OrderIDs(sum[:])
+	dir := t.TempDir()
+	local := randomFile(t, dir, "trace4", mib)
+	s.upload(t, h, local, "~/trace4.bin")
+	s.download(t, h, "~/trace4.bin", filepath.Join(dir, "down"))
+	a := s.sshKey(t, h)
+	s.sshMust(t, a, "true")
+	spans := waitSpan(t, recv, "ssh.connection")
+	byID := map[string]telemetrytest.Span{}
+	for _, sp := range spans {
+		byID[sp.SpanID] = sp
+	}
+	transfers := named(spans, "edge.transfer")
+	if len(transfers) < 2 {
+		t.Errorf("live: %d edge.transfer spans, want the upload's and the download's",
+			len(transfers))
+	}
+	for _, sp := range transfers {
+		inOrder(t, sp, tid.String(), byID, "bugnet.router.v1.EdgeService/OpenTransfer",
+			"bugnet-edge")
+	}
+	conns := named(spans, "ssh.connection")
+	if len(conns) != 1 {
+		t.Fatalf("live: %d ssh.connection spans, want 1", len(conns))
+	}
+	inOrder(t, conns[0], tid.String(), byID, "bugnet.router.v1.SshGatewayService/AuthorizeSshKey",
+		"bugnet-ssh")
+	up := named(spans, "ssh.upstream")
+	if len(up) != 1 || up[0].ParentID != conns[0].SpanID {
+		t.Errorf("live: want one ssh.upstream span under the connection, got %d", len(up))
+	}
+	before := strangerSpans(spans)
+	s.strangers(t, 100)
+	// Every process flushes within its batch timeout
+	time.Sleep(3 * time.Second)
+	if got := strangerSpans(recv.Spans()); got != before {
+		t.Errorf("live: 100 unknown tokens and aliases added %d spans", got-before)
+	}
+}
+
+// strangers sends n unknown transfer tokens and n unknown SSH aliases through the dev front
+func (s *stack) strangers(t *testing.T, n int) {
+	t.Helper()
+	c := s.client()
+	url := "https://" + s.f.Names.TransferHost + "/"
+	host, _, _, _, err := ssh.ParseAuthorizedKey([]byte(s.sshHost))
+	if err != nil {
+		t.Fatalf("live: the gateway's host key: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range n {
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		res, err := c.Get(url + "bnx_" + base64.RawURLEncoding.EncodeToString(b))
+		if err != nil {
+			t.Fatalf("live: an unknown transfer token: %v", err)
+		}
+		_ = res.Body.Close()
+		alias := "bn-" + strings.ToLower(rand.Text()[:10])
+		conn, err := ssh.Dial("tcp", s.sshAddr, &ssh.ClientConfig{
+			User: alias, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+			HostKeyCallback: ssh.FixedHostKey(host), Timeout: 10 * time.Second,
+		})
+		if err == nil {
+			_ = conn.Close()
+			t.Fatal("live: an unknown SSH alias connected")
 		}
 	}
 }
