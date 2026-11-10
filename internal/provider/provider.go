@@ -103,6 +103,8 @@ type Summary struct {
 	State State
 	// ExpiresAt is the provider-side lifetime, zero when the listing does not say
 	ExpiresAt time.Time
+	// PoolHeld marks a member a provider-kept pool still holds, which no claim has taken
+	PoolHeld bool
 }
 
 // State is a provider-neutral reading of one sandbox
@@ -345,4 +347,42 @@ type ForeignLister interface {
 	ListLabelled(
 		ctx context.Context, labels map[string]string, cursor string, limit int,
 	) (ForeignPage, error)
+}
+
+// Parker is a provider whose prepared sandboxes wait for a claim in a cheaper idle state
+type Parker interface {
+	// Park moves a ready sandbox to the provider's cheapest idle state, keeping its disk
+	Park(ctx context.Context, ref Ref) error
+	// Unpark wakes a parked sandbox and returns once Exec reaches it
+	Unpark(ctx context.Context, ref Ref) error
+	// ParkedHourlyCostMicros is what one parked sandbox of size costs an hour
+	ParkedHourlyCostMicros(size Size) int64
+}
+
+// PoolSpec is one provider-kept pool of warm sandboxes of one size
+type PoolSpec struct {
+	Name   string // unique per deployment and size, as bn-main-medium
+	Size   Size
+	Target int
+	// Labels are carried by every member, never a placement label
+	Labels map[string]string
+}
+
+// Claim is one sandbox taken from a provider-kept pool
+type Claim struct {
+	Ref Ref
+	// Warm means the pool had a member ready, false when the provider made one on demand
+	Warm bool
+	// CreatedAt is when the provider made the member, which MaxLifetime counts from
+	CreatedAt time.Time
+}
+
+// PoolClaimer is a provider that keeps warm sandboxes itself and hands one out per claim
+type PoolClaimer interface {
+	// EnsurePool creates the pool or sets its target, safe to call again
+	EnsurePool(ctx context.Context, spec PoolSpec) error
+	// Claim takes one member under key, and a repeated key returns the same member
+	Claim(ctx context.Context, pool, key string) (Claim, error)
+	// IdleHourlyCostMicros is what one unclaimed member of size costs the account an hour
+	IdleHourlyCostMicros(size Size) int64
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -59,6 +60,7 @@ func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider) {
 		{"inspect running", c.inspectRunning},
 		{"exec", c.exec},
 		{"files", c.files},
+		{"parked", c.parked},
 		{"list owned", c.listOwned},
 		{"destroy twice", c.destroyTwice},
 		{"gone from list owned", c.gone},
@@ -148,6 +150,59 @@ func (c check) files(t *testing.T) {
 		}
 	}
 	t.Errorf("ListFiles of %s lacks %s: %+v", dir, path, listing.Entries)
+}
+
+// parked checks that a Parker's sandbox serves Exec and ReadFile as before after Park and Unpark
+func (c check) parked(t *testing.T) {
+	pk, ok := c.p.(provider.Parker)
+	if !ok {
+		t.Skip("the provider keeps no parked sandboxes")
+	}
+	ctx := withTimeout(t, opTimeout)
+	path := "/tmp/bugnet-contract-" + c.labels[labelKey] + "/data.txt"
+	ref := c.ref
+	var route provider.GateRoute
+	gater, gates := c.p.(provider.Gater)
+	if gates {
+		meta, err := gater.PrepareGate(ctx, ref, provider.DefaultGatePort)
+		if err != nil {
+			t.Fatalf("PrepareGate before Park: %v", err)
+		}
+		ref.Meta = map[string]string{}
+		for k, v := range c.ref.Meta {
+			ref.Meta[k] = v
+		}
+		for k, v := range meta {
+			ref.Meta[k] = v
+		}
+		if route, err = gater.GateRoute(ref, provider.DefaultGatePort); err != nil {
+			t.Fatalf("GateRoute before Park: %v", err)
+		}
+	}
+	if err := pk.Park(ctx, c.ref); err != nil {
+		t.Fatalf("Park: %v", err)
+	}
+	if err := pk.Unpark(ctx, c.ref); err != nil {
+		t.Fatalf("Unpark: %v", err)
+	}
+	spec := provider.ExecSpec{Argv: []string{"sh", "-c", "echo hi; exit 5"}}
+	if out, code, err := run(ctx, c.p, c.ref, spec); err != nil || string(out) != "hi\n" ||
+		code != 5 {
+		t.Errorf("exec after Unpark gave stdout %q, exit %d, %v", out, code, err)
+	}
+	got, eof, err := c.p.ReadFile(ctx, c.ref, path, 0, 1024)
+	if err != nil || string(got) != "hello, contract\n" || !eof {
+		t.Errorf("ReadFile after Unpark gave %q eof %v, %v", got, eof, err)
+	}
+	if gates {
+		after, err := gater.GateRoute(ref, provider.DefaultGatePort)
+		if err != nil || !reflect.DeepEqual(after, route) {
+			t.Errorf("GateRoute after Unpark gave %+v, %v, want %+v", after, err, route)
+		}
+	}
+	if cost := pk.ParkedHourlyCostMicros(provider.Size{}); cost < 0 {
+		t.Errorf("ParkedHourlyCostMicros is %d", cost)
+	}
 }
 
 func (c check) listOwned(t *testing.T) {
