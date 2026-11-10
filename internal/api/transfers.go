@@ -607,22 +607,35 @@ func (st *stream) working(run func() error) error {
 	return run()
 }
 
-// finish stops the watcher, ends the claim as done or released and removes the staged copy
-func (st *stream) finish(ok bool) {
+// endKind is how a stream leaves its claim
+type endKind int
+
+const (
+	released endKind = iota
+	done
+	held
+)
+
+// finish stops the watcher, ends the claim as released, done or held and removes the staged copy
+func (st *stream) finish(end endKind) {
 	st.cancel(errFinished)
 	<-st.watched
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(st.parent), xferStepTimeout)
 	defer cancel()
-	end := st.s.xfers.Release
-	if ok {
-		end = st.s.xfers.Done
-	}
 	log := st.s.d.Log.With("transfer", transfer.Short(st.rec.ID), "placement", st.p.ID)
-	err := end(ctx, st.rec, st.lease, st.moved.Swap(0))
-	if err != nil {
-		log.Warn("api: end a transfer claim", "done", ok, "err", err)
+	var err error
+	switch end {
+	case held:
+		_, err = st.s.xfers.Renew(ctx, st.rec, st.lease, st.moved.Swap(0), time.Now())
+	case done:
+		err = st.s.xfers.Done(ctx, st.rec, st.lease, st.moved.Swap(0))
+	default:
+		err = st.s.xfers.Release(ctx, st.rec, st.lease, st.moved.Swap(0))
 	}
-	if ok && err == nil {
+	if err != nil {
+		log.Warn("api: end a transfer claim", "done", end == done, "held", end == held, "err", err)
+	}
+	if end == done && err == nil {
 		dir := "out"
 		if st.rec.Direction == upload {
 			dir = "in"
@@ -635,7 +648,15 @@ func (st *stream) finish(ok bool) {
 			log.Warn("api: remove a staged transfer", "err", err)
 		}
 	}
-	log.Info("api: transfer stream ended", "done", ok)
+	log.Info("api: transfer stream ended", "done", end == done, "held", end == held)
+}
+
+// upEnd is done for an upload that succeeded, else released
+func upEnd(err error) endKind {
+	if err == nil {
+		return done
+	}
+	return released
 }
 
 // status answers err, or the reason the stream was cut when it was
@@ -661,9 +682,46 @@ func (e *EdgeServer) ReadTransfer(
 		err = st.status(err)
 	}
 	// A range that stops short of the end leaves the URL for the rest, as a failed attempt does
-	st.finish(err == nil &&
-		(m.GetLength() == 0 || m.GetOffset()+m.GetLength() == uint64(st.rec.Size)))
+	end := released
+	if err == nil && (m.GetLength() == 0 || m.GetOffset()+m.GetLength() == uint64(st.rec.Size)) {
+		end = done
+		if m.GetHoldEnd() {
+			end = held
+		}
+	}
+	st.finish(end)
 	return err
+}
+
+// EndTransfer ends a held download's claim as done once the edge delivered it, else as issued
+func (e *EdgeServer) EndTransfer(
+	ctx context.Context, req *connect.Request[routerv1.EndTransferRequest],
+) (*connect.Response[routerv1.EndTransferResponse], error) {
+	s, m := e.s, req.Msg
+	rec, err := s.xfers.Get(ctx, m.GetTransferId())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	if rec.Direction != download {
+		return nil, s.status(errWrongWay)
+	}
+	end := s.xfers.Release
+	if m.GetDelivered() {
+		end = s.xfers.Done
+	}
+	if err := end(ctx, rec, m.GetLease(), 0); err != nil {
+		return nil, s.status(err)
+	}
+	log := s.d.Log.With("transfer", transfer.Short(rec.ID), "placement", rec.Placement)
+	if m.GetDelivered() {
+		if p, err := s.d.Store.PlacementByID(ctx, rec.Placement); err != nil {
+			log.Warn("api: read the placement of a delivered transfer", "err", err)
+		} else {
+			s.d.SessionWriter.Transfer(ctx, p, "out", rec.Path, rec.Size)
+		}
+	}
+	log.Info("api: transfer stream ended", "done", m.GetDelivered(), "held", false)
+	return connect.NewResponse(&routerv1.EndTransferResponse{}), nil
 }
 
 func (st *stream) read(
@@ -757,7 +815,7 @@ func (e *EdgeServer) WriteTransfer(
 	if err != nil {
 		err = st.status(err)
 	}
-	st.finish(err == nil)
+	st.finish(upEnd(err))
 	if err != nil {
 		return nil, err
 	}

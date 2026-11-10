@@ -1074,7 +1074,7 @@ the gateway.
 | Service | Caller | Token | Built so far |
 | --- | --- | --- | --- |
 | `SandboxRouterService` | The MCP gateway, `bugnet-dev` | `BUGNET_INTERNAL_TOKEN` | Placements, commands, files, `CreateTransfer`, `CreatePreview`, the secret RPCs, `AddSshKey`, `RemoveSshKey`, `AppendSessionEvents` and `RotateSessionLink` |
-| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `ResolvePreview`, `RepairPreview` |
+| `EdgeService` | `bugnet-edge` | `BUGNET_EDGE_TOKEN` | `ReportEdgeUsage`, `CheckEdgeLeases`, `WatchEdgeEvents`, `OpenTransfer`, `ReadTransfer`, `WriteTransfer`, `EndTransfer`, `ResolvePreview`, `RepairPreview` |
 | `SecretsRouteService` | `bugnet-secrets` | `BUGNET_SECRETS_TOKEN` | `GetSecretLink`, `SubmitSecretLink`, `GetBridgeSealingKey`, `PutBridgeSecret` |
 | `SshGatewayService` | `bugnet-ssh` | `BUGNET_SSH_TOKEN` | Every RPC |
 | `EgressService` | `bugnet-egress` | `BUGNET_EGRESS_TOKEN` | `ResolveTunnel`, `ReportEgressUsage`, `CheckEgressLeases`, `WatchEgressEvents` |
@@ -1300,7 +1300,7 @@ provider's exec user, `root` when it has none, never what `ssh-up` prints (DP 9)
 
 `CreateTransfer` mints a one-use URL, `https://<names.transfer_host>/<bnx_ token>`, for one file
 going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves it with
-`OpenTransfer`, `ReadTransfer` and `WriteTransfer` (DP 8.3).
+`OpenTransfer`, `ReadTransfer`, `WriteTransfer` and `EndTransfer` (DP 8.3).
 
 - **Paths.** `~` and `~/rest` mean the exec user's home: `/root` for root, `/home/<user>`
   otherwise, and the local provider's own `/root`. Any other relative path, an empty one, or one
@@ -1334,7 +1334,9 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   with `probe` describes the file without claiming, and refuses a placement that spent its edge
   budget with `BUDGET_SPENT`.
 - **Streams.** `ReadTransfer` reads from an offset in messages of at most 256 KiB, checks the file
-  again at the end and only then sends its last bytes with `verified`. `WriteTransfer` hashes and
+  again at the end and only then sends its last bytes with `verified`. With `hold_end` a read that reaches the end
+  keeps the claim active until the edge calls `EndTransfer`, which marks it done when
+  `delivered` and hands it back as issued otherwise. `WriteTransfer` hashes and
   counts the bytes and commits only on a clean close with exactly the declared size and a matching
   SHA-256, so a cut or wrong upload leaves the old file. A stream ends after
   `transfers.idle_timeout` without a byte from the edge. Time the provider spends reading,
