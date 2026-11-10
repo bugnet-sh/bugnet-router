@@ -7,3 +7,5 @@
 !.env.example
 /.superpowers/
 node_modules/
+/cmd/bugnet-dev/bugnet-dev
+/cmd/router-worker/router-worker
