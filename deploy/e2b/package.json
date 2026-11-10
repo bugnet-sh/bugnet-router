@@ -3,7 +3,7 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "build": "tsx build.ts production",
+        "build": "tsx build.ts prod",
         "build:dev": "tsx build.ts dev"
     },
     "engines": {

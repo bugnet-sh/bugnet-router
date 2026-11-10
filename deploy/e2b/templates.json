@@ -1,12 +1,6 @@
 {
-    "ca": {
-        "production": { "cert_file": "~/.local/state/bugnet-prod/egress-ca/egress-ca.pem", "version": 1 },
-        "dev": { "cert_file": "~/.local/state/bugnet-dev/egress-ca/egress-ca.pem", "version": 1 }
-    },
     "templates": [
-        { "name": "bugnet-2x2", "cpu_count": 2, "memory_mb": 2048, "ca": "production" },
-        { "name": "bugnet-4x8", "cpu_count": 4, "memory_mb": 8192, "ca": "production" },
-        { "name": "bugnet-dev-2x2", "cpu_count": 2, "memory_mb": 2048, "ca": "dev" },
-        { "name": "bugnet-dev-4x8", "cpu_count": 4, "memory_mb": 8192, "ca": "dev" }
+        { "size": "2x2", "cpu_count": 2, "memory_mb": 2048 },
+        { "size": "4x8", "cpu_count": 4, "memory_mb": 8192 }
     ]
 }

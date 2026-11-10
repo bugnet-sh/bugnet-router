@@ -1,4 +1,4 @@
-.PHONY: test lint build x402-local
+.PHONY: test lint build image-inputs x402-local
 
 test:
 	go test -race -timeout 40m ./...
@@ -8,6 +8,11 @@ lint:
 
 build:
 	go build ./...
+
+# Rewrites deploy/image/inputs.sha256 once VERSION moved or while no build record of it exists,
+# and fails when an input moved under a version that was built, CP 19.6.3
+image-inputs:
+	go run ./internal/image/inputs
 
 # The x402 local run, XS 11.2 and 11.3: the real router, egress and Payments on a fake chain
 X402_BIN = $(CURDIR)/bin/x402local
