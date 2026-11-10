@@ -163,6 +163,9 @@ type Options struct {
 	BufferTotal int64
 	// OrganizationID is read from the account when empty
 	OrganizationID string
+	// PoolIdleHourlyMicros is what one unclaimed member of a pool costs an hour, 0 while Light
+	// Sleep is free
+	PoolIdleHourlyMicros int64
 }
 
 // Provider places sandboxes on Koyeb, keeping only the labels it already read per service
@@ -182,8 +185,11 @@ type Provider struct {
 	retryWait time.Duration
 	// orgID is the organization the quota route names, read once when no setting gave it
 	orgID string
-	mu    sync.Mutex
-	known map[string]knownService // by service id, labels never change after create
+	// poolIdle is one unclaimed pool member's cost an hour
+	poolIdle int64
+	mu       sync.Mutex
+	known    map[string]knownService // by service id, labels never change after create
+	pools    map[string]string       // pool ids by name
 }
 
 // knownService is what ListOwned read from one deployment of a service
@@ -237,7 +243,9 @@ func New(opts Options) (*Provider, error) {
 		buffers:      semaphore.NewWeighted(total),
 		retryWait:    defaultRetryWait,
 		known:        map[string]knownService{},
+		pools:        map[string]string{},
 		orgID:        opts.OrganizationID,
+		poolIdle:     opts.PoolIdleHourlyMicros,
 	}, nil
 }
 
@@ -728,6 +736,9 @@ func overLifetime(until, created time.Time) error {
 
 // Destroy deletes the app with its service and treats one already gone as destroyed
 func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
+	if ref.Meta[metaPooled] != "" {
+		return p.destroyMember(ctx, ref)
+	}
 	app, err := appID(ref)
 	if err != nil {
 		return nil
@@ -753,6 +764,7 @@ func (p *Provider) ListOwned(
 	if listErr == nil && err == nil {
 		p.forgetAllBut(items)
 	}
+	p.markPoolHeld(ctx, owned)
 	return owned, errors.Join(listErr, err)
 }
 
