@@ -283,3 +283,19 @@ func TestHedgeWinReleasesTheAwaitedReservation(t *testing.T) {
 	eq(t, e.inUse(t, "b"), 1)
 	eq(t, e.recountOf(t, "a")+e.recountOf(t, "b"), 1)
 }
+
+func TestNoHedgePastTheAttemptLimit(t *testing.T) {
+	// Two attempts fail at once, so the third is running when its hedge timer fires
+	a := newSlow(t, "a", 0, true)
+	b := newSlow(t, "b", 0, true)
+	c := newSlow(t, "c", 900*time.Millisecond, false)
+	d := newSlow(t, "d", 0, false)
+	e := hedgingEnv(t, a, b, c, d)
+	p, _ := e.placeReady(t, "order-1")
+	eq(t, p.Provider, "c")
+	atts := e.attempts(t, p.ID)
+	eq(t, len(atts), 3)
+	eq(t, atts[2], attemptRow{3, "c", "ready", ""})
+	eq(t, e.hedged(t, p.ID), false)
+	eq(t, len(owned(t, d)), 0)
+}
