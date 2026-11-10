@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,9 +24,6 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/simulate"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
-
-// startPathCold is the start path router mode measures until Reserve and the pools exist
-const startPathCold = "cold"
 
 // benchCmd runs a benchmark subcommand
 func (c *cli) benchCmd(args []string) error {
@@ -198,12 +196,25 @@ func reportOf(r *routerv1.StartReport) bench.Report {
 
 /* Router mode */
 
+// Router mode's paths, which a run is asked to take
+const (
+	pathPlain    = "plain"
+	pathReserved = "reserved"
+)
+
+// defaultPayDelay is the wait between Reserve and the paid order that stands for a user paying
+const defaultPayDelay = 8 * time.Second
+
 // routerRun is one order timed on the client, from CreatePlacement to the first command's exit
 type routerRun struct {
 	ReadyMS    int    `json:"ready_ms"`
 	FirstCmdMS int    `json:"first_cmd_ms"`
 	TotalMS    int    `json:"total_ms"`
 	Error      string `json:"error,omitempty"`
+	// PlacementID names the run's placement, which FindPlacement reads its start path from
+	PlacementID string `json:"placement_id,omitempty"`
+	// StartPath is the path the placement took, cold, pooled or reserved, empty when unread
+	StartPath string `json:"start_path,omitempty"`
 }
 
 func (c *cli) benchRouter(args []string) error {
@@ -211,6 +222,8 @@ func (c *cli) benchRouter(args []string) error {
 	pkg := fs.String("package", "", "package to order")
 	runs := fs.Int("runs", 20, "orders to place")
 	conc := fs.Int("concurrency", 2, "orders at a time")
+	path := fs.String("path", pathPlain, "plain, or reserved to call Reserve first")
+	delay := fs.Duration("pay-delay", defaultPayDelay, "wait between Reserve and the order")
 	asJSON := fs.Bool("json", false, "print the raw samples as JSON")
 	if err := parse(fs, args, false); err != nil {
 		return err
@@ -220,6 +233,12 @@ func (c *cli) benchRouter(args []string) error {
 	}
 	if *runs < 1 || *conc < 1 {
 		return fmt.Errorf("%w: --runs and --concurrency must be at least 1", errUsage)
+	}
+	if *path != pathPlain && *path != pathReserved {
+		return fmt.Errorf("%w: --path takes plain or reserved", errUsage)
+	}
+	if *delay < 0 {
+		return fmt.Errorf("%w: --pay-delay must not be negative", errUsage)
 	}
 	// Every run signs its own order token, so a missing key stops the benchmark first
 	if _, err := c.sign(order{kind: ordertoken.KindStart, pkg: *pkg, ttl: defaultTTL}); err != nil {
@@ -238,13 +257,14 @@ func (c *cli) benchRouter(args []string) error {
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			out[i] = c.timeOrder(api, *pkg)
+			out[i] = c.timeOrder(api, *pkg, *path == pathReserved, *delay)
 		}()
 	}
 	wg.Wait()
+	c.readPaths(out, *path)
 	if *asJSON {
 		b, err := json.MarshalIndent(map[string]any{
-			"start_path": startPathCold, "package": *pkg, "samples": out,
+			"start_path": *path, "package": *pkg, "samples": out,
 		}, "", "  ")
 		if err != nil {
 			return err
@@ -252,9 +272,47 @@ func (c *cli) benchRouter(args []string) error {
 		_, err = fmt.Fprintln(c.stdout, string(b))
 		return err
 	}
-	return bench.Format(c.stdout, fmt.Sprintf(
-		"router %s  start_path %s  %d runs, concurrency %d", *pkg, startPathCold, *runs, *conc),
-		routerReport(*pkg, out), 0)
+	// A plain run may still take a pool member, so the report groups runs by the path each took
+	groups := map[string][]routerRun{}
+	for _, r := range out {
+		groups[r.StartPath] = append(groups[r.StartPath], r)
+	}
+	var paths []string
+	for p := range groups {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	for _, p := range paths {
+		head := fmt.Sprintf("router %s  start_path %s  %d runs, concurrency %d", *pkg, p,
+			len(groups[p]), *conc)
+		if err := bench.Format(c.stdout, head, routerReport(*pkg, groups[p]), 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readPaths sets each run's start path from its placement, as the operator reads it, and from the
+// path the run asked for where the operator cannot be reached
+func (c *cli) readPaths(runs []routerRun, asked string) {
+	op, err := c.operator()
+	for i := range runs {
+		runs[i].StartPath = asked
+		if err != nil || runs[i].PlacementID == "" {
+			continue
+		}
+		res, ferr := op.FindPlacement(c.ctx, connect.NewRequest(&routerv1.FindPlacementRequest{
+			Target: &routerv1.PlacementTarget{Target: &routerv1.PlacementTarget_PlacementId{
+				PlacementId: runs[i].PlacementID,
+			}},
+		}))
+		if ferr != nil {
+			continue
+		}
+		if sp := res.Msg.GetPlacement().GetStartPath(); sp != "" {
+			runs[i].StartPath = sp
+		}
+	}
 }
 
 // routerReport turns the timed orders into a report whose total is payment to first command
@@ -285,24 +343,46 @@ func routerReport(pkg string, runs []routerRun) bench.Report {
 }
 
 // timeOrder places one order through CreatePlacement, runs `true` through Exec and stops it
-func (c *cli) timeOrder(api routerv1connect.SandboxRouterServiceClient, pkg string) routerRun {
+//
+// With reserved it calls Reserve first and waits the pay delay as a user would pay, then signs the
+// token with issued_at set and orders with the same quote. The clock starts at signing.
+func (c *cli) timeOrder(
+	api routerv1connect.SandboxRouterServiceClient, pkg string, reserved bool, delay time.Duration,
+) routerRun {
 	var run routerRun
 	fail := func(err error) routerRun {
 		run.Error = err.Error()
 		return run
 	}
+	var quote string
+	if reserved {
+		quote = "q2.bench-" + strings.ToLower(rand.Text())
+		// Reserve never fails a start, so its answer, whatever it says, only decides the path
+		_, err := api.Reserve(c.ctx, connect.NewRequest(&routerv1.ReserveRequest{
+			QuoteId: quote, PackageId: pkg,
+		}))
+		if err != nil {
+			return fail(fmt.Errorf("reserve: %w", err))
+		}
+		select {
+		case <-time.After(delay):
+		case <-c.ctx.Done():
+			return fail(c.ctx.Err())
+		}
+	}
+	start := time.Now()
 	token, err := c.sign(order{kind: ordertoken.KindStart, pkg: pkg, ttl: defaultTTL})
 	if err != nil {
 		return fail(err)
 	}
-	start := time.Now()
 	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
-		OrderToken: token,
+		OrderToken: token, QuoteId: quote,
 	}))
 	if err != nil {
 		return fail(err)
 	}
 	h, p := res.Msg.GetHandle(), res.Msg.GetPlacement()
+	run.PlacementID = p.GetPlacementId()
 	defer func() {
 		_, _ = api.StopPlacement(c.ctx, connect.NewRequest(&routerv1.StopPlacementRequest{
 			Handle: h,

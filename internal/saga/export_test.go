@@ -72,3 +72,6 @@ func SetCreateWait(t testing.TB, d time.Duration) {
 	createWait = d
 	t.Cleanup(func() { createWait = old })
 }
+
+// LifetimeUntil is the lifetime a reserved sandbox is asked for, never past the provider's limit
+var LifetimeUntil = lifetimeUntil

@@ -251,3 +251,53 @@ func TestCanaryFactsOfReadsSamplesPlacementsAndHealth(t *testing.T) {
 	}
 	eq(t, f, store.CanaryFacts{LastCanary: at, State: "down", Blocked: "auth"})
 }
+
+func TestReadyP95FromColdSamplesOnly(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	add := func(path string, ready, runner, gate, wake int, kind store.SampleKind) {
+		t.Helper()
+		m := sample("a", kind, store.OutcomeOK, now.Add(-time.Minute), ready)
+		m.StartPath, m.RunnerMS, m.GateMS, m.WakeMS = path, runner, gate, wake
+		if err := s.InsertStartSample(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Cold starts, whose whole attempt is ready, runner and gate added
+	for i := 1; i <= 5; i++ {
+		add("cold", i*1000, 200, 100, store.NoStep, store.SamplePlacement)
+	}
+	// A sample with no path is a cold one, as the probes' are
+	add("", 4000, store.NoStep, 100, store.NoStep, store.SampleCanary)
+	// Fast claims and reserves must not hide a slow create path
+	for range 10 {
+		add("pooled", store.NoStep, store.NoStep, 150, 300, store.SamplePlacement)
+		add("reserved", store.NoStep, store.NoStep, store.NoStep, store.NoStep,
+			store.SamplePlacement)
+		add("speculative", 700, store.NoStep, 100, store.NoStep, store.SampleReserve)
+	}
+	add("pool", 60_000, store.NoStep, store.NoStep, store.NoStep, store.SamplePool)
+
+	c, err := s.HealthWindow(ctx, "a", now.Add(-15*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cold ready values are 1 to 5 s and 4 s, so the nearest-rank p95 of six is 5 s
+	eq(t, c.ReadyP95, 5*time.Second)
+	eq(t, c.ColdTotalP95, 5300*time.Millisecond)
+	// A pooled attempt is its wake and its gate
+	eq(t, c.PooledTotalP95, 450*time.Millisecond)
+
+	// The rollup stores both whole-attempt figures beside the ready p95
+	_, err = s.WriteHealth(ctx, "a", store.HealthState{
+		State: store.HealthOK, Samples: 26, ReadyP95: c.ReadyP95, ColdTotalP95: c.ColdTotalP95,
+		PooledTotalP95: c.PooledTotalP95,
+	}, now)
+	eq(t, err, nil)
+	rows, err := s.ProviderHealths(ctx)
+	eq(t, err, nil)
+	eq(t, len(rows), 1)
+	eq(t, [3]time.Duration{rows[0].ReadyP95, rows[0].ColdTotalP95, rows[0].PooledTotalP95},
+		[3]time.Duration{5 * time.Second, 5300 * time.Millisecond, 450 * time.Millisecond})
+}

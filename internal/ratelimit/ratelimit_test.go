@@ -382,3 +382,38 @@ func TestBadBucketsAreRefused(t *testing.T) {
 	}
 	eq(t, exists(t, vk, prefix+"rl:fine"), false)
 }
+
+func TestTakeUnlessBlockersAndTokens(t *testing.T) {
+	ctx := t.Context()
+	vk, prefix := testenv.Valkey(t)
+	l := ratelimit.New(vk, prefix, 0, 0)
+	b := ratelimit.Bucket{Key: "rl:gated", PerSecond: 0.001, Burst: 2}
+	g, err := l.TakeUnless(ctx, b, true, "brake", "spend")
+	eq(t, err, nil)
+	eq(t, g, ratelimit.Gated{Taken: true})
+	// A gate-only read spends nothing and sees no blocker
+	g, err = l.TakeUnless(ctx, b, false, "brake", "spend")
+	eq(t, err, nil)
+	eq(t, g, ratelimit.Gated{})
+	g, _ = l.TakeUnless(ctx, b, true, "brake")
+	eq(t, g.Taken, true)
+	// The bucket is empty now, and says when it holds a token
+	g, _ = l.TakeUnless(ctx, b, true, "brake")
+	eq(t, g.Taken || g.Blocked != "" || g.Wait <= 0, false)
+
+	if err := vk.Do(ctx, vk.B().Set().Key(prefix+"spend").Value("1").Build()).Error(); err != nil {
+		t.Fatal(err)
+	}
+	// A blocker refuses a take, a gate-only read and an empty bucket alike, naming itself
+	for _, take := range []bool{true, false} {
+		g, err = l.TakeUnless(ctx, b, take, "brake", "spend")
+		eq(t, err, nil)
+		eq(t, g, ratelimit.Gated{Blocked: "spend"})
+	}
+	// The refused take spent nothing from a fresh bucket
+	fresh := ratelimit.Bucket{Key: "rl:fresh", PerSecond: 0.001, Burst: 1}
+	g, _ = l.TakeUnless(ctx, fresh, true, "spend")
+	eq(t, g, ratelimit.Gated{Blocked: "spend"})
+	g, _ = l.TakeUnless(ctx, fresh, true, "brake")
+	eq(t, g.Taken, true)
+}

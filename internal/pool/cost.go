@@ -23,9 +23,13 @@ func OverheadMicros(
 	if mem.EndedAt != nil && mem.EndedAt.Before(end) {
 		end = *mem.EndedAt
 	}
+	// A member that never parked, as one a reservation started, ran until it was claimed
 	warmAt := end
-	if mem.WarmAt != nil && mem.WarmAt.Before(warmAt) {
+	switch {
+	case mem.WarmAt != nil && mem.WarmAt.Before(warmAt):
 		warmAt = *mem.WarmAt
+	case mem.WarmAt == nil && mem.ClaimedAt != nil && mem.ClaimedAt.Before(warmAt):
+		warmAt = *mem.ClaimedAt
 	}
 	idleEnd := end
 	if mem.ClaimedAt != nil && mem.ClaimedAt.Before(idleEnd) {

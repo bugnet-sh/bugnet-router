@@ -184,6 +184,8 @@ type options struct {
 	deployment  string
 	// dataplaneWorkers sets Deps.DataplaneWorkers, the default when zero
 	dataplaneWorkers int
+	// reserve are the saga's Reserve settings, the defaults when its hold is zero
+	reserve config.Reserve
 	// features lists the providers of each data-plane feature
 	features provider.Features
 	// egress is where apply_secrets points forwarders
@@ -298,6 +300,7 @@ func newEnv(t *testing.T, o options) *env {
 		Events:       edgeevents.New(vk, prefix, slog.New(slog.NewTextHandler(out, nil))),
 		Keys:         keys,
 		Wallets:      o.wallets,
+		Reserve:      o.reserve,
 	}
 	if o.pools != nil {
 		w := poolpkg.NewWarmth(st, poolpkg.Configs(*o.pools), nil)
@@ -448,7 +451,9 @@ func (e *env) placeReady(t *testing.T, order string) (store.Placement, string) {
 	tok := e.token(t, ordertoken.Claims{
 		OrderID: order, Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: smallPrice,
 	})
-	p, h, err := e.saga.Create(t.Context(), tok, placement.Requirements{})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatalf("create %s: %v", order, err)
 	}

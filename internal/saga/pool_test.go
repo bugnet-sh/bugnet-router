@@ -218,10 +218,10 @@ func TestRestrictedPackageNeverClaimsAMember(t *testing.T) {
 	}, a)
 	members := e.fill(t)
 	eq(t, len(members), 1)
-	p, _, err := e.saga.Create(t.Context(), e.token(t, ordertoken.Claims{
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.token(t, ordertoken.Claims{
 		OrderID: "order-r", Kind: ordertoken.KindStart, PackageID: "small-10m-restricted",
 		AmountMicros: smallPrice,
-	}), placement.Requirements{})
+	}), Requirements: placement.Requirements{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,9 @@ func TestFailStuckRetiresBoundMembers(t *testing.T) {
 	e := newPoolEnv(t, nil, a)
 	members := e.fill(t)
 	// A placement that is placing, holding a member as its saga would mid-claim
-	p, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"), placement.Requirements{})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

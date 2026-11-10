@@ -2185,3 +2185,89 @@ boxd's key. POOL1 records the wake times, POOL2 runs a day and records the idle 
 `boxd.parked_gib`, POOL3 checks that hibernated machines count in the machine limit, POOL4 that
 the delete-after timer ends a hibernated machine and POOL5 that the proxy pin and SSH off survive
 a wake.
+
+### Reserve and the bind
+
+`Reserve` holds a prepared sandbox for a quote while the user pays, and the paid order takes it in
+its own transaction. The gateway calls it on an unpaid `bugnet_start` with the quote id (1 to 128
+printable ASCII bytes), the package, the requirements and the client's address, and calls it again
+to renew. `CreatePlacement` carries the same `quote_id`. `ReleaseReservation` gives the quote's
+open reservation back and answers OK for a quote with none. Reserve never fails a start. It
+answers `HELD` with `expires_at`, or `SKIPPED` with `DISABLED`, `NO_WARM`, `BUSY`, `BRAKED`,
+`QUOTE_SPENT` or `NOT_POOLABLE`, and the answer names no provider, sandbox or reservation id. A bad
+quote id or an unknown package is the only refusal (`QUOTE_INVALID`, `INVALID_ARGUMENT`).
+
+The settings are `[reserve]` and `[targets]`, each at its default in `config/example.toml`.
+`reserve.speculative_providers` lists `e2b`, `koyeb` and `boxd`, and the decoder refuses `boat`
+there. `reserve.shared_ranges` lists Anthropic's `160.79.104.0/21`, and an address in it never
+counts toward `per_ip_open` and is never stored.
+
+One Reserve costs one Valkey call and one short transaction. The Valkey call is one script that
+reads `reserve:brake` and `reserve:spend` and takes a token from `rl:reserve:all` (1 a second, burst
+10), and a renewal reads the two keys and takes no token. Valkey silent for 200 ms answers `BUSY`.
+Then, in order: an open reservation for the quote of the same package and requirements is renewed to
+`min(now + hold, hold_until)`, and only while the longer hold still clears the margin floor, else
+it keeps its expiry. A different one is released and counts. `reserve.per_quote` (2) reservations
+per quote ever, `max_open` and `per_ip_open` follow, as `QUOTE_SPENT` and `BUSY`. Then a pool member
+of the first candidate with a warm member, while open reservations hold fewer than
+`pools.reserve_share` of the pool's target (the claim is `pooled`, and a pool found empty records
+one miss, a full share none), else a start before payment on the first candidate whose provider is
+in `reserve.speculative_providers`, whose size costs at most `speculative_max_hourly_micros`, with
+fewer than `speculative_max_open` such reservations open, a free slot and a create token now
+(`speculative`). The hold is billed into each candidate, so the margin floor refuses a start where
+a 150 s hold would take a package under it.
+
+The replica that answered prepares the sandbox in a goroutine of the saga's wait group:
+`Unpark` or `Create` and `Boot` with `Pool` set, `Prepare` once with the reservation's placement
+id, `SetLifetime` to the latest a bind could need and never past the provider's limit, then one
+transaction that seals the ref under the member's id and writes the rest of `Prepared` (never a ref
+or a credential) to `reservations.prepared`. It heartbeats every 10 s from `preparing` through
+`ready`, and a ready row's gate is checked every `reserve.keepalive`, a failed check failing the
+reservation. The whole preparation has `reserve.prep_budget`. `Saga.Close` stops the keepalive
+goroutines after `Wait` has returned.
+
+`CreatePlacement` binds in the order's transaction (CP 18.5.5), after the wallet checks and before
+the placement insert. It locks the quote's open reservation, which must match the package, the
+requirements and the expiry plus grace, on a provider that is healthy and not blocked, else it is
+released and its member retired. A `ready` one points the order row at the reservation's placement
+id, inserts the placement and runs the ready writes the cold path runs (`readyWrites`, x402 rows and
+`needs_secrets` included), moves the member's slot to the placement and seals the ref again under
+the placement id, so `ready_at` and the paid clock start at the bind. A `preparing` one is marked
+`awaited` and the order waits for it for `reserve.await_max`, on the channel `reservation:<id>` and
+every 250 ms, then binds, or goes cold when the reservation failed, its heartbeat is 30 s stale or
+the wait ran out. An order refused by a wallet check keeps its own fresh id, so the reservation
+stays for the quote's next order. A retried order returns the placement its order row names. Every
+transaction that moves a placing placement out of `placing` other than the bind, a failure and
+`FailStuck` included, releases its awaited reservation and queues `pool_retire` for the member.
+
+`reserve_watch` (every 10 s, `Timeout()` 20 s) lapses a reservation past `expires_at` plus
+`lapse_grace`, fails one whose heartbeat is 30 s stale and an awaited one whose placement left
+`placing`, queues `pool_retire` for a held member left without a reservation, and sets or clears
+`reserve:brake`. The brake sets for `reserve.brake_for` when the last hour has at least
+`brake_unused` reservations that ended unused and at least `brake_ratio` times the bound ones, and
+sets again at once once it ends while the hour still holds them. Retention deletes reservations 7
+days after `ended_at`.
+
+The 5 s target is measured from the order token's `issued_at`, which Payments sets when it signs
+after settlement. A value in the 60 s before the order arrived is `placements.paid_at`, anything
+else, or none, stores the arrival time and logs once a minute. `jobs.first_frame_ms` is the time
+from `Exec`'s arrival to the job's first frame, written off the exec path. Start samples carry
+`start_path`, `bind_ms`, `paid_to_ready_ms`, `wake_ms` and the reservation, and the shared-health
+rollup writes `ready_p95_ms` from cold samples only, with `cold_total_p95_ms` and
+`pooled_total_p95_ms` beside it. `ReportStarts` groups by provider, size, kind and start path and
+prints `bind`, `paid_to_ready`, `first_frame`, `paid_to_first_frame` and `wake`. `/monitor` shows
+`payment to first command p90 is N s over the last hour, target 5 s` when the hour's reserved and
+pooled placements number at least `targets.min_placements` and their p90 is over
+`targets.first_command_p90`, and `reservations are braked until T, U unused and B bound in the last
+hour` while the brake holds.
+
+`bugnet-dev reserve --quote Q --package P [--ssh] [--preview] [--secrets]` then `create --package P
+--quote Q` tries a bind by hand. `token` and `create` sign `issued_at` unless `--no-issued-at`.
+`bench router --path plain|reserved --pay-delay 8s` times orders from payment to the first command
+and prints one table per path the placements took. With `reserved` each run calls `Reserve`, waits
+the delay as a user would pay, then signs the token and orders with the same quote.
+
+The live rows are `TestLiveControl/RSV1` to `RSV3`. RSV1 holds an E2B start for 100 s, binds it and
+extends until the provider's lifetime says no, RSV2 runs `bench router --path reserved` 30 times
+per pooled provider and checks that the p90 of payment to first command stays under 5 s, and RSV3
+records each provider's `cold` figure after `bugnet-dev pools drain`.

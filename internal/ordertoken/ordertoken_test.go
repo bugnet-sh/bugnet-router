@@ -211,12 +211,57 @@ func TestUnknownClaimsStillRefused(t *testing.T) {
 	pub, priv := keys(t)
 	exp := `"expires_at":"2026-11-04T12:01:00Z"`
 	for _, payload := range []string{
-		`{"kind":"start","issued_at":"2026-11-04T12:00:00Z",` + exp + `}`,
+		`{"kind":"start","issued":"2026-11-04T12:00:00Z",` + exp + `}`,
 		`{"kind":"start","payer":"` + payerAddr + `","allowance":1,` + exp + `}`,
 		`{"kind":"start","fee_micros":1,` + exp + `}`,
 	} {
 		if _, err := Verify(pub, signRaw(priv, payload), now); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: got %v, want ErrMalformed", payload, err)
+		}
+	}
+}
+
+func TestIssuedAtClaim(t *testing.T) {
+	pub, priv := keys(t)
+	s := start()
+	at := now.Add(-time.Second)
+	s.IssuedAt = &at
+	tok, _ := Sign(priv, s)
+	got, err := Verify(pub, tok, now)
+	if err != nil || got.IssuedAt == nil || !got.IssuedAt.Equal(at) {
+		t.Fatalf("start with issued_at: %+v %v", got, err)
+	}
+	raw := `{"order_id":"o","kind":"start","package_id":"p","amount_micros":1,` +
+		`"issued_at":"not a time","expires_at":"2026-11-04T12:01:00Z"}`
+	if _, err := Verify(pub, signRaw(priv, raw), now); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("a bad issued_at: got %v, want ErrMalformed", err)
+	}
+}
+
+func TestIssuedAtWindow(t *testing.T) {
+	created := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	issued := func(s string) Claims {
+		at, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Claims{IssuedAt: &at}
+	}
+	for name, c := range map[string]struct {
+		claims Claims
+		want   time.Time
+		ok     bool
+	}{
+		"30 s early":   {issued("2026-11-05T11:59:30Z"), created.Add(-30 * time.Second), true},
+		"60 s early":   {issued("2026-11-05T11:59:00Z"), created.Add(-time.Minute), true},
+		"120 s early":  {issued("2026-11-05T11:58:00Z"), created, false},
+		"a later time": {issued("2026-11-05T12:00:05Z"), created, false},
+		"the same":     {issued("2026-11-05T12:00:00Z"), created, true},
+		"no claim":     {Claims{}, created, true},
+	} {
+		got, ok := c.claims.PaidAt(created)
+		if !got.Equal(c.want) || ok != c.ok {
+			t.Errorf("%s: got %v %v, want %v %v", name, got, ok, c.want, c.ok)
 		}
 	}
 }

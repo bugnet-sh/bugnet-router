@@ -212,3 +212,36 @@ func (s *Store) InstallSeconds(ctx context.Context, placement uuid.UUID) (int, e
 	}
 	return int(min(n, math.MaxInt32)), nil
 }
+
+// SetJobFirstFrame stores the milliseconds from Exec's arrival to the job's first frame, once, in
+// a transaction that does not wait for the disk
+func (s *Store) SetJobFirstFrame(ctx context.Context, id string, ms int) error {
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `set local synchronous_commit = off`); err != nil {
+			return fmt.Errorf("set job first frame: %w", err)
+		}
+		_, err := tx.Exec(ctx, `
+			update jobs set first_frame_ms = $2 where id = $1 and first_frame_ms is null`,
+			id, ms)
+		if err != nil {
+			return fmt.Errorf("set job first frame: %w", err)
+		}
+		return nil
+	})
+}
+
+// JobFirstFrame returns the job's first frame time in milliseconds, false when none is stored
+func (s *Store) JobFirstFrame(ctx context.Context, id string) (int, bool, error) {
+	var ms *int
+	err := s.q.QueryRow(ctx, `select first_frame_ms from jobs where id = $1`, id).Scan(&ms)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, ErrNotFound
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("job first frame: %w", err)
+	}
+	if ms == nil {
+		return 0, false, nil
+	}
+	return *ms, true, nil
+}

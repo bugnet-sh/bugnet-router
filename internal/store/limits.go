@@ -87,6 +87,9 @@ type ProviderHealth struct {
 	// Samples and ReadyP95 are the rollup window's count and ready p95
 	Samples  int
 	ReadyP95 time.Duration
+	// ColdTotalP95 and PooledTotalP95 are the whole-attempt p95 figures of the cold and pooled
+	// paths, zero for none
+	ColdTotalP95, PooledTotalP95 time.Duration
 	// Blocked is banned, unfunded or auth, empty while the account works
 	Blocked       string
 	BlockedDetail string
@@ -105,7 +108,7 @@ func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 	rows, err := s.q.Query(ctx, `
 		select provider, state, state_since, samples, ready_p95_ms, coalesce(blocked, ''),
 			blocked_detail, blocked_since, account_checked_at, success_lb, foreign_sandboxes,
-			updated_at
+			updated_at, coalesce(cold_total_p95_ms, 0), coalesce(pooled_total_p95_ms, 0)
 		from provider_health order by provider`)
 	if err != nil {
 		return nil, fmt.Errorf("select provider health: %w", err)
@@ -113,12 +116,14 @@ func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (ProviderHealth, error) {
 		var h ProviderHealth
 		var since, checked *time.Time
-		var p95 int
+		var p95, cold, pooled int
 		err := r.Scan(&h.Provider, &h.State, &h.StateSince, &h.Samples, &p95, &h.Blocked,
 			&h.BlockedDetail, &since, &checked, &h.SuccessLB, &h.ForeignSandboxes,
-			&h.UpdatedAt)
+			&h.UpdatedAt, &cold, &pooled)
 		h.StateSince = utc(h.StateSince)
 		h.ReadyP95 = time.Duration(p95) * time.Millisecond
+		h.ColdTotalP95 = time.Duration(cold) * time.Millisecond
+		h.PooledTotalP95 = time.Duration(pooled) * time.Millisecond
 		if since != nil {
 			h.BlockedSince = utc(*since)
 		}

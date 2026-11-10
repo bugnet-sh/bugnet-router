@@ -107,6 +107,12 @@ func TestOverheadMicros(t *testing.T) {
 	}
 	eq(t, pool.OverheadMicros(held, hourly, parked, base, base.Add(2*time.Hour)),
 		int64(600_000+60_000+600_000))
+	// A member a reservation started never parks, and its hold is billed once
+	started := store.Member{
+		State: store.MemberGone, CreatedAt: base, ClaimedAt: at(0), EndedAt: at(60),
+	}
+	eq(t, pool.OverheadMicros(started, hourly, parked, base, base.Add(2*time.Hour)),
+		int64(3_600_000))
 	// A member still warm costs up to now
 	warm := store.Member{State: store.MemberWarm, CreatedAt: base, WarmAt: at(10)}
 	eq(t, pool.OverheadMicros(warm, hourly, parked, base, *at(70)), int64(600_000+360_000))

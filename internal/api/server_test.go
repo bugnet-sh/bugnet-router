@@ -222,6 +222,8 @@ type options struct {
 	wallets config.Wallets
 	// bench sets the benchmark settings, the defaults when zero
 	bench config.Bench
+	// reserve sets the saga's Reserve settings, the defaults when its hold is zero
+	reserve config.Reserve
 	// providerOps is each provider account's operations a second
 	providerOps map[string]int
 	// x402 changes the API server's [x402] settings from x402Of's
@@ -357,8 +359,10 @@ func newEnv(t *testing.T, opts options) *env {
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
 		Sessions: writer, SessionKeep: sess.Keep, SessionAbuseHold: sess.AbuseHold,
+		Reserve: opts.reserve,
 	})
 	t.Cleanup(sg.Wait)
+	t.Cleanup(sg.Close)
 	js := jobs.New(jobs.Deps{
 		Store: st, Bus: streams.NewBus(vk, prefix), Registry: reg, ReplicaID: "api-test",
 		Log: discard, MaxRunning: opts.maxRunning, JobBudget: opts.jobBudget, Sessions: writer,

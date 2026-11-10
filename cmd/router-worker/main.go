@@ -214,6 +214,8 @@ func serve(
 		Pools:            warmth,
 		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
 		PoolRoom:         cfg.Pools.ExtensionRoom,
+		Reserve:          cfg.Reserve,
+		ReserveShare:     cfg.Pools.ReserveShare,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
@@ -250,7 +252,8 @@ func serve(
 			marginFloor:       cfg.MarginFloor,
 			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
 		},
-		poolLines(log, st, w.Pools())))
+		poolLines(log, st, w.Pools()),
+		reserveLines(log, st, vk, cfg.ValkeyPrefix, cfg.Targets)))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

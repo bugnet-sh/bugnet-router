@@ -66,3 +66,40 @@ func TestE2EPoolFillsAnOrderClaimsAndTheNextIsCold(t *testing.T) {
 		t.Errorf("the order after a drain took path %q, want cold", found["start_path"])
 	}
 }
+
+func TestE2EReserveThenCreate(t *testing.T) {
+	t.Parallel()
+	s := startStackWith(t, stackOptions{extra: poolSettings})
+	poolsWait(t, s, "1")
+
+	held := parseKV(s.devOK(t, s.a, "reserve", "--quote", "q2.e2e", "--package", smallPkg))
+	if held["outcome"] != "held" || held["expires_at"] == "" {
+		t.Fatalf("bugnet-dev reserve printed %v, want a hold", held)
+	}
+	// The member is held for the quote, so the pool shows it and the order binds it
+	if out := s.devOK(t, s.a, "pools"); !strings.Contains(out, " held=1 ") {
+		t.Errorf("bugnet-dev pools after a reserve says %q, want one held member", out)
+	}
+	// The other replica sees the same quote, as the gateway's calls land anywhere
+	created := parseKV(s.devOK(t, s.b, "create", "--package", smallPkg, "--quote", "q2.e2e"))
+	if created["state"] != "ready" || created["handle"] == "" {
+		t.Fatalf("bugnet-dev create --quote printed %v, want a ready placement", created)
+	}
+	found := parseKV(s.devOK(t, s.a, "abuse", "find", created["placement_id"]))
+	if found["start_path"] != "reserved" {
+		t.Errorf("the order took path %q, want reserved", found["start_path"])
+	}
+	out := s.devOK(t, s.a, "exec", "--handle", created["handle"], "--", "echo", "bound")
+	if !strings.Contains(out, "bound") {
+		t.Errorf("a command in the bound sandbox printed %q", out)
+	}
+	// A second order with the quote finds nothing held and starts as it would without Reserve
+	again := parseKV(s.devOK(t, s.a, "create", "--package", smallPkg, "--quote", "q2.e2e"))
+	if again["state"] != "ready" {
+		t.Fatalf("the second order printed %v", again)
+	}
+	cold := parseKV(s.devOK(t, s.a, "abuse", "find", again["placement_id"]))
+	if cold["start_path"] == "reserved" {
+		t.Errorf("the second order took path %q, a quote binds once", cold["start_path"])
+	}
+}

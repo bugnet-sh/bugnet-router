@@ -199,6 +199,8 @@ type command struct {
 	argv []string
 	cwd  string
 	env  map[string]string
+	// arrived is when Exec arrived, which first_frame_ms counts from
+	arrived time.Time
 }
 
 // Exec starts argv in the placement, or attaches to the job a repeated key already started
@@ -206,6 +208,7 @@ func (s *Service) Exec(
 	ctx context.Context, p store.Placement, argv []string, cwd string,
 	env map[string]string, idemKey string, wait time.Duration, until Until,
 ) (ExecResult, error) {
+	arrived := time.Now()
 	if len(argv) == 0 {
 		return ExecResult{}, fmt.Errorf("%w: no argv", ErrInvalid)
 	}
@@ -227,7 +230,7 @@ func (s *Service) Exec(
 		ID: newJobID(p.ID, idemKey), PlacementID: p.ID, IdempotencyKey: idemKey,
 		Limit: s.d.MaxRunning, Install: IsInstall(argv),
 	}
-	c := &command{argv: argv, cwd: cwd, env: env}
+	c := &command{argv: argv, cwd: cwd, env: env, arrived: arrived}
 	if err := s.begin(ctx, p, prov, nj, c, deadline); err != nil {
 		return ExecResult{}, err
 	}
@@ -708,6 +711,7 @@ type owner struct {
 	noTail      bool      // the sandbox's bugnet-run has no attach --tail
 	spent       bool      // the placement's budget refused a snapshot
 	skipped     bool      // the stream left output out
+	framed      bool      // the job's first frame has been seen and timed
 	held        [2][]byte // the newest output between stream and offsets while flooding
 	snapped     time.Time // when held output was last stored or passed over
 	mu          sync.Mutex
@@ -958,6 +962,9 @@ func (o *owner) pump(argv []string) pumpResult {
 			return result
 		}
 		idle.Reset(idleAfter)
+		if f.Kind != frame.KindPong {
+			o.firstFrame()
+		}
 		switch {
 		case f.Kind == frame.KindPong:
 			continue
@@ -993,6 +1000,26 @@ func (o *owner) pump(argv []string) pumpResult {
 		}
 		result = pumpProgressed
 	}
+}
+
+// firstFrame times the job's first frame from Exec's arrival and stores it, once, off the exec path
+// with a commit that does not wait for the disk
+//
+// A job this owner only attaches to has no arrival to count from and stores nothing.
+func (o *owner) firstFrame() {
+	if o.framed || o.cmd == nil || o.cmd.arrived.IsZero() {
+		return
+	}
+	o.framed = true
+	ms := max(1, int(time.Since(o.cmd.arrived).Milliseconds()))
+	id, st := o.job(), o.s.d.Store
+	o.s.wg.Go(func() {
+		ctx, cancel := detached(o.s.ctx)
+		defer cancel()
+		if err := st.SetJobFirstFrame(ctx, id, ms); err != nil {
+			o.s.d.Log.Warn("store a job's first frame time", "job", id, "err", err)
+		}
+	})
 }
 
 // keep appends a frame of a job within its budget, reporting the pump's result when it cannot

@@ -1987,3 +1987,33 @@ func TestFinalTailKeepsOutputARefusedSnapshotHeld(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstFrameMSOnTheJobRow(t *testing.T) {
+	e := newEnv(t)
+	s := e.service(t, "r1")
+	// The job sleeps first, so its first frame is a heartbeat or its exit, never the arrival
+	res := e.exec(t, s, []string{"sh", "-c", "sleep 0.3; echo hi"}, "", 0, jobs.Until{})
+	waitFinished(t, e.store, res.JobID)
+	var ms int
+	var ok bool
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		var err error
+		if ms, ok, err = e.store.JobFirstFrame(t.Context(), res.JobID); err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !ok || ms < 1 || ms > 30_000 {
+		t.Fatalf("first_frame_ms = %d, %v, want a few milliseconds", ms, ok)
+	}
+	// The value is written once, so a later frame never moves it
+	if err := e.store.SetJobFirstFrame(t.Context(), res.JobID, ms+5000); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := e.store.JobFirstFrame(t.Context(), res.JobID); got != ms {
+		t.Fatalf("first_frame_ms moved from %d to %d", ms, got)
+	}
+}

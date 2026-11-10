@@ -53,8 +53,9 @@ func (e *env) paidToken(t *testing.T, order, payer, feePayer string) string {
 
 func (e *env) createPaid(t *testing.T, order, payer string) (store.Placement, error) {
 	t.Helper()
-	p, _, err := e.saga.Create(t.Context(), e.paidToken(t, order, payer, facilitator),
-		placement.Requirements{})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.paidToken(t, order, payer, facilitator), Requirements: placement.Requirements{},
+	})
 	return p, err
 }
 
@@ -240,16 +241,18 @@ func TestPayerCountsAsAbsent(t *testing.T) {
 		{"no-claim", "", facilitator},
 	}
 	for _, c := range cases {
-		p, _, err := e.saga.Create(ctx, e.paidToken(t, c.order, c.payer, c.fee),
-			placement.Requirements{})
+		p, _, err := e.saga.Create(ctx, saga.CreateInput{
+			Token: e.paidToken(t, c.order, c.payer, c.fee), Requirements: placement.Requirements{},
+		})
 		if err != nil {
 			t.Fatalf("%s: %v", c.order, err)
 		}
 		eq(t, p.Payer, "")
 	}
 	// A payer an earlier order carried as its fee payer counts as absent too
-	p, _, err := e.saga.Create(ctx, e.paidToken(t, "seen", payerB, facilitator),
-		placement.Requirements{})
+	p, _, err := e.saga.Create(ctx, saga.CreateInput{
+		Token: e.paidToken(t, "seen", payerB, facilitator), Requirements: placement.Requirements{},
+	})
 	eq(t, err, nil)
 	eq(t, p.Payer, "")
 	o, err := e.store.OrderByID(ctx, "listed")
@@ -258,8 +261,9 @@ func TestPayerCountsAsAbsent(t *testing.T) {
 	// The order keeps the claim the placement does not count under
 	eq(t, o.Payer, facilitator)
 	eq(t, o.AmountMicros, int64(smallPrice))
-	paid, _, err := e.saga.Create(ctx, e.paidToken(t, "paid", payerA, facilitator),
-		placement.Requirements{})
+	paid, _, err := e.saga.Create(ctx, saga.CreateInput{
+		Token: e.paidToken(t, "paid", payerA, facilitator), Requirements: placement.Requirements{},
+	})
 	eq(t, err, nil)
 	eq(t, paid.Payer, payerA)
 	o, err = e.store.OrderByID(ctx, "paid")
@@ -270,8 +274,9 @@ func TestPayerCountsAsAbsent(t *testing.T) {
 func TestPayerWithoutAGuardCountsAsAbsent(t *testing.T) {
 	e := newEnvWith(t, func(d *saga.Deps) { d.Wallets = config.Wallets{UsePayer: true} },
 		newLocal(t, local.Options{Name: "a"}))
-	p, _, err := e.saga.Create(t.Context(), e.paidToken(t, "o1", payerA, ""),
-		placement.Requirements{})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.paidToken(t, "o1", payerA, ""), Requirements: placement.Requirements{},
+	})
 	eq(t, err, nil)
 	eq(t, p.Payer, "")
 	n, err := e.vk.Do(t.Context(), e.vk.B().Exists().Key(e.prefix+wallet.UnguardedKey).Build()).
@@ -279,8 +284,9 @@ func TestPayerWithoutAGuardCountsAsAbsent(t *testing.T) {
 	eq(t, err, nil)
 	eq(t, n, int64(1))
 	// With a fee payer the same address counts
-	p, _, err = e.saga.Create(t.Context(), e.paidToken(t, "o2", payerA, facilitator),
-		placement.Requirements{})
+	p, _, err = e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.paidToken(t, "o2", payerA, facilitator), Requirements: placement.Requirements{},
+	})
 	eq(t, err, nil)
 	eq(t, p.Payer, payerA)
 }
@@ -306,10 +312,11 @@ func TestDepositOrderCountsAsAnonymous(t *testing.T) {
 	)
 	e := walletEnv(t, func(w *config.Wallets) { w.AnonymousMaxConcurrent = 1 })
 	deposit := func(order, tx string) (store.Placement, error) {
-		p, _, err := e.saga.Create(t.Context(), e.token(t, ordertoken.Claims{
+		tok := e.token(t, ordertoken.Claims{
 			OrderID: order, Kind: ordertoken.KindStart, PackageID: smallPkg,
 			AmountMicros: smallPrice, Tx: tx,
-		}), placement.Requirements{})
+		})
+		p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok})
 		return p, err
 	}
 	p, err := deposit("deposit-1", firstTx)
@@ -355,8 +362,9 @@ func TestOrdersKeepThePayerClaim(t *testing.T) {
 
 func TestPayerRequired(t *testing.T) {
 	e := walletEnv(t, func(w *config.Wallets) { w.RequirePayer = true })
-	_, _, err := e.saga.Create(t.Context(), e.paidToken(t, "o1", "", facilitator),
-		placement.Requirements{})
+	_, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.paidToken(t, "o1", "", facilitator), Requirements: placement.Requirements{},
+	})
 	eq(t, errors.Is(err, saga.ErrPayerRequired), true)
 	eq(t, e.orderCount(t), 0)
 	if _, err := e.createPaid(t, "o2", payerA); err != nil {
@@ -372,7 +380,9 @@ func TestUnderpaidUsesPackageShare(t *testing.T) {
 			AmountMicros: amount, AllowanceMicros: 1000000,
 		})
 	}
-	p, _, err := e.saga.Create(t.Context(), tok("paid", 1053000), placement.Requirements{})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok("paid", 1053000), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +390,9 @@ func TestUnderpaidUsesPackageShare(t *testing.T) {
 	eq(t, err, nil)
 	eq(t, o.AmountMicros, int64(53000))
 	eq(t, p.PaidMicros, int64(53000))
-	_, _, err = e.saga.Create(t.Context(), tok("short", 1049000), placement.Requirements{})
+	_, _, err = e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok("short", 1049000), Requirements: placement.Requirements{},
+	})
 	eq(t, errors.Is(err, saga.ErrUnderpaid), true)
 }
 
@@ -432,7 +444,9 @@ func TestAnExtendWithoutAPayerHoldsNoLock(t *testing.T) {
 	<-a.held
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, _, err := e.saga.Create(ctx, e.startToken(t, "order-2"), placement.Requirements{})
+	_, _, err := e.saga.Create(ctx, saga.CreateInput{
+		Token: e.startToken(t, "order-2"), Requirements: placement.Requirements{},
+	})
 	close(a.release)
 	eq(t, err, nil)
 	eq(t, <-done, nil)
@@ -456,8 +470,9 @@ func TestAnExtensionPayerIsSeen(t *testing.T) {
 // placePaid places a ready placement whose start order payer paid
 func (e *env) placePaid(t *testing.T, order, payer string) (store.Placement, string) {
 	t.Helper()
-	p, h, err := e.saga.Create(t.Context(), e.paidToken(t, order, payer, facilitator),
-		placement.Requirements{})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.paidToken(t, order, payer, facilitator), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,10 +552,10 @@ func TestOrdersKeepTheTxClaim(t *testing.T) {
 			"vUqm7uMfhRnnCWgiWyiqDTX1DAJ2fB2BU8dWS4E7moZ5"
 	)
 	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
-	p, h, err := e.saga.Create(t.Context(), e.token(t, ordertoken.Claims{
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.token(t, ordertoken.Claims{
 		OrderID: "o1", Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: smallPrice,
 		Tx: startTx,
-	}), placement.Requirements{})
+	}), Requirements: placement.Requirements{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,6 +590,8 @@ func TestMarginUsesPackageShare(t *testing.T) {
 		AmountMicros: 1053000, AllowanceMicros: 1000000,
 	})
 	// 40000 against the 1053000 paid would pass the 0.5 floor, against the package it fails
-	_, _, err := e.saga.Create(t.Context(), tok, placement.Requirements{})
+	_, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	eq(t, errors.Is(err, placement.ErrNoCandidate), true)
 }

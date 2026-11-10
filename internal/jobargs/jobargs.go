@@ -380,3 +380,15 @@ func (PoolRetire) InsertOpts() river.InsertOpts {
 		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
 	}
 }
+
+// ReserveWatch asks the worker to lapse and fail reservations, retire the members left without
+// one and set or clear the brake
+type ReserveWatch struct{}
+
+// Kind returns the River job kind
+func (ReserveWatch) Kind() string { return "reserve_watch" }
+
+// InsertOpts runs it once, one at a time, since the next run comes seconds later
+func (ReserveWatch) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}

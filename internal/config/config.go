@@ -116,6 +116,9 @@ type Config struct {
 	Sessions         Sessions
 	// Pools holds the warm pool settings and the pools themselves
 	Pools Pools
+	// Reserve holds the Reserve settings and Targets the 5 s target's
+	Reserve Reserve
+	Targets Targets
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -399,6 +402,8 @@ type file struct {
 	Images              imagesFile     `toml:"images"`
 	Sessions            sessionsFile   `toml:"sessions"`
 	Pools               poolsFile      `toml:"pools"`
+	Reserve             reserveFile    `toml:"reserve"`
+	Targets             targetsFile    `toml:"targets"`
 	Localrun            localrunFile   `toml:"localrun"`
 }
 
@@ -636,6 +641,8 @@ func defaults() file {
 		Estimator:  defaultEstimator(),
 		Sessions:   defaultSessions(),
 		Pools:      defaultPools(),
+		Reserve:    defaultReserve(),
+		Targets:    defaultTargets(),
 	}
 }
 
@@ -875,6 +882,12 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	if c.Pools, err = f.Pools.read(d.Pools); err != nil {
+		return Config{}, err
+	}
+	if c.Reserve, err = f.Reserve.read(d.Reserve); err != nil {
+		return Config{}, err
+	}
+	if c.Targets, err = f.Targets.read(d.Targets); err != nil {
 		return Config{}, err
 	}
 	c.Localrun = f.Localrun.read()

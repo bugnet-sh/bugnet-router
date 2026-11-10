@@ -52,8 +52,9 @@ func (e *env) sessionEnded(t *testing.T, id uuid.UUID) {
 func TestFailedPlacementEndsItsSessionRecord(t *testing.T) {
 	t.Run("no candidate", func(t *testing.T) {
 		e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
-		p, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"),
-			placement.Requirements{GPU: true})
+		p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+			Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{GPU: true},
+		})
 		if !errors.Is(err, placement.ErrNoCandidate) {
 			t.Fatalf("err %v, want ErrNoCandidate", err)
 		}
