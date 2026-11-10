@@ -45,6 +45,14 @@ rm -rf "$PAYLOAD"
 mkdir -p "$PAYLOAD"
 cp "$HERE/setup-image.sh" "$HERE/pins.conf" "$HERE/VERSION" "$PAYLOAD/"
 cp "$RUNNER" "$PAYLOAD/bugnet-run-linux-amd64"
+# The bare base image has no CA bundle for apt's first fetch from the snapshot, so it borrows ours
+for bundle in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do
+    if [ -s "$bundle" ]; then
+        cp "$bundle" "$PAYLOAD/apt-ca.pem"
+        break
+    fi
+done
+[ -s "$PAYLOAD/apt-ca.pem" ] || die "this host has no CA bundle to lend apt"
 
 upper="$(echo "$CHANNEL" | tr '[:lower:]' '[:upper:]')"
 for ca in "${CAS[@]}"; do

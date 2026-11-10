@@ -88,7 +88,13 @@ EOF
 
 step3_packages() {
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
+    # Ubuntu's base images carry no CA bundle, so apt verifies with the build host's until one lands
+    if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ -s "$HERE/apt-ca.pem" ]; then
+        apt-get -o "Acquire::https::CAInfo=$HERE/apt-ca.pem" update --error-on=any
+        apt-get -o "Acquire::https::CAInfo=$HERE/apt-ca.pem" install -y --no-install-recommends \
+            ca-certificates
+    fi
+    apt-get update --error-on=any
     # APT_PACKAGES is a word list on purpose
     # shellcheck disable=SC2086
     apt-get install -y --no-install-recommends $APT_PACKAGES
