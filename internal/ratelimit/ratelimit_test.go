@@ -417,3 +417,37 @@ func TestTakeUnlessBlockersAndTokens(t *testing.T) {
 	g, _ = l.TakeUnless(ctx, fresh, true, "brake")
 	eq(t, g.Taken, true)
 }
+
+func TestPeekLevelReadsHowFullABucketIs(t *testing.T) {
+	vk, prefix := testenv.Valkey(t)
+	l := ratelimit.New(vk, prefix, 0, 0)
+	ctx := t.Context()
+	// A slow refill, so the bucket stays where the takes left it
+	b := ratelimit.Bucket{Key: "rl:create:level", PerSecond: ratelimit.PerHour(1), Burst: 4}
+	level := func(share float64) bool {
+		t.Helper()
+		ok, err := l.PeekLevel(ctx, b, share)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	eq(t, level(0.5), true)
+	eq(t, exists(t, vk, prefix+b.Key), false)
+	takeKey(t, l, b)
+	eq(t, level(0.5), true) // 3 of 4 tokens
+	takeKey(t, l, b)
+	eq(t, level(0.5), true) // 2 of 4
+	takeKey(t, l, b)
+	eq(t, level(0.5), false) // 1 of 4
+	eq(t, level(0.25), true)
+	takeKey(t, l, b)
+	eq(t, level(0), false) // a bucket with no token is never at any level
+	// Peeking took nothing, so one token an hour has not come back
+	ok, _ := takeKey(t, l, b)
+	eq(t, ok, false)
+	_, err := l.PeekLevel(ctx, b, 1.5)
+	if err == nil {
+		t.Fatal("a share over 1 was accepted")
+	}
+}
