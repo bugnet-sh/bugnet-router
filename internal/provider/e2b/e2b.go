@@ -12,7 +12,8 @@
 // compression. A streamed upload fills a hidden temporary file beside the target, since envd
 // truncates in place, and Commit chmods it and moves it over the target. Create blocks the
 // private, link-local and metadata ranges outside the VM with network.denyOut, and a restricted
-// package's sandbox reaches the egress proxy's IPv4 addresses alone.
+// package's sandbox reaches the egress proxy's IPv4 addresses alone. A create may name another
+// template as its image, and DeleteImage removes a template the build made.
 package e2b
 
 import (
@@ -27,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"math"
 	"net/http"
@@ -101,6 +103,7 @@ var (
 	bannedWord     = regexp.MustCompile(`(?i)\bbanned\b`)
 	billingWord    = regexp.MustCompile(`(?i)blocked|billing|spending|payment|credit|funds`)
 	capacityWord   = regexp.MustCompile(`(?i)capacity`)
+	templateWord   = regexp.MustCompile(`(?i)template.*not found`)
 )
 
 // Template is one template built on the account, sold as the size of the same name
@@ -311,13 +314,16 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, invalid(fmt.Errorf("e2b has no template for size %q",
 			req.Size.Name))
 	}
+	if req.Builder {
+		return provider.Ref{}, invalid(errors.New("e2b builds its templates itself"))
+	}
 	if req.Lifetime <= 0 || req.Lifetime > p.maxLifetime {
 		return provider.Ref{}, invalid(fmt.Errorf("lifetime %v is not within e2b's limit of %v",
 			req.Lifetime, p.maxLifetime))
 	}
 	// V2 has no secure flag because E2B issues an envd access token to every v2 sandbox
 	body := api.NewSandboxV2{
-		TemplateID: p.templates[i].TemplateID,
+		TemplateID: cmp.Or(req.Image, p.templates[i].TemplateID),
 		Timeout:    new(seconds(req.Lifetime)),
 		AutoPause:  new(false),
 		Network:    p.network(req.Egress),
@@ -335,7 +341,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return p.api.PostV2Sandboxes(ctx, params, body)
 	})
 	if err != nil {
-		return provider.Ref{}, err
+		return provider.Ref{}, missingTemplate(err, body.TemplateID)
 	}
 	var sb api.Sandbox
 	if err := json.Unmarshal(raw, &sb); err != nil || sb.SandboxID == "" {
@@ -357,6 +363,32 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		ref.Meta[metaTraffic] = *sb.TrafficAccessToken
 	}
 	return ref, nil
+}
+
+// missingTemplate lets a create the template's absence refused fail over to another provider
+func missingTemplate(err error, template string) error {
+	e, ok := provider.AsError(err)
+	if !ok || (e.Code != provider.CodeNotFound && e.Code != provider.CodeInvalid) ||
+		!templateWord.MatchString(e.Error()) {
+		return err
+	}
+	slog.Error("e2b has no such template for a create", "template", template)
+	e.CanFailOver = true
+	return e
+}
+
+// DeleteImage deletes a template by its ID or name and treats one already gone as deleted
+func (p *Provider) DeleteImage(ctx context.Context, ref string) error {
+	if ref == "" {
+		return invalid(errors.New("e2b needs a template to delete"))
+	}
+	_, _, err := p.send(ctx, false, func(ctx context.Context) (*http.Response, error) {
+		return p.api.DeleteTemplatesTemplateID(ctx, ref)
+	})
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return nil
+	}
+	return err
 }
 
 // idempotencyKey fits any key to E2B's ^[a-z0-9-]+$ pattern and keeps distinct keys apart

@@ -69,7 +69,8 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			ps = append(ps, p)
 		case "boat":
 			p, err := buildBoat(
-				cfg.Boat, cfg.ProviderKeys["boat"], vk, cfg.ValkeyPrefix, cfg.Hooks.BoatWindow)
+				cfg.Boat, cfg.ProviderKeys["boat"], vk, cfg.ValkeyPrefix, cfg.Hooks.BoatWindow,
+				cfg.Images.Boat.Ref)
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -165,7 +166,7 @@ func boxdOptions(cfg config.Config, key string) boxd.Options {
 	return boxd.Options{
 		APIKey: key, Endpoint: cfg.Boxd.Endpoint, Region: cfg.Boxd.Region,
 		GatePort: cfg.Previews.GatePort, GateRoute: cfg.Boxd.GateRoute,
-		ParkedGiB: cfg.Boxd.ParkedGiB,
+		ParkedGiB: cfg.Boxd.ParkedGiB, Snapshots: cfg.Images.Boxd.Refs,
 	}
 }
 
@@ -191,12 +192,14 @@ func koyebOptions(cfg config.Config, token string) koyeb.Options {
 		PartBytes: cfg.Transfers.KoyebPart, BufferTotal: cfg.Transfers.KoyebBufferTotal,
 		OrganizationID:       cfg.Koyeb.OrganizationID,
 		PoolIdleHourlyMicros: cfg.Koyeb.PoolIdleHourlyMicros,
+		Image:                cfg.Images.Koyeb.Ref,
 	}
 }
 
 // buildBoat builds Boat from its settings, every machine type is a size unless some are named
 func buildBoat(
 	cfg config.Boat, key string, vk valkey.Client, prefix string, window time.Duration,
+	from string,
 ) (*boat.Provider, error) {
 	if key == "" {
 		return nil, errors.New("boat needs BOAT_API_KEY")
@@ -204,6 +207,7 @@ func buildBoat(
 	p, err := boat.New(boat.Options{
 		APIKey: key, TypeBySize: cfg.Types, Valkey: vk, Prefix: prefix, HookWindow: window,
 		EgressFamilies: cfg.EgressFamilies, EgressIPv6Bits: cfg.EgressIPv6Bits,
+		From: from,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("boat.types: %w", err)

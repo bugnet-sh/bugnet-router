@@ -1045,3 +1045,16 @@ func TestLocalInspectReportsTheLifetimeAndAGoneSandbox(t *testing.T) {
 	}
 	eq(t, st.State, provider.StateGone)
 }
+
+func TestLocalRefusesImageAndBuilder(t *testing.T) {
+	p := newLocal(t, local.Options{})
+	for _, req := range []provider.CreateRequest{
+		{Size: small, Image: "bugnet-dev-2026-11-1"}, {Size: small, Builder: true},
+	} {
+		_, err := p.Create(t.Context(), req)
+		requireCode(t, "Create with an image or builder", err, provider.CodeInvalid)
+	}
+	if _, ok := any(p).(provider.ImageDeleter); ok {
+		t.Error("local implements ImageDeleter, it has no artifacts")
+	}
+}

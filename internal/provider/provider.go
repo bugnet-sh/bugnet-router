@@ -59,6 +59,10 @@ type CreateRequest struct {
 	Lifetime       time.Duration
 	// Egress restricts outbound traffic for a restricted package, nil leaving it open
 	Egress *EgressAllow
+	// Image overrides the artifact the adapter starts this size from, empty to keep it
+	Image string
+	// Builder asks for a sandbox an image can be saved from, never one sold to a user
+	Builder bool
 }
 
 // EgressAllow is all a restricted package's sandbox may reach, set at create where EgressControl
@@ -67,6 +71,19 @@ type EgressAllow struct {
 	Hosts []string
 	// Proxy holds the egress proxy's addresses
 	Proxy []netip.Addr
+}
+
+// ImageDeleter is a provider whose base image artifacts the router can delete
+type ImageDeleter interface {
+	// DeleteImage removes an artifact by its ref, nil when it is already gone
+	DeleteImage(ctx context.Context, ref string) error
+}
+
+// ImageSaver is a provider whose base image is a saved copy of a sandbox the build ran in
+type ImageSaver interface {
+	ImageDeleter
+	// SaveImage saves the sandbox as name and returns the ref creates use, once it is ready
+	SaveImage(ctx context.Context, sandbox Ref, name string) (string, error)
 }
 
 // ExecSpec is a command run directly, without a shell, inside a sandbox

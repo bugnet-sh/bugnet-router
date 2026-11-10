@@ -166,6 +166,8 @@ type Options struct {
 	// PoolIdleHourlyMicros is what one unclaimed member of a pool costs an hour, 0 while Light
 	// Sleep is free
 	PoolIdleHourlyMicros int64
+	// Image is the OCI reference by digest every service starts from, koyeb/sandbox when empty
+	Image string
 }
 
 // Provider places sandboxes on Koyeb, keeping only the labels it already read per service
@@ -187,9 +189,11 @@ type Provider struct {
 	orgID string
 	// poolIdle is one unclaimed pool member's cost an hour
 	poolIdle int64
-	mu       sync.Mutex
-	known    map[string]knownService // by service id, labels never change after create
-	pools    map[string]string       // pool ids by name
+	// image is the OCI reference a service's docker.image names
+	image string
+	mu    sync.Mutex
+	known map[string]knownService // by service id, labels never change after create
+	pools map[string]string       // pool ids by name
 }
 
 // knownService is what ListOwned read from one deployment of a service
@@ -246,6 +250,7 @@ func New(opts Options) (*Provider, error) {
 		pools:        map[string]string{},
 		orgID:        opts.OrganizationID,
 		poolIdle:     opts.PoolIdleHourlyMicros,
+		image:        cmp.Or(opts.Image, sandboxImage),
 	}, nil
 }
 
@@ -319,6 +324,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if !ok {
 		return provider.Ref{}, invalid(fmt.Errorf("koyeb has no size %q", req.Size.Name))
 	}
+	if req.Builder {
+		return provider.Ref{}, invalid(errors.New("koyeb has no image to build"))
+	}
 	if req.Lifetime <= 0 || req.Lifetime > maxLifetime {
 		return provider.Ref{}, invalid(fmt.Errorf("lifetime %v is not within koyeb's limit of %v",
 			req.Lifetime, maxLifetime))
@@ -338,6 +346,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		labelsJSON: string(encoded), secret: base64.RawURLEncoding.EncodeToString(secret),
 		// Taken before sending and cut to the second so SetLifetime never undercounts the age
 		created: time.Now().UTC().Truncate(time.Second),
+		image:   cmp.Or(req.Image, p.image),
 	}
 	// Lookups and cleanup still run when ctx ended, since an app may exist and bill
 	after, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterCreateLimit)
@@ -359,9 +368,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 
 // newService is what one create asks Koyeb for
 type newService struct {
-	name, instanceType, labelsJSON, secret string
-	labels                                 map[string]string
-	created                                time.Time
+	name, instanceType, labelsJSON, secret, image string
+	labels                                        map[string]string
+	created                                       time.Time
 }
 
 // createApp makes the app, or finds the one a repeated or lost create made and reports it not fresh
@@ -409,11 +418,23 @@ func (p *Provider) createService(
 		}
 		err = absent(err)
 	}
+	err = p.missingImage(err, n.image)
 	if !isCode(err, provider.CodeOutcomeUnknown) {
 		// An app without its service is useless, and Koyeb would only drop it after 15 minutes
 		_ = p.api.deleteApp(after, appID)
 	}
 	return provider.Ref{}, err
+}
+
+// missingImage lets a service Koyeb refused for a custom image fail over to another provider
+func (p *Provider) missingImage(err error, image string) error {
+	e, ok := provider.AsError(err)
+	if !ok || e.Code != provider.CodeInvalid || image == sandboxImage {
+		return err
+	}
+	p.log.Error("koyeb refused a service for its base image", "image", image)
+	e.CanFailOver = true
+	return e
 }
 
 func (p *Provider) serviceSpec(appID string, n newService) createServiceRequest {
@@ -436,7 +457,7 @@ func (p *Provider) serviceSpec(appID string, n newService) createServiceRequest 
 		Scalings: []scalingSpec{{Min: 1, Max: 1}},
 		Mesh:     "DEPLOYMENT_MESH_AUTO",
 	}
-	def.Docker.Image = sandboxImage
+	def.Docker.Image = n.image
 	req := createServiceRequest{AppID: appID, Name: n.name, Definition: def}
 	req.LifeCycle.DeleteAfterCreate = int64(backstop.Seconds())
 	return req

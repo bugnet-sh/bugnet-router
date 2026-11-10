@@ -77,6 +77,14 @@ type fakeSandbox struct {
 	// degradedSince and stopText set Boat's health and error fields, empty for none
 	degradedSince time.Time
 	stopText      string
+	// snapshots is the create's snapshots flag, which a save needs on
+	snapshots bool
+}
+
+// fakeSaved is one saved snapshot, saving for polls more reads
+type fakeSaved struct {
+	name, status string
+	polls        int
 }
 
 // fakeProc is one detached command, its logs kept whole so every attach can replay them
@@ -186,6 +194,9 @@ type fakeBoat struct {
 	downloadEncoding string
 	// expired answers every signed URL as one past its expiry, under mu
 	expired bool
+	// savedPolls is how many reads a new saved snapshot stays saving, saved the snapshots by name
+	savedPolls int
+	saved      map[string]*fakeSaved
 	// shiftRange moves the start of every ranged download this many bytes past the one asked for
 	shiftRange int64
 
@@ -244,34 +255,37 @@ func newFake(t *testing.T) *fakeBoat {
 		t: t, tmp: tmp, sandboxes: map[string]*fakeSandbox{}, keys: map[string]keyRecord{},
 		faults: map[string]*fault{}, calls: map[string]int{}, bodies: map[string][]int{},
 		grants: map[string]uploadGrant{}, grow: map[string][]byte{}, swaps: map[string]func(){},
-		hosts: map[string]string{},
+		hosts: map[string]string{}, saved: map[string]*fakeSaved{},
 	}
 	mux := http.NewServeMux()
 	const sb = "/api/v1/sandboxes/{id}"
 	for pattern, h := range map[string]http.HandlerFunc{
-		"POST /api/v1/sandboxes":               f.create,
-		"GET /api/v1/sandboxes":                f.list,
-		"GET " + sb:                            f.get,
-		"PATCH " + sb:                          f.update,
-		"DELETE " + sb:                         f.delete,
-		"POST " + sb + "/commands":             f.command,
-		"GET " + sb + "/commands/{pid}/stream": f.attach,
-		"DELETE " + sb + "/commands/{pid}":     f.stopCommand,
-		"GET " + sb + "/files":                 f.readFile,
-		"PUT " + sb + "/files":                 f.writeFile,
-		"GET " + sb + "/files/list":            f.listFiles,
-		"GET " + sb + "/files/info":            f.fileInfo,
-		"POST " + sb + "/files/folder":         f.folder,
-		"POST " + sb + "/files/permissions":    f.permissions,
-		"POST " + sb + "/files/upload-url":     f.uploadURL,
-		"POST " + sb + "/files/download-url":   f.downloadURL,
-		"POST " + sb + "/files/move":           f.move,
-		"POST " + sb + "/host":                 f.host,
-		"POST " + sb + "/sshkey":               f.sshKey,
-		"DELETE " + sb + "/files":              f.deleteFile,
-		"GET " + sb + "/usage":                 f.readUsage,
-		"GET /api/v1/limits":                   f.readLimits,
-		"GET /api/v1/me":                       f.readMe,
+		"POST /api/v1/sandboxes":                f.create,
+		"GET /api/v1/sandboxes":                 f.list,
+		"GET " + sb:                             f.get,
+		"PATCH " + sb:                           f.update,
+		"DELETE " + sb:                          f.delete,
+		"POST " + sb + "/commands":              f.command,
+		"GET " + sb + "/commands/{pid}/stream":  f.attach,
+		"DELETE " + sb + "/commands/{pid}":      f.stopCommand,
+		"GET " + sb + "/files":                  f.readFile,
+		"PUT " + sb + "/files":                  f.writeFile,
+		"GET " + sb + "/files/list":             f.listFiles,
+		"GET " + sb + "/files/info":             f.fileInfo,
+		"POST " + sb + "/files/folder":          f.folder,
+		"POST " + sb + "/files/permissions":     f.permissions,
+		"POST " + sb + "/files/upload-url":      f.uploadURL,
+		"POST " + sb + "/files/download-url":    f.downloadURL,
+		"POST " + sb + "/files/move":            f.move,
+		"POST " + sb + "/host":                  f.host,
+		"POST " + sb + "/sshkey":                f.sshKey,
+		"DELETE " + sb + "/files":               f.deleteFile,
+		"GET " + sb + "/usage":                  f.readUsage,
+		"POST /api/v1/saved-snapshots":          f.saveSnapshot,
+		"GET /api/v1/saved-snapshots/{name}":    f.getSnapshot,
+		"DELETE /api/v1/saved-snapshots/{name}": f.deleteSnapshot,
+		"GET /api/v1/limits":                    f.readLimits,
+		"GET /api/v1/me":                        f.readMe,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -613,6 +627,9 @@ func (f *fakeBoat) create(w http.ResponseWriter, r *http.Request) {
 		FailFast    bool              `json:"failFast"`
 		Count       *int              `json:"count"`
 		HostedPorts []any             `json:"hostedPorts"`
+		From        *string           `json:"from"`
+		Snapshots   bool              `json:"snapshots"`
+		NoEnv       bool              `json:"noEnv"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
 		f.fail(w, http.StatusBadRequest, "invalid_json", err.Error(), nil, nil)
@@ -635,6 +652,13 @@ func (f *fakeBoat) create(w http.ResponseWriter, r *http.Request) {
 	key := r.Header.Get("Idempotency-Key")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if req.From != nil {
+		if sv := f.saved[*req.From]; sv == nil || sv.status != "ready" {
+			f.fail(w, http.StatusNotFound, "snapshot_not_found", "No such saved snapshot.", nil,
+				nil)
+			return
+		}
+	}
 	f.creates = append(f.creates, createCall{header: r.Header.Clone(), body: body})
 	if key != "" {
 		if rec, ok := f.keys[key]; ok {
@@ -660,6 +684,7 @@ func (f *fakeBoat) create(w http.ResponseWriter, r *http.Request) {
 		id: "bx_" + randomText(8), labels: req.Labels, typ: typ, ttl: ttl,
 		archiveAfter: now.Add(time.Duration(ttl) * time.Second), created: now,
 		state: "provisioning", startPolls: f.startPolls, procs: map[int]*fakeProc{},
+		snapshots: req.Snapshots,
 	}
 	if s.labels == nil {
 		s.labels = map[string]string{}
@@ -1812,4 +1837,71 @@ func (f *fakeBoat) stopWith(id, state, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sandboxes[id].state, f.sandboxes[id].stopText = state, text
+}
+
+func (f *fakeBoat) saveSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct{ SandboxID, Name string }
+	var raw map[string]string
+	_ = json.NewDecoder(r.Body).Decode(&raw)
+	req.SandboxID, req.Name = raw["sandboxId"], raw["name"]
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandboxes[req.SandboxID]
+	switch {
+	case s == nil || s.deleted:
+		f.fail(w, http.StatusNotFound, "sandbox_not_found", "No such sandbox.", nil, nil)
+		return
+	case !s.snapshots:
+		f.fail(w, http.StatusBadRequest, "snapshots_off", "Snapshots are off for this sandbox.",
+			nil, nil)
+		return
+	case f.saved[req.Name] != nil && f.saved[req.Name].status == "saving":
+		f.fail(w, http.StatusConflict, "save_in_progress", "A save is running.", nil, nil)
+		return
+	}
+	f.saved[req.Name] = &fakeSaved{name: req.Name, status: "saving", polls: f.savedPolls}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok": true, "type": "snapshot.saved.saving", "status": "saving",
+		"snapshot": map[string]any{"name": req.Name, "status": "saving"},
+	})
+}
+
+func (f *fakeBoat) getSnapshot(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sv := f.saved[r.PathValue("name")]
+	if sv == nil {
+		f.fail(w, http.StatusNotFound, "snapshot_not_found", "No such saved snapshot.", nil, nil)
+		return
+	}
+	if sv.status == "saving" {
+		if sv.polls--; sv.polls <= 0 {
+			sv.status = "ready"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "type": "snapshot.saved.info",
+		"snapshot": map[string]any{"name": sv.name, "status": sv.status},
+	})
+}
+
+func (f *fakeBoat) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	name := r.PathValue("name")
+	if f.saved[name] == nil {
+		f.fail(w, http.StatusNotFound, "snapshot_not_found", "No such saved snapshot.", nil, nil)
+		return
+	}
+	delete(f.saved, name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "type": "snapshot.saved.deleted", "name": name, "status": "deleted",
+	})
+}
+
+// addSaved places a ready saved snapshot, as an earlier build would have
+func (f *fakeBoat) addSaved(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.saved[name] = &fakeSaved{name: name, status: "ready"}
 }

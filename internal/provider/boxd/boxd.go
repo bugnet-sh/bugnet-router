@@ -26,6 +26,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -111,6 +112,8 @@ type Options struct {
 	ParkedGiB int
 	// WakeCheck is the command Unpark runs until it exits 0, the runner's ping when empty
 	WakeCheck []string
+	// Snapshots maps each size to the snapshot its machines restore, none for boxd's own image
+	Snapshots map[string]string
 }
 
 // Provider places sandboxes on boxd over one gRPC connection and streams files over a second
@@ -126,7 +129,10 @@ type Provider struct {
 	gateRoute    string
 	parkedGiB    int
 	// pingArgv is the command Unpark runs until it exits 0
-	pingArgv []string
+	pingArgv  []string
+	snapshots map[string]string
+	// imagePoll and imageWait pace SaveImage's wait for a snapshot to turn ready
+	imagePoll, imageWait time.Duration
 }
 
 // New connects lazily to boxd, the first call dials the endpoint
@@ -176,7 +182,8 @@ func New(opts Options) (*Provider, error) {
 		streams: boxdpb.NewBoxdApiClient(streamConn), log: log, pollInterval: defaultPoll,
 		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
 		gateRoute: route, parkedGiB: cmp.Or(opts.ParkedGiB, defaultParkedGiB),
-		pingArgv: pingArgv,
+		pingArgv: pingArgv, snapshots: maps.Clone(opts.Snapshots),
+		imagePoll: snapshotPoll, imageWait: snapshotWait,
 	}, nil
 }
 
@@ -256,28 +263,12 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if !slices.ContainsFunc(sizes, func(s sizeClass) bool { return s.size.Name == req.Size.Name }) {
 		return provider.Ref{}, invalid(fmt.Errorf("boxd has no size %q", req.Size.Name))
 	}
-	labels, err := encodeLabels(req.Labels)
+	in, labels, err := p.createRequest(req)
 	if err != nil {
 		return provider.Ref{}, err
 	}
-	in := &boxdpb.CreateVmRequest{
-		Config: &boxdpb.VmConfig{
-			Srf:     &boxdpb.SrfConfig{AutoSuspendTimeoutSecs: proto.Uint32(0)},
-			Network: &boxdpb.NetworkConfig{Ssh: proto.Bool(false)},
-		},
-		Spec: &boxdpb.MachineSpec{
-			Version: 1, Size: req.Size.Name, Labels: labels, Isolated: true,
-		},
-	}
-	if req.IdempotencyKey != "" {
-		in.Name = machineName(req.IdempotencyKey)
-		labels[keyLabel] = keyDigest(req.IdempotencyKey)
-	}
 	if req.Lifetime > 0 {
 		in.DeleteAfterSecs = proto.Uint64(wholeSeconds(req.Lifetime))
-	}
-	if req.Egress != nil {
-		in.Spec.Egress = egressList(req.Egress)
 	}
 
 	resp, err := p.api.CreateVm(ctx, in)
@@ -310,7 +301,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 			}
 		}
 	default:
-		return provider.Ref{}, classify(ctx, err)
+		return provider.Ref{}, p.missingSnapshot(classify(ctx, err), snapshotOf(in))
 	}
 	if err := p.closeRoutes(after, vm); err != nil {
 		p.discard(ctx, vm.GetVmId())

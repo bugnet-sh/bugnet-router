@@ -13,7 +13,9 @@
 // orders through the API, and simulate replays the start samples it reads from
 // BUGNET_DATABASE_URL. deploy maps renders the VPS's HAProxy and bugnet-certs files from
 // deploy/vps. mtls init makes the internal CA and the egress to Payments certificate pairs, renews
-// them for their existing keys, or makes a development set.
+// them for their existing keys, or makes a development set. image scan checks a payload or an
+// image for secrets, image build and check make and test the base image artifacts on each
+// provider, and image retire and use read OperatorService before they delete.
 package main
 
 import (
@@ -47,6 +49,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/solana"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 )
@@ -169,6 +172,24 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   image scan --dir DIR | --oci TAG       scan a payload directory or a local OCI image for every
                                          secret of the environment, exit 1 on any finding, printing
                                          rules and paths and never values
+  image build --provider boxd|boat --channel dev|prod [--payload FILE | --from-oci REF]
+        [--version V] [--inputs HEX] [--record FILE]
+                                         run setup-image.sh in one builder per size, scan it, save
+                                         it as an image and merge its refs into the build record,
+                                         boxd's key from BOXD_API_KEY and Boat's asked for as
+                                         "Boat image key:" with echo off, never stored or printed
+  image check --provider e2b|boxd|koyeb|boat --channel dev|prod --ref [SIZE=]REF...
+        [--size S]... [--version V] [--record FILE]
+                                         start fresh sandboxes from each artifact as a placement
+                                         would, scan and compare them, delete an artifact that
+                                         fails and print the [images.PROVIDER] block of one that
+                                         passes, the runtime key from the environment
+  image retire --provider P --version V [--channel C] [--record FILE]
+                                         delete the version's artifacts, refused while the version
+                                         is on images.accept, any placement runs on it or one
+                                         became ready on it in the last hour
+  image use [--provider P]               print the live placements and the last ready time of each
+                                         provider and image version, as OperatorService serves it
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -194,7 +215,8 @@ Settings
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
   BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, abuse, placement end, signals,
-                            providers, pools, estimate, bench start and report, and session hold,
+                            providers, pools, estimate, bench start and report, session hold, and
+                            image retire and use,
                             which call OperatorService
   BUGNET_DATABASE_URL       Postgres URL, read only by simulate
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
@@ -236,6 +258,9 @@ type cli struct {
 	ask func(label string) (string, error)
 	// hookBase replaces each provider's webhook API address in tests
 	hookBase map[string]string
+	// provFor replaces the provider an image command builds, and environ the process environment
+	provFor func(cfg config.Config, name string) (provider.Provider, error)
+	environ []string
 }
 
 // run executes one command and returns the process exit code, 2 for bad usage
