@@ -192,6 +192,9 @@ func (c *cli) printOperatorPlacement(p *routerv1.OperatorPlacement, blocked []st
 	if p.GetStartPath() != "" {
 		kv = append(kv, [2]string{"start_path", p.GetStartPath()})
 	}
+	if p.GetHedged() {
+		kv = append(kv, [2]string{"hedged", "true"})
+	}
 	if blocked != nil {
 		kv = append(kv, [2]string{"blocked_payers", strings.Join(blocked, ",")})
 	}

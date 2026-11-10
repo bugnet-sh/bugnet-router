@@ -310,3 +310,20 @@ func (p *Provider) destroyMember(ctx context.Context, ref provider.Ref) error {
 	}
 	return err
 }
+
+// DeletePool deletes the pool by name, which leaves the members already claimed alone, and treats
+// one that is gone as deleted
+func (p *Provider) DeletePool(ctx context.Context, name string) error {
+	found, err := p.findPool(ctx, name)
+	if err != nil || found == nil {
+		return err
+	}
+	p.mu.Lock()
+	delete(p.pools, name)
+	p.mu.Unlock()
+	err = p.api.deletePool(ctx, found.ID)
+	if err == nil || isCode(err, provider.CodeNotFound) {
+		return nil
+	}
+	return err
+}

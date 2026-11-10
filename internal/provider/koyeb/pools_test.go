@@ -312,3 +312,23 @@ func TestKoyebPoolIdleCost(t *testing.T) {
 	eq(t, err, nil)
 	eq(t, q.IdleHourlyCostMicros(size), int64(120))
 }
+
+func TestKoyebDeletePool(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeToken)
+	ctx := t.Context()
+	eq(t, p.EnsurePool(ctx, mediumSpec(t, p, 1)), nil)
+	eq(t, p.DeletePool(ctx, poolName), nil)
+	_, ok := f.poolByName(poolName)
+	eq(t, ok, false)
+	// A pool that is gone is deleted, and a claim on it finds no pool
+	eq(t, p.DeletePool(ctx, poolName), nil)
+	_, err := p.Claim(ctx, poolName, "claim-1")
+	if !isCode(err, provider.CodeNotFound) {
+		t.Fatalf("a claim on a deleted pool: %v", err)
+	}
+	// The name can be used again
+	eq(t, p.EnsurePool(ctx, mediumSpec(t, p, 1)), nil)
+	_, ok = f.poolByName(poolName)
+	eq(t, ok, true)
+}
