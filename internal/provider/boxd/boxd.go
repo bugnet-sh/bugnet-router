@@ -95,6 +95,8 @@ var (
 	rateWord       = regexp.MustCompile(`(?i)\brate(limit\w*)?\b`)
 	// machineLimitWord marks the organization's own machine limit, which a poll corrects
 	machineLimitWord = regexp.MustCompile(`(?i)machine limit`)
+	// unpaidCap is how boxd refuses a machine past the few an organization without a card may run
+	unpaidCap = regexp.MustCompile(`(?i)can have \d+ machines`)
 	// goneStatus is how boxd refuses a call on a machine it keeps listed after destroying it
 	goneStatus = regexp.MustCompile(`status '(destroyed|destroying)'`)
 )
@@ -996,8 +998,11 @@ func classify(ctx context.Context, err error) error {
 		e.Code, e.CanFailOver = provider.CodeNotFound, false
 	case codes.FailedPrecondition:
 		e.Code, e.CanFailOver = provider.CodeInvalid, false
-		if goneStatus.MatchString(st.Message()) {
+		switch {
+		case goneStatus.MatchString(st.Message()):
 			e.Code = provider.CodeNotFound
+		case unpaidCap.MatchString(st.Message()):
+			e.Code, e.CanFailOver = provider.CodeQuota, true
 		}
 	case codes.InvalidArgument, codes.AlreadyExists, codes.OutOfRange:
 		e.Code, e.CanFailOver = provider.CodeInvalid, false

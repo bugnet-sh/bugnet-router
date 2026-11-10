@@ -47,6 +47,12 @@ func TestBoxdErrorMapping(t *testing.T) {
 			op:  create, code: provider.CodeQuota, failOver: true,
 		},
 		{
+			name: "machine cap without a payment method", method: "CreateVm",
+			err: status.Error(codes.FailedPrecondition, "Without a payment method an "+
+				"organization can have 2 machines. Connect a payment method at the console"),
+			op: create, code: provider.CodeQuota, failOver: true,
+		},
+		{
 			name: "rate limit", method: "CreateVm",
 			err: status.Error(codes.ResourceExhausted, "rate limit exceeded, slow down"),
 			op:  create, code: provider.CodeRateLimited, failOver: true,
