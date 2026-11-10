@@ -83,7 +83,7 @@ func TestPlacementReserveLeavesTheProbeSlot(t *testing.T) {
 	holdCapacity(t, s, "p", 5, 0, 0)
 	for i, want := range []bool{true, true, true, false} {
 		pl := newPlacement(t, s, "o"+string(rune('a'+i)))
-		ok, err := s.ReservePlacementCapacity(ctx, pl.ID, "p")
+		ok, err := s.ReservePlacementCapacity(ctx, pl.ID, "p", 1)
 		if err != nil || ok != want {
 			t.Fatalf("placement %d reserve = %v, %v", i, ok, err)
 		}

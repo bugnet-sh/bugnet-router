@@ -12,9 +12,19 @@ import (
 
 // unbuilt maps each contract RPC the router does not serve yet to a call of it, none being left
 func unbuilt(
-	_ context.Context, _ routerv1connect.SandboxRouterServiceClient,
+	ctx context.Context, c routerv1connect.SandboxRouterServiceClient,
 ) map[string]func() error {
-	return map[string]func() error{}
+	return map[string]func() error{
+		"Reserve": func() error {
+			_, err := c.Reserve(ctx, connect.NewRequest(&routerv1.ReserveRequest{QuoteId: "q"}))
+			return err
+		},
+		"ReleaseReservation": func() error {
+			_, err := c.ReleaseReservation(ctx,
+				connect.NewRequest(&routerv1.ReleaseReservationRequest{QuoteId: "q"}))
+			return err
+		},
+	}
 }
 
 // built names the RPCs Server implements
@@ -59,4 +69,16 @@ func TestNewRPCsNeedTheInternalToken(t *testing.T) {
 			mustCode(t, call(), connect.CodeUnauthenticated, "")
 		})
 	}
+}
+
+func TestPoolRPCsAnswerUnimplemented(t *testing.T) {
+	e := newEnv(t, options{})
+	op := e.operator(t, operatorToken)
+	_, err := op.ListPools(t.Context(), connect.NewRequest(&routerv1.ListPoolsRequest{}))
+	mustCode(t, err, connect.CodeUnimplemented, "")
+	_, err = op.DrainPool(t.Context(), connect.NewRequest(&routerv1.DrainPoolRequest{}))
+	mustCode(t, err, connect.CodeUnimplemented, "")
+	stranger := e.operator(t, "Bearer wrong-token-0123456789abcdef0123456789")
+	_, err = stranger.ListPools(t.Context(), connect.NewRequest(&routerv1.ListPoolsRequest{}))
+	mustCode(t, err, connect.CodeUnauthenticated, "")
 }

@@ -711,7 +711,7 @@ func TestReleaseEndedCapacity(t *testing.T) {
 	held := map[string]store.Placement{}
 	for _, name := range []string{"failed", "terminated", "placing", "ready"} {
 		p := newPlacement(t, s, name)
-		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "local"); err != nil || !ok {
+		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "local", 1); err != nil || !ok {
 			t.Fatalf("reserve %s: %v %v", name, ok, err)
 		}
 		held[name] = p
@@ -1196,18 +1196,18 @@ func TestPlacementCapacityHeldOnce(t *testing.T) {
 	}
 	p := newPlacement(t, s, "p")
 	q := newPlacement(t, s, "q")
-	if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "a"); err != nil || !ok {
+	if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "a", 1); err != nil || !ok {
 		t.Fatalf("reserve for p = %v, %v", ok, err)
 	}
 	if got := held(t, s, p.ID); got != "a" {
 		t.Fatalf("p holds capacity on %q, want a", got)
 	}
-	_, err := s.ReservePlacementCapacity(ctx, p.ID, "b")
+	_, err := s.ReservePlacementCapacity(ctx, p.ID, "b", 1)
 	if !errors.Is(err, store.ErrStateConflict) || inUse(t, pool, "b") != 0 {
 		t.Fatalf("second reserve for p: %v with %d in use on b, want a state conflict and 0",
 			err, inUse(t, pool, "b"))
 	}
-	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a"); err != nil || ok {
+	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a", 1); err != nil || ok {
 		t.Fatalf("reserve for q on a full provider = %v, %v, want false", ok, err)
 	}
 	if got := held(t, s, q.ID); got != "" || inUse(t, pool, "a") != 1 {
@@ -1234,7 +1234,7 @@ func TestPlacementCapacityHeldOnce(t *testing.T) {
 		t.Fatalf("after release p holds %q with %d in use, want nothing and 0", got,
 			inUse(t, pool, "a"))
 	}
-	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a"); err != nil || !ok {
+	if ok, err := s.ReservePlacementCapacity(ctx, q.ID, "a", 1); err != nil || !ok {
 		t.Fatalf("reserve for q after the release = %v, %v", ok, err)
 	}
 
@@ -1242,12 +1242,12 @@ func TestPlacementCapacityHeldOnce(t *testing.T) {
 	if err := s.MarkPlacementFailed(ctx, failed.ID, "x", true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.ReservePlacementCapacity(ctx, failed.ID, "b")
+	_, err = s.ReservePlacementCapacity(ctx, failed.ID, "b", 1)
 	if !errors.Is(err, store.ErrStateConflict) || inUse(t, pool, "b") != 0 {
 		t.Fatalf("reserve for a failed placement: %v with %d in use, want a state conflict and 0",
 			err, inUse(t, pool, "b"))
 	}
-	if _, err := s.ReservePlacementCapacity(ctx, uuid.New(), "b"); !errors.Is(err,
+	if _, err := s.ReservePlacementCapacity(ctx, uuid.New(), "b", 1); !errors.Is(err,
 		store.ErrStateConflict) {
 		t.Fatalf("reserve for an unknown placement: %v, want a state conflict", err)
 	}
@@ -1259,7 +1259,7 @@ func TestReleasePlacementCapacityRacingReleaseFreesOneSlot(t *testing.T) {
 	x := newPlacement(t, s, "x")
 	y := newPlacement(t, s, "y")
 	for _, p := range []store.Placement{x, y} {
-		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "b"); err != nil || !ok {
+		if ok, err := s.ReservePlacementCapacity(ctx, p.ID, "b", 1); err != nil || !ok {
 			t.Fatalf("reserve = %v, %v", ok, err)
 		}
 	}

@@ -10,10 +10,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RecountCapacity sets the provider's in_use to the placements and probe slots holding a slot and
-// returns the old and new values. It is CP 10.5's transaction, the capacity row locked first so
-// every reserve and release that committed before is counted and one that waits adds its own
-// after.
+// RecountCapacity sets the provider's in_use to what its placements, attempts, pool members and
+// probe slots hold and returns the old and new values
+//
+// It is CP 10.5's transaction, the capacity row locked first so every reserve and release that
+// committed before is counted and one that waits adds its own after.
 func (s *Store) RecountCapacity(
 	ctx context.Context, provider string, probeAge time.Duration, now time.Time,
 ) (oldValue, newValue int, err error) {
@@ -37,6 +38,8 @@ func (s *Store) RecountCapacity(
 		}
 		err = tx.QueryRow(ctx, `
 			select (select count(*) from placements where capacity_provider = $1)
+				+ (select count(*) from placement_attempts where slot_provider = $1)
+				+ (select count(*) from pool_members where provider = $1 and holds_slot)
 				+ (select count(*) from probe_slots where provider = $1)`,
 			provider).Scan(&newValue)
 		if err != nil {
