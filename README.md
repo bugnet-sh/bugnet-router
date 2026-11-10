@@ -141,7 +141,7 @@ scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 | `control` | `TestLiveControl` in `test/live` | Zero or more | Each named provider's, from `.env` |
 | `leak` | `TestLiveLeak` in `test/live` | At least one | Each named provider's, from `.env` |
 | `sessions` | `TestLiveSessions` in `test/live`, rows SESS1 to SESS6, with `sessions.keep` at 3 minutes | At least one | Each named provider's, from `.env` |
-| `trace` | `TestLiveTrace` in `test/live`, rows TRACE1 and TRACE2, with the stack's `otlp_endpoint` pointing at a receiver in the test | At least one | Each named provider's, from `.env` |
+| `trace` | `TestLiveTrace` in `test/live`, rows TRACE1, TRACE2 and TRACE4, with the stack's `otlp_endpoint` pointing at a receiver in the test, and TRACE3 alone, which exports to the `otlp_endpoint` of `config/dev.toml` with `BUGNET_OTLP_AUTHORIZATION` from `.env`. TRACE3 and TRACE4 need `--front vps` | At least one | Each named provider's, from `.env` |
 | `image` | `TestLiveImage` in `test/live`, rows IMG1 to IMG10 and each provider's own, from the artifacts of `deploy/image/builds`, with no stack | At least one | Each named provider's, from `.env` |
 | `bench` | `bugnet-dev bench` against `--router URL` | Zero or more | None. It sources no `.env` and needs `BUGNET_OPERATOR_TOKEN` set |
 
@@ -1826,6 +1826,11 @@ sandbox ids and Payments' order ids never reach the backend. A sandbox id and an
 only as `bugnet.sandbox_hash` and `bugnet.order_hash`, keyed under the data-plane keys. No trace
 header reaches a sandbox or a provider, and each outbox event's POST carries a `traceparent` that
 Payments may continue and must not treat as authenticated.
+
+The edge, SSH and egress binaries of `bugnet-edges` join the same trace. Each answer that names a
+session carries `order_traceparent`, the router's own span for that call, and the edge starts its
+`edge.transfer`, `edge.preview.route`, `ssh.connection` or `egress.tunnel` span under it, so
+a request that resolves to no placement makes no span anywhere.
 
 ## Providers
 
