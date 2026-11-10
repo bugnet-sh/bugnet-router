@@ -19,12 +19,17 @@ const (
 	RetainUsageObservation RetentionTable = "usage_observations"
 	RetainEstimates        RetentionTable = "estimates"
 	RetainSourceFacts      RetentionTable = "source_facts"
+	RetainReservations     RetentionTable = "reservations"
+	RetainPoolMembers      RetentionTable = "pool_members"
+	RetainPoolMisses       RetentionTable = "pool_misses"
 )
 
 // RetentionTables lists the tables retention trims, in its order
 var RetentionTables = []RetentionTable{
 	RetainStartSamples, RetainBenches, RetainTransferIndex, RetainProbeSlots,
 	RetainUsageObservation, RetainEstimates, RetainSourceFacts,
+	// A reservation refers to its member, so reservations go first
+	RetainReservations, RetainPoolMembers, RetainPoolMisses,
 }
 
 // retentionSQL deletes up to $2 rows of a table older than $1 and answers how many
@@ -61,6 +66,22 @@ var retentionSQL = map[RetentionTable]string{
 			where g.used_at < $1 and not exists (select 1 from estimates e
 				where e.source_key = g.source_key and e.revision = g.revision)
 			limit $2) returning 1)
+		select count(*) from d`,
+	RetainReservations: `with d as (delete from reservations where id in (
+			select id from reservations where ended_at < $1 limit $2) returning 1)
+		select count(*) from d`,
+	// A gone member ages from its end, a bound one from the end of the placement it served
+	RetainPoolMembers: `with d as (delete from pool_members m where m.id in (
+			select g.id from pool_members g
+			where (g.state = 'gone' and g.ended_at < $1
+					or g.state = 'bound' and exists (select 1 from placements p
+						where p.id = g.placement_id and p.terminated_at < $1))
+				and not exists (select 1 from reservations r where r.member_id = g.id)
+			limit $2) returning 1)
+		select count(*) from d`,
+	RetainPoolMisses: `with d as (delete from pool_misses where (provider, size_name, minute) in (
+			select provider, size_name, minute from pool_misses where minute < $1 limit $2)
+			returning 1)
 		select count(*) from d`,
 }
 
