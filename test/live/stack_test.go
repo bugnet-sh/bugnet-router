@@ -441,6 +441,15 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	pub := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 	m["order_token_public_key"] = base64.StdEncoding.EncodeToString(pub)
 	m["providers"] = []string{s.provider}
+	if s.provider != "local" {
+		// dev.toml's warm pool and starts before payment are local's, which this stack lacks
+		delete(table(m, "pools"), "pool")
+		speculative := []string{}
+		if s.provider != "boat" {
+			speculative = []string{s.provider}
+		}
+		table(m, "reserve")["speculative_providers"] = speculative
+	}
 	m["deployment_id"] = "live-" + strings.ToLower(rand.Text()[:8])
 	table(m, "api")["listen_addr"] = apiAddr
 	table(m, "worker")["listen_addr"] = workerAddr
