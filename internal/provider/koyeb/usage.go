@@ -35,7 +35,8 @@ func (p *Provider) ReadUsage(
 		"limit":         {pageLimit}, "offset": {strconv.Itoa(max(offset, 0))},
 	}
 	var raw json.RawMessage
-	if err := p.api.send(ctx, false, http.MethodGet, "/v1/usages/details", q, nil, &raw); err != nil {
+	err := p.api.send(ctx, false, http.MethodGet, "/v1/usages/details", q, nil, &raw)
+	if err != nil {
 		return provider.Usage{}, err
 	}
 	var fields map[string]json.RawMessage

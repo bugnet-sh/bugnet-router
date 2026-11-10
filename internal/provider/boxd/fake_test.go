@@ -113,6 +113,9 @@ type fakeBoxd struct {
 	orgBilling *boxdpb.GetOrgBillingResponse
 	// orgAsked is the org name of the last GetOrgBilling call
 	orgAsked string
+	// orgUsage is what GetOrgUsage reports and usageAsked the last window it was asked for
+	orgUsage   *boxdpb.GetOrgUsageResponse
+	usageAsked *boxdpb.GetOrgUsageRequest
 
 	mu           sync.Mutex
 	vms          map[string]*fakeVM
@@ -1153,6 +1156,18 @@ func (f *fakeBoxd) GetOrgMachineLimit(
 	return &boxdpb.GetOrgMachineLimitResponse{
 		OrgId: "o1", OrgName: "acme", MaxVms: 25, VmCount: n,
 	}, nil
+}
+
+func (f *fakeBoxd) GetOrgUsage(
+	_ context.Context, req *boxdpb.GetOrgUsageRequest,
+) (*boxdpb.GetOrgUsageResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.usageAsked = req
+	if f.orgUsage == nil {
+		return &boxdpb.GetOrgUsageResponse{Currency: "usd"}, nil
+	}
+	return f.orgUsage, nil
 }
 
 func (f *fakeBoxd) GetOrgBilling(

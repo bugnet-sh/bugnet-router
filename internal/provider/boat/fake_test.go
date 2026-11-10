@@ -154,6 +154,8 @@ type fakeBoat struct {
 	// endState is what a sandbox becomes after provisioning, ready when empty
 	endState string
 	pageSize int
+	// usages are the bodies of GET /sandboxes/{id}/usage by sandbox id, a missing one answering 404
+	usages map[string]string
 	// chunkBytes caps the stdout bytes in one stream line
 	chunkBytes int
 	// reconnectEvery ends an attach stream with a reconnect line after so many stdout lines
@@ -267,6 +269,7 @@ func newFake(t *testing.T) *fakeBoat {
 		"POST " + sb + "/host":                 f.host,
 		"POST " + sb + "/sshkey":               f.sshKey,
 		"DELETE " + sb + "/files":              f.deleteFile,
+		"GET " + sb + "/usage":                 f.readUsage,
 		"GET /api/v1/limits":                   f.readLimits,
 		"GET /api/v1/me":                       f.readMe,
 	} {
@@ -1731,6 +1734,18 @@ func (f *fakeBoat) setLimits(status int, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.limitsStatus, f.limits = status, body
+}
+
+func (f *fakeBoat) readUsage(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	body, ok := f.usages[r.PathValue("id")]
+	f.mu.Unlock()
+	if !ok {
+		f.fail(w, http.StatusNotFound, "not_found", "no usage for that sandbox", nil, nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
 }
 
 func (f *fakeBoat) readLimits(w http.ResponseWriter, _ *http.Request) {

@@ -107,6 +107,8 @@ type fakeE2B struct {
 	// wrongRangeStart answers a ranged GET with 206 and the file from byte 0
 	wrongRangeStart bool
 	pageSize        int
+	// teamEvents are the killed events GET /events/sandboxes pages through, newest first
+	teamEvents []api.SandboxEvent
 	// noSpace answers every upload with envd's 507 once its body arrived
 	noSpace atomic.Bool
 	// shortBody declares a whole file on download and sends half of it
@@ -159,6 +161,7 @@ func newFake(t *testing.T) *fakeE2B {
 		"POST /v2/sandboxes/{id}/connect": f.connect,
 		"GET /teams/{team}/metrics/max":   f.teamMetrics,
 		"GET /events/sandboxes/{id}":      f.events,
+		"GET /events/sandboxes":           f.teamEventPage,
 	} {
 		rest.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -601,6 +604,20 @@ func (f *fakeE2B) events(w http.ResponseWriter, r *http.Request) {
 		Id: openapi_types.UUID{1}, SandboxId: id, Type: "sandbox.lifecycle.killed",
 		Timestamp: time.Now(), Version: "v1", EventData: &data,
 	}})
+}
+
+func (f *fakeE2B) teamEventPage(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q := r.URL.Query()
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset = min(max(offset, 0), len(f.teamEvents))
+	end := len(f.teamEvents)
+	if limit > 0 {
+		end = min(offset+limit, end)
+	}
+	writeJSON(w, http.StatusOK, append([]api.SandboxEvent{}, f.teamEvents[offset:end]...))
 }
 
 func (f *fakeE2B) timeout(w http.ResponseWriter, r *http.Request) {

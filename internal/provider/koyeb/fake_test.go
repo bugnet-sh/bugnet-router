@@ -203,8 +203,10 @@ type fakeKoyeb struct {
 	// org is the organization fields the account route answers with, nil for an ACTIVE one
 	org map[string]any
 	// usage is the quota usage fields, quotaOrg the organization id the route was asked for
-	usage    map[string]any
-	quotaOrg string
+	usage map[string]any
+	// usageDetails are the rows GET /v1/usages/details pages through
+	usageDetails []map[string]any
+	quotaOrg     string
 	// refuseBinds answers every bind_port with a 500
 	refuseBinds bool
 	// instanceEvents is the newest instance event message of each deployment, by deployment id
@@ -236,6 +238,7 @@ func newFake(t *testing.T) *fakeKoyeb {
 		"GET /v1/instances":                       f.listInstances,
 		"GET /v1/instance_events":                 f.listInstanceEvents,
 		"GET /v1/account/organization":            f.organization,
+		"GET /v1/usages/details":                  f.usageDetailPage,
 		"GET /v1/quotas/organizations/{id}/usage": f.quotaUsage,
 	} {
 		api.HandleFunc(pattern, f.gate(pattern, h))
@@ -1691,6 +1694,16 @@ func (f *fakeKoyeb) organization(w http.ResponseWriter, _ *http.Request) {
 		org[k] = v
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"organization": org})
+}
+
+func (f *fakeKoyeb) usageDetailPage(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset = min(max(offset, 0), len(f.usageDetails))
+	end := min(offset+limit, len(f.usageDetails))
+	writeJSON(w, http.StatusOK, map[string]any{"usage_details": f.usageDetails[offset:end]})
 }
 
 func (f *fakeKoyeb) quotaUsage(w http.ResponseWriter, r *http.Request) {
