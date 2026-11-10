@@ -156,6 +156,7 @@ cp "$here/deploy.sh" "$here/check.sh" "$here/bugnet-ops" "$bundle/"
 cp -R "$here/systemd" "$here/postgres" "$here/valkey" "$bundle/"
 cp "$here"/config/*.toml "$bundle/config/"
 cp "$router/config/packages.json" "$bundle/config/packages.json"
+cp "$here/config/mining-pools.txt" "$bundle/config/mining-pools.txt"
 if [[ -n $mtls ]]; then
 	cp -Rp "$mtls" "$bundle/mtls"
 fi

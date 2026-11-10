@@ -477,8 +477,13 @@ sudo systemctl restart 'bugnet-secrets@*'
   `deploy.sh` keeps the previous copy of each changed file in `/etc/bugnet/previous/`.
 - `allowed_shared_hosts` in `[x402]` is written by `deploy.sh x402-index --router`, never by
   hand (section 7.1).
-- E2B stays out of `secrets.providers` (so no x402 on E2B) until its templates carry the
-  production egress CA.
+- E2B is in `secrets.providers` since 2026-11-10, when its templates got the production egress
+  CA. A rebuilt template must bake the same CA, or E2B leaves that list again.
+- `config/mining-pools.txt` is the list `harden` blocks, installed as
+  `/etc/bugnet/mining-pools.txt`. Refresh it about monthly: run `deploy/vps/mining-pools.py` on
+  the Mac, read what it printed, commit, and ship. Add or remove pool hosts in
+  `config/mining-pool-hosts.txt`. The script leaves out any address inside Cloudflare's,
+  CloudFront's or Fastly's ranges.
 - Operator commands run as `bugnet-router` with the router's environment, printing no secret:
 
   ```sh

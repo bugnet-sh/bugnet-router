@@ -109,7 +109,7 @@ check_bundle() {
 		maps/certs-staging.toml maps/deploy.env postgres/bugnet.conf postgres/pg_hba.conf \
 		postgres/pg_ident.conf valkey/bugnet.conf config/router.toml config/edge.toml \
 		config/secrets-route.toml config/sessions.toml config/ssh.toml config/egress.toml \
-		config/packages.json systemd/valkey-server.service.d/bugnet.conf \
+		config/packages.json config/mining-pools.txt systemd/valkey-server.service.d/bugnet.conf \
 		systemd/bugnet-certs.service systemd/bugnet-certs.timer systemd/router-worker.service; do
 		[[ -f $here/$f ]] || die "$here/$f is missing; build the bundle with ship.sh"
 	done
@@ -393,6 +393,7 @@ install_configs() {
 		rm -f "$tmp"
 	done
 	install -o root -g root -m 0644 "$here/config/packages.json" "$etc/packages.json"
+	install -o root -g root -m 0644 "$here/config/mining-pools.txt" "$etc/mining-pools.txt"
 	install -o root -g root -m 0644 "$here/maps/deploy.env" "$etc/deploy.env"
 	for f in router edge secrets-route sessions ssh egress certs; do
 		[[ ! -f $etc/$f.env ]] || { chown root:root "$etc/$f.env" && chmod 0600 "$etc/$f.env"; }
