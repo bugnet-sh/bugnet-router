@@ -14,12 +14,24 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/leakscan"
 )
 
-// image runs the base image commands, scan only until the builds land
+// image runs the base image commands
 func (c *cli) image(args []string) error {
-	if len(args) == 0 || args[0] != "scan" {
-		return fmt.Errorf("%w: image takes scan", errUsage)
+	if len(args) == 0 {
+		return fmt.Errorf("%w: image takes scan, build, check, retire or use", errUsage)
 	}
-	return c.imageScan(args[1:])
+	switch args[0] {
+	case "scan":
+		return c.imageScan(args[1:])
+	case "build":
+		return c.imageBuild(args[1:])
+	case "check":
+		return c.imageCheck(args[1:])
+	case "retire":
+		return c.imageRetire(args[1:])
+	case "use":
+		return c.imageUse(args[1:])
+	}
+	return fmt.Errorf("%w: image takes scan, build, check, retire or use", errUsage)
 }
 
 // imageScan scans a directory or a local OCI image for every needle of the environment
@@ -33,7 +45,7 @@ func (c *cli) imageScan(args []string) error {
 	if (*dir == "") == (*oci == "") {
 		return fmt.Errorf("%w: give exactly one of --dir and --oci", errUsage)
 	}
-	needles, err := leakscan.FromEnv(os.Environ())
+	needles, err := leakscan.FromEnv(c.environment())
 	if err != nil {
 		return err
 	}
