@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptrace"
 	"regexp"
@@ -127,6 +126,8 @@ type Options struct {
 	EgressFamilies []string
 	// EgressIPv6Bits is the prefix width of an IPv6 source, 64 to 128, 128 when zero
 	EgressIPv6Bits int
+	// From is the saved snapshot every sandbox deploys from, Boat's own image when empty
+	From string
 }
 
 // Provider places sandboxes on Boat, keeping only what it knows about the next start's fee
@@ -153,6 +154,9 @@ type Provider struct {
 	// egressFamilies and egressBits shape EgressSource's prefix
 	egressFamilies []string
 	egressBits     int
+	from           string
+	// imagePoll and imageWait pace SaveImage's wait for a saved snapshot to turn ready
+	imagePoll, imageWait time.Duration
 }
 
 // New checks the options and makes no call to Boat
@@ -192,6 +196,7 @@ func New(opts Options) (*Provider, error) {
 		pollInterval: defaultPoll, limitsTTL: defaultLimitsTTL,
 		reattachWait: defaultReattach, idleTimeout: defaultIdle,
 		hookWindow: cmp.Or(opts.HookWindow, defaultHookWindow),
+		from:       opts.From, imagePoll: savedPoll, imageWait: savedWait,
 	}
 	if opts.Valkey != nil {
 		p.fees.shared = &sharedStarts{c: opts.Valkey, key: opts.Prefix + "boat:starts"}
@@ -262,19 +267,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return provider.Ref{}, invalid(fmt.Errorf("lifetime %v is not within boat's limit of %v",
 			req.Lifetime, maxTTL))
 	}
-	if err := checkLabels(req.Labels); err != nil {
+	body, err := p.createBody(req, s)
+	if err != nil {
 		return provider.Ref{}, err
-	}
-	body := api.CreateSandboxRequest{
-		Type:       new(api.CreateSandboxRequestType(s.typ.name)),
-		TtlSeconds: new(wholeSeconds(req.Lifetime)),
-		NoEnv:      new(true),
-		Snapshots:  new(false),
-		Monitoring: new(false),
-		FailFast:   new(true),
-	}
-	if len(req.Labels) > 0 {
-		body.Labels = new(maps.Clone(req.Labels))
 	}
 	params := &api.CreateParams{}
 	if req.IdempotencyKey != "" {
@@ -285,7 +280,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 		return p.api.Create(ctx, params, body)
 	})
 	if err != nil {
-		return provider.Ref{}, err
+		return provider.Ref{}, p.missingFrom(err, body)
 	}
 	p.started(time.Now())
 	var reply sandboxReply

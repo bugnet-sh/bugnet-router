@@ -1004,6 +1004,102 @@ func (e SandboxUsageResponseSandboxType) Valid() bool {
 	}
 }
 
+// Defines values for SavedSnapshotStatus.
+const (
+	SavedSnapshotStatusFailed SavedSnapshotStatus = "failed"
+	SavedSnapshotStatusReady  SavedSnapshotStatus = "ready"
+	SavedSnapshotStatusSaving SavedSnapshotStatus = "saving"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotStatus enum.
+func (e SavedSnapshotStatus) Valid() bool {
+	switch e {
+	case SavedSnapshotStatusFailed:
+		return true
+	case SavedSnapshotStatusReady:
+		return true
+	case SavedSnapshotStatusSaving:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SavedSnapshotDeletedResponseStatus.
+const (
+	Deleted SavedSnapshotDeletedResponseStatus = "deleted"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotDeletedResponseStatus enum.
+func (e SavedSnapshotDeletedResponseStatus) Valid() bool {
+	switch e {
+	case Deleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SavedSnapshotDeletedResponseType.
+const (
+	SnapshotSavedDeleted SavedSnapshotDeletedResponseType = "snapshot.saved.deleted"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotDeletedResponseType enum.
+func (e SavedSnapshotDeletedResponseType) Valid() bool {
+	switch e {
+	case SnapshotSavedDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SavedSnapshotInfoResponseType.
+const (
+	SnapshotSavedInfo SavedSnapshotInfoResponseType = "snapshot.saved.info"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotInfoResponseType enum.
+func (e SavedSnapshotInfoResponseType) Valid() bool {
+	switch e {
+	case SnapshotSavedInfo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SavedSnapshotSavingResponseStatus.
+const (
+	SavedSnapshotSavingResponseStatusSaving SavedSnapshotSavingResponseStatus = "saving"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotSavingResponseStatus enum.
+func (e SavedSnapshotSavingResponseStatus) Valid() bool {
+	switch e {
+	case SavedSnapshotSavingResponseStatusSaving:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SavedSnapshotSavingResponseType.
+const (
+	SnapshotSavedSaving SavedSnapshotSavingResponseType = "snapshot.saved.saving"
+)
+
+// Valid indicates whether the value is a known member of the SavedSnapshotSavingResponseType enum.
+func (e SavedSnapshotSavingResponseType) Valid() bool {
+	switch e {
+	case SnapshotSavedSaving:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StopOperationStatus.
 const (
 	StopOperationStatusCompleted  StopOperationStatus = "completed"
@@ -2082,6 +2178,90 @@ type SandboxUsageResponse struct {
 // SandboxUsageResponseSandboxType The sandbox's current machine size, which sets `billingMultiplier`.
 type SandboxUsageResponseSandboxType string
 
+// SavedSnapshot A saved snapshot: a frozen copy of a sandbox's disk at one moment, saved under a name you pick. Independent of the source sandbox's later life: the sandbox can change, stop, or be deleted and the saved snapshot still deploys. Saved snapshots never expire; re-saving a name replaces its artifact.
+type SavedSnapshot struct {
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Error Failure reason. Only present when `status` is `failed`.
+	Error *string `json:"error,omitempty"`
+
+	// Name The user-chosen handle, unique within your account.
+	Name string `json:"name"`
+
+	// SizeBytes Restored content size of the frozen state, in bytes.
+	SizeBytes *int `json:"sizeBytes,omitempty"`
+
+	// SnapshotId The frozen artifact behind the name. Present once `status` is `ready`. Accepted by `GET /api/boat/snapshots/{snapshotId}/tree` to browse its files.
+	SnapshotId *string `json:"snapshotId,omitempty"`
+
+	// SourceSandboxId The sandbox this snapshot was saved from (display only).
+	SourceSandboxId string `json:"sourceSandboxId"`
+
+	// Status `saving` while the capture and pin are in flight (a live source sandbox takes a fresh snapshot first, which can run minutes), `ready` when deployable, `failed` if the save did not complete (see `error`; save again to retry).
+	Status SavedSnapshotStatus `json:"status"`
+
+	// Type Sandbox type the snapshot was saved from. Deploys default to it.
+	Type *string `json:"type,omitempty"`
+}
+
+// SavedSnapshotStatus `saving` while the capture and pin are in flight (a live source sandbox takes a fresh snapshot first, which can run minutes), `ready` when deployable, `failed` if the save did not complete (see `error`; save again to retry).
+type SavedSnapshotStatus string
+
+// SavedSnapshotDeletedResponse defines model for SavedSnapshotDeletedResponse.
+type SavedSnapshotDeletedResponse struct {
+	Name string `json:"name"`
+
+	// Ok Examples: true
+	Ok     bool                               `json:"ok"`
+	Status SavedSnapshotDeletedResponseStatus `json:"status"`
+	Type   SavedSnapshotDeletedResponseType   `json:"type"`
+}
+
+// SavedSnapshotDeletedResponseStatus defines model for SavedSnapshotDeletedResponse.Status.
+type SavedSnapshotDeletedResponseStatus string
+
+// SavedSnapshotDeletedResponseType defines model for SavedSnapshotDeletedResponse.Type.
+type SavedSnapshotDeletedResponseType string
+
+// SavedSnapshotInfoResponse defines model for SavedSnapshotInfoResponse.
+type SavedSnapshotInfoResponse struct {
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Snapshot A saved snapshot: a frozen copy of a sandbox's disk at one moment, saved under a name you pick. Independent of the source sandbox's later life: the sandbox can change, stop, or be deleted and the saved snapshot still deploys. Saved snapshots never expire; re-saving a name replaces its artifact.
+	Snapshot SavedSnapshot                 `json:"snapshot"`
+	Type     SavedSnapshotInfoResponseType `json:"type"`
+}
+
+// SavedSnapshotInfoResponseType defines model for SavedSnapshotInfoResponse.Type.
+type SavedSnapshotInfoResponseType string
+
+// SavedSnapshotSaveRequest defines model for SavedSnapshotSaveRequest.
+type SavedSnapshotSaveRequest struct {
+	// Name Name to save under. 1-63 lowercase letters, digits, or dashes, starting with a letter or digit. Reusing one of your existing names replaces that snapshot's artifact. `latest`, `tree`, `pull`, `rm`, `save`, `current`, `self`, and `new` are reserved.
+	Name string `json:"name"`
+
+	// SandboxId The sandbox whose current state to freeze.
+	SandboxId string `json:"sandboxId"`
+}
+
+// SavedSnapshotSavingResponse defines model for SavedSnapshotSavingResponse.
+type SavedSnapshotSavingResponse struct {
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Snapshot A saved snapshot: a frozen copy of a sandbox's disk at one moment, saved under a name you pick. Independent of the source sandbox's later life: the sandbox can change, stop, or be deleted and the saved snapshot still deploys. Saved snapshots never expire; re-saving a name replaces its artifact.
+	Snapshot SavedSnapshot                     `json:"snapshot"`
+	Status   SavedSnapshotSavingResponseStatus `json:"status"`
+	Type     SavedSnapshotSavingResponseType   `json:"type"`
+}
+
+// SavedSnapshotSavingResponseStatus defines model for SavedSnapshotSavingResponse.Status.
+type SavedSnapshotSavingResponseStatus string
+
+// SavedSnapshotSavingResponseType defines model for SavedSnapshotSavingResponse.Type.
+type SavedSnapshotSavingResponseType string
+
 // SshKeyRequest defines model for SshKeyRequest.
 type SshKeyRequest struct {
 	// Key Public SSH key in OpenSSH format. Private keys are rejected.
@@ -2437,6 +2617,9 @@ type HostPortJSONRequestBody = HostPortRequest
 
 // SshKeyJSONRequestBody defines body for SshKey for application/json ContentType.
 type SshKeyJSONRequestBody = SshKeyRequest
+
+// SaveSavedSnapshotJSONRequestBody defines body for SaveSavedSnapshot for application/json ContentType.
+type SaveSavedSnapshotJSONRequestBody = SavedSnapshotSaveRequest
 
 // CreateWebhookJSONRequestBody defines body for CreateWebhook for application/json ContentType.
 type CreateWebhookJSONRequestBody = WebhookCreateRequest
@@ -3192,6 +3375,36 @@ type ClientInterface interface {
 	// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
 	Usage(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// SaveSavedSnapshotWithBody Save a saved snapshot
+	//
+	// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+	SaveSavedSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SaveSavedSnapshot Save a saved snapshot
+	//
+	// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+	SaveSavedSnapshot(ctx context.Context, body SaveSavedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteSavedSnapshot Remove a saved snapshot
+	//
+	// Remove a saved snapshot and release its storage (`boat snapshot rm <name>` in the CLI). Sandboxes already deployed from it are unaffected.
+	//
+	// Corresponds with DELETE /saved-snapshots/{name} (the `DeleteSavedSnapshot` operationId).
+	DeleteSavedSnapshot(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSavedSnapshot Get a saved snapshot
+	//
+	// Corresponds with GET /saved-snapshots/{name} (the `GetSavedSnapshot` operationId).
+	GetSavedSnapshot(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWebhooks List webhooks
 	//
 	// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
@@ -3868,6 +4081,76 @@ func (c *Client) SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSO
 // Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
 func (c *Client) Usage(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUsageRequest(c.Server, sandboxId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SaveSavedSnapshotWithBody Save a saved snapshot
+//
+// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+func (c *Client) SaveSavedSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveSavedSnapshotRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// SaveSavedSnapshot Save a saved snapshot
+//
+// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+func (c *Client) SaveSavedSnapshot(ctx context.Context, body SaveSavedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveSavedSnapshotRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// DeleteSavedSnapshot Remove a saved snapshot
+//
+// Remove a saved snapshot and release its storage (`boat snapshot rm <name>` in the CLI). Sandboxes already deployed from it are unaffected.
+//
+// Corresponds with DELETE /saved-snapshots/{name} (the `DeleteSavedSnapshot` operationId).
+func (c *Client) DeleteSavedSnapshot(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteSavedSnapshotRequest(c.Server, name)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetSavedSnapshot Get a saved snapshot
+//
+// Corresponds with GET /saved-snapshots/{name} (the `GetSavedSnapshot` operationId).
+func (c *Client) GetSavedSnapshot(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSavedSnapshotRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -5324,6 +5607,114 @@ func NewUsageRequest(server string, sandboxId SandboxId, params *UsageParams) (*
 	return req, nil
 }
 
+// NewSaveSavedSnapshotRequest calls the generic SaveSavedSnapshot builder with application/json body
+func NewSaveSavedSnapshotRequest(server string, body SaveSavedSnapshotJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSaveSavedSnapshotRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewSaveSavedSnapshotRequestWithBody constructs an http.Request for the SaveSavedSnapshot method, with any body, and a specified content type
+func NewSaveSavedSnapshotRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/saved-snapshots")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteSavedSnapshotRequest constructs an http.Request for the DeleteSavedSnapshot method
+func NewDeleteSavedSnapshotRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/saved-snapshots/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSavedSnapshotRequest constructs an http.Request for the GetSavedSnapshot method
+func NewGetSavedSnapshotRequest(server string, name string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "name", name, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/saved-snapshots/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListWebhooksRequest constructs an http.Request for the ListWebhooks method
 func NewListWebhooksRequest(server string) (*http.Request, error) {
 	var err error
@@ -5892,6 +6283,40 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
 	UsageWithResponse(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*UsageResponse, error)
+
+	// SaveSavedSnapshotWithBodyWithResponse Save a saved snapshot
+	//
+	// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+	SaveSavedSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SaveSavedSnapshotResponse, error)
+
+	// SaveSavedSnapshotWithResponse Save a saved snapshot
+	//
+	// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+	SaveSavedSnapshotWithResponse(ctx context.Context, body SaveSavedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*SaveSavedSnapshotResponse, error)
+
+	// DeleteSavedSnapshotWithResponse Remove a saved snapshot
+	//
+	// Remove a saved snapshot and release its storage (`boat snapshot rm <name>` in the CLI). Sandboxes already deployed from it are unaffected.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with DELETE /saved-snapshots/{name} (the `DeleteSavedSnapshot` operationId).
+	DeleteSavedSnapshotWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*DeleteSavedSnapshotResponse, error)
+
+	// GetSavedSnapshotWithResponse Get a saved snapshot
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /saved-snapshots/{name} (the `GetSavedSnapshot` operationId).
+	GetSavedSnapshotWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetSavedSnapshotResponse, error)
 
 	// ListWebhooksWithResponse List webhooks
 	//
@@ -7257,6 +7682,199 @@ func (r UsageResponse) ContentType() string {
 	return ""
 }
 
+type SaveSavedSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON202 the response for an HTTP 202 `application/json` response
+	JSON202 *SavedSnapshotSavingResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON402 the response for an HTTP 402 `application/json` response
+	JSON402 *ErrorEnvelope
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *ErrorEnvelope
+}
+
+// GetJSON202 returns the response for an HTTP 202 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON202() *SavedSnapshotSavingResponse {
+	return r.JSON202
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON402 returns the response for an HTTP 402 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON402() *ErrorEnvelope {
+	return r.JSON402
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r SaveSavedSnapshotResponse) GetJSON409() *ErrorEnvelope {
+	return r.JSON409
+}
+
+// GetBody returns the raw response body bytes
+func (r SaveSavedSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r SaveSavedSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SaveSavedSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r SaveSavedSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type DeleteSavedSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SavedSnapshotDeletedResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *ErrorEnvelope
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r DeleteSavedSnapshotResponse) GetJSON200() *SavedSnapshotDeletedResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r DeleteSavedSnapshotResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r DeleteSavedSnapshotResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r DeleteSavedSnapshotResponse) GetJSON409() *ErrorEnvelope {
+	return r.JSON409
+}
+
+// GetBody returns the raw response body bytes
+func (r DeleteSavedSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteSavedSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteSavedSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r DeleteSavedSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetSavedSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SavedSnapshotInfoResponse
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetSavedSnapshotResponse) GetJSON200() *SavedSnapshotInfoResponse {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetSavedSnapshotResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetSavedSnapshotResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r GetSavedSnapshotResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSavedSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSavedSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetSavedSnapshotResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhooksResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -8106,6 +8724,64 @@ func (c *ClientWithResponses) UsageWithResponse(ctx context.Context, sandboxId S
 		return nil, err
 	}
 	return ParseUsageResponse(rsp)
+}
+
+// SaveSavedSnapshotWithBodyWithResponse Save a saved snapshot
+//
+// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+func (c *ClientWithResponses) SaveSavedSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SaveSavedSnapshotResponse, error) {
+	rsp, err := c.SaveSavedSnapshotWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSaveSavedSnapshotResponse(rsp)
+}
+
+// SaveSavedSnapshotWithResponse Save a saved snapshot
+//
+// Freeze a sandbox's current state under a name (`boat snapshot <id> <name>` in the CLI). Answers `202` immediately with the snapshot in `saving`; a running sandbox takes a fresh capture first, which can run minutes. Poll `GET /saved-snapshots/{name}` until the status settles at `ready` or `failed`. Reusing one of your existing names replaces that snapshot's artifact once the new save is ready.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /saved-snapshots (the `SaveSavedSnapshot` operationId).
+func (c *ClientWithResponses) SaveSavedSnapshotWithResponse(ctx context.Context, body SaveSavedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*SaveSavedSnapshotResponse, error) {
+	rsp, err := c.SaveSavedSnapshot(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSaveSavedSnapshotResponse(rsp)
+}
+
+// DeleteSavedSnapshotWithResponse Remove a saved snapshot
+//
+// Remove a saved snapshot and release its storage (`boat snapshot rm <name>` in the CLI). Sandboxes already deployed from it are unaffected.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with DELETE /saved-snapshots/{name} (the `DeleteSavedSnapshot` operationId).
+func (c *ClientWithResponses) DeleteSavedSnapshotWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*DeleteSavedSnapshotResponse, error) {
+	rsp, err := c.DeleteSavedSnapshot(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteSavedSnapshotResponse(rsp)
+}
+
+// GetSavedSnapshotWithResponse Get a saved snapshot
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /saved-snapshots/{name} (the `GetSavedSnapshot` operationId).
+func (c *ClientWithResponses) GetSavedSnapshotWithResponse(ctx context.Context, name string, reqEditors ...RequestEditorFn) (*GetSavedSnapshotResponse, error) {
+	rsp, err := c.GetSavedSnapshot(ctx, name, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSavedSnapshotResponse(rsp)
 }
 
 // ListWebhooksWithResponse List webhooks
@@ -9172,6 +9848,154 @@ func ParseUsageResponse(rsp *http.Response) (*UsageResponse, error) {
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSaveSavedSnapshotResponse parses an HTTP response from a SaveSavedSnapshotWithResponse call
+func ParseSaveSavedSnapshotResponse(rsp *http.Response) (*SaveSavedSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SaveSavedSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest SavedSnapshotSavingResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 402:
+		var dest ErrorEnvelope
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON402 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorEnvelope
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteSavedSnapshotResponse parses an HTTP response from a DeleteSavedSnapshotWithResponse call
+func ParseDeleteSavedSnapshotResponse(rsp *http.Response) (*DeleteSavedSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteSavedSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SavedSnapshotDeletedResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorEnvelope
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSavedSnapshotResponse parses an HTTP response from a GetSavedSnapshotWithResponse call
+func ParseGetSavedSnapshotResponse(rsp *http.Response) (*GetSavedSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSavedSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SavedSnapshotInfoResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized

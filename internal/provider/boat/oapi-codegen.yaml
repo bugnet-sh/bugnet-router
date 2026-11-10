@@ -36,3 +36,6 @@ output-options:
     - rotateWebhookSigningSecret
     - me
     - usage
+    - saveSavedSnapshot
+    - getSavedSnapshot
+    - deleteSavedSnapshot
