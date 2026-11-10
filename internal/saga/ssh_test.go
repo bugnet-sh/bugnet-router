@@ -60,7 +60,9 @@ func (e *env) placeWith(
 	t *testing.T, order string, req placement.Requirements,
 ) (store.Placement, string) {
 	t.Helper()
-	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, order), Requirements: req})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, order), Requirements: req,
+	})
 	if err != nil {
 		t.Fatalf("create %s: %v", order, err)
 	}

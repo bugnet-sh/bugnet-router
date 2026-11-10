@@ -20,7 +20,10 @@ func placeStoringX402(
 	t *testing.T, e *env, g gatedReady, secrets, withRow bool,
 ) store.Placement {
 	t.Helper()
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-x402"), Requirements: placement.Requirements{Secrets: secrets}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token:        e.startToken(t, "order-x402"),
+		Requirements: placement.Requirements{Secrets: secrets},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

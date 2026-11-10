@@ -450,7 +450,9 @@ func (e *env) extendToken(t *testing.T, order, pkg string, amount int64, h strin
 // place creates a placement and waits for its placing to finish
 func (e *env) place(t *testing.T, order string) (store.Placement, string) {
 	t.Helper()
-	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, order), Requirements: placement.Requirements{}})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, order), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatalf("create %s: %v", order, err)
 	}
@@ -645,7 +647,9 @@ func TestCreatePlacementReady(t *testing.T) {
 	e := newEnv(t, a)
 	msgs := e.subscribe(t)
 
-	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +747,9 @@ func TestCreatePlacementSameOrderReturnsSamePlacement(t *testing.T) {
 	results := make(chan result, 2)
 	for range 2 {
 		go func() {
-			p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
+			p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+				Token: tok, Requirements: placement.Requirements{},
+			})
 			results <- result{p, h, err}
 		}()
 	}
@@ -755,7 +761,9 @@ func TestCreatePlacementSameOrderReturnsSamePlacement(t *testing.T) {
 		t.Fatalf("got %s/%s and %s/%s", first.p.ID, first.h, second.p.ID, second.h)
 	}
 	e.saga.Wait()
-	again, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
+	again, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	if err != nil || again.ID != first.p.ID || h != first.h {
 		t.Fatalf("third create %s %q %v", again.ID, h, err)
 	}
@@ -801,7 +809,9 @@ func TestCreateRejectsExpiredAndForgedTokens(t *testing.T) {
 		}), []error{saga.ErrUnknownPackage}},
 	}
 	for _, c := range cases {
-		_, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: c.token, Requirements: placement.Requirements{}})
+		_, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+			Token: c.token, Requirements: placement.Requirements{},
+		})
 		for _, want := range c.want {
 			if !errors.Is(err, want) {
 				t.Errorf("%s: err %v, want %v", c.name, err, want)
@@ -822,7 +832,9 @@ func TestCreateRejectsAmountBelowPrice(t *testing.T) {
 		OrderID: "o", Kind: ordertoken.KindStart, PackageID: smallPkg,
 		AmountMicros: smallPrice - 1,
 	})
-	if _, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}}); !errors.Is(
+	if _, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	}); !errors.Is(
 		err, saga.ErrUnderpaid) {
 		t.Fatalf("err %v, want ErrUnderpaid", err)
 	}
@@ -838,7 +850,9 @@ func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	tok := e.startToken(t, "order-1")
 	wantH, _ := handle.Derive(e.handleKey, "order-1")
 
-	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{GPU: true}})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{GPU: true},
+	})
 	if !errors.Is(err, placement.ErrNoCandidate) {
 		t.Fatalf("err %v, want ErrNoCandidate", err)
 	}
@@ -857,7 +871,9 @@ func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	}
 
 	// A repeat finds the failed placement even once a candidate exists
-	again, h2, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
+	again, h2, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	if !errors.Is(err, placement.ErrNoCandidate) || again.ID != p.ID || h2 != wantH ||
 		again.State != store.PlacementFailed {
 		t.Fatalf("repeat %+v %q %v", again, h2, err)
@@ -898,7 +914,9 @@ func TestCreateStoresNeedsSecrets(t *testing.T) {
 		{"order-secrets-gpu", placement.Requirements{Secrets: true, GPU: true}, true,
 			store.PlacementFailed},
 	} {
-		p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, c.order), Requirements: c.req})
+		p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+			Token: e.startToken(t, c.order), Requirements: c.req,
+		})
 		if err != nil && !errors.Is(err, placement.ErrNoCandidate) {
 			t.Fatalf("%s: %v", c.order, err)
 		}
@@ -914,7 +932,9 @@ func TestCreateStoresNeedsSecrets(t *testing.T) {
 func TestPlacingHeartbeats(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a", ReadyDelay: time.Second})
 	e := newEnvWith(t, func(d *saga.Deps) { d.HeartbeatInterval = 50 * time.Millisecond }, a)
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1303,7 +1323,9 @@ func TestFailStuckRacingPlacingReleasesOneSlot(t *testing.T) {
 	if ok, err := e.store.ReservePlacementCapacity(ctx, other.ID, "a", 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
-	p, _, err := e.saga.Create(ctx, saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(ctx, saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1342,7 +1364,9 @@ func TestStuckDestroyDoesNotHangPlacing(t *testing.T) {
 	a := stuckDestroy{newLocal(t, local.Options{Name: "a"}), make(chan struct{})}
 	e := newEnv(t, a)
 	t.Cleanup(func() { close(a.unblock) })
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1369,7 +1393,9 @@ func TestReadyAfterPlacementLeftPlacing(t *testing.T) {
 		make(chan struct{})}
 	e := newEnv(t, a)
 	msgs := e.subscribe(t)
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -479,7 +479,7 @@ func TestRenewalStopsAtMaxHold(t *testing.T) {
 }
 
 func TestRenewalRefusedPastTheFloor(t *testing.T) {
-	// A 150 s hold takes the margin of this $0.05 package to its floor of 50%, a longer one under it
+	// A 150 s hold takes this $0.05 package's margin to its floor of 50%, a longer one under it
 	a := pricey{newLocal(t, local.Options{Name: "a"}), 120_000}
 	e, clk := reserveEnv(t, reserveSettings("a"), nil, a)
 	first := e.reserve(t, "q2.f", smallPkg)
@@ -703,8 +703,8 @@ func TestRetriedOrderReturnsTheBoundPlacement(t *testing.T) {
 	eq(t, err, nil)
 	e.saga.Wait()
 	var named uuid.UUID
-	eq(t, e.pool.QueryRow(t.Context(), `select placement_id from orders where order_id = 'order-1'`).
-		Scan(&named), nil)
+	eq(t, e.pool.QueryRow(t.Context(),
+		`select placement_id from orders where order_id = 'order-1'`).Scan(&named), nil)
 	// The order row names the reservation's placement id, and a retry reads it from there
 	eq(t, named, r.PlacementID)
 	again, h2, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, QuoteID: "q2.t"})

@@ -128,7 +128,8 @@ func (f reserveFile) read(d reserveFile) (Reserve, error) {
 	} {
 		got, err := time.ParseDuration(cmp.Or(v.raw, v.def))
 		if err != nil || got < v.min || got > v.max {
-			return Reserve{}, fmt.Errorf("reserve.%s must be a Go duration from %s to %s such as %s",
+			return Reserve{}, fmt.Errorf(
+				"reserve.%s must be a Go duration from %s to %s such as %s",
 				v.key, v.min, v.max, v.def)
 		}
 		*v.into = got
@@ -157,7 +158,8 @@ func (f reserveFile) read(d reserveFile) (Reserve, error) {
 		*n.into = int(n.v)
 	}
 	if f.SpeculativeMaxHourlyMicros < 0 || f.SpeculativeMaxHourlyMicros > 1_000_000_000 {
-		return Reserve{}, fmt.Errorf("reserve.speculative_max_hourly_micros must be 0 to 1000000000")
+		return Reserve{}, fmt.Errorf(
+			"reserve.speculative_max_hourly_micros must be 0 to 1000000000")
 	}
 	r.SpeculativeMaxHourlyMicros = f.SpeculativeMaxHourlyMicros
 	for _, s := range f.SharedRanges {

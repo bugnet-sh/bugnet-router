@@ -679,7 +679,7 @@ func rowReserveBind(t *testing.T, s *stack) {
 	t.Logf("RSV1: held %s before the bind, which took %s with its command, about %d micros of "+
 		"provider time for the hold", hold.Round(time.Second), bind.Round(time.Millisecond), cost)
 
-	// Each extension adds 10 minutes, and the provider's lifetime counts from the sandbox's creation
+	// Each extension adds 10 minutes, and the provider's lifetime counts from the sandbox's start
 	extended := 0
 	for extended < 8 {
 		if _, stderr, err := s.devTry(t, "check-extend", "--handle", h, "--package",

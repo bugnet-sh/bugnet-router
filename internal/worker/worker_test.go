@@ -451,7 +451,9 @@ func (e *env) placeReady(t *testing.T, order string) (store.Placement, string) {
 	tok := e.token(t, ordertoken.Claims{
 		OrderID: order, Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: smallPrice,
 	})
-	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatalf("create %s: %v", order, err)
 	}

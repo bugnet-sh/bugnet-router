@@ -32,9 +32,9 @@
 // probes hold every 5 minutes. foreign_count counts each provider's sandboxes no known deployment
 // owns every hour, 200 services a run. reserve_watch runs every 10 s and lapses reservations past
 // their grace, fails the stale ones and the awaited ones whose placement left placing, retires the
-// members they leave held and sets or clears the reservation brake. cost_daily_tick queues the check of the day before, and
-// cost_daily reads one page of a provider's usage into its provider_cost_daily row and queues
-// the next until the last.
+// members they leave held and sets or clears the reservation brake. cost_daily_tick queues the
+// check of the day before, and cost_daily reads one page of a provider's usage into its
+// provider_cost_daily row and queues the next until the last.
 package worker
 
 import (

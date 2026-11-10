@@ -340,7 +340,8 @@ func (s *Saga) renew(
 	fitsStill := false
 	if err == nil {
 		for _, c := range cands {
-			fitsStill = fitsStill || c.Provider.Name() == mem.Provider && c.Size.Name == mem.SizeName
+			fitsStill = fitsStill ||
+				c.Provider.Name() == mem.Provider && c.Size.Name == mem.SizeName
 		}
 	}
 	if !fitsStill {
@@ -370,7 +371,7 @@ func (s *Saga) holdOne(
 	}
 	res.Path = store.ReservePooled
 	if mem.ID == uuid.Nil {
-		if mem, cand, err = s.startForReserve(ctx, ts, pkg, cands, res.ID); err != nil {
+		if mem, cand, err = s.startForReserve(ctx, ts, cands, res.ID); err != nil {
 			return res, store.Member{}, cand, err
 		}
 		res.Path = store.ReserveSpeculative
@@ -433,8 +434,7 @@ func (s *Saga) claimForReserve(
 //
 // With cost first only the candidate a cold order would take is looked at, as for step 4.
 func (s *Saga) startForReserve(
-	ctx context.Context, ts *store.Store, pkg catalog.Package, cands []placement.Candidate,
-	reservation uuid.UUID,
+	ctx context.Context, ts *store.Store, cands []placement.Candidate, reservation uuid.UUID,
 ) (store.Member, placement.Candidate, error) {
 	cfg := s.d.Reserve
 	if !s.d.WarmFirst && len(cands) > 1 {
@@ -526,7 +526,8 @@ func (s *Saga) ReleaseReservation(ctx context.Context, quoteID string) error {
 			return err
 		}
 		cur, err := ts.OpenReservation(ctx, sha)
-		if errors.Is(err, store.ErrNotFound) || err == nil && cur.State == store.ReservationAwaited {
+		if errors.Is(err, store.ErrNotFound) ||
+			err == nil && cur.State == store.ReservationAwaited {
 			return nil
 		}
 		if err != nil {
@@ -748,7 +749,8 @@ func (s *Saga) prepareReservation(
 	name := prov.Name()
 	started := s.now()
 	smp := s.sampleOf(store.Placement{}, prov, size, started)
-	smp.Kind, smp.StartPath, smp.MemberID, smp.ReservationID = store.SampleReserve, r.Path, m.ID, r.ID
+	smp.Kind, smp.StartPath = store.SampleReserve, r.Path
+	smp.MemberID, smp.ReservationID = m.ID, r.ID
 	smp.WakeMS = store.NoStep
 	stop := func(err error, record bool) {
 		if record {
@@ -852,8 +854,8 @@ func (s *Saga) startMember(
 	created := s.now()
 	ref, err := s.create(ctx, prov, provider.CreateRequest{
 		IdempotencyKey: m.IdempotencyKey, Size: size, Labels: s.memberLabels(m),
-		Lifetime: r.HoldUntil.Sub(created) + cfg.LapseGrace + time.Duration(pkg.Minutes)*time.Minute +
-			lifetimeSlack,
+		Lifetime: r.HoldUntil.Sub(created) + cfg.LapseGrace +
+			time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
 		Egress: s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
 	smp.CreateMS = int(s.now().Sub(created).Milliseconds())

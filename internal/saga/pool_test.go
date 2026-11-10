@@ -283,7 +283,9 @@ func TestFailStuckRetiresBoundMembers(t *testing.T) {
 	e := newPoolEnv(t, nil, a)
 	members := e.fill(t)
 	// A placement that is placing, holding a member as its saga would mid-claim
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

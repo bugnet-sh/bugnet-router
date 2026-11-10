@@ -20,7 +20,8 @@ const targetWindow = time.Hour
 // reserveLines reports CP 18.9.3's target line and CP 18.18's brake line
 //
 // The target line shows when the hour's reserved and pooled placements number at least
-// targets.min_placements and their p90 of payment to first command is over targets.first_command_p90.
+// targets.min_placements and their p90 of payment to first command is over
+// targets.first_command_p90.
 // The brake line shows while reserve:brake is set, with the counts that set it.
 func reserveLines(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, t config.Targets,

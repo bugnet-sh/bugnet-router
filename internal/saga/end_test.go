@@ -411,7 +411,9 @@ func TestRefundsExcludeAllowance(t *testing.T) {
 		OrderID: "paid", Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: 1053000,
 		AllowanceMicros: 1000000,
 	})
-	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
