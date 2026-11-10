@@ -41,6 +41,8 @@ type Placement struct {
 	// SandboxCreatedAt is when the provider made a pooled sandbox, nil for a cold start, whose
 	// sandbox is as old as the placement
 	SandboxCreatedAt *time.Time
+	// PaidAt is when the order was paid, the start of the 5 s target
+	PaidAt *time.Time
 	// TerminationReason is why the placement moved to terminating, empty before it did
 	TerminationReason string
 	TerminatingAt     *time.Time
@@ -126,6 +128,8 @@ type NewPlacement struct {
 	Tx string
 	// Source is the estimate's source, nil for none
 	Source *PlacementSource
+	// PaidAt is when the order was paid, the transaction's time when zero
+	PaidAt time.Time
 }
 
 // Order is a start or extend order the router took, with the placement it is for
@@ -185,7 +189,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 			and not (placements.state = 'failed' and placements.refundable)),
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
 	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes,
-	coalesce(start_path, ''), sandbox_created_at`
+	coalesce(start_path, ''), sandbox_created_at, paid_at`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -203,7 +207,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
 		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes, &p.StartPath,
-		&p.SandboxCreatedAt)
+		&p.SandboxCreatedAt, &p.PaidAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -232,6 +236,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	p.GateReadyAt = utcPtr(p.GateReadyAt)
 	p.DegradedSince = utcPtr(p.DegradedSince)
 	p.SandboxCreatedAt = utcPtr(p.SandboxCreatedAt)
+	p.PaidAt = utcPtr(p.PaidAt)
 	return p, nil
 }
 
@@ -397,14 +402,14 @@ func (s *Store) InsertPlacement(ctx context.Context, p NewPlacement) (Placement,
 		insert into placements (id, handle_sha256, order_id, package_id, state,
 			failure_reason, refundable, terminated_at, key_id, needs_secrets, payer,
 			estimate_id, source_kind, source_canonical, source_ref, source_revision,
-			source_read, source_label, source_unread)
+			source_read, source_label, source_unread, paid_at)
 		values ($1, $2, $3, $4, $5, $6, $7, case when $7 then now() end, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18)`,
+			$11, $12, $13, $14, $15, $16, $17, $18, coalesce($19, now()))`,
 		p.ID, p.HandleSHA256, p.OrderID, p.PackageID, state, nullIfEmpty(p.FailureReason),
 		failed, nullIfEmpty(p.KeyID), p.NeedsSecrets, nullIfEmpty(p.Payer), estimate,
 		nullIfEmpty(src.Kind), nullIfEmpty(src.Canonical), nullIfEmpty(src.Ref),
 		nullIfEmpty(src.Revision), src.Read && estimate != nil, nullIfEmpty(src.Label),
-		nullIfEmpty(src.Unread))
+		nullIfEmpty(src.Unread), nullTime(p.PaidAt))
 	if err != nil {
 		return Placement{}, fmt.Errorf("insert placement: %w", err)
 	}

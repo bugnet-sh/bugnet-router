@@ -29,6 +29,10 @@ const (
 	PathCold   = "cold"
 	PathPooled = "pooled"
 	PathPool   = "pool"
+	// PathReserved is a placement that bound a reservation's sandbox
+	PathReserved = "reserved"
+	// PathSpeculative is the sample path of a reservation that started its own sandbox
+	PathSpeculative = "speculative"
 )
 
 // Sample outcomes, of which only ok and failed count in a provider's health
@@ -70,6 +74,15 @@ type StartSample struct {
 	MemberID uuid.UUID
 	// WakeMS is the time to wake a parked member, negative when none was woken
 	WakeMS int
+	// ReservationID is the reservation a reserve sample or a bound start belongs to
+	ReservationID uuid.UUID
+	// Hedge says a second attempt ran beside this one
+	Hedge bool
+	// BindMS is CreatePlacement to ready and PaidToReadyMS payment to ready, zero for none
+	BindMS, PaidToReadyMS int
+	// FirstFrameMS is the first frame time of the placement's first job, read with the sample
+	// and zero for none
+	FirstFrameMS int
 }
 
 // NoStep marks a StartSample timing that did not run
@@ -94,14 +107,15 @@ func (s *Store) InsertStartSample(ctx context.Context, m StartSample) error {
 			insert into start_samples (id, kind, bench_id, placement_id, provider, size_name,
 				sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms,
 				warm_cmd_ms, destroy_ms, outcome, error_code, error, cost_micros, replica,
-				start_path, member_id, wake_ms)
+				start_path, member_id, wake_ms, reservation_id, hedge, bind_ms, paid_to_ready_ms)
 			values ($1, $2, nullif($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-				$16, $17, $18, $19, $20, nullif($21, ''), $22, $23)`,
+				$16, $17, $18, $19, $20, nullif($21, ''), $22, $23, $24, $25, $26, $27)`,
 			m.ID, string(m.Kind), m.BenchID, nilUUID(m.PlacementID), m.Provider, m.SizeName,
 			m.SandboxID, utc(m.StartedAt), step(m.CreateMS), step(m.ReadyMS), step(m.RunnerMS),
 			step(m.GateMS), step(m.FirstCmdMS), step(m.WarmCmdMS), step(m.DestroyMS), m.Outcome,
 			m.ErrorCode, m.Error, m.CostMicros, m.Replica, m.StartPath, nilUUID(m.MemberID),
-			step(m.WakeMS))
+			step(m.WakeMS), nilUUID(m.ReservationID), m.Hedge, nullIf0(m.BindMS),
+			nullIf0(m.PaidToReadyMS))
 		if err != nil {
 			return fmt.Errorf("insert start sample: %w", err)
 		}
@@ -129,7 +143,9 @@ func step(ms int) any {
 const startSampleColumns = `id, kind, coalesce(bench_id, ''), placement_id, provider, size_name,
 	sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms, warm_cmd_ms,
 	destroy_ms, outcome, error_code, error, cost_micros, replica, coalesce(start_path, ''),
-	member_id, wake_ms`
+	member_id, wake_ms, reservation_id, hedge, bind_ms, paid_to_ready_ms,
+	coalesce((select j.first_frame_ms from jobs j where j.placement_id = start_samples.placement_id
+		order by j.created_at, j.id limit 1), 0)`
 
 // StartSamples returns the samples of provider since a time, oldest first
 func (s *Store) StartSamples(
@@ -143,7 +159,10 @@ type SampleFilter struct {
 	BenchID  string
 	Provider string
 	Kinds    []SampleKind
-	Since    time.Time
+	// Paths are the start paths to keep, hedged naming the samples of a start with a second
+	// attempt, every path when empty
+	Paths []string
+	Since time.Time
 }
 
 // SampleQuery returns the samples f picks, oldest first
@@ -152,11 +171,17 @@ func (s *Store) SampleQuery(ctx context.Context, f SampleFilter) ([]StartSample,
 	for i, k := range f.Kinds {
 		kinds[i] = string(k)
 	}
+	paths := f.Paths
+	if paths == nil {
+		paths = []string{}
+	}
 	rows, err := s.q.Query(ctx, `select `+startSampleColumns+`
 		from start_samples
 		where ($1 = '' or bench_id = $1) and ($2 = '' or provider = $2)
 			and (cardinality($3::text[]) = 0 or kind = any($3)) and started_at >= $4
-		order by started_at, id`, f.BenchID, f.Provider, kinds, utc(f.Since))
+			and (cardinality($5::text[]) = 0 or coalesce(start_path, '') = any($5)
+				or 'hedged' = any($5) and hedge)
+		order by started_at, id`, f.BenchID, f.Provider, kinds, utc(f.Since), paths)
 	if err != nil {
 		return nil, fmt.Errorf("select start samples: %w", err)
 	}
@@ -164,12 +189,21 @@ func (s *Store) SampleQuery(ctx context.Context, f SampleFilter) ([]StartSample,
 		var m StartSample
 		var placement *uuid.UUID
 		var t [7]*int
-		var member *uuid.UUID
-		var wake *int
+		var member, reservation *uuid.UUID
+		var wake, bind, paid *int
 		err := r.Scan(&m.ID, &m.Kind, &m.BenchID, &placement, &m.Provider, &m.SizeName,
 			&m.SandboxID, &m.StartedAt, &t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6],
 			&m.Outcome, &m.ErrorCode, &m.Error, &m.CostMicros, &m.Replica, &m.StartPath, &member,
-			&wake)
+			&wake, &reservation, &m.Hedge, &bind, &paid, &m.FirstFrameMS)
+		if reservation != nil {
+			m.ReservationID = *reservation
+		}
+		if bind != nil {
+			m.BindMS = *bind
+		}
+		if paid != nil {
+			m.PaidToReadyMS = *paid
+		}
 		if placement != nil {
 			m.PlacementID = *placement
 		}
@@ -243,6 +277,9 @@ type HealthCounts struct {
 	OK, Failed int
 	// ReadyP95 is the nearest-rank 95th percentile of ready_ms over ok samples, 0 without any
 	ReadyP95 time.Duration
+	// ColdTotalP95 and PooledTotalP95 are the nearest-rank 95th percentiles of whole attempts, the
+	// steps from the start to ready added, over the ok samples of the cold and pooled paths
+	ColdTotalP95, PooledTotalP95 time.Duration
 	// LastCanaries are the outcomes of the last two canary samples that count, newest first
 	LastCanaries []string
 }
@@ -252,19 +289,29 @@ func (s *Store) HealthWindow(
 	ctx context.Context, provider string, since time.Time,
 ) (HealthCounts, error) {
 	var c HealthCounts
-	var p95 *float64
+	var p95, cold, pooled *float64
 	err := s.q.QueryRow(ctx, `
 		select count(*) filter (where outcome = 'ok'), count(*) filter (where outcome = 'failed'),
 			percentile_disc(0.95) within group (order by ready_ms)
 				filter (where outcome = 'ok' and ready_ms is not null and kind <> 'pool'
-					and coalesce(start_path, 'cold') = 'cold')
+					and coalesce(start_path, 'cold') = 'cold'),
+			percentile_disc(0.95) within group (order by `+attemptTotal+`)
+				filter (where outcome = 'ok' and kind <> 'pool'
+					and coalesce(start_path, 'cold') = 'cold'),
+			percentile_disc(0.95) within group (order by `+attemptTotal+`)
+				filter (where outcome = 'ok' and kind <> 'pool' and start_path = 'pooled')
 		from start_samples where provider = $1 and started_at >= $2`,
-		provider, utc(since)).Scan(&c.OK, &c.Failed, &p95)
+		provider, utc(since)).Scan(&c.OK, &c.Failed, &p95, &cold, &pooled)
 	if err != nil {
 		return HealthCounts{}, fmt.Errorf("count start samples: %w", err)
 	}
-	if p95 != nil {
-		c.ReadyP95 = time.Duration(*p95 * float64(time.Millisecond))
+	for _, v := range []struct {
+		from *float64
+		to   *time.Duration
+	}{{p95, &c.ReadyP95}, {cold, &c.ColdTotalP95}, {pooled, &c.PooledTotalP95}} {
+		if v.from != nil {
+			*v.to = time.Duration(*v.from * float64(time.Millisecond))
+		}
 	}
 	rows, err := s.q.Query(ctx, `
 		select outcome from start_samples
@@ -280,6 +327,10 @@ func (s *Store) HealthWindow(
 	return c, nil
 }
 
+// attemptTotal is a whole attempt's time, its steps from the start to ready added
+const attemptTotal = `(coalesce(ready_ms, 0) + coalesce(runner_ms, 0) + coalesce(gate_ms, 0)
+	+ coalesce(wake_ms, 0))`
+
 // HealthState is what a rollup writes to one provider's health row
 type HealthState struct {
 	State string
@@ -287,6 +338,8 @@ type HealthState struct {
 	Samples   int
 	SuccessLB float64
 	ReadyP95  time.Duration
+	// ColdTotalP95 and PooledTotalP95 are the whole-attempt p95 figures hedges read
+	ColdTotalP95, PooledTotalP95 time.Duration
 }
 
 // WriteHealth stores a rollup, moving state_since only when the state changes, and returns the
@@ -314,9 +367,11 @@ func (s *Store) WriteHealth(
 		_, err = tx.Exec(ctx, `
 			update provider_health set state = $2,
 				state_since = case when state = $2 then state_since else $3::timestamptz end,
-				samples = $4, success_lb = $5, ready_p95_ms = $6, updated_at = $3
+				samples = $4, success_lb = $5, ready_p95_ms = $6, updated_at = $3,
+				cold_total_p95_ms = $7, pooled_total_p95_ms = $8
 			where provider = $1`, provider, h.State, utc(at), h.Samples, h.SuccessLB,
-			int(h.ReadyP95/time.Millisecond))
+			int(h.ReadyP95/time.Millisecond), nullIf0(int(h.ColdTotalP95/time.Millisecond)),
+			nullIf0(int(h.PooledTotalP95/time.Millisecond)))
 		if err != nil {
 			return fmt.Errorf("write health: %w", err)
 		}

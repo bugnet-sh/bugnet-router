@@ -85,12 +85,13 @@ func (o *OperatorServer) StartBench(
 	}), nil
 }
 
-// ReportStarts groups the start samples of a benchmark or a time window by provider, size and kind
+// ReportStarts groups the start samples of a benchmark or a time window by provider, size, kind and
+// start path
 func (o *OperatorServer) ReportStarts(
 	ctx context.Context, req *connect.Request[routerv1.ReportStartsRequest],
 ) (*connect.Response[routerv1.ReportStartsResponse], error) {
 	m, s := req.Msg, o.s
-	f := store.SampleFilter{Provider: m.GetProvider()}
+	f := store.SampleFilter{Provider: m.GetProvider(), Paths: m.GetStartPaths()}
 	for _, k := range m.GetKinds() {
 		kind, ok := sampleKinds[k]
 		if !ok {
@@ -139,7 +140,10 @@ func startReportMsg(r bench.Report) *routerv1.StartReport {
 		SuccessLowerBound: r.SuccessLower, Create: stepMsg(r.Create), Ready: stepMsg(r.Ready),
 		Runner: stepMsg(r.Runner), Gate: stepMsg(r.Gate), FirstCommand: stepMsg(r.FirstCmd),
 		WarmCommand: stepMsg(r.WarmCmd), Destroy: stepMsg(r.Destroy), Total: stepMsg(r.Total),
-		CostMicros: r.CostMicros, Errors: map[string]uint32{},
+		CostMicros: r.CostMicros, Errors: map[string]uint32{}, StartPath: r.StartPath,
+		Bind: stepMsg(r.Bind), PaidToReady: stepMsg(r.PaidToReady),
+		FirstFrame: stepMsg(r.FirstFrame), PaidToFirstFrame: stepMsg(r.PaidToFirstFrame),
+		Wake: stepMsg(r.Wake),
 	}
 	for k, v := range sampleKinds {
 		if v == r.Kind {

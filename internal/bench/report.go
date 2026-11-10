@@ -33,7 +33,12 @@ type Report struct {
 	WarmCmd      Steps
 	Destroy      Steps
 	Total        Steps
-	CostMicros   int64
+	// StartPath is cold, pooled, reserved or pool, empty for samples that name none
+	StartPath string
+	// Bind is CreatePlacement to ready, PaidToReady payment to ready, FirstFrame the first job's
+	// first frame and PaidToFirstFrame payment to that frame, Wake the unpark or claim
+	Bind, PaidToReady, FirstFrame, PaidToFirstFrame, Wake Steps
+	CostMicros                                            int64
 	// Errors counts the failures by the provider's error code
 	Errors map[string]int
 }
@@ -41,13 +46,15 @@ type Report struct {
 type groupKey struct {
 	provider, size string
 	kind           store.SampleKind
+	path           string
 }
 
-// Build groups samples by provider, size and kind and reports each group, in that order
+// Build groups samples by provider, size, kind and start path and reports each group, in that
+// order
 func Build(samples []store.StartSample) []Report {
 	groups := map[groupKey][]store.StartSample{}
 	for _, m := range samples {
-		k := groupKey{m.Provider, m.SizeName, m.Kind}
+		k := groupKey{m.Provider, m.SizeName, m.Kind, m.StartPath}
 		groups[k] = append(groups[k], m)
 	}
 	keys := make([]groupKey, 0, len(groups))
@@ -56,7 +63,7 @@ func Build(samples []store.StartSample) []Report {
 	}
 	slices.SortFunc(keys, func(a, b groupKey) int {
 		return cmp.Or(cmp.Compare(a.provider, b.provider), cmp.Compare(a.size, b.size),
-			cmp.Compare(a.kind, b.kind))
+			cmp.Compare(a.kind, b.kind), cmp.Compare(a.path, b.path))
 	})
 	out := make([]Report, 0, len(keys))
 	for _, k := range keys {
@@ -66,8 +73,12 @@ func Build(samples []store.StartSample) []Report {
 }
 
 func reportOf(k groupKey, samples []store.StartSample) Report {
-	r := Report{Provider: k.provider, Size: k.size, Kind: k.kind, Errors: map[string]int{}}
+	r := Report{
+		Provider: k.provider, Size: k.size, Kind: k.kind, StartPath: k.path,
+		Errors: map[string]int{},
+	}
 	var create, ready, runner, gate, first, warm, destroy, total []int
+	var bind, paid, frame, paidFrame, wake []int
 	for _, m := range samples {
 		r.CostMicros += m.CostMicros
 		switch m.Outcome {
@@ -91,6 +102,12 @@ func reportOf(k groupKey, samples []store.StartSample) Report {
 		if m.ReadyMS >= 0 && m.FirstCmdMS >= 0 {
 			total = append(total, m.ReadyMS+max(m.RunnerMS, 0)+max(m.GateMS, 0)+m.FirstCmdMS)
 		}
+		wake = ran(wake, m.WakeMS)
+		bind, paid = positive(bind, m.BindMS), positive(paid, m.PaidToReadyMS)
+		frame = positive(frame, m.FirstFrameMS)
+		if m.PaidToReadyMS > 0 && m.FirstFrameMS > 0 {
+			paidFrame = append(paidFrame, m.PaidToReadyMS+m.FirstFrameMS)
+		}
 	}
 	if n := r.OK + r.Failed; n > 0 {
 		r.SuccessRate = float64(r.OK) / float64(n)
@@ -99,7 +116,17 @@ func reportOf(k groupKey, samples []store.StartSample) Report {
 	r.Create, r.Ready, r.Runner, r.Gate = steps(create), steps(ready), steps(runner), steps(gate)
 	r.FirstCmd, r.WarmCmd, r.Destroy = steps(first), steps(warm), steps(destroy)
 	r.Total = steps(total)
+	r.Bind, r.PaidToReady, r.FirstFrame = steps(bind), steps(paid), steps(frame)
+	r.PaidToFirstFrame, r.Wake = steps(paidFrame), steps(wake)
 	return r
+}
+
+// positive adds a step's time when it was measured, a zero meaning it was not
+func positive(into []int, ms int) []int {
+	if ms <= 0 {
+		return into
+	}
+	return append(into, ms)
 }
 
 // ran adds a step's time when the step ran
@@ -125,20 +152,28 @@ func Format(w io.Writer, head string, r Report, estimatedMicros int64) error {
 	line("%s", head)
 	line("outcome    ok %d   failed %d (refused %d)   success %.1f%% (95%% lower bound %.1f%%)",
 		r.OK, r.Failed, r.Refused, r.SuccessRate*100, r.SuccessLower*100)
-	line("%-10s %8s %8s %8s", "", "p50", "p90", "p99")
+	line("%-11s %8s %8s %8s", "", "p50", "p90", "p99")
 	for _, row := range []struct {
 		name string
 		s    Steps
+		// optional leaves the row out when no sample measured the step
+		optional bool
 	}{
-		{"create", r.Create}, {"ready", r.Ready}, {"runner", r.Runner}, {"gate", r.Gate},
-		{"first cmd", r.FirstCmd}, {"warm cmd", r.WarmCmd}, {"destroy", r.Destroy},
-		{"total", r.Total},
+		{"create", r.Create, false}, {"ready", r.Ready, false}, {"runner", r.Runner, false},
+		{"gate", r.Gate, false}, {"first cmd", r.FirstCmd, false},
+		{"warm cmd", r.WarmCmd, false}, {"destroy", r.Destroy, false}, {"total", r.Total, false},
+		{"bind", r.Bind, true}, {"paid>ready", r.PaidToReady, true},
+		{"first frame", r.FirstFrame, true}, {"paid>frame", r.PaidToFirstFrame, true},
+		{"wake", r.Wake, true},
 	} {
-		if row.s.Samples == 0 {
-			line("%-10s %8s %8s %8s", row.name, "-", "-", "-")
+		if row.optional && row.s.Samples == 0 {
 			continue
 		}
-		line("%-10s %8s %8s %8s", row.name, sec(row.s.P50), sec(row.s.P90), sec(row.s.P99))
+		if row.s.Samples == 0 {
+			line("%-11s %8s %8s %8s", row.name, "-", "-", "-")
+			continue
+		}
+		line("%-11s %8s %8s %8s", row.name, sec(row.s.P50), sec(row.s.P90), sec(row.s.P99))
 	}
 	if estimatedMicros > 0 {
 		line("cost       %s measured   (%s estimated)", usd(r.CostMicros), usd(estimatedMicros))

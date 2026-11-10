@@ -151,3 +151,11 @@ func nullIfEmpty(s string) any {
 	}
 	return s
 }
+
+// nullTime is nil for the zero time, so the column holds null
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return utc(t)
+}

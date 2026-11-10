@@ -76,6 +76,9 @@ func New(reg *provider.Registry, health Health, warm Warm) *Engine {
 	return &Engine{reg: reg, health: health, warm: warm}
 }
 
+// Healthy reports whether the engine's health source lets the provider be tried now
+func (e *Engine) Healthy(name string) bool { return e.health.Healthy(name) }
+
 // Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package

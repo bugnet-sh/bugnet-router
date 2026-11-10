@@ -245,7 +245,8 @@ func (s *Store) StartFill(
 	return m, err
 }
 
-// MarkMemberCreated records the sandbox a fill created, so a crash leaves its id behind
+// MarkMemberCreated records the sandbox a fill or a reservation created, so a crash leaves its id
+// behind
 func (s *Store) MarkMemberCreated(
 	ctx context.Context, id uuid.UUID, ref provider.Ref, createdAt time.Time,
 ) error {
@@ -259,7 +260,7 @@ func (s *Store) MarkMemberCreated(
 	}
 	tag, err := s.q.Exec(ctx, `
 		update pool_members set provider_ref = $2, sandbox_created_at = $3
-		where id = $1 and state = 'filling'`, id, raw, utc(createdAt))
+		where id = $1 and state in ('filling', 'held')`, id, raw, utc(createdAt))
 	if err != nil {
 		return fmt.Errorf("mark member created: %w", err)
 	}

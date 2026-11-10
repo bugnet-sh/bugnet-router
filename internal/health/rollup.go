@@ -46,7 +46,10 @@ func (r Rules) State(c Counts) store.HealthState {
 	case n >= r.MinSamples && c.ReadyP95 > r.SlowReadyP95:
 		state = store.HealthSlow
 	}
-	return store.HealthState{State: state, Samples: n, SuccessLB: lb, ReadyP95: c.ReadyP95}
+	return store.HealthState{
+		State: state, Samples: n, SuccessLB: lb, ReadyP95: c.ReadyP95,
+		ColdTotalP95: c.ColdTotalP95, PooledTotalP95: c.PooledTotalP95,
+	}
 }
 
 // Rollup judges every provider, keeping each one's previous state when canary failures alone
