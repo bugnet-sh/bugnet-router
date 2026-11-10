@@ -660,5 +660,6 @@ func (s *Saga) terminatedEvent(
 		ev.Refunds = refunds(orders, unused)
 	}
 	ev.UnusedSeconds = &unused
+	ev.CostMicros, ev.EdgeBytes, ev.EgressBytes = &p.CostMicros, &p.EdgeBytes, &p.EgressBytes
 	return ev, nil
 }

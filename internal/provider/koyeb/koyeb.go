@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -747,21 +748,38 @@ func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 func (p *Provider) ListOwned(
 	ctx context.Context, labels map[string]string,
 ) ([]provider.Summary, error) {
+	items, listErr := p.sandboxServices(ctx)
+	owned, err := p.summaries(ctx, items, labels)
+	if listErr == nil && err == nil {
+		p.forgetAllBut(items)
+	}
+	return owned, errors.Join(listErr, err)
+}
+
+// sandboxServices lists the bn- services, and the ones it found when the listing is cut short
+func (p *Provider) sandboxServices(ctx context.Context) ([]serviceRecord, error) {
 	var items []serviceRecord
-	listErr := p.eachService(ctx, "", func(s serviceRecord) bool {
+	err := p.eachService(ctx, "", func(s serviceRecord) bool {
 		// A service still being created has no deployment to read labels from yet
 		if strings.HasPrefix(s.Name, namePrefix) && s.LatestDeploymentID != "" {
 			items = append(items, s)
 		}
 		return true
 	})
+	return items, err
+}
+
+// summaries reads the summary of each service and keeps the ones carrying every label
+func (p *Provider) summaries(
+	ctx context.Context, items []serviceRecord, labels map[string]string,
+) ([]provider.Summary, error) {
 	var owned []provider.Summary
 	var wait time.Duration
 	for _, s := range items {
 		sum, ok := p.knownSummary(s)
 		if !ok {
 			if wait > 0 && !sleep(ctx, wait) {
-				return owned, errors.Join(listErr, ctx.Err())
+				return owned, ctx.Err()
 			}
 			dep, err := p.deployment(ctx, s.LatestDeploymentID)
 			wait = 0
@@ -769,7 +787,7 @@ func (p *Provider) ListOwned(
 				wait = e.RetryAfter
 			}
 			if ctx.Err() != nil {
-				return owned, errors.Join(listErr, ctx.Err())
+				return owned, ctx.Err()
 			}
 			if err != nil {
 				// One unreadable sandbox must not stop the sweep, the next sweep reads it again
@@ -797,10 +815,31 @@ func (p *Provider) ListOwned(
 			owned = append(owned, sum)
 		}
 	}
-	if listErr == nil {
-		p.forgetAllBut(items)
+	return owned, nil
+}
+
+// ListLabelled reads the deployments of up to limit of the bn- services from the cursor on, the
+// cursor being the number of services already read. Koyeb needs one read for each.
+func (p *Provider) ListLabelled(
+	ctx context.Context, labels map[string]string, cursor string, limit int,
+) (provider.ForeignPage, error) {
+	items, err := p.sandboxServices(ctx)
+	if err != nil {
+		return provider.ForeignPage{}, err
 	}
-	return owned, listErr
+	slices.SortFunc(items, func(a, b serviceRecord) int { return strings.Compare(a.ID, b.ID) })
+	start, _ := strconv.Atoi(cursor)
+	start = min(max(start, 0), len(items))
+	end := min(start+limit, len(items))
+	owned, err := p.summaries(ctx, items[start:end], labels)
+	if err != nil {
+		return provider.ForeignPage{}, err
+	}
+	out := provider.ForeignPage{Sandboxes: owned}
+	if end < len(items) {
+		out.Next = strconv.Itoa(end)
+	}
+	return out, nil
 }
 
 // expiresAt is when the service's backstop deletes it, zero when Koyeb gives none

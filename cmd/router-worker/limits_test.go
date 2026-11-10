@@ -19,7 +19,7 @@ import (
 func askLimits(st *store.Store, vk valkey.Client, lc limitsCheck) (int, string) {
 	rec := httptest.NewRecorder()
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
-		lc, nil, canaryCheck{}, lossCheck{})(rec,
+		lc, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }

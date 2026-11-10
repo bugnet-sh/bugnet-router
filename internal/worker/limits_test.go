@@ -162,5 +162,6 @@ func TestPeriodicPollIntervals(t *testing.T) {
 	eq(t, got, map[string]time.Duration{
 		"limits_poll/boat": 15 * time.Second, "account_check/boat": time.Minute,
 		"limits_poll/other": time.Minute, "account_check/other": time.Minute,
+		"foreign_count": time.Hour,
 	})
 }

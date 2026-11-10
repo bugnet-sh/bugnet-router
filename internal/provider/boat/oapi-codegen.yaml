@@ -35,3 +35,4 @@ output-options:
     - deleteWebhook
     - rotateWebhookSigningSecret
     - me
+    - usage

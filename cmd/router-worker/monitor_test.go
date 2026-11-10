@@ -52,7 +52,7 @@ func migrated(t *testing.T) *pgxpool.Pool {
 func probe(st *store.Store, vk valkey.Client, read vkinfo.Reader) (int, string) {
 	rec := httptest.NewRecorder()
 	monitor(discard, st, vk, testPrefix, read, testPools, feedCheck{}, nil,
-		limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+		limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
@@ -85,7 +85,7 @@ func TestMonitorAnswersWithinItsTimeout(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/monitor", nil)
 		monitor(discard, store.New(pool), vk, testPrefix, hung, testPools, feedCheck{}, nil,
-			limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec, req)
+			limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec, req)
 		answered <- strconv.Itoa(rec.Code) + " " + rec.Body.String()
 	}()
 	select {
@@ -258,7 +258,7 @@ func TestMonitorShowsEmptyPoolList(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, path, feedCheck{}, nil,
-			limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+			limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want ||
 			strings.Contains(rec.Body.String(), "pool.example.com") {
@@ -274,7 +274,7 @@ func TestMonitorShowsPayerTreatedAsAbsent(t *testing.T) {
 	ask := func() (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, prefix, healthy, testPools, feedCheck{}, nil,
-			limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+			limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -300,7 +300,7 @@ func TestMonitorShowsStaleStats(t *testing.T) {
 	ask := func(feed feedCheck) (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feed, nil,
-			limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+			limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -351,7 +351,7 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 		rec := httptest.NewRecorder()
 		disk := func(context.Context) (int64, error) { return percent, nil }
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, disk,
-			limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+			limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		if want == "" {
 			if rec.Code != http.StatusOK {
@@ -366,7 +366,7 @@ func TestMonitorShowsTheSessionDiskBudget(t *testing.T) {
 	rec := httptest.NewRecorder()
 	failing := func(context.Context) (int64, error) { return 0, errors.New("no size") }
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, failing,
-		limitsCheck{}, nil, canaryCheck{}, lossCheck{})(rec,
+		limitsCheck{}, nil, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("an unread size gave %d: %s", rec.Code, rec.Body)
@@ -388,7 +388,7 @@ func TestMonitorEgressSourcesLine(t *testing.T) {
 	ask := func(providers ...string) (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
-			limitsCheck{}, providers, canaryCheck{}, lossCheck{})(rec,
+			limitsCheck{}, providers, canaryCheck{}, lossCheck{}, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}

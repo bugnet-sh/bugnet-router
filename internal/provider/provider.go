@@ -300,3 +300,49 @@ type Account struct {
 type AccountChecker interface {
 	CheckAccount(ctx context.Context) (Account, error)
 }
+
+// SandboxUsage is what a provider billed for one sandbox, CostMicros -1 when it gives time only
+type SandboxUsage struct {
+	ID         string
+	Seconds    int64
+	CostMicros int64
+	// Deployment is the bugnet_deployment label the source ties to the sandbox, else empty
+	Deployment string
+}
+
+// Usage is one page of what a provider billed in a window
+type Usage struct {
+	Sandboxes []SandboxUsage
+	// TotalMicros is the account's bill for the page's window, -1 when the provider gives none
+	TotalMicros int64
+	// Complete is false while the provider may still add to the window
+	Complete bool
+	// Attributed is true when the source can name a sandbox's deployment, Deployment then
+	// being empty only for a sandbox it ties to none
+	Attributed bool
+	// Next is the cursor of the next page, empty after the last
+	Next string
+}
+
+// UsageReader is a provider that reports what it billed
+type UsageReader interface {
+	// ReadUsage reports use in [from, to) one page at a time, resuming at cursor and asking per
+	// sandbox for refs where the provider must
+	ReadUsage(ctx context.Context, from, to time.Time, refs []Ref, cursor string) (Usage, error)
+}
+
+// ForeignPage is one page of sandboxes found by label
+type ForeignPage struct {
+	Sandboxes []Summary
+	// Next is the cursor of the next page, empty after the last
+	Next string
+}
+
+// ForeignLister is a provider that lists sandboxes by label in bounded pages
+type ForeignLister interface {
+	// ListLabelled finds sandboxes carrying every label, resuming at cursor and reading at most
+	// limit services from the provider where it needs a read for each
+	ListLabelled(
+		ctx context.Context, labels map[string]string, cursor string, limit int,
+	) (ForeignPage, error)
+}

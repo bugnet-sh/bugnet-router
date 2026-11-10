@@ -572,12 +572,16 @@ func (s *Saga) attempt(
 			failOver: true, reason: reasonRateLimited, detail: "no create token for " + name,
 		}
 	}
+	hourly, fee := quote(prov, c.Size)
 	rec := store.Attempt{
 		PlacementID:    p.ID,
 		Attempt:        n,
 		Provider:       name,
 		IdempotencyKey: idempotencyKey(p.OrderID, n, name),
 		State:          attemptCreating,
+		SizeName:       c.Size.Name,
+		HourlyMicros:   hourly,
+		StartFeeMicros: fee,
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.release(ctx, p.ID)
@@ -1282,13 +1286,19 @@ func (s *Saga) terminate(
 	// A stop retried while the destroy is in flight waits for it instead of calling the provider
 	shared, err, _ := s.destroys.Do(p.ID.String(), func() (any, error) {
 		// The stats come first, bounded so they never hold the deletion up
-		return s.readStats(ctx, p, prov, ref), destroyRef(ctx, prov, ref)
+		stats := s.readStats(ctx, p, prov, ref)
+		err := destroyRef(ctx, prov, ref)
+		if err == nil {
+			s.markDestroyed(ctx, prov, ref)
+		}
+		return stats, err
 	})
 	if err != nil {
 		return store.Placement{}, fmt.Errorf("destroy sandbox: %w", err)
 	}
 	rawStats, _ := shared.([]byte)
 
+	edgeBytes, egressBytes := s.usedBytes(ctx, p.ID)
 	var ended store.Placement
 	var ev Event
 	already := false
@@ -1306,6 +1316,14 @@ func (s *Saga) terminate(
 			return err
 		}
 		if _, err := ts.ReleasePlacementCapacity(ctx, p.ID); err != nil {
+			return err
+		}
+		spans, err := ts.PlacementSpans(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		cost := s.spansCost(spans, s.now())
+		if err := ts.SetPlacementCost(ctx, p.ID, cost, edgeBytes, egressBytes); err != nil {
 			return err
 		}
 		if err := ts.DeleteGatewayKeys(ctx, p.ID); err != nil {
@@ -1334,6 +1352,7 @@ func (s *Saga) terminate(
 	if !already {
 		s.publish(ctx, ev)
 		s.sessionEnded(ctx, p.ID)
+		s.judgeMargin(ended)
 		s.observe(ctx, ended, prov, rawStats)
 	}
 	return ended, nil
@@ -1402,7 +1421,9 @@ func (s *Saga) destroy(ctx context.Context, prov provider.Provider, ref provider
 	defer cancel()
 	if err := destroyRef(ctx, prov, ref); err != nil {
 		s.d.Log.Error("destroy sandbox", "provider", prov.Name(), "sandbox", ref.ID, "err", err)
+		return
 	}
+	s.markDestroyed(ctx, prov, ref)
 }
 
 // release frees the slot the placement holds, if any, so a repeat or a racing caller frees nothing

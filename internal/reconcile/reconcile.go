@@ -70,9 +70,7 @@ func New(d Deps) *Reconciler {
 		d.Log = slog.Default()
 	}
 	d.Abuse = d.Abuse.OrDefaults()
-	if d.Settings == (config.Reconcile{}) {
-		d.Settings = config.DefaultReconcile()
-	}
+	d.Settings = d.Settings.OrDefaults()
 	return &Reconciler{d: d}
 }
 

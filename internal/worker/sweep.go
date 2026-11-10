@@ -154,6 +154,10 @@ func (w *Worker) destroy(ctx context.Context, prov provider.Provider, ref provid
 		w.noteAccount(ctx, prov.Name(), err)
 		return
 	}
+	if err := w.store.MarkSandboxDestroyed(ctx, prov.Name(), ref.ID, w.now()); err != nil {
+		w.log.Error("sweep stamp destroyed sandbox", "provider", prov.Name(),
+			"sandbox", ref.ID, "err", err)
+	}
 	w.log.Info("sweep destroyed sandbox", "provider", prov.Name(), "sandbox", ref.ID)
 }
 

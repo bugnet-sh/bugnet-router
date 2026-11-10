@@ -631,6 +631,14 @@ func (p *Provider) ListOwned(
 	return owned, nil
 }
 
+// ListLabelled lists every machine carrying the labels, boxd listing them in one answer
+func (p *Provider) ListLabelled(
+	ctx context.Context, labels map[string]string, _ string, _ int,
+) (provider.ForeignPage, error) {
+	owned, err := p.ListOwned(ctx, labels)
+	return provider.ForeignPage{Sandboxes: owned}, err
+}
+
 /* Labels */
 
 // encodeLabels maps router labels to boxd's key rules, where a dot stands for an underscore

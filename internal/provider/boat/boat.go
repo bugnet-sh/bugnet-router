@@ -581,13 +581,7 @@ func (p *Provider) ListOwned(
 			if sb.ID == "" || !hasLabels(have, labels) {
 				continue
 			}
-			s := provider.Summary{Labels: have}
-			s.CreatedAt, _ = parseTime(sb.CreatedAt)
-			s.Ref = newRef(sb.ID, s.CreatedAt)
-			if st, ok := inspectOf(sb); ok {
-				s.State, s.ExpiresAt = st.State, st.ExpiresAt
-			}
-			owned = append(owned, s)
+			owned = append(owned, summaryOf(sb, have))
 		}
 		next := page.PageInfo.NextCursor
 		if !page.PageInfo.HasMore || next == "" {
@@ -595,6 +589,65 @@ func (p *Provider) ListOwned(
 		}
 		params.Cursor = &next
 	}
+}
+
+// summaryOf reduces a listed sandbox to a Summary carrying the labels have
+func summaryOf(sb sandbox, have map[string]string) provider.Summary {
+	s := provider.Summary{Labels: have}
+	s.CreatedAt, _ = parseTime(sb.CreatedAt)
+	s.Ref = newRef(sb.ID, s.CreatedAt)
+	if st, ok := inspectOf(sb); ok {
+		s.State, s.ExpiresAt = st.State, st.ExpiresAt
+	}
+	return s
+}
+
+// ListLabelled lists up to limit sandboxes carrying every label from cursor on
+func (p *Provider) ListLabelled(
+	ctx context.Context, labels map[string]string, cursor string, limit int,
+) (provider.ForeignPage, error) {
+	var filter []string
+	for k, v := range labels {
+		filter = append(filter, k+"="+v)
+	}
+	slices.Sort(filter)
+	params := &api.SandboxesParams{}
+	if len(filter) > 0 {
+		params.Label = &filter
+	}
+	if cursor != "" {
+		params.Cursor = &cursor
+	}
+	var out provider.ForeignPage
+	for len(out.Sandboxes) < limit {
+		params.Limit = new(min(pageLimit, limit-len(out.Sandboxes)))
+		raw, err := p.send(ctx, noEffect, func(ctx context.Context) (*http.Response, error) {
+			return p.api.Sandboxes(ctx, params)
+		})
+		if err != nil {
+			return provider.ForeignPage{}, err
+		}
+		var page sandboxPage
+		if err := decode(raw, &page); err != nil {
+			return provider.ForeignPage{}, internal(fmt.Errorf("boat sandbox list reply: %w", err))
+		}
+		for _, sb := range page.Sandboxes {
+			have := sb.Labels
+			if have == nil {
+				have = map[string]string{}
+			}
+			if sb.ID != "" && hasLabels(have, labels) {
+				out.Sandboxes = append(out.Sandboxes, summaryOf(sb, have))
+			}
+		}
+		next := page.PageInfo.NextCursor
+		if !page.PageInfo.HasMore || next == "" {
+			out.Next = ""
+			return out, nil
+		}
+		params.Cursor, out.Next = &next, next
+	}
+	return out, nil
 }
 
 func hasLabels(have, want map[string]string) bool {
