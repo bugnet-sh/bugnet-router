@@ -87,6 +87,9 @@ func TestBoxdAccountErrors(t *testing.T) {
 			provider.BlockAuth, false},
 		{"unauthenticated", "GetOrgBilling", status.Error(codes.Unauthenticated, "no"),
 			provider.BlockAuth, false},
+		{"billing behind a login", "GetOrgBilling", status.Error(codes.PermissionDenied,
+			"this operation requires an interactive session (`boxd login`)"),
+			provider.BlockNone, false},
 		{"unavailable", "Whoami", status.Error(codes.Unavailable, "down"),
 			provider.BlockNone, true},
 	} {
