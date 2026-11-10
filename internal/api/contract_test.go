@@ -71,14 +71,11 @@ func TestNewRPCsNeedTheInternalToken(t *testing.T) {
 	}
 }
 
-func TestPoolRPCsAnswerUnimplemented(t *testing.T) {
+func TestPoolRPCsNeedTheOperatorToken(t *testing.T) {
 	e := newEnv(t, options{})
-	op := e.operator(t, operatorToken)
-	_, err := op.ListPools(t.Context(), connect.NewRequest(&routerv1.ListPoolsRequest{}))
-	mustCode(t, err, connect.CodeUnimplemented, "")
-	_, err = op.DrainPool(t.Context(), connect.NewRequest(&routerv1.DrainPoolRequest{}))
-	mustCode(t, err, connect.CodeUnimplemented, "")
 	stranger := e.operator(t, "Bearer wrong-token-0123456789abcdef0123456789")
-	_, err = stranger.ListPools(t.Context(), connect.NewRequest(&routerv1.ListPoolsRequest{}))
+	_, err := stranger.ListPools(t.Context(), connect.NewRequest(&routerv1.ListPoolsRequest{}))
+	mustCode(t, err, connect.CodeUnauthenticated, "")
+	_, err = stranger.DrainPool(t.Context(), connect.NewRequest(&routerv1.DrainPoolRequest{}))
 	mustCode(t, err, connect.CodeUnauthenticated, "")
 }

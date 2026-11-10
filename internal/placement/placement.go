@@ -30,6 +30,10 @@ type Candidate struct {
 	Size           provider.Size
 	CostMicros     int64 // the package's minutes in whole billing increments plus any start fee
 	MarginFraction float64
+	// Warm means a pool member is claimed before any create is tried
+	Warm bool
+	// HourlyMicros and StartFeeMicros are the parts of CostMicros that hedging needs
+	HourlyMicros, StartFeeMicros int64
 }
 
 // Requirements are the capabilities a placement needs beyond the package's resources
@@ -41,6 +45,12 @@ type Inputs struct {
 	Requirements Requirements
 	MarginFloor  float64
 	Exclude      map[string]bool // providers already tried
+	// WarmFirst puts candidates with a warm member ahead of every cold one
+	WarmFirst bool
+	// Hold is provider time before the paid clock starts, billed and checked against the floor
+	Hold time.Duration
+	// HoldMax is the longest a renewed hold can run, which the candidate's lifetime must cover
+	HoldMax time.Duration
 }
 
 // Health reports how well each provider has been behaving
@@ -49,15 +59,21 @@ type Health interface {
 	ReadyP95(provider string) time.Duration
 }
 
+// Warm reports whether a provider has a warm member of a size to claim now
+type Warm interface {
+	WarmAvailable(provider, size string) bool
+}
+
 // Engine filters and orders providers for a package, capacity is left to the saga
 type Engine struct {
 	reg    *provider.Registry
 	health Health
+	warm   Warm
 }
 
-// New builds an engine over a registry and a health source
-func New(reg *provider.Registry, health Health) *Engine {
-	return &Engine{reg: reg, health: health}
+// New builds an engine over a registry, a health source and a warm source, which may be nil
+func New(reg *provider.Registry, health Health, warm Warm) *Engine {
+	return &Engine{reg: reg, health: health, warm: warm}
 }
 
 // Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
@@ -65,7 +81,8 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	req := in.Requirements
 	req.GPU = req.GPU || pk.Resources.GPUCount > 0
-	need := time.Duration(pk.Minutes)*time.Minute + lifetimeSlack
+	need := time.Duration(pk.Minutes)*time.Minute + max(in.HoldMax, 0) + lifetimeSlack
+	billed := time.Duration(pk.Minutes)*time.Minute + max(in.Hold, 0)
 	var rs []ranked
 	for _, p := range e.reg.Ordered() {
 		name := p.Name()
@@ -87,10 +104,12 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		if !ok {
 			continue
 		}
-		cost := costMicros(p.HourlyCostMicros(size), pk.Minutes, p.BillingIncrement())
+		hourly := p.HourlyCostMicros(size)
+		cost := costMicros(hourly, billed, p.BillingIncrement())
+		var fee int64
 		if sc, ok := p.(provider.StartCoster); ok {
-			fee, ok := sc.StartCostMicros(size)
-			if !ok {
+			var ok bool
+			if fee, ok = sc.StartCostMicros(size); !ok {
 				continue
 			}
 			cost += fee
@@ -106,7 +125,13 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 				continue
 			}
 		}
-		c := Candidate{Provider: p, Size: size, CostMicros: cost, MarginFraction: margin}
+		c := Candidate{
+			Provider: p, Size: size, CostMicros: cost, MarginFraction: margin,
+			HourlyMicros: hourly, StartFeeMicros: fee,
+			// A pool member carries no egress restriction, so a restricted package creates cold
+			Warm: e.warm != nil && len(pk.EgressAllow) == 0 &&
+				e.warm.WarmAvailable(name, size.Name),
+		}
 		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
 	}
 	if len(rs) == 0 {
@@ -114,12 +139,19 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	}
 	/* Ordering */
 	// A stable sort leaves equal costs in the order the providers setting lists them
+	// With WarmFirst a warm member is quick to claim even where creates are slow, so it comes first
 	slices.SortStableFunc(rs, func(a, b ranked) int {
-		return cmp.Or(cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
+		warm := 0
+		if in.WarmFirst {
+			warm = cmp.Compare(b2i(b.Warm), b2i(a.Warm))
+		}
+		return cmp.Or(warm, cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
 	})
 	out := make([]Candidate, len(rs))
 	for i, r := range rs {
 		out[i] = r.Candidate
+		// Cost first looks at the candidate a cold order would take, and no other
+		out[i].Warm = r.Warm && (in.WarmFirst || i == 0)
 	}
 	return out, nil
 }
@@ -157,9 +189,15 @@ func (e *Engine) slowRank(name string) int {
 	return 0
 }
 
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // costMicros bills whole increments and rounds the result up to a whole micro
-func costMicros(hourly int64, minutes int, increment time.Duration) int64 {
-	used := time.Duration(minutes) * time.Minute
+func costMicros(hourly int64, used, increment time.Duration) int64 {
 	billed := used
 	if increment > 0 {
 		billed = (used + increment - 1) / increment * increment

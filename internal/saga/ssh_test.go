@@ -50,7 +50,7 @@ func withSSH(names ...string) func(*saga.Deps) {
 			panic(err)
 		}
 		d.Registry = reg
-		d.Engine = placement.New(reg, d.Tracker)
+		d.Engine = placement.New(reg, d.Tracker, nil)
 		d.SSH.Ports = []int{22}
 	}
 }

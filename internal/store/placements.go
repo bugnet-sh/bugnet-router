@@ -36,6 +36,11 @@ type Placement struct {
 	SagaHeartbeat *time.Time
 	// CapacityProvider is the provider whose capacity slot the placement holds, empty for none
 	CapacityProvider string
+	// StartPath is how the sandbox came to be, cold or pooled, empty before it is ready
+	StartPath string
+	// SandboxCreatedAt is when the provider made a pooled sandbox, nil for a cold start, whose
+	// sandbox is as old as the placement
+	SandboxCreatedAt *time.Time
 	// TerminationReason is why the placement moved to terminating, empty before it did
 	TerminationReason string
 	TerminatingAt     *time.Time
@@ -160,6 +165,10 @@ type Attempt struct {
 	StartFeeMicros int64
 	// DestroyedAt is when the attempt's sandbox was destroyed, nil while it lives or never was
 	DestroyedAt *time.Time
+	// Path is how the attempt got its sandbox, cold or pooled, empty for none
+	Path string
+	// MemberID is the pool member a pooled attempt claimed, the zero id for none
+	MemberID uuid.UUID
 }
 
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
@@ -175,7 +184,8 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 		where o.placement_id = placements.id
 			and not (placements.state = 'failed' and placements.refundable)),
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
-	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes`
+	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes,
+	coalesce(start_path, ''), sandbox_created_at`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -192,7 +202,8 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.SourceKind, &p.SourceCanonical, &p.SourceRef, &p.SourceRevision, &p.SourceRead,
 		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
-		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes)
+		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes, &p.StartPath,
+		&p.SandboxCreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -220,6 +231,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	p.TerminatingAt = utcPtr(p.TerminatingAt)
 	p.GateReadyAt = utcPtr(p.GateReadyAt)
 	p.DegradedSince = utcPtr(p.DegradedSince)
+	p.SandboxCreatedAt = utcPtr(p.SandboxCreatedAt)
 	return p, nil
 }
 
@@ -404,19 +416,21 @@ func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 	_, err := s.q.Exec(ctx, `
 		insert into placement_attempts
 			(placement_id, attempt, provider, idempotency_key, state, error_code, error,
-				sandbox_id, size_name, hourly_micros, start_fee_micros, destroyed_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				sandbox_id, size_name, hourly_micros, start_fee_micros, destroyed_at, path,
+				member_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (placement_id, attempt) do update set provider = excluded.provider,
 			idempotency_key = excluded.idempotency_key, state = excluded.state,
 			error_code = excluded.error_code, error = excluded.error,
 			sandbox_id = coalesce(excluded.sandbox_id, placement_attempts.sandbox_id),
 			size_name = coalesce(excluded.size_name, placement_attempts.size_name),
 			hourly_micros = excluded.hourly_micros, start_fee_micros = excluded.start_fee_micros,
-			destroyed_at = coalesce(placement_attempts.destroyed_at, excluded.destroyed_at)`,
+			destroyed_at = coalesce(placement_attempts.destroyed_at, excluded.destroyed_at),
+			path = excluded.path, member_id = excluded.member_id`,
 		a.PlacementID, a.Attempt, nullIfEmpty(a.Provider), nullIfEmpty(a.IdempotencyKey),
 		nullIfEmpty(a.State), nullIfEmpty(a.ErrorCode), nullIfEmpty(a.Error),
 		nullIfEmpty(a.SandboxID), nullIfEmpty(a.SizeName), a.HourlyMicros, a.StartFeeMicros,
-		utcPtr(a.DestroyedAt))
+		utcPtr(a.DestroyedAt), nullIfEmpty(a.Path), nilUUID(a.MemberID))
 	if err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
@@ -444,16 +458,20 @@ func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt,
 		select placement_id, attempt, coalesce(provider, ''), coalesce(idempotency_key, ''),
 			coalesce(state, ''), coalesce(error_code, ''), coalesce(error, ''),
 			coalesce(sandbox_id, ''), coalesce(size_name, ''), hourly_micros, start_fee_micros,
-			destroyed_at
+			destroyed_at, coalesce(path, ''), member_id
 		from placement_attempts where placement_id = $1 order by attempt`, placementID)
 	if err != nil {
 		return nil, fmt.Errorf("select attempts: %w", err)
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Attempt, error) {
 		var a Attempt
+		var member *uuid.UUID
 		err := r.Scan(&a.PlacementID, &a.Attempt, &a.Provider, &a.IdempotencyKey, &a.State,
 			&a.ErrorCode, &a.Error, &a.SandboxID, &a.SizeName, &a.HourlyMicros,
-			&a.StartFeeMicros, &a.DestroyedAt)
+			&a.StartFeeMicros, &a.DestroyedAt, &a.Path, &member)
+		if member != nil {
+			a.MemberID = *member
+		}
 		a.DestroyedAt = utcPtr(a.DestroyedAt)
 		return a, err
 	})
@@ -558,6 +576,23 @@ func (s *Store) MarkPlacementReady(
 			ready_at = $6, deadline = $7
 		where id = $1 and state = $8`,
 		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing)
+}
+
+// SetPlacementStart records how a placing placement's sandbox came to be and, for a pooled one,
+// when the provider made it
+func (s *Store) SetPlacementStart(
+	ctx context.Context, id uuid.UUID, path string, sandboxCreatedAt *time.Time,
+) error {
+	tag, err := s.q.Exec(ctx, `
+		update placements set start_path = $2, sandbox_created_at = $3 where id = $1`,
+		id, nullIfEmpty(path), utcPtr(sandboxCreatedAt))
+	if err != nil {
+		return fmt.Errorf("set start of %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set start of %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 // SetPlacementGate records the gate's ready time and the CA version in one write, nil and 0 as null

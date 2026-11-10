@@ -82,6 +82,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
@@ -201,6 +202,13 @@ type Deps struct {
 	SessionAbuseHold time.Duration
 	// CreatesPerSecond is each provider's create rate, absent for no bucket
 	CreatesPerSecond map[string]int
+	// Pools is the view of warm pool members that marks candidates warm, none when nil
+	Pools *pool.Warmth
+	// WarmFirst puts a candidate with a warm member ahead of every cold one, pools.order
+	WarmFirst bool
+	// PoolRoom is the lifetime a claimed member must still have past its package, one hour when
+	// zero
+	PoolRoom time.Duration
 }
 
 // Saga runs placements from order to teardown
@@ -237,6 +245,7 @@ func New(deps Deps) *Saga {
 	if deps.DeploymentID == "" {
 		deps.DeploymentID = defaultDeployment
 	}
+	deps.PoolRoom = cmp.Or(deps.PoolRoom, time.Hour)
 	deps.SessionKeep = cmp.Or(deps.SessionKeep, defaultSessionKeep)
 	deps.SessionAbuseHold = cmp.Or(deps.SessionAbuseHold, defaultAbuseHold)
 	w := deps.Wallets.OrDefaults()
@@ -407,6 +416,7 @@ func (s *Saga) inputs(
 ) placement.Inputs {
 	return placement.Inputs{
 		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
+		WarmFirst: s.d.WarmFirst,
 	}
 }
 
@@ -468,6 +478,8 @@ func (s *Saga) place(
 	var attempted []provider.Provider
 	reason, detail := reasonExhausted, ""
 	full := false
+	// missed is set once an order has been counted as wanting a pool that had no member for it
+	missed := false
 	for n := 1; n <= maxAttempts && budget.Err() == nil; {
 		cands, err := s.d.Engine.Candidates(s.inputs(pkg, req, tried))
 		if err != nil {
@@ -493,17 +505,22 @@ func (s *Saga) place(
 			reason, detail = reasonRateLimited, name+" asked for its creates to wait"
 			continue
 		}
-		reserved, err := s.reserve(ctx, p.ID, name, n)
-		if err != nil {
-			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
-			break
+		out, ran := s.attemptWarm(ctx, budget, p, pkg, req, c, n, &missed)
+		if ran {
+			attempted = append(attempted, c.Provider)
+		} else {
+			reserved, err := s.reserve(ctx, p.ID, name, n)
+			if err != nil {
+				reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
+				break
+			}
+			if !reserved {
+				full = true
+				continue
+			}
+			attempted = append(attempted, c.Provider)
+			out = s.attemptCold(ctx, budget, p, pkg, req, c, n, &missed)
 		}
-		if !reserved {
-			full = true
-			continue
-		}
-		attempted = append(attempted, c.Provider)
-		out := s.attempt(ctx, budget, p, pkg, req, c, n)
 		if out.done {
 			// One attempt on a provider that keys its creates left no sandbox beside the kept one
 			if out.kept == nil || len(attempted) > 1 ||
@@ -561,10 +578,29 @@ func (s *Saga) reserve(
 	return s.d.Store.ReservePlacementCapacity(ctx, id, providerName, attempt)
 }
 
-// attempt holds a capacity slot on c's provider and gives it back unless the sandbox is ready
-func (s *Saga) attempt(
+// wantsPool reports whether an order for pkg on c would have taken a pool member if one waited
+func (s *Saga) wantsPool(pkg catalog.Package, c placement.Candidate) bool {
+	return len(pkg.EgressAllow) == 0 && s.d.Pools.HasPool(c.Provider.Name(), c.Size.Name)
+}
+
+// countMiss records one miss for the order the first time it wants a pool and finds it empty
+func (s *Saga) countMiss(ctx context.Context, c placement.Candidate, missed *bool) {
+	if *missed {
+		return
+	}
+	*missed = true
+	ctx, cancel := step(ctx)
+	defer cancel()
+	err := s.d.Store.RecordMiss(ctx, c.Provider.Name(), c.Size.Name, s.now())
+	if err != nil {
+		s.d.Log.Warn("record pool miss", "provider", c.Provider.Name(), "err", err)
+	}
+}
+
+// attemptCold holds a capacity slot on c's provider and gives it back unless the sandbox is ready
+func (s *Saga) attemptCold(
 	ctx, budget context.Context, p store.Placement, pkg catalog.Package,
-	req placement.Requirements, c placement.Candidate, n int,
+	req placement.Requirements, c placement.Candidate, n int, missed *bool,
 ) outcome {
 	prov := c.Provider
 	name := prov.Name()
@@ -573,6 +609,9 @@ func (s *Saga) attempt(
 		return outcome{
 			failOver: true, reason: reasonRateLimited, detail: "no create token for " + name,
 		}
+	}
+	if s.wantsPool(pkg, c) && !c.Warm {
+		s.countMiss(ctx, c, missed)
 	}
 	hourly, fee := quote(prov, c.Size)
 	rec := store.Attempt{
@@ -584,6 +623,7 @@ func (s *Saga) attempt(
 		SizeName:       c.Size.Name,
 		HourlyMicros:   hourly,
 		StartFeeMicros: fee,
+		Path:           store.PathCold,
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.release(ctx, p.ID, n)
@@ -591,6 +631,7 @@ func (s *Saga) attempt(
 	}
 	started := s.now()
 	smp := s.sampleOf(p, prov, c.Size, started)
+	smp.StartPath = store.PathCold
 	ref, err := s.create(budget, prov, provider.CreateRequest{
 		IdempotencyKey: rec.IdempotencyKey,
 		Size:           c.Size,
@@ -641,7 +682,114 @@ func (s *Saga) attempt(
 		}
 	}
 	s.recordSample(ctx, prov, c.Size, smp, nil)
-	return s.commitReady(ctx, p, pkg, c, rec, ref, boot, started)
+	prep := Prepared{
+		Ref: ref, KeyID: p.KeyID, GateReadyAt: boot.GateReadyAt, SSHHost: boot.SSH,
+		CAVersion: boot.CAVersion, GateMS: boot.GateMS,
+	}
+	return s.commitReady(ctx, p, pkg, c, rec, prep, nil, started)
+}
+
+// attemptWarm claims a warm member for c when the engine marked it warm and runs the pooled
+// attempt on it, reporting false when no attempt ran and the candidate goes on as a cold create
+//
+// The claim, the attempt row and the slot move are one transaction. A claim that finds no member
+// records a miss in that transaction and a member that cannot be woken is retired, both falling
+// to a cold create on the same candidate.
+func (s *Saga) attemptWarm(
+	ctx, budget context.Context, p store.Placement, pkg catalog.Package,
+	req placement.Requirements, c placement.Candidate, n int, missed *bool,
+) (outcome, bool) {
+	if !c.Warm {
+		return outcome{}, false
+	}
+	prov := c.Provider
+	name := prov.Name()
+	hourly, fee := quote(prov, c.Size)
+	rec := store.Attempt{
+		PlacementID: p.ID, Attempt: n, Provider: name, State: attemptCreating,
+		SizeName: c.Size.Name, HourlyMicros: hourly, StartFeeMicros: fee, Path: store.PathPooled,
+		IdempotencyKey: idempotencyKey(p.OrderID, n, name),
+	}
+	started := s.now()
+	var m store.Member
+	claimed := false
+	cctx, cancel := step(ctx)
+	err := s.d.Store.WithTx(cctx, func(tx pgx.Tx) error {
+		ts := s.d.Store.Tx(tx)
+		if err := ts.RecordAttempt(cctx, rec); err != nil {
+			return err
+		}
+		// The member must be young enough for the package, its extension room and the slack
+		bornAfter := time.Time{}
+		if life := prov.Capabilities().MaxLifetime; life > 0 {
+			need := time.Duration(pkg.Minutes)*time.Minute + s.d.PoolRoom + lifetimeSlack
+			bornAfter = s.now().Add(need - life)
+		}
+		var ok bool
+		var err error
+		m, ok, err = ts.ClaimWarm(cctx, name, c.Size.Name, bornAfter,
+			store.Holder{Placement: p.ID, Attempt: n})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if s.wantsPool(pkg, c) && !*missed {
+				if err := ts.RecordMiss(cctx, name, c.Size.Name, s.now()); err != nil {
+					return err
+				}
+				*missed = true
+			}
+			return nil
+		}
+		claimed = true
+		rec.IdempotencyKey, rec.SandboxID, rec.MemberID = m.IdempotencyKey, "", m.ID
+		if m.ProviderRef != nil {
+			rec.SandboxID = m.ProviderRef.ID
+		}
+		return ts.RecordAttempt(cctx, rec)
+	})
+	cancel()
+	switch {
+	case err == nil && !claimed:
+		return outcome{}, false
+	case err != nil:
+		return outcome{reason: reasonInternal, detail: fmt.Sprintf("claim on %s: %v", name, err),
+			failOver: true}, true
+	case m.ProviderRef == nil:
+		s.retireMember(ctx, m.ID, store.EndFailed, "claimed a member without a sandbox")
+		s.release(ctx, p.ID, n)
+		return outcome{}, false
+	}
+	smp := s.sampleOf(p, prov, c.Size, started)
+	smp.StartPath, smp.MemberID, smp.SandboxID = store.PathPooled, m.ID, m.ProviderRef.ID
+	ref := *m.ProviderRef
+	if pk, ok := prov.(provider.Parker); ok {
+		err := pk.Unpark(budget, ref)
+		smp.WakeMS = int(s.now().Sub(started).Milliseconds())
+		if err != nil {
+			s.d.Log.Warn("pooled sandbox did not wake, creating cold", "provider", name,
+				"member", m.ID, "err", err)
+			s.recordSample(ctx, prov, c.Size, smp, err)
+			s.retireMember(ctx, m.ID, store.EndFailed, "unpark failed")
+			s.release(ctx, p.ID, n)
+			return outcome{}, false
+		}
+	}
+	prep, err := s.Prepare(ctx, prov, ref, p.ID, req, true)
+	smp.GateMS = prep.GateMS
+	if err != nil {
+		if s.providerFailed(ctx, name, err, false) {
+			s.d.Tracker.RecordFailure(name)
+		}
+		s.recordSample(ctx, prov, c.Size, smp, err)
+		s.abandon(ctx, prov, rec, nil, err)
+		return outcome{
+			failOver: true, reason: reasonBootFailed,
+			detail: fmt.Sprintf("prepare on %s: %v", name, err),
+		}, true
+	}
+	s.recordSample(ctx, prov, c.Size, smp, nil)
+	return s.commitReady(ctx, p, pkg, c, rec, prep, &m, started), true
 }
 
 // create retries a create whose outcome is unknown under the same key on the same provider
@@ -681,13 +829,18 @@ func canFailOver(err error) bool {
 }
 
 // commitReady starts the paid clock, or gives the sandbox back when the placement moved on
+//
+// A pooled attempt passes the member it claimed, whose row stays bound to the placement.
 func (s *Saga) commitReady(
 	ctx context.Context, p store.Placement, pkg catalog.Package, c placement.Candidate,
-	rec store.Attempt, ref provider.Ref, boot BootReport, started time.Time,
+	rec store.Attempt, prep Prepared, mem *store.Member, started time.Time,
 ) outcome {
 	prov := c.Provider
+	ref := prep.Ref
 	readyAt := s.now()
-	s.d.Tracker.RecordReady(prov.Name(), readyAt.Sub(started))
+	if mem == nil {
+		s.d.Tracker.RecordReady(prov.Name(), readyAt.Sub(started))
+	}
 	deadline := readyAt.Add(time.Duration(pkg.Minutes) * time.Minute)
 	lctx, cancel := step(ctx)
 	err := prov.SetLifetime(lctx, ref, deadline.Add(lifetimeSlack))
@@ -701,46 +854,10 @@ func (s *Saga) commitReady(
 	tctx, cancel := step(ctx)
 	defer cancel()
 	err = s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
-		ts := s.d.Store.Tx(tx)
-		err := ts.MarkPlacementReady(tctx, p.ID, ref, c.Size.Name, readyAt, deadline)
-		if err != nil {
-			return err
-		}
-		if err := s.x402AtReady(tctx, tx, p.ID, s.d.Registry.Capabilities(prov)); err != nil {
-			return err
-		}
-		var gateAt *time.Time
-		if boot.GateReady {
-			gateAt = &boot.GateReadyAt
-		}
-		if err := ts.SetPlacementGate(tctx, p.ID, gateAt, boot.CAVersion); err != nil {
-			return err
-		}
-		if boot.SSH != nil {
-			if err := ts.PutSSHHost(tctx, *boot.SSH); err != nil {
-				return err
-			}
-		}
-		if s.d.Registry.Capabilities(prov).SSH {
-			s.mintAlias(tctx, ts, p.ID)
-		}
-		if _, _, err := s.addBudgets(tctx, ts, p.ID, pkg); err != nil {
-			return err
-		}
-		ready := rec
-		ready.State = attemptReady
-		if err := ts.RecordAttempt(tctx, ready); err != nil {
-			return err
-		}
-		if err := s.insertDeadline(tctx, tx, p.ID, deadline); err != nil {
-			return err
-		}
-		cur, err := ts.PlacementByID(tctx, p.ID)
-		if err != nil {
-			return err
-		}
-		ev = newEvent(cur, "")
-		return s.d.Store.InsertOutbox(tctx, tx, EventReady, ev)
+		var err error
+		ev, err = s.readyWrites(tctx, tx, p, pkg, prov, c.Size.Name, rec, prep, mem, readyAt,
+			deadline)
+		return err
 	})
 	if err != nil {
 		s.abandon(ctx, prov, rec, &ref, err)
@@ -757,11 +874,73 @@ func (s *Saga) commitReady(
 	return outcome{done: true, kept: &ref}
 }
 
+// readyWrites makes a placing placement ready inside tx with everything that goes with it, the
+// gate and CA records, the SSH host and alias, the budgets, the attempt, the deadline job and the
+// ready event
+func (s *Saga) readyWrites(
+	ctx context.Context, tx pgx.Tx, p store.Placement, pkg catalog.Package,
+	prov provider.Provider, size string, rec store.Attempt, prep Prepared, mem *store.Member,
+	readyAt, deadline time.Time,
+) (Event, error) {
+	ts := s.d.Store.Tx(tx)
+	err := ts.MarkPlacementReady(ctx, p.ID, prep.Ref, size, readyAt, deadline)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := s.x402AtReady(ctx, tx, p.ID, s.d.Registry.Capabilities(prov)); err != nil {
+		return Event{}, err
+	}
+	var gateAt *time.Time
+	if !prep.GateReadyAt.IsZero() {
+		gateAt = &prep.GateReadyAt
+	}
+	if err := ts.SetPlacementGate(ctx, p.ID, gateAt, prep.CAVersion); err != nil {
+		return Event{}, err
+	}
+	path, bornAt := store.PathCold, (*time.Time)(nil)
+	if mem != nil {
+		path, bornAt = store.PathPooled, mem.SandboxCreatedAt
+	}
+	if err := ts.SetPlacementStart(ctx, p.ID, path, bornAt); err != nil {
+		return Event{}, err
+	}
+	if prep.SSHHost != nil {
+		if err := ts.PutSSHHost(ctx, *prep.SSHHost); err != nil {
+			return Event{}, err
+		}
+	}
+	if s.d.Registry.Capabilities(prov).SSH {
+		s.mintAlias(ctx, ts, p.ID)
+	}
+	if _, _, err := s.addBudgets(ctx, ts, p.ID, pkg); err != nil {
+		return Event{}, err
+	}
+	ready := rec
+	ready.State = attemptReady
+	if err := ts.RecordAttempt(ctx, ready); err != nil {
+		return Event{}, err
+	}
+	if err := s.insertDeadline(ctx, tx, p.ID, deadline); err != nil {
+		return Event{}, err
+	}
+	cur, err := ts.PlacementByID(ctx, p.ID)
+	if err != nil {
+		return Event{}, err
+	}
+	ev := newEvent(cur, "")
+	return ev, s.d.Store.InsertOutbox(ctx, tx, EventReady, ev)
+}
+
 // abandon destroys an attempt's sandbox if it has one, records the failure and frees the slot
+//
+// A pooled attempt retires its member instead, which destroys the sandbox through pool_retire and
+// leaves the slot to the placement row that took it over.
 func (s *Saga) abandon(
 	ctx context.Context, prov provider.Provider, rec store.Attempt, ref *provider.Ref, err error,
 ) {
-	if ref != nil {
+	if rec.MemberID != uuid.Nil {
+		s.retireMember(ctx, rec.MemberID, store.EndFailed, err.Error())
+	} else if ref != nil {
 		s.destroy(ctx, prov, *ref)
 	}
 	rec.State = attemptFailed
@@ -773,6 +952,42 @@ func (s *Saga) abandon(
 		s.d.Log.Error("record failed attempt", "placement", rec.PlacementID, "err", err)
 	}
 	s.release(ctx, rec.PlacementID, rec.Attempt)
+}
+
+// retireMember sets a member to retiring and queues the job that destroys its sandbox
+func (s *Saga) retireMember(ctx context.Context, id uuid.UUID, reason, detail string) {
+	ctx, cancel := step(context.WithoutCancel(ctx))
+	defer cancel()
+	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		return s.retireMemberTx(ctx, tx, id, reason, detail)
+	})
+	if err != nil {
+		s.d.Log.Error("retire pool member", "member", id, "err", err)
+	}
+}
+
+// retireMemberTx is retireMember inside tx, so a transaction that moves a placement on retires the
+// members bound to it in the same commit
+func (s *Saga) retireMemberTx(
+	ctx context.Context, tx pgx.Tx, id uuid.UUID, reason, detail string,
+) error {
+	old, err := s.d.Store.Tx(tx).RetireMember(ctx, id, reason, truncate(detail, 500))
+	if err != nil || old == "" {
+		return err
+	}
+	_, err = s.d.River.InsertTx(ctx, tx, jobargs.PoolRetire{Member: id, Reason: reason}, nil)
+	if err != nil {
+		return fmt.Errorf("insert pool_retire: %w", err)
+	}
+	return nil
+}
+
+// truncate cuts a message to n bytes, so no provider text of any length lands in a row
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 func (s *Saga) recordAttempt(ctx context.Context, rec store.Attempt) error {
@@ -839,6 +1054,16 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 		}
 		if _, err := ts.ReleaseAttemptSlots(ctx, id); err != nil {
 			return err
+		}
+		// A member bound to a placement that failed has no owner left, so it goes with it
+		members, err := ts.MembersOfPlacement(ctx, id)
+		if err != nil {
+			return err
+		}
+		for _, m := range members {
+			if err := s.retireMemberTx(ctx, tx, m.ID, store.EndFailed, reason); err != nil {
+				return err
+			}
 		}
 		failed = true
 		return nil
@@ -1173,7 +1398,12 @@ func (s *Saga) checkExtend(
 // withinLifetime refuses a deadline whose sandbox would outlast the provider's maximum lifetime
 func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
 	limit := prov.Capabilities().MaxLifetime
-	if life := deadline.Add(lifetimeSlack).Sub(p.CreatedAt); limit > 0 && life > limit {
+	// A pooled sandbox is older than its placement, and the provider counts from its creation
+	born := p.CreatedAt
+	if p.SandboxCreatedAt != nil && p.SandboxCreatedAt.Before(born) {
+		born = *p.SandboxCreatedAt
+	}
+	if life := deadline.Add(lifetimeSlack).Sub(born); limit > 0 && life > limit {
 		// The limit can come from the settings file, so the refusal the caller sees leaves it out
 		return fmt.Errorf("%w: %v from creation", ErrExceedsLifetime, life.Round(time.Second))
 	}

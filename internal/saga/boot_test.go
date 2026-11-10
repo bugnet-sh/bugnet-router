@@ -89,9 +89,15 @@ func (s scripted) Exec(
 	call := sub
 	if sub == "setup" {
 		raw, _, err := s.ReadFile(ctx, ref, "/tmp/bugnet/setup-spec.json", 0, 1<<20)
-		var got struct{ Sample bool }
+		var got struct {
+			Sample bool
+			Phase  string
+		}
 		if err == nil && json.Unmarshal(raw, &got) == nil {
 			call += " sample=" + strconv.FormatBool(got.Sample)
+			if got.Phase == "pool" {
+				call = "setup pool"
+			}
 		}
 	}
 	s.mu.Lock()

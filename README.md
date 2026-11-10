@@ -1802,7 +1802,9 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   Every machine's public default proxy is pinned to the gate port 29417 before the router uses
   it, so no app inside is public on its own. boxd's own SSH and auto hibernation are turned off
   too. A failed pin or SSH call destroys the machine, and the placement tries the next provider.
-  A refused hibernation call only warns, and the ref records it as `hibernate_off` `0`.
+  A refused hibernation call only warns, and the ref records it as `hibernate_off` `0`. A boxd
+  pool member is parked with `HibernateVm` and woken with `WakeVm`, and `boxd.parked_gib` (5) sets
+  its idle cost, see Warm pools.
 - `e2b` runs E2B sandboxes from templates built with `deploy/e2b`, with `E2B_API_KEY`, one
   `[[e2b.templates]]` table per size, `e2b.domain` and `e2b.max_lifetime`. Without templates it
   has no sizes and is never chosen.
@@ -2029,6 +2031,10 @@ batch after 90 s of work.
 | `usage_observations` | `estimator.observations_keep` (90 days) |
 | `estimates` that no placement or observation refers to | `estimator.estimates_keep` (7 days) after `served_at` |
 | `source_facts` that no kept estimate refers to | `estimator.source_facts_keep` (7 days) after `used_at` |
+| `reservations` | 7 days after `ended_at`, before the members they refer to |
+| `pool_members` in `gone` | 30 days after `ended_at` |
+| `pool_members` in `bound` | 30 days after their placement's `terminated_at` |
+| `pool_misses` | A day |
 
 `wallets`, `wallet_events`, `catalogs` and `provider_cost_daily` are kept.
 
@@ -2118,3 +2124,64 @@ The live rows are `TestLiveControl/G1` (what `Inspect` reads after `sudo powerof
 event), `R2` to `R5` (each provider's usage call, and whether Boat's usage answers after a
 `DELETE`), and `H1` and `H3` (E2B's and Boat's deliveries, which need `--front vps` and the
 provider's webhook secret in the environment).
+
+### Warm pools
+
+A pool is one provider and size that keeps prepared sandboxes waiting for an order. Only a
+provider that can park a sandbox in a cheaper idle state (`provider.Parker`) or hands out members
+it keeps itself (`provider.PoolClaimer`) can have one, so boxd and local do and E2B and Boat do
+not. router-api and router-worker refuse to start with a pool on any other provider, on a size the
+provider does not sell, or on Boat. The settings are `[pools]`, one `[[pools.pool]]` table per
+pool with `provider`, `size`, `min`, `max` and `max_age`, and `boxd.parked_gib`. `config/example.toml`
+lists boxd `1x4` with `min = 2` and `max = 5`, and `config/dev.toml` the local provider's one size
+with `min = 1` and `max = 2`.
+
+Every member is one `pool_members` row that only moves forward: `filling`, `warm`, `held`, `bound`,
+`retiring`, `gone`. `pool_tick` runs every `pools.tick` (15 s), one at a time, in router-worker.
+For each pool it stores `target = clamp(ceil(claims_per_second x refill_p95) + headroom, min, max)`
+in `pool_targets`, where the rate counts the claims and the misses of `pools.rate_window` and the
+refill p95 is the p95 of the day's `pool` samples, 60 s with fewer than 5. A pool starts at most
+`pools.max_fills_per_tick` members a tick, each in one transaction that takes a slot with the
+placements' margin, inserts the row `filling` with `holds_slot` and inserts its `pool_fill` job.
+A pool stays out of the provider's share of `pools.capacity_share`, and out of a provider with an
+account block or a pause on its creates. `pool_fill` (queue `pools`, `pools.workers` workers, 170 s)
+takes a create token, creates the sandbox under the key `pool-<member id>` with the labels
+`bugnet_pool` and `pool_member`, boots it with `setup`'s pool phase and `harden`, parks it, and
+writes `warm` with the sealed ref and a start sample of kind `pool`. A failed fill retires its
+member, and three in a row pause the pool for `pools.fail_pause` with reason `failing`.
+
+An order claims a member with one statement under `for update skip locked`, oldest first, only from
+`warm` and only if the member is young enough for the package, `pools.extension_room` and the
+provider's lifetime. The claim, the attempt row (`path` `pooled`, the member id) and the move of
+the member's slot to the placement are one transaction, and the member's credentials are sealed
+again under the placement id. `Unpark` wakes it (boxd `WakeVm`, then `bugnet-run ping` every 25 ms
+for up to 10 s), `Prepare` runs `setup` in its full phase with a fresh seed and the gate, and the
+ready writes store `start_path` `pooled`, `sandbox_created_at` and the CA version. A claim that
+finds no member, or a member that does not wake, becomes a cold create on the same candidate. A
+failed pooled attempt retires its member. A package with `egress.allow` never claims, and no order
+is counted as a miss for it. Each order is counted at most once, in `pool_misses`, when it wanted a
+pool that had no member.
+
+`pool_tick` also retires `warm` members older than `max_age` and `filling` ones 10 minutes old,
+inspects the warm member it inspected longest ago in each pool (at most every `pools.inspect_every`),
+queues the retire job of any `retiring` member, and, once the last 24 hours of waste and idle cost
+over all pools reach `pools.max_daily_micros`, holds every target at its `min` and keeps the Valkey
+key `reserve:spend` set for two ticks. `pool_retire{member, reason}` destroys the sandbox, looks
+for another by the member's label, and sets `gone`, freeing the slot only when the row still holds
+it. The sweep treats a sandbox with a `bugnet_pool` label by CP 18.6.9: a placement that names it
+judges it, then its member row, then `PoolHeld`, else it goes after 10 minutes.
+
+`bugnet-dev pools` lists each pool's members, target, demand and pause, and `bugnet-dev pools
+drain --provider P --size S [--pause 1h]` retires its warm members and keeps its refill off for the
+pause, a pool that is not configured answering `POOL_UNKNOWN`. Both call `OperatorService` and read
+Postgres alone. `FindPlacement` shows the order's
+`start_path`. `/monitor` reports a pool with a target and no warm member for over 10 minutes, a
+paused pool, a member in `filling` for over 10 minutes and reservations switched off by the spend
+cap. Member time, parked and running before the claim, goes into the daily cost check, and a
+member's sandbox id is never an unknown one.
+
+The live rows are `TestLiveControl/POOL1` to `POOL5`, which need `--front` of the local mode and
+boxd's key. POOL1 records the wake times, POOL2 runs a day and records the idle cost for
+`boxd.parked_gib`, POOL3 checks that hibernated machines count in the machine limit, POOL4 that
+the delete-after timer ends a hibernated machine and POOL5 that the proxy pin and SSH off survive
+a wake.

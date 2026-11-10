@@ -10,6 +10,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/spend"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -127,6 +128,15 @@ func (w *Worker) ours(
 		}
 		return 0
 	})
+	members, err := w.store.MembersCreatedBetween(ctx, name, from, to)
+	if err != nil {
+		return 0, err
+	}
+	prices := pool.Prices(w.registry)
+	for _, m := range members {
+		hourly, parked := prices(m.Provider, m.SizeName)
+		cost += spend.MemberCost(m, hourly, parked, w.now())
+	}
 	return cost + probes, nil
 }
 

@@ -43,6 +43,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -152,6 +153,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err := api.CheckHooks(cfg.Hooks, cfg.HookSecrets, reg); err != nil {
 		return err
 	}
+	if err := checkPools(reg, cfg); err != nil {
+		return err
+	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
 	runners, err := providers.Runners(cfg, reg)
 	if err != nil {
@@ -184,7 +188,15 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	st := openStore(pool, cfg, log)
 	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)
 	tracker := placement.NewTracker(time.Now)
-	engine := placement.New(reg, health.NewShared(st, tracker, log))
+	warmth, warm := poolWarmth(cfg, st)
+	engine := placement.New(reg, health.NewShared(st, tracker, log), warm)
+	// Insert only, so it serves ListPools and DrainPool from Postgres alone
+	pools, err := poolpkg.New(poolpkg.Deps{
+		Store: st, Registry: reg, River: rc, Settings: cfg.Pools, Replica: cfg.ReplicaID, Log: log,
+	})
+	if err != nil {
+		return err
+	}
 	sg := saga.New(saga.Deps{
 		Store:         st,
 		Engine:        engine,
@@ -213,6 +225,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		// The hold of D-b (a), for abuse and operator ends
 		SessionAbuseHold: cfg.Sessions.AbuseHold,
 		CreatesPerSecond: cfg.CreatesPerSecond,
+		Pools:            warmth,
+		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
+		PoolRoom:         cfg.Pools.ExtensionRoom,
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {
@@ -267,6 +282,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Images:              cfg.Images,
 		Hooks:               cfg.Hooks,
 		HookSecrets:         cfg.HookSecrets,
+		Pools:               pools,
 	})
 	defer srv.Close()
 
@@ -315,6 +331,21 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
 	scanner.Wait()
 	return serveErr
+}
+
+// checkPools refuses a pool on a provider that cannot keep one, which would fill nothing and say
+// nothing
+func checkPools(reg *provider.Registry, cfg config.Config) error {
+	return poolpkg.Validate(reg, cfg.Pools)
+}
+
+// poolWarmth is the view of warm members that marks candidates, none while no pool is on
+func poolWarmth(cfg config.Config, st *store.Store) (*poolpkg.Warmth, placement.Warm) {
+	if !cfg.Pools.Enabled || len(cfg.Pools.Pool) == 0 {
+		return nil, nil
+	}
+	w := poolpkg.NewWarmth(st, poolpkg.Configs(cfg.Pools), nil)
+	return w, w
 }
 
 // checkWallets refuses the payer claim while Payments can neither ask CheckPayer nor hear blocks

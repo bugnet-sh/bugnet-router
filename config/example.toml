@@ -302,10 +302,33 @@ known_deployments = ["main", "dev"] # bugnet_deployment labels whose sandboxes a
 cost_daily_at = "03:00"       # UTC time of the daily check of providers' bills against ours
 cost_alert_fraction = 0.1     # alert when a provider bills this much over our meter
 
+[pools]                       # warm pools, control-plane 18.6
+enabled = true                # false keeps every pool off
+order = "cost_first"          # the cheapest candidate first, or "warm_first" (question 17)
+tick = "15s"                  # pool_tick sizes, fills, inspects and retires every pool
+workers = 4                   # River workers on the pools queue, 1 to 64
+reserve_share = 0.5           # share of a pool's target that open reservations may hold
+capacity_share = 0.25         # share of a provider's max_concurrent that members may take
+headroom = 2                  # members kept beyond the demand a target is sized for
+rate_window = "15m"           # claims and misses over this long count as demand
+extension_room = "1h"         # lifetime a claimed member must still have past its package
+inspect_every = "10m"         # the gap between inspections of one warm member
+max_fills_per_tick = 2        # fills one tick starts for one pool
+fail_pause = "10m"            # three failed fills in a row pause a pool this long
+max_daily_micros = 2000000    # a day's waste and idle cost, then every target drops to its min
+
+[[pools.pool]]
+provider = "boxd"             # never "boat", and "koyeb" only after KOYEBP1 passes
+size = "1x4"                  # a size the provider sells
+min = 2
+max = 5
+max_age = "24h"               # a warm member is replaced after this long
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
 gate_route = "default"        # the pinned default proxy, or "subdomain" for a bn proxy to the gate
+parked_gib = 5                # disk written per hibernated pool member, which sets its idle cost
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
 ops_per_second = 0            # user operations on the account a second, 0 for no bucket

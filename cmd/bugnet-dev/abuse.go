@@ -189,6 +189,9 @@ func (c *cli) printOperatorPlacement(p *routerv1.OperatorPlacement, blocked []st
 	if p.GetDeadline() != nil {
 		kv = append(kv, [2]string{"deadline", stamp(p.GetDeadline())})
 	}
+	if p.GetStartPath() != "" {
+		kv = append(kv, [2]string{"start_path", p.GetStartPath()})
+	}
 	if blocked != nil {
 		kv = append(kv, [2]string{"blocked_payers", strings.Join(blocked, ",")})
 	}

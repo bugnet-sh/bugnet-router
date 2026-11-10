@@ -124,7 +124,8 @@ func TestLoadFileDefaults(t *testing.T) {
 		t.Fatalf("sandbox operations %d a second and %d at once, want the limiter's defaults",
 			c.SandboxOpsPerSecond, c.SandboxOpsBurst)
 	}
-	if c.Boxd != (Boxd{Region: "fra", GateRoute: "default"}) || c.Koyeb.Region != "fra" ||
+	if c.Boxd != (Boxd{Region: "fra", GateRoute: "default", ParkedGiB: 5}) ||
+		c.Koyeb.Region != "fra" ||
 		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil || c.Boat.SSHPath != "gate" {
 		t.Fatalf("provider defaults: %+v, %+v, %+v", c.Boxd, c.Koyeb, c.Boat)
 	}
@@ -296,7 +297,9 @@ cpu8 = "large"
 		c.LocalHourlyMicros != 1500 {
 		t.Fatalf("local settings: %+v", c)
 	}
-	if c.Boxd != (Boxd{Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default"}) {
+	if c.Boxd != (Boxd{
+		Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default", ParkedGiB: 5,
+	}) {
 		t.Fatalf("boxd settings: %+v", c.Boxd)
 	}
 	wantTemplates := []E2BTemplate{
@@ -1056,6 +1059,12 @@ func TestCommittedFilesLoad(t *testing.T) {
 	}
 	// Names have no default, the example shows the production set
 	example.E2B.Templates, example.Names = nil, empty.Names
+	// The example shows the one boxd pool, which an empty file lacks
+	wantPool := []Pool{{Provider: "boxd", Size: "1x4", Min: 2, Max: 5, MaxAge: 24 * time.Hour}}
+	if !reflect.DeepEqual(example.Pools.Pool, wantPool) {
+		t.Errorf("config/example.toml pools %+v, want %+v", example.Pools.Pool, wantPool)
+	}
+	example.Pools.Pool = nil
 	if len(example.Koyeb.InstanceTypes) == 0 && len(example.Boat.Types) == 0 {
 		example.Koyeb.InstanceTypes, example.Boat.Types = nil, nil
 	}

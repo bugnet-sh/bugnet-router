@@ -97,12 +97,17 @@ func (s SSHSettings) specFor(prov provider.Provider, ref provider.Ref, authorize
 // sshUp runs ssh-up and answers the host it reports, with the exec user and never its own
 func (s *Saga) sshUp(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
-	authorize []string,
+	authorize []string, newHostKey bool,
 ) (store.SSHHost, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.d.SSH.installTimeout()+sshUpSlack)
 	defer cancel()
 	spec := s.d.SSH.specFor(prov, ref, authorize)
-	ans, err := rootCommand(ctx, prov, ref, "ssh-up", sshSpecPath, spec)
+	var extra []string
+	if newHostKey {
+		// A pool member's sandbox must never share a host key with another's
+		extra = append(extra, "--new-host-key")
+	}
+	ans, err := rootCommand(ctx, prov, ref, "ssh-up", sshSpecPath, spec, extra...)
 	if err != nil {
 		return store.SSHHost{}, err
 	}
@@ -176,7 +181,7 @@ func (s *Saga) PrepareSSH(ctx context.Context, id uuid.UUID) error {
 		if s.d.Registry.NativeSSH(prov) {
 			return nil
 		}
-		host, err := s.sshUp(ctx, prov, ref, id, nil)
+		host, err := s.sshUp(ctx, prov, ref, id, nil, false)
 		if err != nil {
 			return fmt.Errorf("ssh-up: %w", err)
 		}
@@ -226,7 +231,7 @@ func (s *Saga) AuthorizeGateway(
 			out.Host = host
 			return err
 		}
-		if host, err = s.sshUp(ctx, prov, ref, id, []string{line}); err != nil {
+		if host, err = s.sshUp(ctx, prov, ref, id, []string{line}, false); err != nil {
 			return fmt.Errorf("%w: ssh-up: %w", ErrSSHPreparing, err)
 		}
 		if err := lockReady(ctx, ts, id); err != nil {

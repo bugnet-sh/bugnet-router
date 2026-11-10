@@ -79,6 +79,8 @@ func liveMachine(ctx context.Context, t *testing.T, p *Provider) provider.Ref {
 
 func TestBoxdLiveContract(t *testing.T) {
 	p := liveProvider(t)
+	// A bare contract sandbox holds no runner for Unpark to ping
+	p.pingArgv = []string{"true"}
 	contract.Run(t, func(*testing.T) provider.Provider { return p })
 }
 

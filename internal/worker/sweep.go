@@ -97,6 +97,9 @@ func (w *Worker) sweepProvider(ctx context.Context, prov provider.Provider) {
 
 // leftover reports whether a sandbox still needs destroying, ending an expired placement first
 func (w *Worker) leftover(ctx context.Context, prov provider.Provider, o provider.Summary) bool {
+	if _, pooled := o.Labels["bugnet_pool"]; pooled {
+		return w.poolLeftover(ctx, prov, o)
+	}
 	id, err := uuid.Parse(o.Labels["placement"])
 	if err != nil {
 		if o.CreatedAt.IsZero() {
@@ -114,6 +117,13 @@ func (w *Worker) leftover(ctx context.Context, prov provider.Provider, o provide
 		w.log.Error("sweep load placement", "placement", id, "err", err)
 		return false
 	}
+	return w.judge(ctx, prov, o, p)
+}
+
+// judge decides a sandbox as the placement it belongs to, ending an expired placement first
+func (w *Worker) judge(
+	ctx context.Context, prov provider.Provider, o provider.Summary, p store.Placement,
+) bool {
 	now := w.now()
 	switch {
 	case p.State == store.PlacementTerminated || p.State == store.PlacementFailed:

@@ -26,6 +26,9 @@ const (
 	benchesKeep       = 90 * 24 * time.Hour
 	transferIndexKeep = 30 * 24 * time.Hour
 	probeSlotsKeep    = 10 * time.Minute
+	reservationsKeep  = 7 * 24 * time.Hour
+	poolMembersKeep   = 30 * 24 * time.Hour
+	poolMissesKeep    = 24 * time.Hour
 )
 
 // The ages of the estimator's rows when Deps leaves them unset
@@ -63,6 +66,9 @@ func (w *Worker) ages() map[store.RetentionTable]time.Duration {
 		store.RetainUsageObservation: w.d.ObservationsKeep,
 		store.RetainEstimates:        w.d.EstimatesKeep,
 		store.RetainSourceFacts:      w.d.SourceFactsKeep,
+		store.RetainReservations:     reservationsKeep,
+		store.RetainPoolMembers:      poolMembersKeep,
+		store.RetainPoolMisses:       poolMissesKeep,
 	}
 }
 

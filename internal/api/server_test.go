@@ -52,6 +52,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -247,6 +248,8 @@ type options struct {
 	// hooks and hookSecrets set the webhook providers and their secrets
 	hooks       config.Hooks
 	hookSecrets map[string]config.HookSecret
+	// pools lists the warm pools of the local provider, which ListPools and DrainPool serve
+	pools *config.Pools
 }
 
 type env struct {
@@ -339,7 +342,7 @@ func newEnv(t *testing.T, opts options) *env {
 		t.Fatal(err)
 	}
 	tracker := placement.NewTracker(time.Now)
-	engine := placement.New(reg, tracker)
+	engine := placement.New(reg, tracker, nil)
 	sess := sessionSettings
 	if opts.sessions != nil {
 		sess = *opts.sessions
@@ -405,7 +408,21 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.sourcer != nil {
 		sources = newSources(t, opts, reg, st, apiVK, prefix, rc)
 	}
+	var pools *poolpkg.Manager
+	if opts.pools != nil {
+		poolReg, err := provider.NewRegistry([]provider.Provider{prov}, provider.Features{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pools, err = poolpkg.New(poolpkg.Deps{
+			Store: st, Registry: poolReg, River: rc, Settings: *opts.pools, Log: discard,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	srv := api.New(api.Deps{
+		Pools:     pools,
 		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,

@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -55,4 +56,12 @@ func SpansCost(spans []store.AttemptSpan, end time.Time, incrOf func(string) tim
 		total += AttemptCost(a.CreatedAt, to, incrOf(a.Provider), a.HourlyMicros, a.StartFeeMicros)
 	}
 	return total
+}
+
+// MemberCost is the provider cost in micros of one pool member's own time up to end: filling at
+// the hourly rate, waiting parked at the parked rate, and, for a member held for a reservation or
+// ended unbound, the running time after its claim. A bound member's running time is its
+// placement's, which the attempt spans price.
+func MemberCost(m store.Member, hourly, parked int64, end time.Time) int64 {
+	return pool.OverheadMicros(m, hourly, parked, m.CreatedAt, end)
 }

@@ -173,7 +173,9 @@ func newFake(t *testing.T) *fakeBoxd {
 // provider builds an adapter talking to the fake over plaintext loopback
 func (f *fakeBoxd) provider(t *testing.T, key string) *Provider {
 	t.Helper()
-	p, err := New(Options{APIKey: key, Endpoint: f.addr, Insecure: true})
+	p, err := New(Options{
+		APIKey: key, Endpoint: f.addr, Insecure: true, WakeCheck: []string{"true"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,6 +480,38 @@ func (f *fakeBoxd) SetDeleteAfter(
 	return &boxdpb.SetDeleteAfterResponse{DeleteAtMs: vm.deleteAt.UnixMilli()}, nil
 }
 
+func (f *fakeBoxd) HibernateVm(
+	_ context.Context, req *boxdpb.HibernateVmRequest,
+) (*boxdpb.HibernateVmResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm, err := f.lookup(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	if vm.status == "hibernated" {
+		return nil, status.Error(codes.FailedPrecondition, "machine is already hibernated")
+	}
+	vm.status = "hibernated"
+	return &boxdpb.HibernateVmResponse{}, nil
+}
+
+func (f *fakeBoxd) WakeVm(
+	_ context.Context, req *boxdpb.WakeVmRequest,
+) (*boxdpb.WakeVmResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vm, err := f.lookup(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	if vm.status != "hibernated" {
+		return nil, status.Error(codes.FailedPrecondition, "machine is already running")
+	}
+	vm.status = "running"
+	return &boxdpb.WakeVmResponse{}, nil
+}
+
 func (f *fakeBoxd) SetAutoHibernateTimeout(
 	_ context.Context, req *boxdpb.SetAutoHibernateTimeoutRequest,
 ) (*boxdpb.SetAutoHibernateTimeoutResponse, error) {
@@ -630,6 +664,9 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 	}
 	f.mu.Lock()
 	vm, err := f.lookup(first.GetVmId())
+	if err == nil && vm.status == "hibernated" {
+		err = status.Error(codes.Unavailable, "machine is hibernated")
+	}
 	if err == nil && vm.agentDownExecs > 0 {
 		vm.agentDownExecs--
 		err = status.Error(codes.Unavailable, "cannot connect to VM agent: connection refused")

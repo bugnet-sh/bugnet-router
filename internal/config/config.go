@@ -114,6 +114,8 @@ type Config struct {
 	// CreatesPerSecond is each provider's create rate, absent for no bucket
 	CreatesPerSecond map[string]int
 	Sessions         Sessions
+	// Pools holds the warm pool settings and the pools themselves
+	Pools Pools
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -140,6 +142,8 @@ type Boxd struct {
 	Endpoint string `toml:"endpoint"` // overrides the region's endpoint when set
 	// GateRoute is default for the pinned default proxy, or subdomain for a bn proxy to the gate
 	GateRoute string `toml:"gate_route"`
+	// ParkedGiB is the disk written per hibernated pool member, which sets its idle cost
+	ParkedGiB int `toml:"parked_gib"`
 }
 
 // E2B holds the E2B adapter's settings
@@ -394,6 +398,7 @@ type file struct {
 	Estimator           estimatorFile  `toml:"estimator"`
 	Images              imagesFile     `toml:"images"`
 	Sessions            sessionsFile   `toml:"sessions"`
+	Pools               poolsFile      `toml:"pools"`
 	Localrun            localrunFile   `toml:"localrun"`
 }
 
@@ -451,6 +456,7 @@ type boxdFile struct {
 	Region         string   `toml:"region"`
 	Endpoint       string   `toml:"endpoint"`
 	GateRoute      string   `toml:"gate_route"`
+	ParkedGiB      int64    `toml:"parked_gib"`
 	HardenRequired bool     `toml:"harden_required"`
 	HardenAllow    []string `toml:"harden_allow"`
 	OpsPerSecond   int64    `toml:"ops_per_second"`
@@ -574,7 +580,9 @@ func defaults() file {
 		Local: localFile{
 			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
 		},
-		Boxd:  boxdFile{Region: "fra", GateRoute: "default", HardenRequired: true},
+		Boxd: boxdFile{
+			Region: "fra", GateRoute: "default", ParkedGiB: 5, HardenRequired: true,
+		},
 		E2B:   e2bFile{HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1},
 		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
 		Boat: boatFile{
@@ -627,6 +635,7 @@ func defaults() file {
 		Stats:      defaultStats(),
 		Estimator:  defaultEstimator(),
 		Sessions:   defaultSessions(),
+		Pools:      defaultPools(),
 	}
 }
 
@@ -727,6 +736,7 @@ func (f file) config() (Config, error) {
 		Boxd: Boxd{
 			Region: cmp.Or(f.Boxd.Region, d.Boxd.Region), Endpoint: f.Boxd.Endpoint,
 			GateRoute: cmp.Or(f.Boxd.GateRoute, d.Boxd.GateRoute),
+			ParkedGiB: int(f.Boxd.ParkedGiB),
 		},
 		E2B: E2B{
 			Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates), TeamID: f.E2B.TeamID,
@@ -858,7 +868,13 @@ func (f file) config() (Config, error) {
 	if err := f.providerCounts(&c); err != nil {
 		return Config{}, err
 	}
+	if f.Boxd.ParkedGiB < 1 || f.Boxd.ParkedGiB > 100_000 {
+		return Config{}, errors.New("boxd.parked_gib must be 1 to 100000")
+	}
 	if c.Sessions, err = f.Sessions.read(d.Sessions); err != nil {
+		return Config{}, err
+	}
+	if c.Pools, err = f.Pools.read(d.Pools); err != nil {
 		return Config{}, err
 	}
 	c.Localrun = f.Localrun.read()

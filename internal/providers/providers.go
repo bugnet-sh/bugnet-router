@@ -164,6 +164,7 @@ func boxdOptions(cfg config.Config, key string) boxd.Options {
 	return boxd.Options{
 		APIKey: key, Endpoint: cfg.Boxd.Endpoint, Region: cfg.Boxd.Region,
 		GatePort: cfg.Previews.GatePort, GateRoute: cfg.Boxd.GateRoute,
+		ParkedGiB: cfg.Boxd.ParkedGiB,
 	}
 }
 

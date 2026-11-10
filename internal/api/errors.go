@@ -93,6 +93,9 @@ const (
 	reasonBenchUnknown    = "BENCH_UNKNOWN"
 )
 
+// Pool reasons, named as CP 13.1 names them
+const reasonPoolUnknown = "POOL_UNKNOWN"
+
 // Preview reasons, named as DP 11.3 names them
 const (
 	reasonPortRefused     = "PORT_REFUSED"

@@ -18,6 +18,17 @@ const (
 	SamplePlacement SampleKind = "placement"
 	SampleCanary    SampleKind = "canary"
 	SampleBench     SampleKind = "bench"
+	// SamplePool times the fill of one pool member
+	SamplePool SampleKind = "pool"
+	// SampleReserve times the start of a sandbox for one reservation
+	SampleReserve SampleKind = "reserve"
+)
+
+// Start paths a sample or a placement records
+const (
+	PathCold   = "cold"
+	PathPooled = "pooled"
+	PathPool   = "pool"
 )
 
 // Sample outcomes, of which only ok and failed count in a provider's health
@@ -53,6 +64,12 @@ type StartSample struct {
 	ErrorCode, Error                    string
 	CostMicros                          int64
 	Replica                             string
+	// StartPath is cold, pooled or pool for a fill, empty when the sample says none
+	StartPath string
+	// MemberID is the pool member a fill made or an attempt claimed, the zero id for none
+	MemberID uuid.UUID
+	// WakeMS is the time to wake a parked member, negative when none was woken
+	WakeMS int
 }
 
 // NoStep marks a StartSample timing that did not run
@@ -76,13 +93,15 @@ func (s *Store) InsertStartSample(ctx context.Context, m StartSample) error {
 		_, err := tx.Exec(ctx, `
 			insert into start_samples (id, kind, bench_id, placement_id, provider, size_name,
 				sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms,
-				warm_cmd_ms, destroy_ms, outcome, error_code, error, cost_micros, replica)
+				warm_cmd_ms, destroy_ms, outcome, error_code, error, cost_micros, replica,
+				start_path, member_id, wake_ms)
 			values ($1, $2, nullif($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-				$16, $17, $18, $19, $20)`,
+				$16, $17, $18, $19, $20, nullif($21, ''), $22, $23)`,
 			m.ID, string(m.Kind), m.BenchID, nilUUID(m.PlacementID), m.Provider, m.SizeName,
 			m.SandboxID, utc(m.StartedAt), step(m.CreateMS), step(m.ReadyMS), step(m.RunnerMS),
 			step(m.GateMS), step(m.FirstCmdMS), step(m.WarmCmdMS), step(m.DestroyMS), m.Outcome,
-			m.ErrorCode, m.Error, m.CostMicros, m.Replica)
+			m.ErrorCode, m.Error, m.CostMicros, m.Replica, m.StartPath, nilUUID(m.MemberID),
+			step(m.WakeMS))
 		if err != nil {
 			return fmt.Errorf("insert start sample: %w", err)
 		}
@@ -109,7 +128,8 @@ func step(ms int) any {
 // startSampleColumns are the columns collectSamples reads
 const startSampleColumns = `id, kind, coalesce(bench_id, ''), placement_id, provider, size_name,
 	sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms, warm_cmd_ms,
-	destroy_ms, outcome, error_code, error, cost_micros, replica`
+	destroy_ms, outcome, error_code, error, cost_micros, replica, coalesce(start_path, ''),
+	member_id, wake_ms`
 
 // StartSamples returns the samples of provider since a time, oldest first
 func (s *Store) StartSamples(
@@ -144,11 +164,21 @@ func (s *Store) SampleQuery(ctx context.Context, f SampleFilter) ([]StartSample,
 		var m StartSample
 		var placement *uuid.UUID
 		var t [7]*int
+		var member *uuid.UUID
+		var wake *int
 		err := r.Scan(&m.ID, &m.Kind, &m.BenchID, &placement, &m.Provider, &m.SizeName,
 			&m.SandboxID, &m.StartedAt, &t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6],
-			&m.Outcome, &m.ErrorCode, &m.Error, &m.CostMicros, &m.Replica)
+			&m.Outcome, &m.ErrorCode, &m.Error, &m.CostMicros, &m.Replica, &m.StartPath, &member,
+			&wake)
 		if placement != nil {
 			m.PlacementID = *placement
+		}
+		if member != nil {
+			m.MemberID = *member
+		}
+		m.WakeMS = NoStep
+		if wake != nil {
+			m.WakeMS = *wake
 		}
 		m.StartedAt = utc(m.StartedAt)
 		for i, into := range []*int{&m.CreateMS, &m.ReadyMS, &m.RunnerMS, &m.GateMS,
@@ -226,7 +256,8 @@ func (s *Store) HealthWindow(
 	err := s.q.QueryRow(ctx, `
 		select count(*) filter (where outcome = 'ok'), count(*) filter (where outcome = 'failed'),
 			percentile_disc(0.95) within group (order by ready_ms)
-				filter (where outcome = 'ok' and ready_ms is not null)
+				filter (where outcome = 'ok' and ready_ms is not null and kind <> 'pool'
+					and coalesce(start_path, 'cold') = 'cold')
 		from start_samples where provider = $1 and started_at >= $2`,
 		provider, utc(since)).Scan(&c.OK, &c.Failed, &p95)
 	if err != nil {
@@ -298,7 +329,8 @@ func (s *Store) WriteHealth(
 type CanaryFacts struct {
 	// LastCanary is the start of the newest canary sample, zero for none
 	LastCanary time.Time
-	// LastReady is when a placement last got ready on the provider, zero for none
+	// LastReady is when a placement got ready or a pool fill reached warm on the provider last,
+	// zero for none
 	LastReady time.Time
 	// State is the shared state, ok without a row
 	State string
@@ -313,7 +345,9 @@ func (s *Store) CanaryFactsOf(ctx context.Context, provider string) (CanaryFacts
 	err := s.q.QueryRow(ctx, `
 		select (select max(started_at) from start_samples
 				where provider = $1 and kind = 'canary'),
-			(select max(ready_at) from placements where provider = $1)`,
+			(select max(t) from (
+				select max(ready_at) as t from placements where provider = $1
+				union all select max(warm_at) from pool_members where provider = $1) r)`,
 		provider).Scan(&canary, &ready)
 	if err != nil {
 		return f, fmt.Errorf("select canary facts: %w", err)

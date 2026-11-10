@@ -107,6 +107,10 @@ type Options struct {
 	GatePort int
 	// GateRoute is default for the pinned default proxy, or subdomain for a bn proxy to the gate
 	GateRoute string
+	// ParkedGiB is the disk written per hibernated machine, which sets its idle cost, 5 when 0
+	ParkedGiB int
+	// WakeCheck is the command Unpark runs until it exits 0, the runner's ping when empty
+	WakeCheck []string
 }
 
 // Provider places sandboxes on boxd over one gRPC connection and streams files over a second
@@ -120,12 +124,18 @@ type Provider struct {
 	afterCreate  time.Duration
 	gatePort     int
 	gateRoute    string
+	parkedGiB    int
+	// pingArgv is the command Unpark runs until it exits 0
+	pingArgv []string
 }
 
 // New connects lazily to boxd, the first call dials the endpoint
 func New(opts Options) (*Provider, error) {
 	if opts.APIKey == "" {
 		return nil, errors.New("boxd: an API key is required")
+	}
+	if opts.ParkedGiB < 0 {
+		return nil, fmt.Errorf("boxd: parked GiB %d is negative", opts.ParkedGiB)
 	}
 	if opts.GatePort < 0 || opts.GatePort > 65535 {
 		return nil, fmt.Errorf("boxd: gate port %d is not a TCP port", opts.GatePort)
@@ -157,11 +167,16 @@ func New(opts Options) (*Provider, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	pingArgv := runnerPing
+	if len(opts.WakeCheck) > 0 {
+		pingArgv = slices.Clone(opts.WakeCheck)
+	}
 	return &Provider{
 		conn: conn, api: boxdpb.NewBoxdApiClient(conn), streamConn: streamConn,
 		streams: boxdpb.NewBoxdApiClient(streamConn), log: log, pollInterval: defaultPoll,
 		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
-		gateRoute: route,
+		gateRoute: route, parkedGiB: cmp.Or(opts.ParkedGiB, defaultParkedGiB),
+		pingArgv: pingArgv,
 	}, nil
 }
 

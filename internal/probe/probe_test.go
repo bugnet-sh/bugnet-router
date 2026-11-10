@@ -179,7 +179,7 @@ func newRigOf(
 	st := store.New(pool, store.WithRefSealer(keys), store.WithLogger(discard))
 	tracker := placement.NewTracker(time.Now)
 	sg := saga.New(saga.Deps{
-		Store: st, Engine: placement.New(reg, tracker), Registry: reg, River: rc, Valkey: vk,
+		Store: st, Engine: placement.New(reg, tracker, nil), Registry: reg, River: rc, Valkey: vk,
 		Prefix: prefix, Tracker: tracker, ReplicaID: "replica-test", Log: discard, Keys: keys,
 		Boot: boot,
 	})
