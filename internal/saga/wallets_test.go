@@ -323,6 +323,11 @@ func TestDepositOrderCountsAsAnonymous(t *testing.T) {
 	// Deposit orders share the anonymous pool rather than any sending wallet's limits
 	_, err = deposit("deposit-2", secondTx)
 	eq(t, errors.Is(err, saga.ErrWalletBusy), true)
+	refused, err := e.store.AnonymousRefusals(t.Context(), time.Now().Add(-time.Hour))
+	eq(t, err, nil)
+	eq(t, len(refused), 1)
+	eq(t, refused[0].Count, int64(1))
+	eq(t, refused[0].Day.Equal(time.Now().UTC().Truncate(24*time.Hour)), true)
 }
 
 func TestOrdersKeepThePayerClaim(t *testing.T) {

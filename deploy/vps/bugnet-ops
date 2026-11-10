@@ -4,6 +4,7 @@
 # deploy.sh installs it as /usr/local/bin/bugnet-ops. Run it with sudo:
 #
 #   sudo bugnet-ops wallet show <payer>
+#   sudo bugnet-ops wallet anonymous --days 7
 #   sudo bugnet-ops pubkey --event
 set -euo pipefail
 exec systemd-run --wait --pipe --quiet --collect -p User=bugnet-router \

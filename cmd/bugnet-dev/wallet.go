@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"flag"
 	"fmt"
 	"strconv"
@@ -10,22 +11,68 @@ import (
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // wallet runs a wallet subcommand through OperatorService
 func (c *cli) wallet(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: wallet takes block, unblock, show or list", errUsage)
+		return fmt.Errorf("%w: %s", errUsage, walletSubs)
 	}
 	sub := map[string]func([]string) error{
 		"block": c.walletBlock, "unblock": c.walletUnblock, "show": c.walletShow,
-		"list": c.walletList,
+		"list": c.walletList, "anonymous": c.walletAnonymous,
 	}[args[0]]
 	if sub == nil {
-		return fmt.Errorf("%w: wallet takes block, unblock, show or list", errUsage)
+		return fmt.Errorf("%w: %s", errUsage, walletSubs)
 	}
 	return sub(args[1:])
+}
+
+const walletSubs = "wallet takes block, unblock, show, list or anonymous"
+
+// walletAnonymous prints per UTC day the starts without a payer refused at the anonymous cap
+func (c *cli) walletAnonymous(args []string) error {
+	fs := newFlags("wallet anonymous")
+	days := fs.Uint("days", 7, "UTC days to count, today included, at most 90")
+	if err := parse(fs, args, false); err != nil {
+		return err
+	}
+	if *days < 1 || *days > 90 {
+		return fmt.Errorf("%w: --days takes 1 to 90", errUsage)
+	}
+	url := c.getenv("BUGNET_DATABASE_URL")
+	if url == "" {
+		return errors.New("BUGNET_DATABASE_URL is not set")
+	}
+	pool, err := pgxpool.New(c.ctx, url)
+	if err != nil {
+		return fmt.Errorf("open postgres: %w", err)
+	}
+	defer pool.Close()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	since := today.AddDate(0, 0, 1-int(*days))
+	counts, err := store.New(pool).AnonymousRefusals(c.ctx, since)
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	var total int64
+	for d := since; !d.After(today); d = d.AddDate(0, 0, 1) {
+		var n int64
+		for _, dc := range counts {
+			if dc.Day.Equal(d) {
+				n = dc.Count
+			}
+		}
+		total += n
+		fmt.Fprintf(&b, "%s refused=%d\n", d.Format(time.DateOnly), n)
+	}
+	fmt.Fprintf(&b, "total refused=%d\n", total)
+	_, err = fmt.Fprint(c.stdout, b.String())
+	return err
 }
 
 // payerArg parses fs with one payer before or after the flags
