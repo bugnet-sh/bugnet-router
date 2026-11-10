@@ -20,7 +20,7 @@ func TestMonitorShowsLostEndsOverTheHourlyAlert(t *testing.T) {
 	ask := func(c lossCheck) (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
-			limitsCheck{}, nil, canaryCheck{}, c)(rec,
+			limitsCheck{}, nil, canaryCheck{}, c, spendCheck{})(rec,
 			httptest.NewRequest(http.MethodGet, "/monitor", nil))
 		return rec.Code, rec.Body.String()
 	}
@@ -77,7 +77,7 @@ func TestMonitorShowsAKillNoRouterAskedFor(t *testing.T) {
 	add("boat", "other", time.Minute)
 	rec := httptest.NewRecorder()
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, limitsCheck{},
-		nil, canaryCheck{}, lossCheck{alertPerHour: 3})(rec,
+		nil, canaryCheck{}, lossCheck{alertPerHour: 3}, spendCheck{})(rec,
 		httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	want := "provider e2b: 2 sandboxes killed that no router asked for\n"
 	if rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want {

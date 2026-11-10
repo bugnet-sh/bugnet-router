@@ -235,7 +235,11 @@ func serve(
 	mux.HandleFunc("GET /monitor", monitor(log, st, vk, cfg.ValkeyPrefix, read,
 		cfg.Hardening.PoolList, feed, w.SessionDiskPercent, limitsOf(cfg, reg, vk),
 		sources.Providers(), canariesOf(cfg, reg, w),
-		lossCheck{alertPerHour: cfg.Abuse.LostAlertPerHour}))
+		lossCheck{alertPerHour: cfg.Abuse.LostAlertPerHour},
+		spendCheck{
+			marginFloor:       cfg.MarginFloor,
+			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
+		}))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

@@ -18,7 +18,7 @@ import (
 func askCanaries(st *store.Store, vk valkey.Client, c canaryCheck) (int, string) {
 	rec := httptest.NewRecorder()
 	monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil, limitsCheck{}, nil,
-		c, lossCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
+		c, lossCheck{}, spendCheck{})(rec, httptest.NewRequest(http.MethodGet, "/monitor", nil))
 	return rec.Code, rec.Body.String()
 }
 
