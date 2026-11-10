@@ -6,6 +6,7 @@ import (
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
@@ -143,6 +144,29 @@ func TestDrainPoolRefusals(t *testing.T) {
 	_, err := plain.operator(t, operatorToken).DrainPool(t.Context(),
 		drainReq("local", "small", 0))
 	mustCode(t, err, connect.CodeNotFound, "POOL_UNKNOWN")
+}
+
+func TestFindPlacementShowsAHedgedStart(t *testing.T) {
+	e := newEnv(t, options{})
+	_, p := e.readyPlacement(t)
+	find := func() *routerv1.OperatorPlacement {
+		res, err := e.operator(t, operatorToken).FindPlacement(t.Context(), connect.NewRequest(
+			&routerv1.FindPlacementRequest{Target: &routerv1.PlacementTarget{
+				Target: &routerv1.PlacementTarget_PlacementId{PlacementId: p.GetPlacementId()}}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Msg.GetPlacement()
+	}
+	eq(t, find().GetHedged(), false)
+	id, err := uuid.Parse(p.GetPlacementId())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetPlacementHedged(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, find().GetHedged(), true)
 }
 
 func TestFindPlacementShowsTheStartPath(t *testing.T) {

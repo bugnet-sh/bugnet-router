@@ -182,3 +182,26 @@ func TestReadyP95PrefersTheSharedReading(t *testing.T) {
 	c.add(health.DefaultEvery)
 	eq(t, shared.ReadyP95("a"), 30*time.Second)
 }
+
+func TestSharedTotalsAreTheRollupsWholeAttemptFigures(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	c := newClock()
+	shared := health.NewShared(st, c.tracker(), nil, health.WithClock(c.Now))
+	cold, pooled, n := shared.Totals("a")
+	if cold != 0 || pooled != 0 || n != 0 {
+		t.Fatalf("a provider without a row has totals %v, %v, %d", cold, pooled, n)
+	}
+	_, err := st.WriteHealth(ctx, "a", store.HealthState{
+		State: store.HealthOK, Samples: 7, ColdTotalP95: 4 * time.Second,
+		PooledTotalP95: 900 * time.Millisecond,
+	}, c.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.add(health.DefaultEvery)
+	cold, pooled, n = shared.Totals("a")
+	if cold != 4*time.Second || pooled != 900*time.Millisecond || n != 7 {
+		t.Fatalf("totals %v, %v, %d, want 4s, 900ms, 7", cold, pooled, n)
+	}
+}

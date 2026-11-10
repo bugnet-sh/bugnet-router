@@ -210,3 +210,21 @@ func costMicros(hourly int64, used, increment time.Duration) int64 {
 	num.Add(num, den.Sub(den, big.NewInt(1)))
 	return num.Div(num, big.NewInt(int64(time.Hour))).Int64()
 }
+
+// HedgeFits reports whether b beside a stays above the floor, a having run pre before the order
+//
+// Whichever attempt wins runs the whole package and the loser runs until it is destroyed, so the
+// worst case is the dearer one winning, both start fees paid, and the loser living loserLife.
+// pre counts on both sides, which keeps the check an upper bound. A free package fits only when
+// both candidates cost nothing.
+func HedgeFits(
+	pkg catalog.Package, a, b Candidate, pre, loserLife time.Duration, floor float64,
+) bool {
+	run := time.Duration(pkg.Minutes) * time.Minute
+	incA, incB := a.Provider.BillingIncrement(), b.Provider.BillingIncrement()
+	winner := max(costMicros(a.HourlyMicros, pre+run, incA), costMicros(b.HourlyMicros, run, incB))
+	loser := max(costMicros(a.HourlyMicros, pre+loserLife, incA),
+		costMicros(b.HourlyMicros, pre+loserLife, incB))
+	worst := winner + a.StartFeeMicros + b.StartFeeMicros + loser
+	return float64(worst) <= float64(pkg.PriceMicros)*(1-floor)
+}

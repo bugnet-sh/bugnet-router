@@ -2271,3 +2271,76 @@ The live rows are `TestLiveControl/RSV1` to `RSV3`. RSV1 holds an E2B start for 
 extends until the provider's lifetime says no, RSV2 runs `bench router --path reserved` 30 times
 per pooled provider and checks that the p90 of payment to first command stays under 5 s, and RSV3
 records each provider's `cold` figure after `bugnet-dev pools drain`.
+
+### Hedged starts
+
+A start that runs longer than its provider's p95 gets a second attempt beside it, and the first
+sandbox ready wins. The settings are `[hedge]` in `config/example.toml`: `enabled`,
+`default_after` (5 s), `min_after` (1500 ms), `min_samples` (5), `loser_life` (90 s), `min_left`
+(10 s), `min_bucket_share` (0.5), `per_minute` (30) with `burst` (5), and `onto_boat`, which stays
+`false` until the founder answers CP question 21.
+
+`place` arms a timer for the running attempt at `Hedger.After(provider, path)`. It is the p95 of
+whole attempts on that provider and path (`cold_total_p95_ms` or `pooled_total_p95_ms` of
+`provider_health`) with at least `min_samples` behind it, else `default_after`, and never under
+`min_after`. A wait on an awaited reservation counts as attempt 1 and is measured from the
+reservation's `created_at`. When the timer fires a hedge starts only if all of these hold, and
+otherwise nothing is written and the timer does not arm again:
+
+- the running attempt has seen no unknown create outcome
+- one attempt runs and fewer than 3 have started
+- the next candidate is on another provider, has a free slot, no create pause and a create bucket
+  at least `min_bucket_share` full (a level peek, so nothing is spent)
+- it is not Boat while `onto_boat` is `false`
+- `placement.HedgeFits` holds for the two, which prices the worst case of the dearer one winning,
+  both start fees and the loser living `loser_life`, with the awaited reservation's time so far
+  (at most 55 s) counted on both sides
+- at least `min_left` of the 30 s placing budget is left
+- one token comes from `rl:hedge:all`
+
+The hedge is attempt `n+1` with its own key, its own slot on its attempt row (`slot_provider`) and
+`hedge` set. `placements.hedged` is set once it holds its sandbox, `OperatorPlacement.hedged` and
+`bugnet-dev abuse find` show it, and the samples of both attempts carry `hedge`. Whichever
+`commitReady` gets through `MarkPlacementReady` first wins. It moves its slot to the placement row
+and frees the one the row held for the other attempt in the same transaction, releases an awaited
+reservation and queues `pool_retire` for its member, and cancels the loser's context. A loser with a
+sandbox destroys it, records `failed` with error code `hedge_lost` and frees its slot, and a loser
+inside `Create` returns when the provider answers or the context ends. Once both goroutines end,
+the placement sweeps every attempted provider but keeps the winner, and the worker's sweep takes a
+create that lands later. A known failure of one attempt while the other runs does not fail over,
+and if both fail `place` goes on to the next candidate. A loser's sample has outcome `hedge_lost`,
+which shared health leaves out. `/monitor` reports `hedge loser of placement X still exists after 5
+minutes` for a loser sandbox no one saw destroyed.
+
+### Koyeb's own pools
+
+Koyeb keeps its pool members itself, and the router sizes the pool and claims from it
+(`provider.PoolClaimer`). `pool_tick` stores the target as for any pool but fills nothing, and
+calls `EnsurePool` when the target changed. `pool_ensure{provider}` (default queue, `Timeout()` 30
+s, one per provider while one waits or runs) runs at start and every 5 minutes and sends the stored
+target again, and a paused or drained pool is sent as 0. The pool is named `bn-<deployment>-<size>`
+in `fra`, with Light Sleep, the sandbox service definition, `BUGNET_LABELS` set to the member labels
+and no `SANDBOX_SECRET`. A pool counts as warm to the engine while its target is above 0.
+
+Placing claims with `POST /v1/claim` under the attempt's key, polls the claim every 100 ms for up
+to 30 s, and refuses a member that has no executor secret. The member's row (origin `provider`,
+state `bound`) and the attempt's row are written before the call and the sandbox is stored sealed
+under the placement id after it. Then `Boot` runs with `Pool` set and `Prepare` as for any pooled
+attempt, and the claim's time is the sample's `wake_ms`. A claim that fails retires its member and
+falls back to a cold create on the same candidate. The first request after a claim is HTTP/1.1,
+which the adapter's executor client always uses. `ListOwned` sets `PoolHeld` on pool members no
+claim took, and the sweep keeps them. A claim that cannot be listed leaves every member held.
+`Destroy` of a claimed member deletes its service, and its app once the app holds no other service.
+
+`koyeb.pool_idle_hourly_micros` is 0 while Light Sleep is free. A Koyeb-kept pool adds its target
+times that rate over the day to the spend cap and to `cost_micros_last_day` of `ListPools`, which
+shows `kept_by` `provider` for it. No `[[pools.pool]]` for Koyeb is listed until KOYEBP1 passes and
+the founder answers CP question 19.
+
+The live rows are `TestLiveControl/HEDGE1`, `HEDGE2` and `KOYEBP1` to `KOYEBP5`. HEDGE1 runs 10
+starts on two providers with `hedge.default_after = "200ms"` and checks that every loser is
+destroyed and reads each provider's bill. HEDGE2 follows each loser until the provider no longer
+lists it, against `hedge.loser_life`. KOYEBP1 claims two members of one pool and tries each secret
+on the other's executor and an empty one on both. KOYEBP2 times a claim to a ready executor, KOYEBP3
+checks `PoolHeld`, KOYEBP4 holds idle members for a day (run it twice, a day apart) and KOYEBP5
+destroys an unused claim and counts the pool as it refills.

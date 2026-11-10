@@ -208,6 +208,7 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 	ids2 := []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2"}
 	ids2 = append(ids2, "L1", "L2", "L3", "L4", "R2", "R3", "R4", "R5", "P1")
 	ids2 = append(ids2, "POOL1", "POOL2", "POOL3", "POOL4", "POOL5")
+	ids2 = append(ids2, "HEDGE1", "HEDGE2", "KOYEBP1", "KOYEBP2", "KOYEBP3", "KOYEBP4", "KOYEBP5")
 	for _, id := range ids2 {
 		eq(t, slices.Contains(ids, id), true)
 	}
@@ -229,6 +230,12 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 			eq(t, r.providers, []string{"e2b"})
 		case "POOL1", "POOL2", "POOL3", "POOL4", "POOL5":
 			eq(t, r.providers, []string{"boxd"})
+		case "HEDGE1":
+			eq(t, r.providers, []string{"e2b", "boxd", "koyeb"})
+		case "HEDGE2":
+			eq(t, r.providers, []string{"e2b"})
+		case "KOYEBP1", "KOYEBP2", "KOYEBP3", "KOYEBP4", "KOYEBP5":
+			eq(t, r.providers, []string{"koyeb"})
 		}
 	}
 }

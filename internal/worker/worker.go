@@ -249,6 +249,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &poolTickWorker{w: w})
 	river.AddWorker(workers, &poolFillWorker{w: w})
 	river.AddWorker(workers, &poolRetireWorker{w: w})
+	river.AddWorker(workers, &poolEnsureWorker{w: w})
 	river.AddWorker(workers, &reserveWatchWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
@@ -366,8 +367,25 @@ func polls(d Deps, reg *provider.Registry) []periodicJob {
 		if _, ok := p.(provider.AccountChecker); ok {
 			out = append(out, periodicJob{accountEvery, jobargs.AccountCheck{Provider: name}})
 		}
+		// A provider that keeps its own pools has them created at start and sized every 5 minutes
+		if d.Pools.Enabled && keepsPools(d, p) {
+			out = append(out, periodicJob{poolEnsureEvery, jobargs.PoolEnsure{Provider: name}})
+		}
 	}
 	return out
+}
+
+// keepsPools reports whether the settings list a pool on a provider that keeps its members itself
+func keepsPools(d Deps, p provider.Provider) bool {
+	if _, claims := p.(provider.PoolClaimer); !claims {
+		return false
+	}
+	for _, c := range d.Pools.Pool {
+		if c.Provider == p.Name() {
+			return true
+		}
+	}
+	return false
 }
 
 // periodicJob is one job kind the worker inserts on an interval

@@ -495,3 +495,87 @@ func TestPoolSampleRoundTrips(t *testing.T) {
 	eq(t, h.OK, 1)
 	eq(t, h.ReadyP95, time.Duration(0))
 }
+
+func TestBindProvidedRecordsTheMemberBeforeTheClaim(t *testing.T) {
+	_, keys := testenv.DataPlaneKeys(t)
+	s, pool := newStoreWithPool(t, store.WithRefSealer(keys))
+	ctx := context.Background()
+	p := holdPlacement(t, s, "koyeb", "o1")
+	rec := store.Attempt{
+		PlacementID: p.ID, Attempt: 1, Provider: "koyeb", State: "creating", SizeName: "medium",
+		Path: store.PathPooled, IdempotencyKey: "claim-key-1",
+	}
+	m, err := s.BindProvided(ctx, "koyeb", "medium", "claim-key-1", rec)
+	eq(t, err, nil)
+	eq(t, m.Origin, store.OriginProvider)
+	eq(t, m.State, store.MemberBound)
+	eq(t, m.HoldsSlot, false)
+	eq(t, m.IdempotencyKey, "claim-key-1")
+	eq(t, *m.PlacementID, p.ID)
+	eq(t, m.ProviderRef == nil, true)
+	atts, err := s.Attempts(ctx, p.ID)
+	eq(t, err, nil)
+	eq(t, len(atts), 1)
+	eq(t, atts[0].MemberID, m.ID)
+	// The slot is the attempt's own, so the member adds none
+	eq(t, inUse(t, pool, "koyeb"), 1)
+	eq(t, recount(t, s, "koyeb"), 1)
+
+	// A retry of the same key finds the row a replica that died left
+	again, err := s.BindProvided(ctx, "koyeb", "medium", "claim-key-1", rec)
+	eq(t, err, nil)
+	eq(t, again.ID, m.ID)
+
+	// The claim's sandbox is stored sealed under the placement, and opens under it
+	born := time.Now().Add(-time.Minute)
+	ref := provider.Ref{Provider: "koyeb", ID: "app-1", Meta: map[string]string{
+		"service_id": "svc-1", "secret": "member-secret",
+	}}
+	eq(t, s.MarkMemberClaimed(ctx, m.ID, p.ID, ref, born), nil)
+	got, err := s.MemberByID(ctx, m.ID)
+	eq(t, err, nil)
+	eq(t, got.ProviderRef.Meta["secret"], "member-secret")
+	eq(t, got.ProviderRef.Meta["service_id"], "svc-1")
+	eq(t, got.SandboxCreatedAt.Sub(born) < time.Second, true)
+	var raw string
+	err = pool.QueryRow(ctx, `select provider_ref->'meta'->>'secret' from pool_members
+		where id = $1`, m.ID).Scan(&raw)
+	eq(t, err, nil)
+	eq(t, strings.HasPrefix(raw, "v1."), true)
+	// Another placement cannot record a claim for it
+	err = s.MarkMemberClaimed(ctx, m.ID, uuid.New(), ref, born)
+	if err == nil {
+		t.Fatal("a claim was recorded for a placement that does not hold the member")
+	}
+}
+
+func TestHedgeLosersLeftNamesPlacementsWhoseLoserStillExists(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	made := func(
+		order string, readyAgo time.Duration, loserSandbox string, destroyed bool,
+	) uuid.UUID {
+		t.Helper()
+		p := newPlacement(t, s, order)
+		_, err := pool.Exec(ctx, `update placements set state = 'ready', hedged = true,
+			ready_at = now() - make_interval(secs => $2) where id = $1`, p.ID, readyAgo.Seconds())
+		eq(t, err, nil)
+		var gone any
+		if destroyed {
+			gone = time.Now()
+		}
+		_, err = pool.Exec(ctx, `insert into placement_attempts (placement_id, attempt, provider,
+				state, error_code, sandbox_id, destroyed_at)
+			values ($1, 1, 'slow', 'failed', 'hedge_lost', nullif($2, ''), $3)`,
+			p.ID, loserSandbox, gone)
+		eq(t, err, nil)
+		return p.ID
+	}
+	made("o-destroyed", 10*time.Minute, "a", true)
+	made("o-no-sandbox", 10*time.Minute, "", false)
+	made("o-young", time.Minute, "b", false)
+	left := made("o-left", 10*time.Minute, "c", false)
+	got, err := s.HedgeLosersLeft(ctx, time.Now().Add(-5*time.Minute), 10)
+	eq(t, err, nil)
+	eq(t, got, []uuid.UUID{left})
+}

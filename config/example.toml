@@ -349,6 +349,18 @@ brake_for = "30m"             # how long a brake lasts
 first_command_p90 = "5s"      # /monitor warns when the hour's p90 is over this
 min_placements = 20           # reserved and pooled placements in the hour before it judges
 
+[hedge]                       # hedged starts, control-plane 18.7 and 18.15
+enabled = true                # false never starts a second attempt
+default_after = "5s"          # when a hedge starts for a provider without min_samples whole attempts
+min_after = "1500ms"          # the earliest a hedge ever starts
+min_samples = 5               # whole attempts whose p95 sets the time
+loser_life = "90s"            # the loser's longest life, charged in the margin check
+min_left = "10s"              # of the 30 s placing budget a hedge needs left
+min_bucket_share = 0.5        # the next candidate's create bucket must be this full
+per_minute = 30               # hedges router-wide, with the burst below
+burst = 5
+onto_boat = false             # a hedge never starts on Boat until the founder allows it
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
@@ -394,6 +406,7 @@ ops_per_second = 0
 organization_id = ""          # read from the account when empty
 max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
 creates_per_second = 0        # creates a second on the account, 0 for no bucket
+pool_idle_hourly_micros = 0   # one unclaimed Light Sleep member an hour, free while it is a preview
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
 

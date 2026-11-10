@@ -259,3 +259,114 @@ func TestMigration00024UpAndDown(t *testing.T) {
 		eq(t, reserveTables(), step.want)
 	}
 }
+
+func TestReserveHedgeCapacityHoldsTheAttemptRow(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := holdPlacement(t, s, "local", "o1")
+	ok, err := s.ReserveHedgeCapacity(ctx, p.ID, "other", 2)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	// The placement row keeps the first attempt's slot, the hedge holds its own
+	eq(t, held(t, s, p.ID), "local")
+	eq(t, inUse(t, pool, "other"), 1)
+	atts, err := s.Attempts(ctx, p.ID)
+	eq(t, err, nil)
+	eq(t, len(atts), 1)
+	eq(t, atts[0].Hedge, true)
+	eq(t, atts[0].Attempt, 2)
+	// RecordAttempt keeps the slot the hedge holds
+	a := atts[0]
+	a.State = "creating"
+	eq(t, s.RecordAttempt(ctx, a), nil)
+	eq(t, recount(t, s, "other"), 1)
+	ok, err = s.ReleaseAttemptSlot(ctx, p.ID, 2)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	eq(t, inUse(t, pool, "other"), 0)
+	eq(t, recount(t, s, "other"), 0)
+}
+
+func TestReserveHedgeCapacityRefusesAFullProviderAndAnEndedPlacement(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := holdPlacement(t, s, "local", "o1")
+	eq(t, s.SetCapacity(ctx, "tight", 1), nil)
+	takeSlot(t, s, "tight")
+	ok, err := s.ReserveHedgeCapacity(ctx, p.ID, "tight", 2)
+	eq(t, ok, false)
+	eq(t, err, nil)
+	eq(t, inUse(t, pool, "tight"), 1)
+	_, err = pool.Exec(ctx, `update placements set state = $2 where id = $1`, p.ID,
+		store.PlacementFailed)
+	eq(t, err, nil)
+	ok, err = s.ReserveHedgeCapacity(ctx, p.ID, "other", 2)
+	eq(t, ok, false)
+	if err == nil {
+		t.Fatal("a hedge on a placement that is not placing was not refused")
+	}
+	eq(t, inUse(t, pool, "other"), 0)
+}
+
+func TestWinAttemptSlotMovesTheWinnersSlotAndFreesTheRows(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := holdPlacement(t, s, "slow", "o1")
+	ok, err := s.ReserveHedgeCapacity(ctx, p.ID, "fast", 2)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	eq(t, s.WinAttemptSlot(ctx, p.ID, 2), nil)
+	eq(t, held(t, s, p.ID), "fast")
+	eq(t, inUse(t, pool, "slow"), 0)
+	eq(t, inUse(t, pool, "fast"), 1)
+	// The loser's release finds nothing to free, and the winner's slot stays
+	ok, err = s.ReleaseAttemptSlot(ctx, p.ID, 1)
+	eq(t, ok, false)
+	eq(t, err, nil)
+	eq(t, inUse(t, pool, "fast"), 1)
+	eq(t, recount(t, s, "fast")+recount(t, s, "slow"), 1)
+	// Winning again changes nothing
+	eq(t, s.WinAttemptSlot(ctx, p.ID, 2), nil)
+	eq(t, inUse(t, pool, "fast"), 1)
+}
+
+func TestWinAttemptSlotKeepsAPlacementRowThatHoldsTheWinner(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := holdPlacement(t, s, "first", "o1")
+	ok, err := s.ReserveHedgeCapacity(ctx, p.ID, "second", 2)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	eq(t, s.WinAttemptSlot(ctx, p.ID, 1), nil)
+	eq(t, held(t, s, p.ID), "first")
+	eq(t, inUse(t, pool, "first"), 1)
+	// The loser frees its own row
+	ok, err = s.ReleaseAttemptSlot(ctx, p.ID, 2)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	eq(t, inUse(t, pool, "second"), 0)
+}
+
+func TestWinAttemptSlotOverAnEmptyPlacementRow(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o1")
+	ok, err := s.ReserveHedgeCapacity(ctx, p.ID, "only", 1)
+	eq(t, ok, true)
+	eq(t, err, nil)
+	eq(t, s.WinAttemptSlot(ctx, p.ID, 1), nil)
+	eq(t, held(t, s, p.ID), "only")
+	eq(t, inUse(t, pool, "only"), 1)
+	eq(t, recount(t, s, "only"), 1)
+}
+
+func TestSetPlacementHedged(t *testing.T) {
+	s, _ := newStoreWithPool(t)
+	ctx := context.Background()
+	p := newPlacement(t, s, "o1")
+	eq(t, p.Hedged, false)
+	eq(t, s.SetPlacementHedged(ctx, p.ID), nil)
+	cur, err := s.PlacementByID(ctx, p.ID)
+	eq(t, err, nil)
+	eq(t, cur.Hedged, true)
+}

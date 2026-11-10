@@ -27,6 +27,8 @@ type Warmth struct {
 	read    time.Time
 	warm    map[[2]string]int
 	targets map[[2]string]store.PoolTarget
+	// paused is until when each paused pool stays off
+	paused map[[2]string]time.Time
 }
 
 // NewWarmth builds a view over the configured pools, now being time.Now when nil
@@ -58,6 +60,14 @@ func (w *Warmth) refresh() {
 	if err != nil {
 		return
 	}
+	pauses, err := w.st.Pauses(ctx)
+	if err != nil {
+		return
+	}
+	w.paused = map[[2]string]time.Time{}
+	for _, p := range pauses {
+		w.paused[[2]string{p.Provider, p.SizeName}] = p.Until
+	}
 	w.warm = warm
 	w.targets = map[[2]string]store.PoolTarget{}
 	for _, t := range targets {
@@ -76,6 +86,9 @@ func (w *Warmth) HasPool(provider, size string) bool {
 }
 
 // WarmAvailable reports whether the pool had a claimable member at the last read
+//
+// A provider-kept pool has no rows for the members it holds, so it counts as warm while its target
+// is above 0 and it is not paused, and a claim that finds none ready is made one on demand.
 func (w *Warmth) WarmAvailable(provider, size string) bool {
 	if w == nil || !w.HasPool(provider, size) {
 		return false
@@ -83,7 +96,11 @@ func (w *Warmth) WarmAvailable(provider, size string) bool {
 	w.refresh()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.warm[[2]string{provider, size}] > 0
+	k := [2]string{provider, size}
+	if c := w.pools[Key{provider, size}]; c.ProviderKept {
+		return w.targetLocked(c) > 0 && !w.paused[k].After(w.now())
+	}
+	return w.warm[k] > 0
 }
 
 // Target is the pool's stored target, its min when the row is over a minute old or missing
@@ -98,7 +115,12 @@ func (w *Warmth) Target(provider, size string) int {
 	w.refresh()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	t, ok := w.targets[[2]string{provider, size}]
+	return w.targetLocked(c)
+}
+
+// targetLocked is the stored target of c within its min and max, its min when the row is stale
+func (w *Warmth) targetLocked(c Config) int {
+	t, ok := w.targets[[2]string{c.Provider, c.Size}]
 	if !ok || w.now().Sub(t.ComputedAt) > staleTarget {
 		return c.Min
 	}

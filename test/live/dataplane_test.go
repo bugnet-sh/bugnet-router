@@ -54,7 +54,10 @@ type row struct {
 	providers []string
 	// vps means the row needs the dev front, so it fails at once in the local mode
 	vps bool
-	run func(t *testing.T, s *stack)
+	// settings changes the router's settings of the stack the row runs on, as a row that needs two
+	// providers or a hedge delay must
+	settings func(provider string, m map[string]any)
+	run      func(t *testing.T, s *stack)
 }
 
 // dataplaneRows are DP 16.2's rows and the plan's 16.3 ids, each task adding its own
@@ -101,7 +104,13 @@ func runRows(t *testing.T, rows []row) {
 		}
 		var s *stack
 		if needsStack(mine, *frontFlag) {
-			s = startStack(t, p, *frontFlag, f)
+			var tweaks []func(string, map[string]any)
+			for _, r := range mine {
+				if r.settings != nil {
+					tweaks = append(tweaks, r.settings)
+				}
+			}
+			s = startStack(t, p, *frontFlag, f, tweaks...)
 		}
 		for _, r := range mine {
 			t.Run(r.id, func(t *testing.T) {

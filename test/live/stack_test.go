@@ -302,6 +302,8 @@ type stack struct {
 	egressMetrics string
 	procs         []*proc
 	fronts        []net.Listener // the local mode's PROXY v2 fronts, none in the vps mode
+	// tweaks change the router's settings once they are built, for the rows that need more
+	tweaks []func(string, map[string]any)
 	// sshAddr is where SSH clients connect, and sshKnown their known_hosts file
 	sshAddr  string
 	sshKnown string
@@ -313,7 +315,9 @@ type stack struct {
 }
 
 // startStack starts a stack on provider, or on local for the stack's own test
-func startStack(t *testing.T, provider, mode string, f front) *stack {
+func startStack(
+	t *testing.T, provider, mode string, f front, tweaks ...func(string, map[string]any),
+) *stack {
 	t.Helper()
 	checked := provider
 	if provider == "local" {
@@ -322,7 +326,8 @@ func startStack(t *testing.T, provider, mode string, f front) *stack {
 	if err := checkPlan([]string{checked}, mode, f, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	s := &stack{provider: provider, mode: mode, f: f, root: repo(t), bin: binaries(t)}
+	s := &stack{provider: provider, mode: mode, f: f, root: repo(t), bin: binaries(t),
+		tweaks: tweaks}
 	dir, err := os.MkdirTemp("", "bugnet-live-stack-")
 	if err != nil {
 		t.Fatal(err)
@@ -483,6 +488,9 @@ func (s *stack) routerSettings(t *testing.T, prefix, apiAddr, workerAddr, runner
 	}
 	// The stack offers previews on its provider, so the preview rows can earn its place there
 	table(m, "previews")["providers"] = []string{s.provider}
+	for _, tweak := range s.tweaks {
+		tweak(s.provider, m)
+	}
 	out, err := toml.Marshal(m)
 	if err != nil {
 		t.Fatal(err)

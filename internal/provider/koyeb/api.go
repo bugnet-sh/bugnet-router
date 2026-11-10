@@ -128,8 +128,16 @@ type typeSpec struct {
 }
 
 type scalingSpec struct {
-	Min int `json:"min"`
-	Max int `json:"max"`
+	Min     int             `json:"min"`
+	Max     int             `json:"max"`
+	Targets []scalingTarget `json:"targets,omitempty"`
+}
+
+// scalingTarget carries the idle delay after which an instance goes to light sleep
+type scalingTarget struct {
+	SleepIdleDelay struct {
+		LightSleepValue int64 `json:"light_sleep_value"`
+	} `json:"sleep_idle_delay"`
 }
 
 // flexInt reads a JSON number or the quoted form protobuf gives 64-bit integers, else zero
@@ -219,6 +227,96 @@ func (a *api) newestInstanceEvent(
 		return instanceEvent{}, false, err
 	}
 	return pg.items[0], true, nil
+}
+
+/* Pool routes */
+
+type poolRecord struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Size       flexInt `json:"size"`
+	ReadyCount flexInt `json:"ready_count"`
+	Status     string  `json:"status"`
+}
+
+type claimRecord struct {
+	ID        string `json:"id"`
+	PoolID    string `json:"pool_id"`
+	ServiceID string `json:"service_id"`
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+}
+
+type createPoolRequest struct {
+	Name       string            `json:"name"`
+	Size       int64             `json:"size"`
+	Definition serviceDefinition `json:"definition"`
+}
+
+type updatePoolRequest struct {
+	Size       int64             `json:"size"`
+	Definition serviceDefinition `json:"definition"`
+}
+
+type claimRequest struct {
+	PoolID    string `json:"pool_id"`
+	RequestID string `json:"request_id"`
+}
+
+type claimReply struct {
+	ClaimID   string `json:"claim_id"`
+	ServiceID string `json:"service_id"`
+	Prewarmed bool   `json:"prewarmed"`
+}
+
+func (a *api) createPool(ctx context.Context, req createPoolRequest) (poolRecord, error) {
+	return record[poolRecord](ctx, a, false, http.MethodPost, "/v1/service_pools", nil, req,
+		"service_pool")
+}
+
+func (a *api) updatePool(
+	ctx context.Context, id string, req updatePoolRequest,
+) (poolRecord, error) {
+	return record[poolRecord](ctx, a, false, http.MethodPut,
+		"/v1/service_pools/"+url.PathEscape(id), nil, req, "service_pool")
+}
+
+func (a *api) deletePool(ctx context.Context, id string) error {
+	return a.send(ctx, false, http.MethodDelete, "/v1/service_pools/"+url.PathEscape(id), nil,
+		nil, nil)
+}
+
+func (a *api) listPools(ctx context.Context, name string, offset int) (page[poolRecord], error) {
+	q := url.Values{"limit": {pageLimit}, "offset": {strconv.Itoa(offset)}}
+	if name != "" {
+		q.Set("name", name)
+	}
+	return list[poolRecord](ctx, a, "/v1/service_pools", q, "service_pools")
+}
+
+// claim asks for one member of a pool, a repeated request id answering the same claim
+func (a *api) claim(ctx context.Context, req claimRequest) (claimReply, error) {
+	var out claimReply
+	err := a.send(ctx, false, http.MethodPost, "/v1/claim", nil, req, &out)
+	return out, err
+}
+
+func (a *api) getClaim(ctx context.Context, id string) (claimRecord, error) {
+	return record[claimRecord](ctx, a, false, http.MethodGet,
+		"/v1/claims/"+url.PathEscape(id), nil, nil, "claim")
+}
+
+func (a *api) listClaims(
+	ctx context.Context, pool string, offset int,
+) (page[claimRecord], error) {
+	q := url.Values{"limit": {pageLimit}, "offset": {strconv.Itoa(offset)}}
+	return list[claimRecord](ctx, a, "/v1/service_pools/"+url.PathEscape(pool)+"/claims", q,
+		"claims")
+}
+
+func (a *api) deleteService(ctx context.Context, id string) error {
+	return a.send(ctx, false, http.MethodDelete, "/v1/services/"+url.PathEscape(id), nil, nil,
+		nil)
 }
 
 /* Requests */

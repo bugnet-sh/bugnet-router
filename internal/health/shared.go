@@ -41,6 +41,8 @@ type row struct {
 	out      bool
 	samples  int
 	readyP95 time.Duration
+	// coldTotal and pooledTotal are the whole-attempt p95 figures of the two paths
+	coldTotal, pooledTotal time.Duration
 }
 
 // minSamples is the fewest rollup samples that make the shared ready p95 count
@@ -93,6 +95,13 @@ func (s *Shared) ReadyP95(name string) time.Duration {
 	return s.local.ReadyP95(name)
 }
 
+// Totals are the whole-attempt p95 figures of the cold and pooled paths and the rollup's sample
+// count, zero for a provider without a reading
+func (s *Shared) Totals(name string) (cold, pooled time.Duration, samples int) {
+	r := s.view()[name]
+	return r.coldTotal, r.pooledTotal, r.samples
+}
+
 // view returns the providers of the last reading, none once it is over a minute old
 func (s *Shared) view() map[string]row {
 	now := s.now()
@@ -131,6 +140,7 @@ func (s *Shared) read(now time.Time) {
 		seen[r.Provider] = row{
 			out:     r.Blocked != "" || r.State == store.HealthDown,
 			samples: r.Samples, readyP95: r.ReadyP95,
+			coldTotal: r.ColdTotalP95, pooledTotal: r.PooledTotalP95,
 		}
 	}
 	s.rows, s.readAt = seen, now

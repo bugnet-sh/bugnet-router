@@ -17,10 +17,11 @@ func TestKoyebOptionsCarryTheTransferParts(t *testing.T) {
 	cfg.Koyeb.InstanceTypes = map[string]string{"cpu": "large"}
 	cfg.Transfers.KoyebPart = 4 << 20
 	cfg.Transfers.KoyebBufferTotal = 64 << 20
+	cfg.Koyeb.PoolIdleHourlyMicros = 120
 	got := koyebOptions(cfg, "koyeb_test")
 	want := koyeb.Options{
 		APIToken: "koyeb_test", Region: "par", InstanceTypeBySize: cfg.Koyeb.InstanceTypes,
-		PartBytes: 4 << 20, BufferTotal: 64 << 20,
+		PartBytes: 4 << 20, BufferTotal: 64 << 20, PoolIdleHourlyMicros: 120,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("koyeb options %+v, want %+v", got, want)

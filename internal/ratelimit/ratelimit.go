@@ -38,6 +38,8 @@ const takeBody = `
 local mode = ARGV[1]
 local now = redis.call('TIME')
 now = tonumber(now[1]) * 1000000 + tonumber(now[2])
+-- A level peek names how many tokens must be there, a take or a plain peek needs one
+local need = (tonumber(ARGV[#BUCKETS * 2 + 2]) or 1) * 1000000
 local wait = 0
 local held = {}
 for i, key in ipairs(BUCKETS) do
@@ -53,8 +55,8 @@ for i, key in ipairs(BUCKETS) do
 		end
 	end
 	tokens = math.min(cap, tokens + math.max(0, now - at) * rate)
-	if tokens < 1000000 then
-		wait = math.max(wait, math.ceil((1000000 - tokens) / rate / 1000))
+	if tokens < need then
+		wait = math.max(wait, math.ceil((need - tokens) / rate / 1000))
 	end
 	held[i] = {tokens, cap, rate}
 end
@@ -140,6 +142,17 @@ func (l *Limiter) Peek(ctx context.Context, b Bucket) (bool, time.Duration, erro
 	return l.run(ctx, modePeek, []Bucket{b})
 }
 
+// PeekLevel answers whether the bucket holds at least share of its burst, and spends nothing
+func (l *Limiter) PeekLevel(ctx context.Context, b Bucket, share float64) (bool, error) {
+	if !(share >= 0 && share <= 1) {
+		return false, errors.New("ratelimit: a share is from 0 to 1")
+	}
+	// A bucket holds at least one token to be taken from at all
+	need := math.Max(1, share*float64(b.Burst))
+	ok, _, err := l.runNeed(ctx, modePeek, []Bucket{b}, need)
+	return ok, err
+}
+
 // PeekAll answers what TakeAll would, in one script, and spends nothing
 func (l *Limiter) PeekAll(ctx context.Context, bs []Bucket) (bool, time.Duration, error) {
 	if len(bs) == 0 {
@@ -152,6 +165,13 @@ var errBadBucket = errors.New("ratelimit: a bucket needs a key, a positive finit
 
 // run sends the buckets to the script, refusing a bad one before it reaches Valkey
 func (l *Limiter) run(ctx context.Context, mode string, bs []Bucket) (bool, time.Duration, error) {
+	return l.runNeed(ctx, mode, bs, 0)
+}
+
+// runNeed is run with the tokens each bucket must hold, one when need is 0
+func (l *Limiter) runNeed(
+	ctx context.Context, mode string, bs []Bucket, need float64,
+) (bool, time.Duration, error) {
 	keys := make([]string, 0, len(bs))
 	args := make([]string, 0, 1+2*len(bs))
 	args = append(args, mode)
@@ -162,6 +182,9 @@ func (l *Limiter) run(ctx context.Context, mode string, bs []Bucket) (bool, time
 		keys = append(keys, l.prefix+b.Key)
 		args = append(args, strconv.FormatFloat(b.PerSecond, 'g', -1, 64),
 			strconv.Itoa(b.Burst))
+	}
+	if need > 0 {
+		args = append(args, strconv.FormatFloat(need, 'g', -1, 64))
 	}
 	res, err := takeScript.Exec(ctx, l.c, keys, args).AsIntSlice()
 	if err == nil && len(res) != 2 {

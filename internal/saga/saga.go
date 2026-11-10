@@ -216,6 +216,8 @@ type Deps struct {
 	// ReserveShare is the share of a pool's target open reservations may hold, pools.reserve_share,
 	// one half when zero
 	ReserveShare float64
+	// Hedger starts a second attempt beside one that runs long, none for no hedges
+	Hedger *Hedger
 }
 
 // Saga runs placements from order to teardown
@@ -562,84 +564,6 @@ type outcome struct {
 	detail   string
 }
 
-// place binds the reservation the order awaits, else tries candidates until one is ready or the
-// attempt or time budget runs out
-func (s *Saga) place(
-	ctx context.Context, p store.Placement, pkg catalog.Package, req placement.Requirements,
-	awaiting *store.Reservation, arrived time.Time,
-) {
-	stopHeartbeat := s.heartbeat(ctx, p.ID)
-	defer stopHeartbeat()
-	budget, cancel := context.WithTimeout(ctx, placingBudget)
-	defer cancel()
-	// An order whose reservation is still preparing waits for it first, then goes on cold
-	if awaiting != nil && s.awaitReservation(budget, p, pkg, *awaiting, arrived) {
-		return
-	}
-	tried := map[string]bool{}
-	var attempted []provider.Provider
-	reason, detail := reasonExhausted, ""
-	full := false
-	// missed is set once an order has been counted as wanting a pool that had no member for it
-	missed := false
-	for n := 1; n <= maxAttempts && budget.Err() == nil; {
-		cands, err := s.d.Engine.Candidates(s.inputs(pkg, req, tried))
-		if err != nil {
-			if !errors.Is(err, placement.ErrNoCandidate) {
-				reason, detail = reasonInternal, fmt.Sprintf("find candidates: %v", err)
-			} else if n == 1 && full {
-				reason = reasonFull
-			}
-			break
-		}
-		c := cands[0]
-		name := c.Provider.Name()
-		tried[name] = true
-		// Without a build the sandbox could never run a job, so the provider is passed over
-		if caps := c.Provider.Capabilities(); caps.NeedsRunnerUpload &&
-			len(s.d.Runners[caps.RunnerArch()]) == 0 {
-			s.d.Log.Error("no bugnet-run build for a provider that needs one", "provider", name,
-				"arch", caps.RunnerArch())
-			reason, detail = reasonNoRunner, "no "+caps.RunnerArch()+" build for "+name
-			continue
-		}
-		if s.createsPaused(ctx, name) {
-			reason, detail = reasonRateLimited, name+" asked for its creates to wait"
-			continue
-		}
-		out, ran := s.attemptWarm(ctx, budget, p, pkg, req, c, n, &missed)
-		if ran {
-			attempted = append(attempted, c.Provider)
-		} else {
-			reserved, err := s.reserve(ctx, p.ID, name, n)
-			if err != nil {
-				reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
-				break
-			}
-			if !reserved {
-				full = true
-				continue
-			}
-			attempted = append(attempted, c.Provider)
-			out = s.attemptCold(ctx, budget, p, pkg, req, c, n, &missed)
-		}
-		if out.done {
-			// One attempt on a provider that keys its creates left no sandbox beside the kept one
-			if out.kept == nil || len(attempted) > 1 ||
-				!c.Provider.Capabilities().OneSandboxPerKey {
-				s.sweep(ctx, p.ID, attempted, out.kept)
-			}
-			return
-		}
-		reason, detail = out.reason, out.detail
-		if !out.failOver {
-			break
-		}
-		n++
-	}
-	s.fail(ctx, p, reason, detail, attempted)
-}
-
 // heartbeat shows the placement is still being placed by this replica until stop is called
 func (s *Saga) heartbeat(ctx context.Context, id uuid.UUID) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -677,6 +601,10 @@ func (s *Saga) reserve(
 ) (bool, error) {
 	ctx, cancel := step(ctx)
 	defer cancel()
+	// A hedge holds a slot of its own, so the first attempt's stays where it is
+	if r := runOf(ctx); r != nil && r.hedge {
+		return s.d.Store.ReserveHedgeCapacity(ctx, id, providerName, attempt)
+	}
 	return s.d.Store.ReservePlacementCapacity(ctx, id, providerName, attempt)
 }
 
@@ -686,11 +614,10 @@ func (s *Saga) wantsPool(pkg catalog.Package, c placement.Candidate) bool {
 }
 
 // countMiss records one miss for the order the first time it wants a pool and finds it empty
-func (s *Saga) countMiss(ctx context.Context, c placement.Candidate, missed *bool) {
-	if *missed {
+func (s *Saga) countMiss(ctx context.Context, c placement.Candidate, missed *atomic.Bool) {
+	if !missed.CompareAndSwap(false, true) {
 		return
 	}
-	*missed = true
 	ctx, cancel := step(ctx)
 	defer cancel()
 	err := s.d.Store.RecordMiss(ctx, c.Provider.Name(), c.Size.Name, s.now())
@@ -702,7 +629,7 @@ func (s *Saga) countMiss(ctx context.Context, c placement.Candidate, missed *boo
 // attemptCold holds a capacity slot on c's provider and gives it back unless the sandbox is ready
 func (s *Saga) attemptCold(
 	ctx, budget context.Context, p store.Placement, pkg catalog.Package,
-	req placement.Requirements, c placement.Candidate, n int, missed *bool,
+	req placement.Requirements, c placement.Candidate, n int, missed *atomic.Bool,
 ) outcome {
 	prov := c.Provider
 	name := prov.Name()
@@ -726,21 +653,25 @@ func (s *Saga) attemptCold(
 		HourlyMicros:   hourly,
 		StartFeeMicros: fee,
 		Path:           store.PathCold,
+		Hedge:          hedgeRun(ctx),
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.release(ctx, p.ID, n)
 		return outcome{reason: reasonInternal, detail: err.Error()}
 	}
+	s.markHedged(ctx, p.ID)
 	started := s.now()
 	smp := s.sampleOf(p, prov, c.Size, started)
 	smp.StartPath = store.PathCold
-	ref, err := s.create(budget, prov, provider.CreateRequest{
+	wctx, wcancel := work(budget)
+	ref, err := s.create(wctx, prov, provider.CreateRequest{
 		IdempotencyKey: rec.IdempotencyKey,
 		Size:           c.Size,
 		Labels:         s.labels(p.ID),
 		Lifetime:       time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
 		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
 	})
+	wcancel()
 	smp.CreateMS = int(s.now().Sub(started).Milliseconds())
 	smp.SandboxID = ref.ID
 	if err == nil {
@@ -750,7 +681,7 @@ func (s *Saga) attemptCold(
 		}
 	}
 	if err != nil {
-		if s.providerFailed(ctx, name, err, true) {
+		if s.countsAgainst(ctx, name, err, true) {
 			s.d.Tracker.RecordFailure(name)
 		}
 		s.recordSample(ctx, prov, c.Size, smp, err)
@@ -760,10 +691,12 @@ func (s *Saga) attemptCold(
 			detail: fmt.Sprintf("create on %s: %v", name, err),
 		}
 	}
-	ref, boot, err := s.Boot(ctx, prov, ref, BootPlan{
+	bctx, bcancel := work(ctx)
+	ref, boot, err := s.Boot(bctx, prov, ref, BootPlan{
 		Placement: p.ID, KeyID: p.KeyID, NeedPreview: req.Preview, NeedSSH: req.SSH,
 		Restricted: pkg.EgressAllow,
 	})
+	bcancel()
 	if boot.ReadyMS >= 0 {
 		smp.ReadyMS = smp.CreateMS + boot.ReadyMS
 	}
@@ -773,7 +706,7 @@ func (s *Saga) attemptCold(
 		reason := reasonNoRunner
 		if !noBuild {
 			reason = reasonBootFailed
-			if s.providerFailed(ctx, name, err, false) {
+			if s.countsAgainst(ctx, name, err, false) {
 				s.d.Tracker.RecordFailure(name)
 			}
 			s.recordSample(ctx, prov, c.Size, smp, err)
@@ -800,10 +733,14 @@ func (s *Saga) attemptCold(
 // to a cold create on the same candidate.
 func (s *Saga) attemptWarm(
 	ctx, budget context.Context, p store.Placement, pkg catalog.Package,
-	req placement.Requirements, c placement.Candidate, n int, missed *bool,
+	req placement.Requirements, c placement.Candidate, n int, missed *atomic.Bool,
 ) (outcome, bool) {
 	if !c.Warm {
 		return outcome{}, false
+	}
+	// A provider that keeps its own pool hands members out by claim, never by a row of ours
+	if cl, ok := c.Provider.(provider.PoolClaimer); ok {
+		return s.attemptClaim(ctx, budget, cl, p, pkg, req, c, n)
 	}
 	prov := c.Provider
 	name := prov.Name()
@@ -811,7 +748,7 @@ func (s *Saga) attemptWarm(
 	rec := store.Attempt{
 		PlacementID: p.ID, Attempt: n, Provider: name, State: attemptCreating,
 		SizeName: c.Size.Name, HourlyMicros: hourly, StartFeeMicros: fee, Path: store.PathPooled,
-		IdempotencyKey: idempotencyKey(p.OrderID, n, name),
+		IdempotencyKey: idempotencyKey(p.OrderID, n, name), Hedge: hedgeRun(ctx),
 	}
 	started := s.now()
 	var m store.Member
@@ -836,11 +773,11 @@ func (s *Saga) attemptWarm(
 			return err
 		}
 		if !ok {
-			if s.wantsPool(pkg, c) && !*missed {
+			if s.wantsPool(pkg, c) && !missed.Load() {
 				if err := ts.RecordMiss(cctx, name, c.Size.Name, s.now()); err != nil {
 					return err
 				}
-				*missed = true
+				missed.Store(true)
 			}
 			return nil
 		}
@@ -863,11 +800,14 @@ func (s *Saga) attemptWarm(
 		s.release(ctx, p.ID, n)
 		return outcome{}, false
 	}
+	s.markHedged(ctx, p.ID)
 	smp := s.sampleOf(p, prov, c.Size, started)
 	smp.StartPath, smp.MemberID, smp.SandboxID = store.PathPooled, m.ID, m.ProviderRef.ID
 	ref := *m.ProviderRef
 	if pk, ok := prov.(provider.Parker); ok {
-		err := pk.Unpark(budget, ref)
+		wctx, wcancel := work(budget)
+		err := pk.Unpark(wctx, ref)
+		wcancel()
 		smp.WakeMS = int(s.now().Sub(started).Milliseconds())
 		if err != nil {
 			s.d.Log.Warn("pooled sandbox did not wake, creating cold", "provider", name,
@@ -878,10 +818,12 @@ func (s *Saga) attemptWarm(
 			return outcome{}, false
 		}
 	}
-	prep, err := s.Prepare(ctx, prov, ref, p.ID, req, true)
+	pctx, pcancel := work(ctx)
+	prep, err := s.Prepare(pctx, prov, ref, p.ID, req, true)
+	pcancel()
 	smp.GateMS = prep.GateMS
 	if err != nil {
-		if s.providerFailed(ctx, name, err, false) {
+		if s.countsAgainst(ctx, name, err, false) {
 			s.d.Tracker.RecordFailure(name)
 		}
 		s.recordSample(ctx, prov, c.Size, smp, err)
@@ -913,6 +855,12 @@ func (s *Saga) create(
 	for i := 0; ; i++ {
 		ref, err := prov.Create(ctx, req)
 		e, ok := provider.AsError(err)
+		if ok && e.Code == provider.CodeOutcomeUnknown {
+			// A create that may still boot and bill bars a hedge beside it
+			if r := runOf(ctx); r != nil {
+				r.unknown.Store(true)
+			}
+		}
 		if err == nil || !ok || e.Code != provider.CodeOutcomeUnknown || i == len(unknownBackoff) {
 			return ref, err
 		}
@@ -985,6 +933,10 @@ func (s *Saga) commitReady(
 		}
 		return outcome{reason: reasonInternal, detail: fmt.Sprintf("commit ready: %v", err)}
 	}
+	// The winner's commit cuts every other attempt short at once
+	if r := runOf(ctx); r != nil {
+		r.race.win(r)
+	}
 	s.publish(ctx, ev)
 	if s.d.Sessions != nil {
 		s.d.Sessions.Placement(ctx, p.ID, sessions.PhaseReady, pkg, &deadline, "")
@@ -1005,9 +957,13 @@ func (s *Saga) readyWrites(
 	if err != nil {
 		return Event{}, err
 	}
-	// A ready that is not the bind frees the reservation the placement awaited, if any
+	// A ready that is not the bind frees the reservation the placement awaited, if any, and moves
+	// the winner's slot to the placement row, freeing the one the row held for a hedge's loser
 	if path != store.PathReserved {
 		if err := s.releaseAwaitedTx(ctx, tx, p.ID); err != nil {
+			return Event{}, err
+		}
+		if err := ts.WinAttemptSlot(ctx, p.ID, rec.Attempt); err != nil {
 			return Event{}, err
 		}
 	}
@@ -1071,6 +1027,10 @@ func (s *Saga) abandon(
 	rec.Error = err.Error()
 	if e, ok := provider.AsError(err); ok {
 		rec.ErrorCode = string(e.Code)
+	}
+	// An attempt another one outran says so, whatever its calls answered when they were cut short
+	if lostRun(ctx) {
+		rec.ErrorCode = ErrorHedgeLost
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.d.Log.Error("record failed attempt", "placement", rec.PlacementID, "err", err)

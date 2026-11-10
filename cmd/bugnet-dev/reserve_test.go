@@ -82,8 +82,9 @@ func (r *reserveRouter) StopPlacement(
 // pathOperator answers every placement's start path with path
 type pathOperator struct {
 	routerv1connect.UnimplementedOperatorServiceHandler
-	path  string
-	found atomic.Int32
+	path   string
+	hedged bool
+	found  atomic.Int32
 }
 
 func (o *pathOperator) FindPlacement(
@@ -92,7 +93,7 @@ func (o *pathOperator) FindPlacement(
 	o.found.Add(1)
 	return connect.NewResponse(&routerv1.FindPlacementResponse{
 		Placement: &routerv1.OperatorPlacement{
-			PlacementId: req.Msg.GetTarget().GetPlacementId(), StartPath: o.path,
+			PlacementId: req.Msg.GetTarget().GetPlacementId(), StartPath: o.path, Hedged: o.hedged,
 		},
 	}), nil
 }
@@ -253,4 +254,21 @@ func TestBenchRouterReservedCallsReserveFirst(t *testing.T) {
 	_, _, code = runCLI(t, vars, "--config", settings, "bench", "router", "--package", "small-10m",
 		"--path", "fast")
 	eq(t, code, 2)
+}
+
+func TestAbuseFindShowsAHedgedStart(t *testing.T) {
+	vars := env(map[string]string{"BUGNET_OPERATOR_TOKEN": strings.Repeat("o", 32)})
+	find := func(hedged bool) string {
+		t.Helper()
+		settings := serveBoth(t, &reserveRouter{}, &pathOperator{path: "cold", hedged: hedged})
+		out, stderr, code := runCLI(t, vars, "--config", settings, "abuse", "find",
+			"11111111-2222-3333-4444-555555555555")
+		if code != 0 {
+			t.Fatalf("exited %d: %s", code, stderr)
+		}
+		return out
+	}
+	eq(t, strings.Contains(find(true), "hedged=true"), true)
+	eq(t, strings.Contains(find(true), "start_path=cold"), true)
+	eq(t, strings.Contains(find(false), "hedged"), false)
 }

@@ -214,6 +214,8 @@ type fakeKoyeb struct {
 	// stealBind is a port another client binds right after each unbind_port
 	stealBind string
 	binds     []string
+	// pools holds the service pools and their claims
+	pools *poolState
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -241,6 +243,9 @@ func newFake(t *testing.T) *fakeKoyeb {
 		"GET /v1/usages/details":                  f.usageDetailPage,
 		"GET /v1/quotas/organizations/{id}/usage": f.quotaUsage,
 	} {
+		api.HandleFunc(pattern, f.gate(pattern, h))
+	}
+	for pattern, h := range f.poolRoutes() {
 		api.HandleFunc(pattern, f.gate(pattern, h))
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

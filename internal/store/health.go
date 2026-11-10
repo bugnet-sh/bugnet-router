@@ -42,6 +42,8 @@ const (
 	OutcomeCapacity    = "capacity"
 	OutcomeRateLimited = "rate_limited"
 	OutcomeQuota       = "quota"
+	// OutcomeHedgeLost is an attempt another one outran, which health leaves out
+	OutcomeHedgeLost = "hedge_lost"
 )
 
 // Provider health states
