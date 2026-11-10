@@ -172,6 +172,8 @@ var codes = []struct {
 	{streams.ErrBadCursor, connect.CodeInvalidArgument, ""},
 	{edgeevents.ErrBadCursor, connect.CodeInvalidArgument, ""},
 	{saga.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},
+	{saga.ErrAlreadyEnded, connect.CodeFailedPrecondition, reasonNotReady},
+	{errTargetUnknown, connect.CodeNotFound, reasonTargetUnknown},
 	{saga.ErrExceedsLifetime, connect.CodeFailedPrecondition, reasonExceedsLifetime},
 	{jobs.ErrNotReady, connect.CodeFailedPrecondition, reasonNotReady},
 	{errNotReady, connect.CodeFailedPrecondition, reasonNotReady},
