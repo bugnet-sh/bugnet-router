@@ -102,8 +102,18 @@ jobs:
           CHANNEL: ${{ steps.channel.outputs.channel }}
         run: |
           set -euo pipefail
+          status=0
           deploy/image/build.sh --channel "$CHANNEL" --ca "$RUNNER_TEMP/ca/bugnet-egress-v1.crt" \
-            | tee "$RUNNER_TEMP/build.out"
+            > "$RUNNER_TEMP/build.out" 2>&1 || status=$?
+          cat "$RUNNER_TEMP/build.out"
+          if [ "$status" -ne 0 ]; then
+            # Job logs need admin rights, annotations do not, so the failure's tail goes there
+            tail -n 60 "$RUNNER_TEMP/build.out" | sed 's/%/%25/g' | split -l 20 - "$RUNNER_TEMP/tail."
+            for f in "$RUNNER_TEMP"/tail.*; do
+              echo "::error title=build.sh exited $status::$(awk 'BEGIN { ORS = "%0A" } 1' "$f")"
+            done
+            exit "$status"
+          fi
           echo "digest=$(tail -n 1 "$RUNNER_TEMP/build.out")" >> "$GITHUB_OUTPUT"
 
       # The record names the pushed digest, which every provider build reads
