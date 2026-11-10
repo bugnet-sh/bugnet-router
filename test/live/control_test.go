@@ -53,6 +53,10 @@ func init() {
 		row{id: "R4", providers: []string{"koyeb"}, run: rowUsage},
 		row{id: "R5", providers: []string{"e2b"}, run: rowUsage},
 		row{id: "P1", run: rowProbeLifetime},
+		// E2B, boxd and Koyeb start sandboxes before payment, and Boat never does
+		row{id: "RSV1", providers: []string{"e2b"}, run: rowReserveBind},
+		row{id: "RSV2", providers: []string{"e2b", "boxd", "koyeb"}, run: rowReserveTarget},
+		row{id: "RSV3", providers: []string{"e2b", "boxd", "koyeb", "boat"}, run: rowColdFigure},
 	)
 }
 
@@ -590,4 +594,163 @@ func rowUsage(t *testing.T, s *stack) {
 		}
 	}
 	t.Logf("%s gave no complete usage line for the destroyed sandbox", s.provider)
+}
+
+/* Reserve rows, CP 18.20 */
+
+const (
+	// reservePkg is the 10-minute package the reserve rows order, and reserveMore its extension
+	reservePkg  = "dev-small-10m"
+	reserveMore = "dev-small-10m-more"
+	// reserveHold is how long RSV1 holds before the bind, inside reserve.hold of 120 s
+	reserveHold = 100 * time.Second
+	// targetRuns and targetDelay are RSV2's runs per provider and the user's payment time
+	targetRuns  = 30
+	targetDelay = 8 * time.Second
+	// targetP90 is the 5 s payment to first command target at p90
+	targetP90 = 5 * time.Second
+	// coldRuns is how many plain orders RSV3 times after the drain
+	coldRuns = 10
+)
+
+// benchSample is one order bench router timed
+type benchSample struct {
+	ReadyMS     int    `json:"ready_ms"`
+	FirstCmdMS  int    `json:"first_cmd_ms"`
+	TotalMS     int    `json:"total_ms"`
+	Error       string `json:"error"`
+	StartPath   string `json:"start_path"`
+	PlacementID string `json:"placement_id"`
+}
+
+// benchSamples runs bench router on the stack and answers its timed orders
+func benchSamples(t *testing.T, s *stack, args ...string) []benchSample {
+	t.Helper()
+	out := s.dev(t, append([]string{"bench", "router", "--package", reservePkg, "--json"},
+		args...)...)
+	var parsed struct {
+		Samples []benchSample `json:"samples"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("bench router printed %q: %v", out, err)
+	}
+	return parsed.Samples
+}
+
+// p90 is the nearest-rank 90th percentile of ms, 0 for none
+func p90(ms []int) int {
+	if len(ms) == 0 {
+		return 0
+	}
+	sorted := slices.Sorted(slices.Values(ms))
+	return sorted[(len(sorted)*9+9)/10-1]
+}
+
+// rowReserveBind is RSV1, a start before payment held for 100 s, a bind, and extensions until the
+// provider's lifetime from the sandbox's creation says no
+func rowReserveBind(t *testing.T, s *stack) {
+	p := liveAdapter(t, s.provider)
+	quote := fmt.Sprintf("q2.rsv1-%d", time.Now().UnixNano())
+	held := kv(s.dev(t, "reserve", "--quote", quote, "--package", reservePkg))
+	if held["outcome"] != "held" {
+		t.Fatalf("RSV1: Reserve answered %v, want a hold", held)
+	}
+	reserved := time.Now()
+	time.Sleep(reserveHold)
+	start := time.Now()
+	created := kv(s.dev(t, "create", "--package", reservePkg, "--quote", quote))
+	h := created["handle"]
+	t.Cleanup(func() {
+		if _, stderr, err := s.devTry(t, "stop", "--handle", h); err != nil {
+			t.Errorf("RSV1: stop %s: %v\n%s", h, err, stderr)
+		}
+	})
+	if created["state"] != "ready" {
+		t.Fatalf("RSV1: the order printed %v, want a ready placement", created)
+	}
+	bind := time.Since(start)
+	found := kv(s.dev(t, "abuse", "find", created["placement_id"]))
+	if found["start_path"] != "reserved" {
+		t.Errorf("RSV1: the order took path %q, want reserved", found["start_path"])
+	}
+	size, _ := p.SizeFor(provider.Resources{VCPU: 1, MemoryMiB: 1024})
+	hold := time.Since(reserved)
+	cost := p.HourlyCostMicros(size) * hold.Milliseconds() / 3_600_000
+	t.Logf("RSV1: held %s before the bind, which took %s with its command, about %d micros of "+
+		"provider time for the hold", hold.Round(time.Second), bind.Round(time.Millisecond), cost)
+
+	// Each extension adds 10 minutes, and the provider's lifetime counts from the sandbox's creation
+	extended := 0
+	for extended < 8 {
+		if _, stderr, err := s.devTry(t, "check-extend", "--handle", h, "--package",
+			reserveMore); err != nil {
+			t.Logf("RSV1: the extension after %d was refused: %s", extended,
+				strings.TrimSpace(stderr))
+			break
+		}
+		s.dev(t, "extend", "--handle", h, "--package", reserveMore)
+		extended++
+	}
+	t.Logf("RSV1: %d extensions of 10 minutes were allowed on %s, a sandbox %s old when bound",
+		extended, s.provider, hold.Round(time.Second))
+	if extended == 8 {
+		t.Errorf("RSV1: %s allowed 8 extensions, so its lifetime limit never showed", s.provider)
+	}
+}
+
+// rowReserveTarget is RSV2, bench router on the reserved path 30 times with a pay delay of 8 s,
+// whose p90 of payment to first command must stay under 5 s
+func rowReserveTarget(t *testing.T, s *stack) {
+	samples := benchSamples(t, s, "--runs", strconv.Itoa(targetRuns), "--concurrency", "2",
+		"--path", "reserved", "--pay-delay", targetDelay.String())
+	var total, ready, first []int
+	paths := map[string]int{}
+	for _, m := range samples {
+		paths[m.StartPath]++
+		if m.Error != "" {
+			t.Errorf("RSV2: an order failed: %s", m.Error)
+			continue
+		}
+		total, ready, first = append(total, m.TotalMS), append(ready, m.ReadyMS),
+			append(first, m.FirstCmdMS)
+	}
+	t.Logf("RSV2: %s paths %v, payment to first command p90 %d ms over %d runs "+
+		"(ready p90 %d ms, first command p90 %d ms)", s.provider, paths, p90(total), len(total),
+		p90(ready), p90(first))
+	if got := time.Duration(p90(total)) * time.Millisecond; got >= targetP90 {
+		t.Errorf("RSV2: %s took %s at p90 from payment to first command, the target is under %s,"+
+			" with ready p90 %d ms and first command p90 %d ms", s.provider, got, targetP90,
+			p90(ready), p90(first))
+	}
+}
+
+// rowColdFigure is RSV3, bench router on the plain path after the provider's pools are drained,
+// which records the cold figure
+func rowColdFigure(t *testing.T, s *stack) {
+	pools := s.dev(t, "pools")
+	for _, line := range strings.Split(strings.TrimSpace(pools), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == s.provider {
+			s.dev(t, "pools", "drain", "--provider", f[0], "--size", f[1], "--pause", "30m")
+		}
+	}
+	samples := benchSamples(t, s, "--runs", strconv.Itoa(coldRuns), "--concurrency", "1",
+		"--path", "plain")
+	var total, ready, first []int
+	paths := map[string]int{}
+	for _, m := range samples {
+		paths[m.StartPath]++
+		if m.Error != "" {
+			t.Errorf("RSV3: an order failed: %s", m.Error)
+			continue
+		}
+		total, ready, first = append(total, m.TotalMS), append(ready, m.ReadyMS),
+			append(first, m.FirstCmdMS)
+	}
+	if paths["cold"] != len(samples) {
+		t.Errorf("RSV3: the paths were %v, want every order cold after the drain", paths)
+	}
+	t.Logf("RSV3: %s cold figure, payment to first command p90 %d ms over %d runs (ready p90 "+
+		"%d ms, first command p90 %d ms)", s.provider, p90(total), len(total), p90(ready),
+		p90(first))
 }
