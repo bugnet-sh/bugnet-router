@@ -279,3 +279,57 @@ func (Retention) Kind() string { return "retention" }
 func (Retention) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
 }
+
+// CapacityRecount asks the worker to recount every provider's capacity slots
+type CapacityRecount struct{}
+
+// Kind returns the River job kind
+func (CapacityRecount) Kind() string { return "capacity_recount" }
+
+// InsertOpts runs it once, since the next recount comes in minutes
+func (CapacityRecount) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
+
+// ForeignCount asks the worker to count one provider's sandboxes that no known deployment owns
+type ForeignCount struct {
+	Provider string `json:"provider"`
+}
+
+// Kind returns the River job kind
+func (ForeignCount) Kind() string { return "foreign_count" }
+
+// InsertOpts runs it once, one at a time per provider, since the next count comes within an hour
+func (ForeignCount) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
+
+// CostDailyTick asks the worker to queue the daily cost check of each provider that reports usage
+type CostDailyTick struct{}
+
+// Kind returns the River job kind
+func (CostDailyTick) Kind() string { return "cost_daily_tick" }
+
+// InsertOpts runs it once, since the next tick comes the next day
+func (CostDailyTick) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
+
+// CostDaily asks the worker to read one page of a provider's usage for one UTC day, and to queue
+// itself again until the last page
+type CostDaily struct {
+	Provider string `json:"provider"`
+	// Day is the UTC date as 2006-01-02
+	Day string `json:"day"`
+}
+
+// Kind returns the River job kind
+func (CostDaily) Kind() string { return "cost_daily" }
+
+// InsertOpts runs a page on the default queue, five attempts for a failed read of the provider
+func (CostDaily) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 5}
+}

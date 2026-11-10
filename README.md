@@ -30,7 +30,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | Path | What it holds |
 | --- | --- |
 | `cmd/router-api` | API server, `router-api migrate` applies migrations and exits |
-| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries, the health rollup, `reconcile` and `hook_hint`, benchmark waves and retention, `router-worker outbox-redrive` sends stuck events at once |
+| `cmd/router-worker` | Deadline, watch, sweep, outbox, `apply_secrets`, session jobs, canaries, the health rollup, `reconcile` and `hook_hint`, benchmark waves, `capacity_recount`, `foreign_count`, the daily cost check and retention, `router-worker outbox-redrive` sends stuck events at once |
 | `cmd/bugnet-dev` | Developer CLI for keys, tokens, placements, commands, internal certificates, benchmarks and the placement simulator |
 | `internal/api` | Connect handlers, health and readiness |
 | `internal/ratelimit` | Token buckets in Valkey, the per-placement operation limit and named buckets with fractional rates |
@@ -43,6 +43,7 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/probe` | The probe that starts, times and removes one sandbox, for canaries and benchmarks |
 | `internal/bench`, `internal/simulate` | Nearest-rank percentiles, benchmark cost estimates and start reports, and the placement simulator that replays recorded start samples |
 | `internal/reconcile` | `Classify` (the signal classes of CP 6.3), the correlation `Guard` and `Reconcile`, which ends the placements their provider lost |
+| `internal/spend` | `AttemptCost`, the router's own meter of provider cost, and the margin verdict |
 | `internal/health` | The provider health the replicas share through Postgres, its rollup rules and canary schedule, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
@@ -545,7 +546,7 @@ features that read them land one by one, and until then the settings only load a
 | `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
 | `[bench]` | The estimate over which `bench start` needs `--yes`, and the most runs one benchmark may ask for |
 | `[abuse]` | How provider signals are classed: the class of E2B's `admin` kill and of a Boat sandbox degraded past `degraded_grace`, the word lists matched in Boat's stop text and Koyeb's instance events, the hourly `provider_failed` alert, the correlation guard (`correlated_max` ends in `correlated_window`) and the `late_window` in which a provider's abuse signal still blocks the payers of an ended placement |
-| `[reconcile]` | `ready_grace` (a listing may lag a fresh create), `max_per_sweep` (reconcile jobs one sweep inserts per provider) and `lifetime_drift` |
+| `[reconcile]` | `ready_grace` (a listing may lag a fresh create), `max_per_sweep` (reconcile jobs one sweep inserts per provider), `lifetime_drift`, `recount_every`, `foreign_every`, `foreign_alert_after`, `known_deployments`, `cost_daily_at` and `cost_alert_fraction` |
 | `[health]` | How often each provider gets a canary, the probe workers, the size a canary takes, the window and bounds that mark a provider `down` or `slow`, and when `/monitor` reports a provider down |
 
 `boxd.gate_route` (`default` when unset, or `subdomain`), `boat.ssh_path` (`gate` or `native`)
@@ -2061,7 +2062,30 @@ registered, `hooks.providers` may list `e2b` and `boat`.
 `/monitor` adds `provider X: N sandboxes killed that no router asked for` and `provider X: N
 placements ended as provider_failed in the last hour` over `abuse.lost_alert_per_hour`.
 
+`capacity_recount` runs every `recount_every` and sets each provider's `in_use` to its placements
+and probe slots in one transaction of three statements, the capacity row locked first, so a racing
+reserve stays exact. A probe slot older than 10 minutes goes. A change logs a warning.
+
+`foreign_count{provider}` runs every `foreign_every`. It lists the provider's sandboxes labelled
+`bugnet=1`, at most 200 services a run with its place in Valkey (`foreign:cursor:<provider>`), and
+counts the ones older than `foreign_alert_after` whose `bugnet_deployment` is neither this
+deployment nor in `known_deployments`. The count lands in `provider_health.foreign_sandboxes`, and
+`/monitor` shows it. Nothing is destroyed.
+
+Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. At
+termination `placements.cost_micros` sums `spend.AttemptCost` over the attempts, `edge_bytes` and
+`egress_bytes` come from the budget counters, and `placement.terminated` carries all three. A cost
+over `(1 - margin_floor)` of what the orders paid logs at error level, and `/monitor` counts such
+placements of the last 24 hours and those costing more than they paid.
+
+`cost_daily_tick` runs at `cost_daily_at` and queues `cost_daily{provider, day}` for the day before
+and for the last two days a provider had not finished. Each job reads one page of the provider's
+usage into the `provider_cost_daily` row, keeps the next page's cursor there and queues itself
+again. It alerts, in the log and in `/monitor`, when the provider billed over `cost_alert_fraction`
+more than our meter or named a sandbox that no attempt or probe of ours made.
+
 The live rows are `TestLiveControl/G1` (what `Inspect` reads after `sudo poweroff` and `sudo kill
 -9 1`), `R1` (`Inspect` after a destroy and `ExpiresAt` after `SetLifetime`), `H2` (E2B's kill
-event), and `H1` and `H3` (E2B's and Boat's deliveries, which need `--front vps` and the provider's
-webhook secret in the environment).
+event), `R2` to `R5` (each provider's usage call, and whether Boat's usage answers after a
+`DELETE`), and `H1` and `H3` (E2B's and Boat's deliveries, which need `--front vps` and the
+provider's webhook secret in the environment).

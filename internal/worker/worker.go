@@ -28,7 +28,11 @@
 // deletes old rows in batches of 10,000. The sweep inserts a reconcile job for each ready
 // placement its listing lacks or shows unwell, and the job reads the sandbox, classes the reading
 // and ends the placement the provider lost. A hook_hint job does the same for a sandbox a verified
-// webhook names.
+// webhook names. capacity_recount sets each provider's in_use to the slots its placements and
+// probes hold every 5 minutes. foreign_count counts each provider's sandboxes no known deployment
+// owns every hour, 200 services a run. cost_daily_tick queues the check of the day before, and
+// cost_daily reads one page of a provider's usage into its provider_cost_daily row and queues
+// the next until the last.
 package worker
 
 import (
@@ -45,6 +49,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
@@ -142,6 +147,9 @@ type Worker struct {
 	noTokenLogged time.Time
 	// tokenRefused holds back the error log of a refused token until Payments answers again
 	tokenRefused bool
+	// vk and prefix hold the foreign count's place between runs
+	vk     valkey.Client
+	prefix string
 	// bus reads job streams for the session copy
 	bus  *streams.Bus
 	disk diskGauge
@@ -190,6 +198,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		registry: sd.Registry,
 		log:      sd.Log,
 		bus:      streams.NewBus(sd.Valkey, sd.Prefix),
+		vk:       sd.Valkey,
+		prefix:   sd.Prefix,
 		keys:     sd.Keys,
 		events:   sd.Events,
 		http: &http.Client{
@@ -221,6 +231,10 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &retentionWorker{w: w})
 	river.AddWorker(workers, &reconcileWorker{w: w})
 	river.AddWorker(workers, &hookHintWorker{w: w})
+	river.AddWorker(workers, &recountWorker{w: w})
+	river.AddWorker(workers, &foreignWorker{w: w})
+	river.AddWorker(workers, &costTickWorker{w: w})
+	river.AddWorker(workers, &costDailyWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -296,6 +310,9 @@ func periodicJobs(d Deps, reg *provider.Registry) []*river.PeriodicJob {
 	out = append(out, river.NewPeriodicJob(dailyAt(retentionHour),
 		func() (river.JobArgs, *river.InsertOpts) { return jobargs.Retention{}, single },
 		&river.PeriodicJobOpts{RunOnStart: true}))
+	out = append(out, river.NewPeriodicJob(dailyOffset(d.Reconcile.OrDefaults().CostDailyAt),
+		func() (river.JobArgs, *river.InsertOpts) { return jobargs.CostDailyTick{}, single },
+		&river.PeriodicJobOpts{RunOnStart: true}))
 	for _, p := range polls(d, reg) {
 		// The job's own unique options keep one run of each kind per provider
 		out = append(out, river.NewPeriodicJob(river.PeriodicInterval(p.every),
@@ -305,7 +322,8 @@ func periodicJobs(d Deps, reg *provider.Registry) []*river.PeriodicJob {
 	return out
 }
 
-// polls lists the limits poll and account check of each provider that reads limits or accounts
+// polls lists the foreign count of each provider and the limits poll and account check of each
+// that reads limits or accounts
 func polls(d Deps, reg *provider.Registry) []periodicJob {
 	var out []periodicJob
 	if reg == nil {
@@ -313,6 +331,8 @@ func polls(d Deps, reg *provider.Registry) []periodicJob {
 	}
 	for _, p := range reg.Ordered() {
 		name := p.Name()
+		foreign := jobargs.ForeignCount{Provider: name}
+		out = append(out, periodicJob{d.Reconcile.OrDefaults().ForeignEvery, foreign})
 		if _, ok := p.(provider.LimitsReader); ok {
 			every := d.LimitsPoll.Every
 			if name == "boat" {
@@ -341,6 +361,7 @@ func periodic(d Deps) []periodicJob {
 		{expiryEvery, jobargs.WalletExpiry{}},
 		{sessionExpiryEvery, jobargs.SessionExpiry{}},
 		{canaryEvery, jobargs.CanaryTick{}},
+		{d.Reconcile.OrDefaults().RecountEvery, jobargs.CapacityRecount{}},
 		{rollupEvery, jobargs.HealthRollup{}},
 	}
 	if d.Stats != nil {

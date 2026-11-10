@@ -106,3 +106,16 @@ func (h dailyAt) Next(t time.Time) time.Time {
 	}
 	return next
 }
+
+// dailyOffset is a schedule that fires at one offset from midnight, UTC
+type dailyOffset time.Duration
+
+// Next returns the first time after t that is the offset past a midnight UTC
+func (o dailyOffset) Next(t time.Time) time.Time {
+	t = t.UTC()
+	next := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).Add(time.Duration(o))
+	if !next.After(t) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}

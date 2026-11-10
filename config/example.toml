@@ -294,6 +294,12 @@ late_window = "24h"           # provider abuse on an ended placement still block
 ready_grace = "30s"           # a listing may lag a fresh create this long
 max_per_sweep = 200           # reconcile jobs one sweep inserts per provider
 lifetime_drift = "2m"         # a provider lifetime this far from the deadline is set again
+recount_every = "5m"          # capacity_recount sets in_use to the slots held
+foreign_every = "1h"          # each provider is searched for sandboxes no known deployment owns
+foreign_alert_after = "2h"    # a sandbox counts as foreign once it is this old
+known_deployments = ["main", "dev"] # bugnet_deployment labels whose sandboxes are not foreign
+cost_daily_at = "03:00"       # UTC time of the daily check of providers' bills against ours
+cost_alert_fraction = 0.1     # alert when a provider bills this much over our meter
 
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra

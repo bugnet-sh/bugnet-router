@@ -48,6 +48,10 @@ func init() {
 		row{id: "L2", providers: []string{"boat"}, run: rowLimits},
 		row{id: "L3", providers: []string{"boxd"}, run: rowLimits},
 		row{id: "L4", providers: []string{"koyeb"}, run: rowLimits},
+		row{id: "R2", providers: []string{"boat"}, run: rowUsage},
+		row{id: "R3", providers: []string{"boxd"}, run: rowUsage},
+		row{id: "R4", providers: []string{"koyeb"}, run: rowUsage},
+		row{id: "R5", providers: []string{"e2b"}, run: rowUsage},
 		row{id: "P1", run: rowProbeLifetime},
 	)
 }
@@ -198,7 +202,7 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 	}
 	eq(t, slices.Contains(ids, "N1") && slices.Contains(ids, "N2"), true)
 	ids2 := []string{"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "F1", "F2"}
-	ids2 = append(ids2, "L1", "L2", "L3", "L4", "P1")
+	ids2 = append(ids2, "L1", "L2", "L3", "L4", "R2", "R3", "R4", "R5", "P1")
 	for _, id := range ids2 {
 		eq(t, slices.Contains(ids, id), true)
 	}
@@ -210,8 +214,14 @@ func TestControlRowsAndTheirProviders(t *testing.T) {
 			eq(t, r.providers, []string{"boat"})
 		case "L3":
 			eq(t, r.providers, []string{"boxd"})
-		case "L4":
+		case "L4", "R4":
 			eq(t, r.providers, []string{"koyeb"})
+		case "R2":
+			eq(t, r.providers, []string{"boat"})
+		case "R3":
+			eq(t, r.providers, []string{"boxd"})
+		case "R5":
+			eq(t, r.providers, []string{"e2b"})
 		}
 	}
 }
@@ -483,4 +493,98 @@ func rowProbeLifetime(t *testing.T, s *stack) {
 		time.Sleep(15 * time.Second)
 	}
 	t.Fatalf("P1: the probe sandbox was still there after %s", probeGoneWithin)
+}
+
+// usageWait is how long a row waits for a provider to bill a sandbox it destroyed, boxd being
+// up to about 25 minutes late
+const usageWait = 30 * time.Minute
+
+// usageOf reads every page of the provider's usage in [from, to) and finds one sandbox's line,
+// found false when the provider names none
+func usageOf(
+	t *testing.T, r provider.UsageReader, from, to time.Time, ref provider.Ref,
+) (provider.SandboxUsage, bool, provider.Usage) {
+	t.Helper()
+	var line provider.SandboxUsage
+	var found bool
+	var last provider.Usage
+	cursor := ""
+	for range 200 {
+		u, err := r.ReadUsage(t.Context(), from, to, []provider.Ref{ref}, cursor)
+		if err != nil {
+			t.Fatalf("ReadUsage at %q: %v", cursor, err)
+		}
+		for _, s := range u.Sandboxes {
+			if s.ID == ref.ID {
+				line, found = s, true
+			}
+		}
+		last = u
+		if u.Next == "" {
+			break
+		}
+		cursor = u.Next
+	}
+	return line, found, last
+}
+
+// rowUsage is CP R2 to R5. It makes a sandbox, reads the provider's usage for it while it lives,
+// destroys it, and reads again until the provider bills it, to settle what each usage call
+// answers, whether the reading lags, and for Boat whether it answers after a DELETE.
+func rowUsage(t *testing.T, s *stack) {
+	p := liveAdapter(t, s.provider)
+	reader, ok := p.(provider.UsageReader)
+	if !ok {
+		t.Fatalf("%s reads no usage", s.provider)
+	}
+	cfg, err := config.LoadFile(s.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, ok := p.SizeFor(provider.Resources{
+		VCPU: cfg.Health.CanaryVCPU, MemoryMiB: cfg.Health.CanaryMemoryMiB,
+	})
+	if !ok {
+		t.Fatalf("%s has no size for the canary", s.provider)
+	}
+	run := fmt.Sprintf("r-usage-%d", time.Now().UnixNano())
+	labels := map[string]string{
+		"bugnet": "1", "bugnet_deployment": cfg.DeploymentID, "bugnet_probe": "canary",
+		"probe": run,
+	}
+	ctx := t.Context()
+	from := time.Now().UTC().Add(-time.Minute)
+	ref, err := p.Create(ctx, provider.CreateRequest{
+		IdempotencyKey: "probe-" + run, Size: size, Labels: labels, Lifetime: 10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Destroy(context.WithoutCancel(ctx), ref) })
+	time.Sleep(30 * time.Second)
+	to := time.Now().UTC().Add(time.Minute)
+	line, found, page := usageOf(t, reader, from, to, ref)
+	t.Logf("%s usage while the sandbox lives: found %v, %+v, total %d, complete %v",
+		s.provider, found, line, page.TotalMicros, page.Complete)
+	if err := p.Destroy(ctx, ref); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	destroyed := time.Now()
+	for time.Since(destroyed) < usageWait {
+		time.Sleep(time.Minute)
+		to = time.Now().UTC().Add(time.Minute)
+		line, found, page = usageOf(t, reader, from, to, ref)
+		t.Logf("%s usage %s after the destroy: found %v, %+v, total %d, complete %v",
+			s.provider, time.Since(destroyed).Round(time.Second), found, line, page.TotalMicros,
+			page.Complete)
+		if found && page.Complete && line.Seconds > 0 {
+			t.Logf("%s billed %d s and %d micros, attributed %v, deployment %q", s.provider,
+				line.Seconds, line.CostMicros, page.Attributed, line.Deployment)
+			return
+		}
+		if s.provider != "boxd" && time.Since(destroyed) > 5*time.Minute {
+			break
+		}
+	}
+	t.Logf("%s gave no complete usage line for the destroyed sandbox", s.provider)
 }

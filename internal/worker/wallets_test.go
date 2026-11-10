@@ -286,6 +286,7 @@ func TestWalletExpiryRunsEveryTenMinutes(t *testing.T) {
 		"sweep": time.Minute, "watch": 30 * time.Second, "outbox": time.Second,
 		"wallet_expiry": 10 * time.Minute, "session_expiry": time.Hour,
 		"canary_tick": time.Minute, "health_rollup": 30 * time.Second,
+		"capacity_recount": 5 * time.Minute,
 	})
 }
 
