@@ -111,6 +111,19 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   wallet show PAYER                      print a wallet, its live placements and its events
   wallet list [--blocked] [--limit N] [--page TOKEN]
                                          list wallets in payer order
+  abuse find TARGET                      print the placement a report names, TARGET being a
+                                         placement id, a preview URL or id, a transfer URL or
+                                         bnx_ token, or PROVIDER:SANDBOX_ID
+  abuse end TARGET --note N [--actor A]  end the placement for abuse, live or already ended,
+                                         block every payer and print the payers blocked
+  placement end TARGET --note N [--refund] [--actor A]
+                                         end a live placement with no wallet action
+  signals [--since T] [--provider P] [--class C] [--held] [--limit N]
+                                         list provider signals newest first, --since an RFC 3339
+                                         time or a duration back from now, --held for the
+                                         signals whose wallet actions the guard held
+  providers                              print each provider's health, account state, slots and
+                                         limit source
   estimate --replay ID                   fetch a stored estimate and run the rules locally on its
                                          inputs and catalog, comparing the floor and the
                                          recommendation byte for byte
@@ -164,8 +177,9 @@ Settings
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
-  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, estimate, bench start and
-                            report, and session hold, which call OperatorService
+  BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, abuse, placement end, signals,
+                            providers, estimate, bench start and report, and session hold,
+                            which call OperatorService
   BUGNET_DATABASE_URL       Postgres URL, read only by simulate
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
@@ -222,7 +236,8 @@ func run(
 		"wallet": c.wallet, "x402": c.x402, "mtls": c.mtls, "estimate": c.estimate,
 		"session":      c.session,
 		"fetch-source": c.fetchSource, "hooks": c.hooks, "bench": c.benchCmd,
-		"simulate": c.simulate,
+		"simulate": c.simulate, "abuse": c.abuse, "placement": c.placementCmd,
+		"signals": c.signals, "providers": c.providers,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

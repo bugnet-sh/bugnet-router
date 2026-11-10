@@ -78,6 +78,8 @@ type End struct {
 	// the guard's lock is released with it and never waits on the destroy. A held end other than
 	// an abuse flag ends as provider_failed and keeps its reason as held_class in the evidence.
 	Guard func(ctx context.Context, tx pgx.Tx) (bool, error)
+	// blocked collects the payers an abuse end blocked
+	blocked []string
 }
 
 // hold turns e into a held end, an end of a live placement becoming provider_failed
@@ -104,16 +106,24 @@ func (e *End) hold(live bool) error {
 // A placement that ended first, even while End ran, gets FlagEnded for abuse and answers
 // ErrAlreadyEnded for any other reason.
 func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, error) {
+	p, _, err := s.EndBlocked(ctx, id, e)
+	return p, err
+}
+
+// EndBlocked is End that also returns the payers an abuse end blocked
+func (s *Saga) EndBlocked(
+	ctx context.Context, id uuid.UUID, e End,
+) (store.Placement, []string, error) {
 	switch e.Reason {
 	case ReasonAbuse, ReasonControlLost, ReasonProviderFailed, ReasonSandboxExited,
 		ReasonWalletBlocked, ReasonOperator:
 	default:
-		return store.Placement{}, fmt.Errorf("%w: %q", ErrBadReason, e.Reason)
+		return store.Placement{}, nil, fmt.Errorf("%w: %q", ErrBadReason, e.Reason)
 	}
 	e.Actor = cmp.Or(e.Actor, wallets.ActorRouter)
 	p, err := s.d.Store.PlacementByID(ctx, id)
 	if err != nil {
-		return store.Placement{}, err
+		return store.Placement{}, nil, err
 	}
 	ended := p.State == store.PlacementTerminated
 	if !ended {
@@ -128,21 +138,20 @@ func (s *Saga) End(ctx context.Context, id uuid.UUID, e End) (store.Placement, e
 			return moved, err
 		})
 		if err == nil && taken {
-			return p, fmt.Errorf("%w: ending for %s", ErrAlreadyEnded, p.TerminationReason)
+			return p, nil, fmt.Errorf("%w: ending for %s", ErrAlreadyEnded, p.TerminationReason)
 		}
 		if err != nil || !ended {
-			return p, err
+			return p, e.blocked, err
 		}
 	}
 	if e.Reason != ReasonAbuse {
 		// A retry of the end in force did its wallet action the first time, so it is done
 		if p.TerminationReason == e.Reason {
-			return p, nil
+			return p, nil, nil
 		}
-		return p, fmt.Errorf("%w: ended for %s", ErrAlreadyEnded, p.TerminationReason)
+		return p, nil, fmt.Errorf("%w: ended for %s", ErrAlreadyEnded, p.TerminationReason)
 	}
-	p, _, err = s.FlagEnded(ctx, id, e)
-	return p, err
+	return s.FlagEnded(ctx, id, e)
 }
 
 // FlagEnded records abuse on a terminated or failed placement and runs its wallet actions,
@@ -346,6 +355,7 @@ func (s *Saga) endActions(
 			}
 			if ok {
 				n++
+				e.blocked = append(e.blocked, payer)
 			}
 		}
 		return false, cond(n > 0, actionBlocked, actionEnded), nil

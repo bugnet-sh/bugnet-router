@@ -123,17 +123,7 @@ func (s *Store) Signals(ctx context.Context, placementID uuid.UUID) ([]Signal, e
 	if err != nil {
 		return nil, fmt.Errorf("select provider signals: %w", err)
 	}
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Signal, error) {
-		var sg Signal
-		var placement *uuid.UUID
-		err := r.Scan(&sg.ID, &sg.Class, &sg.Provider, &placement, &sg.Source, &sg.Observed,
-			&sg.Action, &sg.HeldClass, &sg.CreatedAt)
-		if placement != nil {
-			sg.PlacementID = *placement
-		}
-		sg.CreatedAt = utc(sg.CreatedAt)
-		return sg, err
-	})
+	out, err := pgx.CollectRows(rows, scanSignal)
 	if err != nil {
 		return nil, fmt.Errorf("select provider signals: %w", err)
 	}
@@ -154,4 +144,16 @@ func (s *Store) ExpiredBlocks(ctx context.Context, now time.Time, limit int) ([]
 		return nil, fmt.Errorf("select expired blocks: %w", err)
 	}
 	return out, nil
+}
+
+func scanSignal(r pgx.CollectableRow) (Signal, error) {
+	var sg Signal
+	var placement *uuid.UUID
+	err := r.Scan(&sg.ID, &sg.Class, &sg.Provider, &placement, &sg.Source, &sg.Observed,
+		&sg.Action, &sg.HeldClass, &sg.CreatedAt)
+	if placement != nil {
+		sg.PlacementID = *placement
+	}
+	sg.CreatedAt = utc(sg.CreatedAt)
+	return sg, err
 }
