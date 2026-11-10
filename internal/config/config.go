@@ -100,6 +100,10 @@ type Config struct {
 	Wallets       Wallets
 	Stats         Stats
 	Estimator     Estimator
+	// Telemetry holds the trace export settings
+	Telemetry Telemetry
+	// OTLPAuthorization is the whole Authorization header value the trace backend takes
+	OTLPAuthorization string
 	// Localrun is read only by a localrun build and zero in every other
 	Localrun Localrun
 	// Images holds each listed provider's image manifest
@@ -413,6 +417,7 @@ type file struct {
 	Targets             targetsFile    `toml:"targets"`
 	Hedge               hedgeFile      `toml:"hedge"`
 	Localrun            localrunFile   `toml:"localrun"`
+	Telemetry           telemetryFile  `toml:"telemetry"`
 }
 
 type apiFile struct {
@@ -648,6 +653,7 @@ func defaults() file {
 		Reconcile:  defaultReconcile(),
 		Wallets:    defaultWallets(),
 		Stats:      defaultStats(),
+		Telemetry:  defaultTelemetry(),
 		Estimator:  defaultEstimator(),
 		Images:     defaultImages(),
 		Sessions:   defaultSessions(),
@@ -852,6 +858,9 @@ func (f file) config() (Config, error) {
 	if c.Health, err = f.Health.read(d.Health); err != nil {
 		return Config{}, err
 	}
+	if c.Telemetry, err = f.Telemetry.read(d.Telemetry); err != nil {
+		return Config{}, err
+	}
 	if c.Bench, err = f.Bench.read(); err != nil {
 		return Config{}, err
 	}
@@ -1038,6 +1047,7 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 		c.EventSigningKey = ed25519.NewKeyFromSeed(seed)
 	}
 	c.GithubToken, c.HFToken = get("BUGNET_GITHUB_TOKEN"), get("BUGNET_HF_TOKEN")
+	c.OTLPAuthorization = get("BUGNET_OTLP_AUTHORIZATION")
 	c.ProviderKeys = map[string]string{}
 	for _, pk := range providerKeyVars {
 		if v := get(pk.env); v != "" {

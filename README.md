@@ -468,6 +468,7 @@ does not know.
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
 | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more. `router-worker` sends it to Payments' totals call while the stats feed is on |
 | `BUGNET_SESSIONS_TOKEN` | `router-api`, and `bugnet-edge --role sessions`, the bearer token of `SessionPageService`, empty or 32 characters or more |
+| `BUGNET_OTLP_AUTHORIZATION` | `router-api` and `router-worker`, the whole Authorization header value the trace backend takes, `Basic <base64 of instance id:token>` for Grafana Cloud, empty for a local collector |
 | `BUGNET_HOOK_PATH_SECRET` | The edge, and `bugnet-dev hooks`, base64url of 32 bytes in the provider webhook path |
 | `E2B_WEBHOOK_SECRET`, `BOAT_WEBHOOK_SECRET` | `router-api`, the signing secret `bugnet-dev hooks register` prints once, needed for each provider in `hooks.providers`. The same name with `_PREVIOUS` holds the replaced secret for a day after `hooks rotate` |
 | `BOAT_ADMIN_API_KEY` | `bugnet-dev hooks` for Boat only, typed at its prompt with echo off when unset, never in a service |

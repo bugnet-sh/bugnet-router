@@ -82,3 +82,7 @@ template = "bugnet-4x8"
 vcpu = 4
 memory_mib = 8192
 disk_gib = 10
+
+[telemetry]
+traces = false
+environment = "dev"
