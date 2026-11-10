@@ -37,7 +37,7 @@ func CheckHooks(
 		if !ok {
 			return fmt.Errorf("hooks.providers lists %s but it is not in providers", name)
 		}
-		if _, ok := p.(provider.HookVerifier); !ok {
+		if _, ok := provider.As[provider.HookVerifier](p); !ok {
 			return fmt.Errorf("hooks.providers lists %s but it verifies no webhooks", name)
 		}
 	}
@@ -95,7 +95,7 @@ func (s *Server) hookVerifier(name string) (provider.HookVerifier, [][]byte, boo
 	if !ok {
 		return nil, nil, false
 	}
-	v, ok := p.(provider.HookVerifier)
+	v, ok := provider.As[provider.HookVerifier](p)
 	sec := s.d.HookSecrets[name]
 	if !ok || len(sec.Current) == 0 {
 		return nil, nil, false

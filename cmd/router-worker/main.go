@@ -39,6 +39,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
@@ -53,7 +54,7 @@ const (
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log := slog.New(telemetry.LogHandler(slog.NewJSONHandler(os.Stderr, nil)))
 	slog.SetDefault(log)
 	if err := run(log, os.Args[1:]...); err != nil {
 		log.Error("router-worker failed", "err", err)
@@ -153,7 +154,12 @@ func serve(
 	if err != nil {
 		return err
 	}
-	reg, err := providers.Build(cfg, vk)
+	tel, err := telemetry.FromConfig(cfg, "router-worker", log)
+	if err != nil {
+		return err
+	}
+	defer tel.Close()
+	reg, err := providers.Build(cfg, vk, tel)
 	if err != nil {
 		return err
 	}
@@ -186,6 +192,7 @@ func serve(
 	}
 	shared := sharedhealth.NewShared(st, tracker, log)
 	w, err := worker.New(pool, saga.Deps{
+		Telemetry:     tel,
 		Store:         st,
 		Engine:        placement.New(reg, shared, warm),
 		Registry:      reg,
@@ -352,7 +359,7 @@ func readyz(log *slog.Logger, st *store.Store, vk valkey.Client) http.HandlerFun
 func limitsOf(cfg config.Config, reg *provider.Registry, vk valkey.Client) limitsCheck {
 	c := limitsCheck{every: map[string]time.Duration{}, staleAfter: cfg.LimitsPoll.StaleAfter}
 	for _, p := range reg.Ordered() {
-		if _, ok := p.(provider.LimitsReader); !ok {
+		if _, ok := provider.As[provider.LimitsReader](p); !ok {
 			continue
 		}
 		c.every[p.Name()] = cfg.LimitsPoll.Every
@@ -375,7 +382,7 @@ func canariesOf(cfg config.Config, reg *provider.Registry, w *worker.Worker) can
 	}
 	for _, p := range reg.Ordered() {
 		c.every[p.Name()] = cfg.Health.CanaryEvery
-		if _, costly := p.(provider.StartCoster); costly {
+		if _, costly := provider.As[provider.StartCoster](p); costly {
 			c.every[p.Name()] = cfg.Health.BoatCanaryEvery
 		}
 	}

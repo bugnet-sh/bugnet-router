@@ -109,7 +109,7 @@ func NewSources(d SourcesDeps) (*Sources, error) {
 			return nil, fmt.Errorf("secrets.source_check.modes names %s, which is not configured",
 				name)
 		}
-		if _, ok := p.(provider.EgressSourcer); !ok {
+		if _, ok := provider.As[provider.EgressSourcer](p); !ok {
 			return nil, fmt.Errorf("secrets.source_check.modes names %s, which reports no "+
 				"egress address", name)
 		}
@@ -139,7 +139,7 @@ func (s *Sources) sourcer(p store.Placement) (provider.EgressSourcer, Mode, bool
 	if !ok {
 		return nil, ModeOff, false
 	}
-	es, ok := prov.(provider.EgressSourcer)
+	es, ok := provider.As[provider.EgressSourcer](prov)
 	return es, mode, ok
 }
 

@@ -66,7 +66,7 @@ func (cw *costDailyWorker) Work(ctx context.Context, j *river.Job[jobargs.CostDa
 	if !ok {
 		return nil
 	}
-	reader, ok := prov.(provider.UsageReader)
+	reader, ok := provider.As[provider.UsageReader](prov)
 	if !ok {
 		return nil
 	}
@@ -82,7 +82,7 @@ func (w *Worker) costDailyTick(ctx context.Context) {
 	now := w.now()
 	yesterday := now.Truncate(24*time.Hour).AddDate(0, 0, -1)
 	for _, prov := range w.registry.Ordered() {
-		if _, ok := prov.(provider.UsageReader); !ok {
+		if _, ok := provider.As[provider.UsageReader](prov); !ok {
 			continue
 		}
 		name := prov.Name()

@@ -25,7 +25,7 @@ const (
 func (s *Server) FetchSource(
 	ctx context.Context, req *connect.Request[routerv1.FetchSourceRequest],
 ) (*connect.Response[routerv1.FetchSourceResponse], error) {
-	p, _, err := s.sandbox(ctx, req.Msg.GetHandle())
+	ctx, p, _, err := s.sandbox(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}

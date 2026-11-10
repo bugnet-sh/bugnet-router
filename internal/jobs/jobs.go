@@ -33,6 +33,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/google/uuid"
 
@@ -41,6 +43,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 )
 
 const (
@@ -113,11 +117,14 @@ type Deps struct {
 	MaxRunning int
 	// Sessions gives each new job its session record row and events, none when nil
 	Sessions *sessions.Writer
+	// Telemetry makes the command spans, telemetry.Off when nil
+	Telemetry *telemetry.Telemetry
 }
 
 // Service runs jobs and serves their streams
 type Service struct {
 	d      Deps
+	tr     trace.Tracer
 	ctx    context.Context
 	stop   context.CancelFunc
 	wg     sync.WaitGroup
@@ -135,8 +142,12 @@ func New(deps Deps) *Service {
 	deps.PlacementBudget = cmp.Or(deps.PlacementBudget, DefaultPlacementBudget)
 	deps.TailReserve = cmp.Or(deps.TailReserve, DefaultTailReserve)
 	deps.MaxRunning = cmp.Or(deps.MaxRunning, DefaultMaxRunning)
+	if deps.Telemetry == nil {
+		deps.Telemetry = telemetry.Off()
+	}
 	ctx, stop := context.WithCancel(context.Background())
-	return &Service{d: deps, ctx: ctx, stop: stop, owners: map[string]*owner{}}
+	return &Service{d: deps, tr: deps.Telemetry.Tracer("bugnet-router/jobs"), ctx: ctx,
+		stop: stop, owners: map[string]*owner{}}
 }
 
 // ExecResult is what Exec saw of a job up to the moment it returned
@@ -298,7 +309,8 @@ func (s *Service) start(
 		s.d.Sessions.StartJob(ctx, p, nj.ID, shownArgv(ctx, c.argv))
 	}
 	if job.State == store.JobRunning {
-		s.own(lease, p, prov, c)
+		_, span := telemetry.Child(ctx, s.tr, "command.run", attr.JobID(nj.ID))
+		s.own(lease, p, prov, c, span)
 	} else {
 		s.giveBack(lease, true)
 	}
@@ -673,7 +685,8 @@ func (s *Service) takeover(ctx context.Context, id string) {
 		s.d.Log.Warn("taking over a job this replica cannot reach", "job", id, "err", err)
 	}
 	s.d.Log.Info("taking a job over", "job", id, "replica", s.d.ReplicaID)
-	s.own(lease, p, prov, nil)
+	_, span := s.d.Telemetry.InOrder(ctx, p, "command.takeover", attr.JobID(id))
+	s.own(lease, p, prov, nil, span)
 }
 
 // Shutdown stops every owner loop and releases its lease so peers take the jobs over at once
@@ -703,6 +716,7 @@ type owner struct {
 	cmd    *command          // nil when the job only needs attaching
 	ctx    context.Context
 	cancel context.CancelFunc
+	span   trace.Span // command.run or command.takeover, ended when the owner loop ends
 	// The fields up to mu are kept by the run goroutine
 	offsets     [2]int64  // the next stdout and stderr bytes the follower sends
 	stream      [2]int64  // the offsets the stream's output and skip frames reach
@@ -726,17 +740,21 @@ func (s *Service) owns(id string) bool {
 	return ok
 }
 
-// own runs an owner loop for the lease's job, or gives the lease back once Shutdown began
-func (s *Service) own(lease streams.Lease, p store.Placement, prov provider.Provider, c *command) {
-	ctx, cancel := context.WithCancel(s.ctx)
+// own runs an owner loop for the lease's job, or gives the lease back once Shutdown began, the
+// loop running under span and ending it with the job
+func (s *Service) own(
+	lease streams.Lease, p store.Placement, prov provider.Provider, c *command, span trace.Span,
+) {
+	ctx, cancel := context.WithCancel(trace.ContextWithSpan(s.ctx, span))
 	o := &owner{
 		s: s, lease: lease, place: p, prov: prov, cmd: c, ctx: ctx, cancel: cancel,
-		deadline: p.Deadline,
+		deadline: p.Deadline, span: span,
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		cancel()
+		span.End()
 		s.giveBack(lease, false)
 		return
 	}
@@ -783,6 +801,8 @@ func (o *owner) run() {
 	var renew sync.WaitGroup
 	renew.Go(o.renew)
 	finished := o.follow()
+	o.span.SetAttributes(attr.Truncated(o.skipped || o.flood))
+	o.span.End()
 	o.cancel()
 	renew.Wait()
 	o.s.forget(o)
@@ -1276,6 +1296,9 @@ func (o *owner) finishFromStream() bool {
 
 func (o *owner) record(f frame.Frame) bool {
 	state, code := outcome(f)
+	if code != nil {
+		o.span.SetAttributes(attr.ExitCode(*code))
+	}
 	out, errBytes := o.offsets[0], o.offsets[1]
 	if f.Kind == frame.KindExit {
 		out, errBytes = f.Out, f.Err

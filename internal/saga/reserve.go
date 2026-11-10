@@ -700,7 +700,7 @@ func (s *Saga) checkSandbox(ctx context.Context, r store.Reservation) error {
 	if err := json.Unmarshal(r.Prepared, &prep); err != nil {
 		return fmt.Errorf("decode the prepared answer: %w", err)
 	}
-	if g, ok := prov.(provider.Gater); ok && prep.GateReadyAt != nil {
+	if g, ok := provider.As[provider.Gater](prov); ok && prep.GateReadyAt != nil {
 		route, err := g.GateRoute(*m.ProviderRef, s.d.Boot.gatePort())
 		if err != nil {
 			return fmt.Errorf("gate route: %w", err)
@@ -775,7 +775,7 @@ func (s *Saga) prepareReservation(
 			return
 		}
 		ref = *m.ProviderRef
-		if pk, ok := prov.(provider.Parker); ok {
+		if pk, ok := provider.As[provider.Parker](prov); ok {
 			err := pk.Unpark(ctx, ref)
 			smp.WakeMS = int(s.now().Sub(started).Milliseconds())
 			if err != nil {
@@ -1040,7 +1040,7 @@ func (s *Saga) bindInTx(
 
 // sizeNamed finds a size of a provider by name
 func sizeNamed(prov provider.Provider, name string) (provider.Size, bool) {
-	sz, ok := prov.(provider.Sizer)
+	sz, ok := provider.As[provider.Sizer](prov)
 	if !ok {
 		return provider.Size{}, false
 	}

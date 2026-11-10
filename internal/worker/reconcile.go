@@ -35,7 +35,10 @@ func (rw *reconcileWorker) Work(ctx context.Context, job *river.Job[jobargs.Reco
 	if err != nil {
 		return err
 	}
-	return rw.w.reconciler.Reconcile(ctx, p, nil)
+	ctx, span := rw.w.tel.InOrder(ctx, p, "reconcile")
+	err = rw.w.reconciler.Reconcile(ctx, p, nil)
+	span.End()
+	return err
 }
 
 // queueLost inserts a reconcile job for each ready placement the listing lacks, shows unwell or

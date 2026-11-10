@@ -154,7 +154,7 @@ func (c check) files(t *testing.T) {
 
 // parked checks that a Parker's sandbox serves Exec and ReadFile as before after Park and Unpark
 func (c check) parked(t *testing.T) {
-	pk, ok := c.p.(provider.Parker)
+	pk, ok := provider.As[provider.Parker](c.p)
 	if !ok {
 		t.Skip("the provider keeps no parked sandboxes")
 	}
@@ -162,7 +162,7 @@ func (c check) parked(t *testing.T) {
 	path := "/tmp/bugnet-contract-" + c.labels[labelKey] + "/data.txt"
 	ref := c.ref
 	var route provider.GateRoute
-	gater, gates := c.p.(provider.Gater)
+	gater, gates := provider.As[provider.Gater](c.p)
 	if gates {
 		meta, err := gater.PrepareGate(ctx, ref, provider.DefaultGatePort)
 		if err != nil {
@@ -274,7 +274,7 @@ func (c check) notFound(t *testing.T) {
 	path := "/tmp/bugnet-contract-gone.txt"
 
 	requireNotFound(t, "WaitReady", c.p.WaitReady(ctx, c.ref))
-	if es, ok := c.p.(provider.EgressSourcer); ok {
+	if es, ok := provider.As[provider.EgressSourcer](c.p); ok {
 		_, found, err := es.EgressSource(ctx, c.ref)
 		if err == nil && found {
 			t.Errorf("EgressSource on a destroyed sandbox gave a source")

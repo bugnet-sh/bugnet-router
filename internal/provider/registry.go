@@ -56,7 +56,7 @@ func NewRegistry(order []Provider, f Features) (*Registry, error) {
 // features computes p's flags from the lists, and refuses a listing p cannot serve
 func features(p Provider, f Features) (flags, error) {
 	name := p.Name()
-	_, gater := p.(Gater)
+	_, gater := As[Gater](p)
 	fl := flags{secrets: slices.Contains(f.Secrets, name)}
 	if slices.Contains(f.Preview, name) {
 		if !gater {
@@ -66,7 +66,7 @@ func features(p Provider, f Features) (flags, error) {
 		fl.preview = true
 	}
 	if slices.Contains(f.SSH, name) {
-		_, native := p.(NativeSSHer)
+		_, native := As[NativeSSHer](p)
 		switch {
 		case f.BoatNativeSSH && name == "boat":
 			if !native {

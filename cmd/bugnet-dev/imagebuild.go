@@ -76,7 +76,7 @@ func (c *cli) imageProvider(name, key string) (provider.Provider, config.Config,
 		p, err := c.provFor(cfg, name)
 		return p, cfg, err
 	}
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		return nil, cfg, err
 	}
@@ -148,7 +148,7 @@ func imageInputs(given string) (string, error) {
 
 // imageSizes are the sizes the catalog's packages land on at p, smallest first
 func imageSizes(cfg config.Config, p provider.Provider) ([]provider.Size, error) {
-	sz, ok := p.(provider.Sizer)
+	sz, ok := provider.As[provider.Sizer](p)
 	if !ok {
 		return nil, fmt.Errorf("%s lists no sizes", p.Name())
 	}
@@ -263,7 +263,7 @@ func (c *cli) imageBuild(args []string) error {
 	if err != nil {
 		return secrets.fail(err)
 	}
-	saver, ok := p.(provider.ImageSaver)
+	saver, ok := provider.As[provider.ImageSaver](p)
 	if !ok {
 		return fmt.Errorf("%s cannot save images", *name)
 	}
@@ -391,7 +391,7 @@ type checkTarget struct {
 func checkTargets(
 	p provider.Provider, name string, refs, sizes []string,
 ) ([]checkTarget, error) {
-	sz, ok := p.(provider.Sizer)
+	sz, ok := provider.As[provider.Sizer](p)
 	if !ok || len(sz.Sizes()) == 0 {
 		return nil, fmt.Errorf("%s lists no sizes", name)
 	}
@@ -465,7 +465,7 @@ func (c *cli) printCheck(t checkTarget, rep imagebuild.CheckReport) {
 
 // deleteFailed deletes an artifact that failed its check, where the provider keeps artifacts
 func (c *cli) deleteFailed(p provider.Provider, ref string) {
-	d, ok := p.(provider.ImageDeleter)
+	d, ok := provider.As[provider.ImageDeleter](p)
 	if !ok {
 		return
 	}
@@ -564,7 +564,7 @@ func (c *cli) imageRetire(args []string) error {
 	if err != nil {
 		return secrets.fail(err)
 	}
-	d, ok := p.(provider.ImageDeleter)
+	d, ok := provider.As[provider.ImageDeleter](p)
 	if !ok || len(refs) == 0 {
 		_, err := fmt.Fprintf(c.stdout, "provider=%s version=%s nothing to delete\n", *name,
 			*version)

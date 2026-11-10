@@ -69,7 +69,7 @@ func (s *Server) CheckX402(
 	var rows []store.X402Service
 	if m.GetHandle() != "" {
 		var err error
-		if p, err = s.placement(ctx, m.GetHandle()); err != nil {
+		if ctx, p, err = s.placement(ctx, m.GetHandle()); err != nil {
 			return nil, s.status(err)
 		}
 		if rows, err = s.d.Store.X402Services(ctx, p.ID); err != nil {
@@ -90,7 +90,7 @@ func (s *Server) EnableX402(
 	if !secrets.ValidKey(m.GetRequestId()) {
 		return nil, invalid("request_id must be 1 to 128 printable ASCII characters")
 	}
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -248,7 +248,7 @@ func (s *Server) awaitX402(ctx context.Context, id uuid.UUID, added []string) {
 func (s *Server) ListX402(
 	ctx context.Context, req *connect.Request[routerv1.ListX402Request],
 ) (*connect.Response[routerv1.ListX402Response], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}

@@ -42,6 +42,7 @@ func (r *SecretsRouteServer) GetSecretLink(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	_ = s.d.Telemetry.JoinOrder(ctx, p)
 	if p.State != store.PlacementReady {
 		return nil, s.status(errLinkUnknown)
 	}
@@ -77,6 +78,7 @@ func (r *SecretsRouteServer) SubmitSecretLink(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
 	row, err := s.writeSecret(ctx, p, secretWrite{
 		spec: m.GetSpec(), value: m.GetValue(), source: store.SourceLink,
 		key: linkKeyPrefix + l.ID.String(), link: &l, submission: m.GetSubmissionId(),
@@ -120,7 +122,7 @@ func (r *SecretsRouteServer) GetBridgeSealingKey(
 	ctx context.Context, req *connect.Request[routerv1.GetBridgeSealingKeyRequest],
 ) (*connect.Response[routerv1.GetBridgeSealingKeyResponse], error) {
 	s := r.s
-	p, err := s.granted(ctx, req.Msg.GetPutGrant())
+	_, p, err := s.granted(ctx, req.Msg.GetPutGrant())
 	if err == nil {
 		err = s.secretsFor(p)
 	}
@@ -137,7 +139,7 @@ func (r *SecretsRouteServer) PutBridgeSecret(
 	ctx context.Context, req *connect.Request[routerv1.PutBridgeSecretRequest],
 ) (*connect.Response[routerv1.PutBridgeSecretResponse], error) {
 	s, m := r.s, req.Msg
-	p, err := s.granted(ctx, m.GetPutGrant())
+	ctx, p, err := s.granted(ctx, m.GetPutGrant())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -176,17 +178,21 @@ func liveLink(l store.SecretLink) error {
 }
 
 // granted answers the placement a put grant names, refusing an expired or forged one
-func (s *Server) granted(ctx context.Context, grant string) (store.Placement, error) {
+func (s *Server) granted(ctx context.Context, grant string) (
+	context.Context, store.Placement, error) {
 	id, err := s.d.Keys.CheckPutGrant(grant, time.Now())
 	if errors.Is(err, dpkeys.ErrInvalid) || errors.Is(err, dpkeys.ErrExpired) {
-		return store.Placement{}, errPutGrant
+		return ctx, store.Placement{}, errPutGrant
 	}
 	if err != nil {
-		return store.Placement{}, err
+		return ctx, store.Placement{}, err
 	}
 	p, err := s.d.Store.PlacementByID(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
-		return store.Placement{}, errPutGrant
+		return ctx, store.Placement{}, errPutGrant
 	}
-	return p, err
+	if err != nil {
+		return ctx, store.Placement{}, err
+	}
+	return s.d.Telemetry.JoinOrder(ctx, p), p, nil
 }

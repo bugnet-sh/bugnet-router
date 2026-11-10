@@ -71,7 +71,7 @@ func (ss *SessionPageServer) WatchSessionJob(
 		return withInfo(connect.NewError(connect.CodeFailedPrecondition, errNoLive),
 			reasonFeatureUnavailable)
 	}
-	rec, p, err := s.sessionFor(ctx, m.GetId(), m.GetKey())
+	ctx, rec, p, err := s.sessionFor(ctx, m.GetId(), m.GetKey())
 	if err == nil && !liveOpen(rec, p, time.Now()) {
 		err = errSessionUnknown
 	}

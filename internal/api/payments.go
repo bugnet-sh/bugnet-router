@@ -51,6 +51,7 @@ func (ps *PaymentsServer) GetOrder(
 	if err != nil {
 		return nil, ps.s.status(err)
 	}
+	_ = ps.s.d.Telemetry.JoinOrder(ctx, p)
 	msg := placementMsg(p)
 	return connect.NewResponse(&routerv1.GetOrderResponse{
 		Redeemed:       true,
@@ -170,6 +171,7 @@ func (ps *PaymentsServer) LookupPlacement(ctx context.Context,
 	if err != nil {
 		return nil, ps.s.status(err)
 	}
+	_ = ps.s.d.Telemetry.JoinOrder(ctx, p)
 	out := &routerv1.LookupPlacementResponse{
 		PlacementId:  p.ID.String(),
 		StartOrderId: p.OrderID,

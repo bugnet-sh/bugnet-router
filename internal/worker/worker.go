@@ -52,6 +52,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 	"github.com/valkey-io/valkey-go"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
@@ -65,6 +66,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
 
@@ -130,6 +132,8 @@ type Deps struct {
 	Reconcile config.Reconcile
 	// Pools sets the warm pools, the settings' defaults when its tick is zero
 	Pools config.Pools
+	// Telemetry makes the worker's spans, taken from the saga's deps when nil
+	Telemetry *telemetry.Telemetry
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -170,6 +174,8 @@ type Worker struct {
 	// probeAges is the age of each provider's oldest probe sandbox at the last sweep
 	probesMu  sync.Mutex
 	probeAges map[string]time.Duration
+	tel       *telemetry.Telemetry
+	tr        trace.Tracer
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -196,6 +202,13 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	d.ObservationsKeep = cmp.Or(d.ObservationsKeep, defaultObservationsKeep)
 	d.Abuse = d.Abuse.OrDefaults()
 	d.Reconcile = d.Reconcile.OrDefaults()
+	if d.Telemetry == nil {
+		d.Telemetry = sd.Telemetry
+	}
+	if d.Telemetry == nil {
+		d.Telemetry = telemetry.Off()
+	}
+	sd.Telemetry = d.Telemetry
 	if d.Pools.Tick == 0 {
 		d.Pools = config.DefaultPools()
 	}
@@ -205,6 +218,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	w := &Worker{
 		checks:   map[string]failedChecks{},
 		d:        d,
+		tel:      d.Telemetry,
+		tr:       d.Telemetry.Tracer("bugnet-router/worker"),
 		store:    sd.Store,
 		registry: sd.Registry,
 		log:      sd.Log,
@@ -258,6 +273,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		JobTimeout:           jobTimeout,
 		RescueStuckJobsAfter: rescueAfter,
 		Logger:               sd.Log,
+		Middleware:           d.Telemetry.Middleware(true),
 	})
 	if err != nil {
 		return nil, err
@@ -358,14 +374,14 @@ func polls(d Deps, reg *provider.Registry) []periodicJob {
 		name := p.Name()
 		foreign := jobargs.ForeignCount{Provider: name}
 		out = append(out, periodicJob{d.Reconcile.OrDefaults().ForeignEvery, foreign})
-		if _, ok := p.(provider.LimitsReader); ok {
+		if _, ok := provider.As[provider.LimitsReader](p); ok {
 			every := d.LimitsPoll.Every
 			if name == "boat" {
 				every = d.LimitsPoll.BoatEvery
 			}
 			out = append(out, periodicJob{every, jobargs.LimitsPoll{Provider: name}})
 		}
-		if _, ok := p.(provider.AccountChecker); ok {
+		if _, ok := provider.As[provider.AccountChecker](p); ok {
 			out = append(out, periodicJob{accountEvery, jobargs.AccountCheck{Provider: name}})
 		}
 		// A provider that keeps its own pools has them created at start and sized every 5 minutes
@@ -378,7 +394,7 @@ func polls(d Deps, reg *provider.Registry) []periodicJob {
 
 // keepsPools reports whether the settings list a pool on a provider that keeps its members itself
 func keepsPools(d Deps, p provider.Provider) bool {
-	if _, claims := p.(provider.PoolClaimer); !claims {
+	if _, claims := provider.As[provider.PoolClaimer](p); !claims {
 		return false
 	}
 	for _, c := range d.Pools.Pool {

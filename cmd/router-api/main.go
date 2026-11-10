@@ -53,6 +53,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/vkclient"
 	"github.com/bugnet-sh/bugnet-router/internal/vkinfo"
 )
@@ -63,7 +64,7 @@ const (
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log := slog.New(telemetry.LogHandler(slog.NewJSONHandler(os.Stderr, nil)))
 	slog.SetDefault(log)
 	if err := run(log, os.Args[1:]); err != nil {
 		log.Error("router-api failed", "err", err)
@@ -147,7 +148,12 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err := checkRestrictedEgress(cfg, cat); err != nil {
 		return err
 	}
-	reg, err := providers.Build(cfg, vk)
+	tel, err := telemetry.FromConfig(cfg, "router-api", log)
+	if err != nil {
+		return err
+	}
+	defer tel.Close()
+	reg, err := providers.Build(cfg, vk, tel)
 	if err != nil {
 		return err
 	}
@@ -169,7 +175,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return err
 	}
 	// Insert only, the worker runs the jobs
-	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	rc, err := river.NewClient(riverpgxv5.New(pool),
+		&river.Config{Middleware: tel.Middleware(false)})
 	if err != nil {
 		return fmt.Errorf("river client: %w", err)
 	}
@@ -206,6 +213,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return err
 	}
 	sg := saga.New(saga.Deps{
+		Telemetry:     tel,
 		Store:         st,
 		Engine:        engine,
 		Registry:      reg,
@@ -251,11 +259,13 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	}
 	jd := jobDeps(cfg, st, streams.NewBus(vk, cfg.ValkeyPrefix), reg, log)
 	jd.Sessions = writer
+	jd.Telemetry = tel
 	js := jobs.New(jd)
 	var scanner sync.WaitGroup
 	// The scanner runs until jobs.Shutdown, so jobs keep being taken over while HTTP drains
 	scanner.Go(func() { js.RunScanner(context.Background()) })
 	srv := api.New(api.Deps{
+		Telemetry:           tel,
 		Store:               st,
 		Saga:                sg,
 		Jobs:                js,
@@ -385,7 +395,7 @@ func checkImages(reg *provider.Registry, cfg config.Config) error {
 func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
 	refs := cfg.Images.Boxd.Refs
 	p, ok := reg.Get("boxd")
-	sizer, isSizer := p.(provider.Sizer)
+	sizer, isSizer := provider.As[provider.Sizer](p)
 	if len(refs) == 0 || !ok || !isSizer {
 		return nil
 	}

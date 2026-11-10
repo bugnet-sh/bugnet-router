@@ -16,6 +16,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
@@ -259,6 +260,7 @@ func operatorPlacementOf(p store.Placement, extend []string) *routerv1.OperatorP
 		PackageId: p.PackageID, CreatedAt: timestamppb.New(p.CreatedAt), Payer: p.Payer,
 		ExtendPayers: extend, SourceLabel: p.SourceLabel, TerminationReason: p.TerminationReason,
 		StartPath: p.StartPath, Hedged: p.Hedged, ImageVersion: p.ImageVersion,
+		OrderTraceId: orderTraceID(p),
 	}
 	if p.ProviderRef != nil {
 		out.ProviderSandboxId = p.ProviderRef.ID
@@ -320,4 +322,13 @@ func (s *Server) livePlacementsOf(ctx context.Context, payer string) ([]livePlac
 		out = append(out, livePlacement{p: p, extend: extend})
 	}
 	return out, nil
+}
+
+// orderTraceID is the placement's order trace id, 32 hex characters derived from its handle
+func orderTraceID(p store.Placement) string {
+	if len(p.HandleSHA256) == 0 {
+		return ""
+	}
+	tid, _ := telemetry.OrderIDs(p.HandleSHA256)
+	return tid.String()
 }

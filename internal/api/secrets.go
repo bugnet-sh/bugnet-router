@@ -65,7 +65,7 @@ func (s *Server) CreateSecretLink(
 	ctx context.Context, req *connect.Request[routerv1.CreateSecretLinkRequest],
 ) (*connect.Response[routerv1.CreateSecretLinkResponse], error) {
 	m := req.Msg
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err == nil {
 		err = s.secretsFor(p)
 	}
@@ -157,7 +157,7 @@ func (s *Server) newLink(
 func (s *Server) CreateSecretPutGrant(
 	ctx context.Context, req *connect.Request[routerv1.CreateSecretPutGrantRequest],
 ) (*connect.Response[routerv1.CreateSecretPutGrantResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err == nil {
 		err = s.secretsFor(p)
 	}
@@ -178,7 +178,7 @@ func (s *Server) CreateSecretPutGrant(
 func (s *Server) GetSecretSealingKey(
 	ctx context.Context, req *connect.Request[routerv1.GetSecretSealingKeyRequest],
 ) (*connect.Response[routerv1.GetSecretSealingKeyResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	_, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err == nil {
 		err = s.secretsFor(p)
 	}
@@ -195,7 +195,7 @@ func (s *Server) PutSecret(
 	ctx context.Context, req *connect.Request[routerv1.PutSecretRequest],
 ) (*connect.Response[routerv1.PutSecretResponse], error) {
 	m := req.Msg
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -213,7 +213,7 @@ func (s *Server) PutSecret(
 func (s *Server) ListSecrets(
 	ctx context.Context, req *connect.Request[routerv1.ListSecretsRequest],
 ) (*connect.Response[routerv1.ListSecretsResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -232,7 +232,7 @@ func (s *Server) ListSecrets(
 func (s *Server) DeleteSecret(
 	ctx context.Context, req *connect.Request[routerv1.DeleteSecretRequest],
 ) (*connect.Response[routerv1.DeleteSecretResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err == nil {
 		err = s.secretsFor(p)
 	}

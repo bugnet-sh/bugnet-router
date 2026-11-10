@@ -53,7 +53,7 @@ func (s *Server) CreatePreview(
 	ctx context.Context, req *connect.Request[routerv1.CreatePreviewRequest],
 ) (*connect.Response[routerv1.CreatePreviewResponse], error) {
 	port := req.Msg.GetPort()
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -225,7 +225,7 @@ func (e *EdgeServer) ResolvePreview(
 	ctx context.Context, req *connect.Request[routerv1.ResolvePreviewRequest],
 ) (*connect.Response[routerv1.ResolvePreviewResponse], error) {
 	s := e.s
-	pv, p, err := s.previewFor(ctx, req.Msg.GetPreviewId(), req.Msg.GetToken())
+	ctx, pv, p, err := s.previewFor(ctx, req.Msg.GetPreviewId(), req.Msg.GetToken())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -247,7 +247,7 @@ func (e *EdgeServer) ResolvePreview(
 		PlacementId: p.ID.String(), Port: uint32(pv.Port), Upstream: gateUpstream(route, key),
 		ExpiresAt: timestamppb.New(*p.Deadline), Generation: pv.Generation,
 		Budget: s.edgeBudget(p, left), Interstitial: s.d.Previews.Interstitial,
-		SourceLabel: p.SourceLabel,
+		SourceLabel: p.SourceLabel, OrderTraceparent: orderTraceparent(ctx),
 	}
 	if p.ReadyAt != nil {
 		out.StartedAt = timestamppb.New(*p.ReadyAt)
@@ -260,7 +260,7 @@ func (e *EdgeServer) RepairPreview(
 	ctx context.Context, req *connect.Request[routerv1.RepairPreviewRequest],
 ) (*connect.Response[routerv1.RepairPreviewResponse], error) {
 	s := e.s
-	_, p, err := s.previewFor(ctx, req.Msg.GetPreviewId(), req.Msg.GetToken())
+	ctx, _, p, err := s.previewFor(ctx, req.Msg.GetPreviewId(), req.Msg.GetToken())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -280,33 +280,33 @@ func (e *EdgeServer) RepairPreview(
 // previewFor finds a preview and its placement once the token is the preview's
 func (s *Server) previewFor(
 	ctx context.Context, id, token string,
-) (store.Preview, store.Placement, error) {
+) (context.Context, store.Preview, store.Placement, error) {
 	if !preview.ValidID(id) {
-		return store.Preview{}, store.Placement{}, errPreviewUnknown
+		return ctx, store.Preview{}, store.Placement{}, errPreviewUnknown
 	}
 	pv, err := s.d.Store.PreviewByID(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return store.Preview{}, store.Placement{}, errPreviewUnknown
+		return ctx, store.Preview{}, store.Placement{}, errPreviewUnknown
 	case err != nil:
-		return store.Preview{}, store.Placement{}, err
+		return ctx, store.Preview{}, store.Placement{}, err
 	}
 	switch preview.Check(s.d.Keys, pv.ID, pv.Generation, token) {
 	case preview.Invalid:
-		return store.Preview{}, store.Placement{}, errTokenInvalid
+		return ctx, store.Preview{}, store.Placement{}, errTokenInvalid
 	case preview.Earlier:
 		if pv.RevokedAt == nil {
-			return store.Preview{}, store.Placement{}, errTokenInvalid
+			return ctx, store.Preview{}, store.Placement{}, errTokenInvalid
 		}
 	}
 	if pv.RevokedAt != nil {
-		return store.Preview{}, store.Placement{}, store.ErrPreviewRevoked
+		return ctx, store.Preview{}, store.Placement{}, store.ErrPreviewRevoked
 	}
 	p, err := s.d.Store.PlacementByID(ctx, pv.PlacementID)
 	if err != nil {
-		return store.Preview{}, store.Placement{}, err
+		return ctx, store.Preview{}, store.Placement{}, err
 	}
-	return pv, p, nil
+	return s.d.Telemetry.JoinOrder(ctx, p), pv, p, nil
 }
 
 // gateUpstream is the route the edge proxies through, with the gate key added

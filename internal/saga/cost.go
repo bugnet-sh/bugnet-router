@@ -14,7 +14,7 @@ import (
 
 // quote prices an attempt of size on prov for its record, the hour and the start fee
 func quote(prov provider.Provider, size provider.Size) (hourly, fee int64) {
-	if c, ok := prov.(provider.StartCoster); ok {
+	if c, ok := provider.As[provider.StartCoster](prov); ok {
 		if f, ok := c.StartCostMicros(size); ok {
 			fee = f
 		}

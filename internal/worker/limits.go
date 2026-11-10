@@ -46,7 +46,7 @@ func ResolveLimit(providerCap, setting int) (int, string) {
 // pollLimits reads one provider's cap and use into its capacity row, a failure keeping the row
 func (w *Worker) pollLimits(ctx context.Context, name string) {
 	p, ok := w.registry.Get(name)
-	reader, can := p.(provider.LimitsReader)
+	reader, can := provider.As[provider.LimitsReader](p)
 	if !ok || !can {
 		return
 	}

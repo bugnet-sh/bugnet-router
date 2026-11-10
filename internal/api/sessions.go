@@ -113,7 +113,7 @@ func (s *Server) AppendSessionEvents(
 	if len(m.GetEvents()) > maxMCPEvents {
 		return nil, invalid("at most %d events a call", maxMCPEvents)
 	}
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -157,7 +157,7 @@ func (s *Server) AppendSessionEvents(
 func (s *Server) RotateSessionLink(
 	ctx context.Context, req *connect.Request[routerv1.RotateSessionLinkRequest],
 ) (*connect.Response[routerv1.RotateSessionLinkResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -184,28 +184,28 @@ func (s *Server) RotateSessionLink(
 // sessionFor finds the record an id and key name, any miss answering errSessionUnknown alike
 func (s *Server) sessionFor(
 	ctx context.Context, id, key string,
-) (store.SessionRecord, store.Placement, error) {
+) (context.Context, store.SessionRecord, store.Placement, error) {
 	if !sessionIDShape.MatchString(id) || !sessionKeyShape.MatchString(key) {
-		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
+		return ctx, store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
 	rec, err := s.d.Store.SessionRecordByID(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		// The same read and HMAC as a wrong key, so the time taken never tells a live id
 		_, _ = s.d.Store.PlacementByID(ctx, uuid.Nil)
 		s.d.Keys.CheckSessionKey(s.anyKeyID(), id, 0, key)
-		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
+		return ctx, store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
 	if err != nil {
-		return store.SessionRecord{}, store.Placement{}, err
+		return ctx, store.SessionRecord{}, store.Placement{}, err
 	}
 	p, err := s.d.Store.PlacementByID(ctx, rec.PlacementID)
 	if err != nil {
-		return store.SessionRecord{}, store.Placement{}, err
+		return ctx, store.SessionRecord{}, store.Placement{}, err
 	}
 	if !s.d.Keys.CheckSessionKey(p.KeyID, rec.ID, rec.Generation, key) {
-		return store.SessionRecord{}, store.Placement{}, errSessionUnknown
+		return ctx, store.SessionRecord{}, store.Placement{}, errSessionUnknown
 	}
-	return rec, p, nil
+	return s.d.Telemetry.JoinOrder(ctx, p), rec, p, nil
 }
 
 // GetSessionRecord answers the record's state, with the record once ended or the live snapshot
@@ -213,7 +213,7 @@ func (ss *SessionPageServer) GetSessionRecord(
 	ctx context.Context, req *connect.Request[routerv1.GetSessionRecordRequest],
 ) (*connect.Response[routerv1.GetSessionRecordResponse], error) {
 	s := ss.s
-	rec, p, err := s.sessionFor(ctx, req.Msg.GetId(), req.Msg.GetKey())
+	ctx, rec, p, err := s.sessionFor(ctx, req.Msg.GetId(), req.Msg.GetKey())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -250,7 +250,7 @@ func (ss *SessionPageServer) DeleteSessionRecord(
 	ctx context.Context, req *connect.Request[routerv1.DeleteSessionRecordRequest],
 ) (*connect.Response[routerv1.DeleteSessionRecordResponse], error) {
 	s := ss.s
-	rec, _, err := s.sessionFor(ctx, req.Msg.GetId(), req.Msg.GetKey())
+	ctx, rec, _, err := s.sessionFor(ctx, req.Msg.GetId(), req.Msg.GetKey())
 	if err == nil && rec.ClosedAt == nil {
 		err = s.d.Store.DeleteSessionRecordNow(ctx, rec.ID, time.Now())
 	}

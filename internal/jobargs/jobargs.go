@@ -20,28 +20,76 @@ const QueueProbes = "probes"
 // QueuePools is the River queue of the pool fills
 const QueuePools = "pools"
 
+// Trace is the W3C context of the span that inserted a job, written by the insert middleware
+type Trace struct {
+	Parent string `json:"traceparent,omitempty"`
+	State  string `json:"tracestate,omitempty"`
+}
+
+// All lists one zero value of every job args type, for tests that cover each kind
+func All() []river.JobArgs {
+	return []river.JobArgs{
+		Deadline{},
+		Sweep{},
+		Watch{},
+		Outbox{},
+		ApplySecrets{},
+		PrepareSSH{},
+		WalletStopLive{},
+		WalletExpiry{},
+		StatsSnapshot{},
+		SessionCopy{},
+		SessionExpiry{},
+		Reconcile{},
+		HookHint{},
+		LimitsPoll{},
+		AccountCheck{},
+		CanaryTick{},
+		Probe{},
+		HealthRollup{},
+		Bench{},
+		Retention{},
+		CapacityRecount{},
+		ForeignCount{},
+		CostDailyTick{},
+		CostDaily{},
+		PoolTick{},
+		PoolFill{},
+		PoolRetire{},
+		PoolEnsure{},
+		ReserveWatch{},
+	}
+}
+
 // Deadline asks the worker to end a placement once its paid deadline has passed
 type Deadline struct {
 	PlacementID uuid.UUID `json:"placement_id"`
+	Trace       Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
 func (Deadline) Kind() string { return "deadline" }
 
 // Sweep asks the worker to destroy the sandboxes no placement needs
-type Sweep struct{}
+type Sweep struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (Sweep) Kind() string { return "sweep" }
 
 // Watch asks the worker to fail stalled placing placements and end overdue ones
-type Watch struct{}
+type Watch struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (Watch) Kind() string { return "watch" }
 
 // Outbox asks the worker to deliver the outbox events that are due
-type Outbox struct{}
+type Outbox struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (Outbox) Kind() string { return "outbox" }
@@ -49,6 +97,7 @@ func (Outbox) Kind() string { return "outbox" }
 // ApplySecrets asks the worker to write a placement's secrets into its sandbox
 type ApplySecrets struct {
 	PlacementID uuid.UUID `json:"placement_id"`
+	Trace       Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -62,6 +111,7 @@ func (ApplySecrets) InsertOpts() river.InsertOpts {
 // PrepareSSH asks the worker to make a ready placement's sshd ready behind its gate
 type PrepareSSH struct {
 	PlacementID uuid.UUID `json:"placement_id"`
+	Trace       Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -88,20 +138,25 @@ type WalletStopLive struct {
 	// block is lifted or replaced; nil matches any block in force
 	BlockedAt *time.Time `json:"blocked_at,omitempty"`
 	// Waits counts the runs that found a placement still placing and waited for it
-	Waits int `json:"waits,omitempty"`
+	Waits int   `json:"waits,omitempty"`
+	Trace Trace `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
 func (WalletStopLive) Kind() string { return "wallet_stop_live" }
 
 // WalletExpiry asks the worker to lift the wallet blocks whose time has passed
-type WalletExpiry struct{}
+type WalletExpiry struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (WalletExpiry) Kind() string { return "wallet_expiry" }
 
 // StatsSnapshot asks the worker to write the public stats feed's snapshot row
-type StatsSnapshot struct{}
+type StatsSnapshot struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (StatsSnapshot) Kind() string { return "stats_snapshot" }
@@ -114,13 +169,16 @@ func (StatsSnapshot) InsertOpts() river.InsertOpts {
 // SessionCopy asks the worker to copy an ended placement's output into its session record
 type SessionCopy struct {
 	PlacementID uuid.UUID `json:"placement_id"`
+	Trace       Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
 func (SessionCopy) Kind() string { return "session_copy" }
 
 // SessionExpiry asks the worker to delete the session records whose page ended
-type SessionExpiry struct{}
+type SessionExpiry struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (SessionExpiry) Kind() string { return "session_expiry" }
@@ -128,6 +186,7 @@ func (SessionExpiry) Kind() string { return "session_expiry" }
 // Reconcile asks the worker to read one live placement's sandbox and act on what the provider says
 type Reconcile struct {
 	PlacementID uuid.UUID `json:"placement_id"`
+	Trace       Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -150,6 +209,7 @@ type HookHint struct {
 	// PlacementLabel and DeploymentLabel are the sandbox's labels when the event carries them
 	PlacementLabel  string `json:"placement_label,omitempty"`
 	DeploymentLabel string `json:"deployment_label,omitempty"`
+	Trace           Trace  `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -175,6 +235,7 @@ var pendingStates = []rivertype.JobState{
 // LimitsPoll asks the worker to read one provider account's cap and use into its capacity row
 type LimitsPoll struct {
 	Provider string `json:"provider"`
+	Trace    Trace  `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -192,7 +253,8 @@ func (LimitsPoll) InsertOpts() river.InsertOpts {
 type AccountCheck struct {
 	Provider string `json:"provider"`
 	// Now checks at once, otherwise only when the last check is older than its interval
-	Now bool `json:"now,omitempty"`
+	Now   bool  `json:"now,omitempty"`
+	Trace Trace `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -207,7 +269,9 @@ func (AccountCheck) InsertOpts() river.InsertOpts {
 }
 
 // CanaryTick asks the worker to queue a canary for each provider that is due one
-type CanaryTick struct{}
+type CanaryTick struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (CanaryTick) Kind() string { return "canary_tick" }
@@ -225,7 +289,8 @@ type Probe struct {
 	BenchID  string        `json:"bench_id,omitempty" river:"unique"`
 	Run      int           `json:"run,omitempty" river:"unique"`
 	// AllowPaid lets a benchmark probe start a sandbox that costs a fee
-	AllowPaid bool `json:"allow_paid,omitempty"`
+	AllowPaid bool  `json:"allow_paid,omitempty"`
+	Trace     Trace `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -241,7 +306,9 @@ func (Probe) InsertOpts() river.InsertOpts {
 }
 
 // HealthRollup asks the worker to write every provider's shared health row
-type HealthRollup struct{}
+type HealthRollup struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (HealthRollup) Kind() string { return "health_rollup" }
@@ -256,7 +323,8 @@ type Bench struct {
 	BenchID string `json:"bench_id" river:"unique"`
 	Wave    int    `json:"wave" river:"unique"`
 	// AllowPaid lets the wave start sandboxes that cost a fee
-	AllowPaid bool `json:"allow_paid,omitempty"`
+	AllowPaid bool  `json:"allow_paid,omitempty"`
+	Trace     Trace `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -273,7 +341,9 @@ func (Bench) InsertOpts() river.InsertOpts {
 
 // Retention asks the worker to delete one batch of rows past their age, and to queue itself again
 // while more are left
-type Retention struct{}
+type Retention struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (Retention) Kind() string { return "retention" }
@@ -284,7 +354,9 @@ func (Retention) InsertOpts() river.InsertOpts {
 }
 
 // CapacityRecount asks the worker to recount every provider's capacity slots
-type CapacityRecount struct{}
+type CapacityRecount struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (CapacityRecount) Kind() string { return "capacity_recount" }
@@ -297,6 +369,7 @@ func (CapacityRecount) InsertOpts() river.InsertOpts {
 // ForeignCount asks the worker to count one provider's sandboxes that no known deployment owns
 type ForeignCount struct {
 	Provider string `json:"provider"`
+	Trace    Trace  `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -311,7 +384,9 @@ func (ForeignCount) InsertOpts() river.InsertOpts {
 }
 
 // CostDailyTick asks the worker to queue the daily cost check of each provider that reports usage
-type CostDailyTick struct{}
+type CostDailyTick struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (CostDailyTick) Kind() string { return "cost_daily_tick" }
@@ -326,7 +401,8 @@ func (CostDailyTick) InsertOpts() river.InsertOpts {
 type CostDaily struct {
 	Provider string `json:"provider"`
 	// Day is the UTC date as 2006-01-02
-	Day string `json:"day"`
+	Day   string `json:"day"`
+	Trace Trace  `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -338,7 +414,9 @@ func (CostDaily) InsertOpts() river.InsertOpts {
 }
 
 // PoolTick asks the worker to size every pool, fill its deficit and retire what has aged
-type PoolTick struct{}
+type PoolTick struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (PoolTick) Kind() string { return "pool_tick" }
@@ -351,6 +429,7 @@ func (PoolTick) InsertOpts() river.InsertOpts {
 // PoolFill asks the worker to create, boot and park one pool member
 type PoolFill struct {
 	Member uuid.UUID `json:"member"`
+	Trace  Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -368,6 +447,7 @@ func (PoolFill) InsertOpts() river.InsertOpts {
 type PoolRetire struct {
 	Member uuid.UUID `json:"member" river:"unique"`
 	Reason string    `json:"reason"`
+	Trace  Trace     `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -384,6 +464,7 @@ func (PoolRetire) InsertOpts() river.InsertOpts {
 // PoolEnsure asks the worker to create or size the provider-kept pools of one provider
 type PoolEnsure struct {
 	Provider string `json:"provider" river:"unique"`
+	Trace    Trace  `json:"trace,omitzero"`
 }
 
 // Kind returns the River job kind
@@ -399,7 +480,9 @@ func (PoolEnsure) InsertOpts() river.InsertOpts {
 
 // ReserveWatch asks the worker to lapse and fail reservations, retire the members left without
 // one and set or clear the brake
-type ReserveWatch struct{}
+type ReserveWatch struct {
+	Trace Trace `json:"trace,omitzero"`
+}
 
 // Kind returns the River job kind
 func (ReserveWatch) Kind() string { return "reserve_watch" }

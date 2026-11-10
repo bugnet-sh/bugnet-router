@@ -139,7 +139,7 @@ func providerKept(reg *provider.Registry, name string) bool {
 	if !ok {
 		return false
 	}
-	_, claims := prov.(provider.PoolClaimer)
+	_, claims := provider.As[provider.PoolClaimer](prov)
 	return claims
 }
 
@@ -187,8 +187,8 @@ func check(reg *provider.Registry, c Config) error {
 	if !ok {
 		return fmt.Errorf("pools: %s is not in providers", c.Provider)
 	}
-	_, parks := prov.(provider.Parker)
-	_, claims := prov.(provider.PoolClaimer)
+	_, parks := provider.As[provider.Parker](prov)
+	_, claims := provider.As[provider.PoolClaimer](prov)
 	if !parks && !claims {
 		return fmt.Errorf("pools: %s keeps no pools, it neither parks sandboxes nor claims them",
 			c.Provider)
@@ -201,7 +201,7 @@ func check(reg *provider.Registry, c Config) error {
 
 // sizeOf finds the size of a provider by name
 func sizeOf(prov provider.Provider, name string) (provider.Size, bool) {
-	sz, ok := prov.(provider.Sizer)
+	sz, ok := provider.As[provider.Sizer](prov)
 	if !ok {
 		return provider.Size{}, false
 	}
@@ -456,7 +456,7 @@ func (m *Manager) inspect(
 		m.d.Log.Warn("pool member inspection failed", "member", pick.ID, "err", err)
 		return
 	}
-	_, parks := prov.(provider.Parker)
+	_, parks := provider.As[provider.Parker](prov)
 	switch {
 	case st.State == provider.StateGone, st.State == provider.StateFailed,
 		st.State == provider.StateStopped && !parks && st.Reason != "":
@@ -569,7 +569,7 @@ func (m *Manager) Fill(ctx context.Context, id uuid.UUID) error {
 		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
 	}
-	if pk, ok := prov.(provider.Parker); ok {
+	if pk, ok := provider.As[provider.Parker](prov); ok {
 		if err := pk.Park(ctx, ref); err != nil {
 			m.failFillAfter(ctx, mem, &smp, size, ref, fmt.Errorf("park: %w", err))
 			return nil
@@ -739,7 +739,7 @@ func (m *Manager) ensure(ctx context.Context, c Config, target int) error {
 	if !ok {
 		return fmt.Errorf("pool %s %s is on a provider that is not configured", c.Provider, c.Size)
 	}
-	claimer, ok := prov.(provider.PoolClaimer)
+	claimer, ok := provider.As[provider.PoolClaimer](prov)
 	if !ok {
 		return nil
 	}

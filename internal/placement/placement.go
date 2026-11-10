@@ -115,7 +115,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		hourly := p.HourlyCostMicros(size)
 		cost := costMicros(hourly, billed, p.BillingIncrement())
 		var fee int64
-		if sc, ok := p.(provider.StartCoster); ok {
+		if sc, ok := provider.As[provider.StartCoster](p); ok {
 			var ok bool
 			if fee, ok = sc.StartCostMicros(size); !ok {
 				continue

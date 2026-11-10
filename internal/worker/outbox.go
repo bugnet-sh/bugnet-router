@@ -16,9 +16,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/carrier"
 )
 
 const (
@@ -91,11 +95,28 @@ func (w *Worker) deliver(ctx context.Context, ts *store.Store) (delivery, error)
 		return delivery{}, err
 	}
 	ev := due[0]
-	d := delivery{ev: &ev, err: w.post(ctx, ev)}
+	d := delivery{ev: &ev, err: w.postTraced(ctx, ev)}
 	if d.err == nil {
 		return d, ts.MarkOutboxDelivered(ctx, ev.ID)
 	}
 	return d, ts.MarkOutboxFailed(ctx, ev.ID, d.err.Error(), w.now().Add(backoff(ev.Attempts)))
+}
+
+// postTraced posts ev inside outbox.deliver, a child of the context stored on its row, and a row
+// without one makes no span
+func (w *Worker) postTraced(ctx context.Context, ev store.OutboxEvent) error {
+	sctx, linked := w.tel.Continue(ctx, ev.Traceparent, ev.Tracestate)
+	if !linked {
+		return w.post(ctx, ev)
+	}
+	sctx, span := telemetry.Child(sctx, w.tr, "outbox.deliver",
+		attr.EventType(ev.EventType), attr.Attempt(ev.Attempts+1))
+	err := w.post(sctx, ev)
+	if err != nil {
+		telemetry.Fail(span, "delivery_failed")
+	}
+	span.End()
+	return err
 }
 
 // backoff waits 2^n seconds after the nth earlier failure, at most maxBackoff
@@ -129,6 +150,12 @@ func (w *Worker) post(ctx context.Context, ev store.OutboxEvent) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Bugnet-Event-Id", ev.ID.String())
+	if parent, state := carrier.Carrier(ctx); parent != "" {
+		req.Header.Set("traceparent", parent)
+		if state != "" {
+			req.Header.Set("tracestate", state)
+		}
+	}
 	req.Header.Set("X-Bugnet-Signature",
 		base64.StdEncoding.EncodeToString(ed25519.Sign(w.d.SigningKey, raw)))
 	resp, err := w.http.Do(req)
@@ -138,6 +165,7 @@ func (w *Worker) post(ctx context.Context, ev store.OutboxEvent) error {
 	defer func() { _ = resp.Body.Close() }()
 	// Reading a bounded rest of the answer lets the connection be reused
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, drainedBytes))
+	trace.SpanFromContext(ctx).SetAttributes(attr.HTTPStatus(resp.StatusCode))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}

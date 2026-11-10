@@ -70,6 +70,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/valkey-io/valkey-go"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -87,6 +88,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
@@ -222,11 +225,14 @@ type Deps struct {
 	ReserveShare float64
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
+	// Telemetry makes the saga's spans, telemetry.Off when nil
+	Telemetry *telemetry.Telemetry
 }
 
 // Saga runs placements from order to teardown
 type Saga struct {
 	d        Deps
+	tr       trace.Tracer
 	wg       sync.WaitGroup
 	destroys singleflight.Group // keyed by placement, so racing terminations share one destroy
 	gates    singleflight.Group // keyed by placement, so racing gate openings share one run
@@ -264,6 +270,9 @@ func New(deps Deps) *Saga {
 	if deps.DeploymentID == "" {
 		deps.DeploymentID = defaultDeployment
 	}
+	if deps.Telemetry == nil {
+		deps.Telemetry = telemetry.Off()
+	}
 	deps.PoolRoom = cmp.Or(deps.PoolRoom, time.Hour)
 	if deps.Reserve.Hold == 0 {
 		deps.Reserve = config.DefaultReserve()
@@ -274,7 +283,7 @@ func New(deps Deps) *Saga {
 	w := deps.Wallets.OrDefaults()
 	deps.Abuse = deps.Abuse.OrDefaults()
 	s := &Saga{
-		d: deps, w: w,
+		d: deps, w: w, tr: deps.Telemetry.Tracer("bugnet-router/saga"),
 		meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget).
 			WithWalletCap(w.BytesPerDay),
 		guard:  wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
@@ -364,8 +373,12 @@ func (s *Saga) Create(
 		return store.Placement{}, "", fmt.Errorf(
 			"%w: order %s belongs to another placement", ErrBadToken, c.OrderID)
 	}
+	var root trace.Span
 	if rec.created {
+		ctx, root = s.d.Telemetry.StartOrderRoot(ctx, p)
 		s.sessionStarted(ctx, p, pkg, c)
+	} else {
+		ctx = s.d.Telemetry.JoinOrder(ctx, p)
 	}
 	if p.State == store.PlacementFailed {
 		var refusal error
@@ -385,18 +398,22 @@ func (s *Saga) Create(
 				s.publish(ctx, newEvent(p, p.FailureReason))
 				s.sessionEnded(ctx, p.ID)
 			}
+			endRoot(root, p)
 			return p, h, refusal
 		}
 	}
 	if rec.bound != nil {
 		s.afterBind(ctx, rec.bound, p, pkg, arrived)
+		endRoot(root, p)
 		return p, h, nil
 	}
 	if rec.created {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.place(context.WithoutCancel(ctx), p, pkg, req, rec.awaiting, arrived)
+			pctx := context.WithoutCancel(ctx)
+			s.place(pctx, p, pkg, req, rec.awaiting, arrived)
+			s.endOrderRoot(pctx, root, p.ID)
 		}()
 	}
 	return p, h, nil
@@ -750,7 +767,7 @@ func (s *Saga) attemptWarm(
 		return outcome{}, false
 	}
 	// A provider that keeps its own pool hands members out by claim, never by a row of ours
-	if cl, ok := c.Provider.(provider.PoolClaimer); ok {
+	if cl, ok := provider.As[provider.PoolClaimer](c.Provider); ok {
 		return s.attemptClaim(ctx, budget, cl, p, pkg, req, c, n)
 	}
 	prov := c.Provider
@@ -815,7 +832,7 @@ func (s *Saga) attemptWarm(
 	smp := s.sampleOf(p, prov, c.Size, started)
 	smp.StartPath, smp.MemberID, smp.SandboxID = store.PathPooled, m.ID, m.ProviderRef.ID
 	ref := *m.ProviderRef
-	if pk, ok := prov.(provider.Parker); ok {
+	if pk, ok := provider.As[provider.Parker](prov); ok {
 		wctx, wcancel := work(budget)
 		err := pk.Unpark(wctx, ref)
 		wcancel()
@@ -914,6 +931,8 @@ func (s *Saga) commitReady(
 	ctx context.Context, p store.Placement, pkg catalog.Package, c placement.Candidate,
 	rec store.Attempt, prep Prepared, mem *store.Member, started time.Time,
 ) outcome {
+	ctx, span := s.span(ctx, "saga.commit_ready")
+	defer span.End()
 	prov := c.Provider
 	ref := prep.Ref
 	readyAt := s.now()
@@ -1036,6 +1055,8 @@ func (s *Saga) readyWrites(
 func (s *Saga) abandon(
 	ctx context.Context, prov provider.Provider, rec store.Attempt, ref *provider.Ref, err error,
 ) {
+	ctx, span := s.span(ctx, "saga.abandon", attr.Reason(errorReason(err)))
+	defer span.End()
 	if rec.MemberID != uuid.Nil {
 		s.retireMember(ctx, rec.MemberID, store.EndFailed, err.Error())
 	} else if ref != nil {
@@ -1103,6 +1124,8 @@ func (s *Saga) fail(
 	ctx context.Context, p store.Placement, reason, detail string, attempted []provider.Provider,
 ) {
 	s.d.Log.Warn("placement failed", "placement", p.ID, "reason", reason, "detail", detail)
+	ctx, span := s.span(ctx, "saga.fail", attr.Reason(reason))
+	defer span.End()
 	var ev Event
 	tctx, cancel := step(ctx)
 	err := s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
@@ -1126,6 +1149,8 @@ func (s *Saga) fail(
 
 // FailStuck fails a placing placement whose saga went away as placing would, else does nothing
 func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error {
+	ctx, span := s.orderSpanByID(ctx, id, "saga.fail_stuck", attr.Reason(reason))
+	defer span.End()
 	var ev Event
 	failed := false
 	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
@@ -1224,6 +1249,12 @@ func (s *Saga) releaseAwaitedTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) er
 func (s *Saga) sweep(
 	ctx context.Context, id uuid.UUID, provs []provider.Provider, keep *provider.Ref,
 ) {
+	ctx, span := s.span(ctx, "saga.sweep")
+	destroyed := 0
+	defer func() {
+		span.SetAttributes(attr.Count(destroyed))
+		span.End()
+	}()
 	for _, prov := range provs {
 		lctx, cancel := step(ctx)
 		owned, err := prov.ListOwned(lctx, s.labels(id))
@@ -1237,6 +1268,7 @@ func (s *Saga) sweep(
 			if keep != nil && prov.Name() == keep.Provider && o.Ref.ID == keep.ID {
 				continue
 			}
+			destroyed++
 			s.destroy(ctx, prov, o.Ref)
 		}
 	}
@@ -1265,6 +1297,10 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if err != nil {
 		return store.Placement{}, err
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
+	ctx, span := s.span(ctx, "saga.extend",
+		attr.ExtendOrderHash(s.d.Telemetry.OrderHash(c.OrderID)), attr.PackageID(pkg.ID))
+	defer span.End()
 	x, err := s.checkExtend(p, pkg, func(p store.Placement) (bool, error) {
 		return s.d.Store.HasExtendOrder(ctx, c.OrderID, p.ID)
 	})
@@ -1553,6 +1589,9 @@ func (s *Saga) Stop(ctx context.Context, h string) (store.Placement, error) {
 	if err != nil {
 		return store.Placement{}, err
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
+	ctx, span := s.orderSpan(ctx, p, "saga.stop", attr.Reason(ReasonStop))
+	defer span.End()
 	reason := func() string { return ReasonStop }
 	return s.terminate(ctx, p, reason, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementTerminating(ctx, p.ID, ReasonStop, s.now())
@@ -1565,6 +1604,8 @@ func (s *Saga) Terminate(ctx context.Context, placementID uuid.UUID, due time.Ti
 	if err != nil {
 		return err
 	}
+	ctx, span := s.orderSpan(ctx, p, "saga.terminate", attr.Reason(ReasonDeadline))
+	defer span.End()
 	reason := func() string { return ReasonDeadline }
 	_, err = s.terminate(ctx, p, reason, func(ctx context.Context) (bool, error) {
 		return s.d.Store.MarkPlacementDue(ctx, p.ID, ReasonDeadline, due, s.now())
@@ -1789,4 +1830,31 @@ func (s *Saga) release(ctx context.Context, id uuid.UUID, attempt int) {
 // step bounds one store or provider call so a stuck dependency cannot hold placing forever
 func step(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, cleanupTimeout)
+}
+
+// endRoot ends the order root with the placement's state and, for a failure, its reason
+func endRoot(root trace.Span, p store.Placement) {
+	if root == nil {
+		return
+	}
+	root.SetAttributes(attr.State(stateOf(p)))
+	if p.FailureReason != "" {
+		root.SetAttributes(attr.Reason(p.FailureReason))
+	}
+	root.End()
+}
+
+// endOrderRoot ends the order root once placing is over, with the state it ended in
+func (s *Saga) endOrderRoot(ctx context.Context, root trace.Span, id uuid.UUID) {
+	if root == nil {
+		return
+	}
+	cctx, cancel := step(ctx)
+	defer cancel()
+	cur, err := s.d.Store.PlacementByID(cctx, id)
+	if err != nil {
+		root.End()
+		return
+	}
+	endRoot(root, cur)
 }
