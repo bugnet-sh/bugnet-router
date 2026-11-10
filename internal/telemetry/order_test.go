@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry/telemetrytest"
 )
@@ -104,4 +105,13 @@ func handleHash(h string) string {
 		out = append(out, digits[c>>4], digits[c&15])
 	}
 	return string(out)
+}
+
+func TestPlacementWithoutHandleHasNoOrder(t *testing.T) {
+	tel := telemetrytest.New(t, "router-api", 1, nil)
+	eq(t, tel.Order(nil).IsValid(), false)
+	_, span := tel.InOrder(t.Context(), store.Placement{}, "command.takeover")
+	eq(t, span.SpanContext().IsValid(), false)
+	_, root := tel.StartOrderRoot(t.Context(), store.Placement{})
+	eq(t, root.SpanContext().IsValid(), false)
 }

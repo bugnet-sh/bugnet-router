@@ -40,7 +40,7 @@ func orderSampled(tid trace.TraceID, ratio float64) bool {
 // Order returns the remote span context of a placement's order root, sampled by the ratio
 func (t *Telemetry) Order(handleSHA256 []byte) trace.SpanContext {
 	tid, sid := OrderIDs(handleSHA256)
-	if !t.Enabled() || !tid.IsValid() || !sid.IsValid() {
+	if !t.Enabled() || len(handleSHA256) != sha256.Size || !tid.IsValid() || !sid.IsValid() {
 		return trace.SpanContext{}
 	}
 	var flags trace.TraceFlags
@@ -90,7 +90,7 @@ func randomSpanID() trace.SpanID {
 func (t *Telemetry) StartOrderRoot(ctx context.Context, p store.Placement) (
 	context.Context, trace.Span) {
 	tid, sid := OrderIDs(p.HandleSHA256)
-	if !t.Enabled() || !tid.IsValid() || !sid.IsValid() {
+	if !t.Enabled() || len(p.HandleSHA256) != sha256.Size || !tid.IsValid() || !sid.IsValid() {
 		return ctx, trace.SpanFromContext(context.Background())
 	}
 	attrs := append(t.placementAttrs(p), attr.PackageID(p.PackageID))
