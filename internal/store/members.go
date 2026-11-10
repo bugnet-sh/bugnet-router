@@ -499,3 +499,60 @@ func (s *Store) ReservationKeepsMember(ctx context.Context, member uuid.UUID) (b
 	}
 	return keeps, nil
 }
+
+// BindProvided records the member a provider-kept pool is about to hand a placement, as a bound
+// member of origin provider with its attempt row, in one transaction before the claim is made
+//
+// The slot is the attempt's, since a claim reserves one as a create does, so the row holds none. A
+// retry of the same key finds the row a replica that died left, which settles it.
+func (s *Store) BindProvided(
+	ctx context.Context, provider, size, key string, rec Attempt,
+) (Member, error) {
+	var m Member
+	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := s.Tx(tx)
+		id := uuid.New()
+		rec.MemberID = id
+		err := tx.QueryRow(ctx, `
+			insert into pool_members (id, provider, size_name, origin, state, idempotency_key,
+				placement_id, claimed_at, bound_at)
+			values ($1, $2, $3, 'provider', 'bound', $4, $5, now(), now())
+			on conflict (idempotency_key) do update set placement_id = excluded.placement_id
+			returning id`, id, provider, size, key, rec.PlacementID).Scan(&rec.MemberID)
+		if err != nil {
+			return fmt.Errorf("record a provided member: %w", err)
+		}
+		if err := ts.RecordAttempt(ctx, rec); err != nil {
+			return err
+		}
+		m, err = ts.MemberByID(ctx, rec.MemberID)
+		return err
+	})
+	return m, err
+}
+
+// MarkMemberClaimed records the sandbox a provider-kept pool handed out, its credentials sealed
+// under the placement that took it, so a crash leaves its id behind
+func (s *Store) MarkMemberClaimed(
+	ctx context.Context, id, placement uuid.UUID, ref provider.Ref, createdAt time.Time,
+) error {
+	sealed, err := s.sealRef(placement, ref)
+	if err != nil {
+		return fmt.Errorf("mark member claimed %s: %w", id, err)
+	}
+	raw, err := json.Marshal(sealed)
+	if err != nil {
+		return fmt.Errorf("encode member ref: %w", err)
+	}
+	tag, err := s.q.Exec(ctx, `
+		update pool_members set provider_ref = $2, sandbox_created_at = $3
+		where id = $1 and state = 'bound' and placement_id = $4`, id, raw, utc(createdAt),
+		placement)
+	if err != nil {
+		return fmt.Errorf("mark member claimed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("mark member claimed %s: %w", id, ErrStateConflict)
+	}
+	return nil
+}

@@ -27,6 +27,19 @@ func (s *Store) ReserveCapacity(ctx context.Context, provider string, margin int
 	return true, nil
 }
 
+// HasCapacity reports whether a take on provider would find a free slot now, which writes nothing
+func (s *Store) HasCapacity(ctx context.Context, provider string) (bool, error) {
+	var ok bool
+	err := s.q.QueryRow(ctx, `
+		select coalesce((select in_use + external_in_use + $2 < max_concurrent
+			from provider_capacity where provider = $1), true)`,
+		provider, s.reserveSlots).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("read capacity: %w", err)
+	}
+	return ok, nil
+}
+
 // ReleaseCapacity frees one slot on provider and never goes below zero
 func (s *Store) ReleaseCapacity(ctx context.Context, provider string) error {
 	_, err := s.q.Exec(ctx, `

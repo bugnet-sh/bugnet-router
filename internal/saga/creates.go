@@ -21,7 +21,12 @@ const (
 
 // createBucket is the provider's create bucket, false when its creates_per_second is 0
 func (s *Saga) createBucket(name string) (ratelimit.Bucket, bool) {
-	rate := s.d.CreatesPerSecond[name]
+	return createBucketOf(s.d.CreatesPerSecond, name)
+}
+
+// createBucketOf is the create bucket of name among the rates, false for a rate of 0 or none
+func createBucketOf(rates map[string]int, name string) (ratelimit.Bucket, bool) {
+	rate := rates[name]
 	if rate <= 0 {
 		return ratelimit.Bucket{}, false
 	}
@@ -59,7 +64,9 @@ func (s *Saga) takeCreate(ctx context.Context, name string) bool {
 	}
 }
 
-func (s *Saga) pauseKey(name string) string { return s.d.Prefix + "pause:" + name + ":create" }
+func (s *Saga) pauseKey(name string) string { return pauseKeyOf(s.d.Prefix, name) }
+
+func pauseKeyOf(prefix, name string) string { return prefix + "pause:" + name + ":create" }
 
 // createsPaused reports whether name told us to wait before creating, a failed read meaning no
 func (s *Saga) createsPaused(ctx context.Context, name string) bool {
