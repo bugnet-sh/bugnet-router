@@ -28,7 +28,7 @@ func (rw *recountWorker) Work(ctx context.Context, _ *river.Job[jobargs.Capacity
 	return nil
 }
 
-// recount sets each provider's in_use to the slots its placements and probes hold (CP 10.5)
+// recount sets each provider's in_use to the slots its four holders hold (CP 10.5, CP 18.8)
 func (w *Worker) recount(ctx context.Context) {
 	names, err := w.store.CapacityProviders(ctx)
 	if err != nil {

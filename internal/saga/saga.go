@@ -493,7 +493,7 @@ func (s *Saga) place(
 			reason, detail = reasonRateLimited, name+" asked for its creates to wait"
 			continue
 		}
-		reserved, err := s.reserve(ctx, p.ID, name)
+		reserved, err := s.reserve(ctx, p.ID, name, n)
 		if err != nil {
 			reason, detail = reasonInternal, fmt.Sprintf("reserve on %s: %v", name, err)
 			break
@@ -553,10 +553,12 @@ func (s *Saga) heartbeat(ctx context.Context, id uuid.UUID) (stop func()) {
 	}
 }
 
-func (s *Saga) reserve(ctx context.Context, id uuid.UUID, providerName string) (bool, error) {
+func (s *Saga) reserve(
+	ctx context.Context, id uuid.UUID, providerName string, attempt int,
+) (bool, error) {
 	ctx, cancel := step(ctx)
 	defer cancel()
-	return s.d.Store.ReservePlacementCapacity(ctx, id, providerName)
+	return s.d.Store.ReservePlacementCapacity(ctx, id, providerName, attempt)
 }
 
 // attempt holds a capacity slot on c's provider and gives it back unless the sandbox is ready
@@ -567,7 +569,7 @@ func (s *Saga) attempt(
 	prov := c.Provider
 	name := prov.Name()
 	if !s.takeCreate(ctx, name) {
-		s.release(ctx, p.ID)
+		s.release(ctx, p.ID, n)
 		return outcome{
 			failOver: true, reason: reasonRateLimited, detail: "no create token for " + name,
 		}
@@ -584,7 +586,7 @@ func (s *Saga) attempt(
 		StartFeeMicros: fee,
 	}
 	if err := s.recordAttempt(ctx, rec); err != nil {
-		s.release(ctx, p.ID)
+		s.release(ctx, p.ID, n)
 		return outcome{reason: reasonInternal, detail: err.Error()}
 	}
 	started := s.now()
@@ -770,7 +772,7 @@ func (s *Saga) abandon(
 	if err := s.recordAttempt(ctx, rec); err != nil {
 		s.d.Log.Error("record failed attempt", "placement", rec.PlacementID, "err", err)
 	}
-	s.release(ctx, rec.PlacementID)
+	s.release(ctx, rec.PlacementID, rec.Attempt)
 }
 
 func (s *Saga) recordAttempt(ctx context.Context, rec store.Attempt) error {
@@ -833,6 +835,9 @@ func (s *Saga) FailStuck(ctx context.Context, id uuid.UUID, reason string) error
 		}
 		// The slot goes with the failure, so it cannot leak when the cleanup below never runs
 		if _, err := ts.ReleasePlacementCapacity(ctx, id); err != nil {
+			return err
+		}
+		if _, err := ts.ReleaseAttemptSlots(ctx, id); err != nil {
 			return err
 		}
 		failed = true
@@ -1427,11 +1432,11 @@ func (s *Saga) destroy(ctx context.Context, prov provider.Provider, ref provider
 }
 
 // release frees the slot the placement holds, if any, so a repeat or a racing caller frees nothing
-func (s *Saga) release(ctx context.Context, id uuid.UUID) {
+func (s *Saga) release(ctx context.Context, id uuid.UUID, attempt int) {
 	ctx, cancel := step(ctx)
 	defer cancel()
-	if _, err := s.d.Store.ReleasePlacementCapacity(ctx, id); err != nil {
-		s.d.Log.Error("release capacity", "placement", id, "err", err)
+	if _, err := s.d.Store.ReleaseAttemptSlot(ctx, id, attempt); err != nil {
+		s.d.Log.Error("release capacity", "placement", id, "attempt", attempt, "err", err)
 	}
 }
 

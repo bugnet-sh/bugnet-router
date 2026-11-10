@@ -485,7 +485,7 @@ func (e *env) readyPlacement(
 	ctx := t.Context()
 	p := e.placing(t)
 	ref := e.sandbox(t, prov, e.labelsFor(p.ID))
-	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, prov.Name()); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, prov.Name(), 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, readyAt,
@@ -932,7 +932,7 @@ func TestWatchReleasesSlotsOfEndedPlacements(t *testing.T) {
 	e := newEnv(t, options{})
 	ctx := t.Context()
 	p := e.placing(t)
-	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, "local"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, p.ID, "local", 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	// The release after the failure never ran, so the slot outlived the placement
@@ -1034,7 +1034,7 @@ func TestSweepFailsStuckPlacing(t *testing.T) {
 	young := e.placing(t)
 
 	// The stale placement's saga went away holding a slot and a sandbox for its attempt
-	if ok, err := e.store.ReservePlacementCapacity(ctx, stale.ID, "local"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, stale.ID, "local", 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.RecordAttempt(ctx, store.Attempt{

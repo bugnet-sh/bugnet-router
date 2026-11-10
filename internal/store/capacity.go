@@ -53,17 +53,18 @@ func (s *Store) SetCapacity(ctx context.Context, provider string, limit int) err
 // errFull rolls back a placement's claim on a provider that has no free slot
 var errFull = errors.New("store: provider is full")
 
-// ReservePlacementCapacity takes a slot on provider for a placing placement that holds none
+// ReservePlacementCapacity takes a slot on provider for a placing placement that holds none and
+// names attempt as the one whose slot the placement row holds
 func (s *Store) ReservePlacementCapacity(
-	ctx context.Context, id uuid.UUID, provider string,
+	ctx context.Context, id uuid.UUID, provider string, attempt int,
 ) (bool, error) {
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.Tx(tx)
 		// The placement row is locked before the capacity row, in the order a release takes them
 		err := ts.transition(ctx, id, "hold capacity", `
-			update placements set capacity_provider = $2
+			update placements set capacity_provider = $2, capacity_attempt = $4
 			where id = $1 and state = $3 and capacity_provider is null`,
-			provider, PlacementPlacing)
+			provider, PlacementPlacing, attempt)
 		if err != nil {
 			return err
 		}
@@ -93,7 +94,7 @@ func (s *Store) ReleasePlacementCapacity(ctx context.Context, id uuid.UUID) (boo
 				select id, capacity_provider from placements
 				where id = $1 and capacity_provider is not null
 				for update)
-			update placements p set capacity_provider = null from held
+			update placements p set capacity_provider = null, capacity_attempt = null from held
 			where p.id = held.id
 			returning held.capacity_provider`, id).Scan(&provider)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -111,31 +112,34 @@ func (s *Store) ReleasePlacementCapacity(ctx context.Context, id uuid.UUID) (boo
 	return released, nil
 }
 
-// ReleaseEndedCapacity frees every slot still held by a failed or terminated placement
+// ReleaseEndedCapacity frees every slot still held by an ended placement, a failed attempt or a
+// gone pool member, whichever row holds it
 func (s *Store) ReleaseEndedCapacity(ctx context.Context) (int, error) {
 	released := 0
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			with held as (
-				select id, capacity_provider from placements
-				where state in ($1, $2) and capacity_provider is not null
-				for update skip locked)
-			update placements p set capacity_provider = null from held
-			where p.id = held.id
-			returning held.capacity_provider`, PlacementFailed, PlacementTerminated)
-		if err != nil {
-			return fmt.Errorf("clear ended capacity: %w", err)
-		}
-		providers, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return fmt.Errorf("clear ended capacity: %w", err)
-		}
-		for _, provider := range providers {
-			if err := s.Tx(tx).ReleaseCapacity(ctx, provider); err != nil {
-				return err
+		for _, c := range []struct {
+			query string
+			args  []any
+		}{
+			{endedPlacementSlots, []any{PlacementFailed, PlacementTerminated}},
+			{endedAttemptSlots, []any{PlacementFailed, PlacementTerminated, attemptStateFailed}},
+			{goneMemberSlots, nil},
+		} {
+			rows, err := tx.Query(ctx, c.query, c.args...)
+			if err != nil {
+				return fmt.Errorf("clear ended capacity: %w", err)
 			}
+			providers, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return fmt.Errorf("clear ended capacity: %w", err)
+			}
+			for _, provider := range providers {
+				if err := s.Tx(tx).ReleaseCapacity(ctx, provider); err != nil {
+					return err
+				}
+			}
+			released += len(providers)
 		}
-		released = len(providers)
 		return nil
 	})
 	if err != nil {
@@ -143,3 +147,35 @@ func (s *Store) ReleaseEndedCapacity(ctx context.Context) (int, error) {
 	}
 	return released, nil
 }
+
+// attemptStateFailed is the state a saga gives an attempt that did not produce a sandbox
+const attemptStateFailed = "failed"
+
+// Each statement clears one kind of holder and returns the providers whose slots it held
+const (
+	endedPlacementSlots = `
+		with held as (
+			select id, capacity_provider from placements
+			where state in ($1, $2) and capacity_provider is not null
+			for update skip locked)
+		update placements p set capacity_provider = null, capacity_attempt = null from held
+		where p.id = held.id
+		returning held.capacity_provider`
+	endedAttemptSlots = `
+		with held as (
+			select a.placement_id, a.attempt, a.slot_provider
+			from placement_attempts a join placements p on p.id = a.placement_id
+			where a.slot_provider is not null and (p.state in ($1, $2) or a.state = $3)
+			for update of a skip locked)
+		update placement_attempts a set slot_provider = null from held
+		where a.placement_id = held.placement_id and a.attempt = held.attempt
+		returning held.slot_provider`
+	goneMemberSlots = `
+		with held as (
+			select id, provider from pool_members
+			where state = 'gone' and holds_slot
+			for update skip locked)
+		update pool_members m set holds_slot = false from held
+		where m.id = held.id
+		returning held.provider`
+)

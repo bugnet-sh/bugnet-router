@@ -1219,7 +1219,7 @@ func TestFailStuckFailsOnlyPlacing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Its saga failed one attempt on a and went away while creating on b
-	if ok, err := e.store.ReservePlacementCapacity(ctx, stuck.ID, "b"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, stuck.ID, "b", 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	for _, rec := range []store.Attempt{
@@ -1298,7 +1298,7 @@ func TestFailStuckRacingPlacingReleasesOneSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := e.store.ReservePlacementCapacity(ctx, other.ID, "a"); err != nil || !ok {
+	if ok, err := e.store.ReservePlacementCapacity(ctx, other.ID, "a", 1); err != nil || !ok {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	p, _, err := e.saga.Create(ctx, e.startToken(t, "order-1"), placement.Requirements{})
@@ -2570,4 +2570,61 @@ func TestListExtensionsHidesAStartPackageItsExtensionRepeats(t *testing.T) {
 	if got, want := e.listed(t, h), []string{"small-10m-more ok"}; !slices.Equal(got, want) {
 		t.Fatalf("listed %q, want %q", got, want)
 	}
+}
+
+// agree fails unless in_use on name equals what the four holders count
+func (e *env) agree(t *testing.T, name string, want int) {
+	t.Helper()
+	before, after, err := e.store.RecountCapacity(t.Context(), name, time.Hour, time.Now())
+	if err != nil || before != want || after != want {
+		t.Fatalf("%s: in_use %d and recount %d, %v, want both %d", name, before, after, err, want)
+	}
+}
+
+func TestAbandonReleasesByAttempt(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a", CreateHook: failWith(provider.CodeCapacity, true)})
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnv(t, a, b)
+	p, _ := e.placeReady(t, "order-1")
+	eq(t, p.Provider, "b")
+	e.agree(t, "a", 0)
+	e.agree(t, "b", 1)
+	var attempt *int
+	err := e.pool.QueryRow(t.Context(),
+		`select capacity_attempt from placements where id = $1`, p.ID).Scan(&attempt)
+	if err != nil || attempt == nil || *attempt != 2 {
+		t.Fatalf("the placement's slot names attempt %v, %v, want 2", attempt, err)
+	}
+}
+
+func TestFailStuckFreesAttemptSlots(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	b := newLocal(t, local.Options{Name: "b"})
+	e := newEnv(t, a, b)
+	ctx := t.Context()
+	stuck, _, err := e.store.CreatePlacement(ctx, store.NewPlacement{
+		HandleSHA256: []byte("stuck-handle"), OrderID: "order-2", PackageID: smallPkg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.store.ReservePlacementCapacity(ctx, stuck.ID, "b", 1); err != nil || !ok {
+		t.Fatalf("reserve: %v %v", ok, err)
+	}
+	// A second attempt of the placement holds its own slot on a
+	if ok, err := e.store.ReserveCapacity(ctx, "a", 0); err != nil || !ok {
+		t.Fatalf("reserve on a: %v %v", ok, err)
+	}
+	_, err = e.pool.Exec(ctx, `
+		insert into placement_attempts (placement_id, attempt, provider, state, slot_provider)
+		values ($1, 2, 'a', 'creating', 'a')`, stuck.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.saga.FailStuck(ctx, stuck.ID, saga.ReasonPlacingStalled); err != nil {
+		t.Fatalf("fail stuck: %v", err)
+	}
+	e.saga.Wait()
+	e.agree(t, "a", 0)
+	e.agree(t, "b", 0)
 }

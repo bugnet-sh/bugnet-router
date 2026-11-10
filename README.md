@@ -2077,9 +2077,23 @@ registered, `hooks.providers` may list `e2b` and `boat`.
 `/monitor` adds `provider X: N sandboxes killed that no router asked for` and `provider X: N
 placements ended as provider_failed in the last hour` over `abuse.lost_alert_per_hour`.
 
-`capacity_recount` runs every `recount_every` and sets each provider's `in_use` to its placements
-and probe slots in one transaction of three statements, the capacity row locked first, so a racing
-reserve stays exact. A probe slot older than 10 minutes goes. A change logs a warning.
+Every slot has exactly one holder row, and the transaction that moves `in_use` also writes that
+row.
+
+| Holder | Column | Freed by |
+|---|---|---|
+| A placement | `placements.capacity_provider`, with `capacity_attempt` naming the attempt | Its end, or `ReleaseAttemptSlot` |
+| A parallel attempt | `placement_attempts.slot_provider` | `ReleaseAttemptSlot`, or its win |
+| A pool member | `pool_members.holds_slot` | `gone`, or a bind or claim |
+| A probe | `probe_slots` | The probe's end |
+
+A null `capacity_attempt` means attempt 1. Every release names its attempt, so a loser's release
+never frees the winner's slot. `ReleaseEndedCapacity` also frees attempt slots of ended
+placements and failed attempts, and member slots still set on `gone` rows.
+
+`capacity_recount` runs every `recount_every` and sets each provider's `in_use` to the rows of
+those four holders in one transaction of three statements, the capacity row locked first, so a
+racing reserve stays exact. A probe slot older than 10 minutes goes. A change logs a warning.
 
 `foreign_count{provider}` runs every `foreign_every`. It lists the provider's sandboxes labelled
 `bugnet=1`, at most 200 services a run with its place in Valkey (`foreign:cursor:<provider>`), and
