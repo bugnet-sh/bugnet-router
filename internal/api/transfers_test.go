@@ -122,6 +122,39 @@ func (e *env) read(
 	return msgs, stream.Err()
 }
 
+// readHeld reads a claimed download to the end with hold_end set
+func (e *env) readHeld(
+	t *testing.T, o *routerv1.OpenTransferResponse, offset uint64,
+) []*routerv1.ReadTransferResponse {
+	t.Helper()
+	stream, err := e.edge(t).ReadTransfer(timeout(t), connect.NewRequest(
+		&routerv1.ReadTransferRequest{
+			TransferId: o.GetTransferId(), Lease: o.GetLease(), Offset: offset, HoldEnd: true,
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	var msgs []*routerv1.ReadTransferResponse
+	for stream.Receive() {
+		msgs = append(msgs, proto.Clone(stream.Msg()).(*routerv1.ReadTransferResponse))
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return msgs
+}
+
+func (e *env) endTransfer(
+	t *testing.T, o *routerv1.OpenTransferResponse, lease string, delivered bool,
+) error {
+	t.Helper()
+	_, err := e.edge(t).EndTransfer(t.Context(), connect.NewRequest(&routerv1.EndTransferRequest{
+		TransferId: o.GetTransferId(), Lease: lease, Delivered: delivered,
+	}))
+	return err
+}
+
 func joined(msgs []*routerv1.ReadTransferResponse) []byte {
 	var b []byte
 	for _, m := range msgs {
@@ -1305,6 +1338,31 @@ func TestARangeShortOfTheEndLeavesTheURLOpen(t *testing.T) {
 	eq(t, string(joined(msgs)), "6789")
 	_, err = e.openWith(t, tokenOf(t, tail), fromSandbox, false)
 	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+}
+
+func TestAHeldDownloadEndsOnlyWhenTheEdgeSaysSo(t *testing.T) {
+	e := newEnv(t, options{opsBurst: 40})
+	h, _ := e.readyPlacement(t)
+	e.put(t, h, "/root/d", "0123456789")
+	m := e.mintOK(t, download(h, "/root/d"))
+	o := e.open(t, m, fromSandbox)
+	eq(t, string(joined(e.readHeld(t, o, 0))), "0123456789")
+	eq(t, e.field(t, o.GetTransferId(), "state"), "active")
+	eq(t, e.field(t, o.GetTransferId(), "lease"), o.GetLease())
+	mustCode(t, e.endTransfer(t, o, "wrong", true), connect.CodeFailedPrecondition, "IN_USE")
+	eq(t, e.field(t, o.GetTransferId(), "state"), "active")
+	eq(t, e.endTransfer(t, o, o.GetLease(), true), nil)
+	eq(t, e.field(t, o.GetTransferId(), "state"), "done")
+	_, err := e.openWith(t, tokenOf(t, m), fromSandbox, false)
+	mustCode(t, err, connect.CodeFailedPrecondition, "TOKEN_USED")
+
+	m = e.mintOK(t, download(h, "/root/d"))
+	o = e.open(t, m, fromSandbox)
+	e.readHeld(t, o, 0)
+	eq(t, e.endTransfer(t, o, o.GetLease(), false), nil)
+	eq(t, e.field(t, o.GetTransferId(), "state"), "issued")
+	msgs := e.readHeld(t, e.open(t, m, fromSandbox), 6)
+	eq(t, string(joined(msgs)), "6789")
 }
 
 func TestOpenTransferChecksTheClaimBeforeTheFile(t *testing.T) {
