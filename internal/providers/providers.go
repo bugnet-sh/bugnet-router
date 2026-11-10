@@ -188,7 +188,8 @@ func koyebOptions(cfg config.Config, token string) koyeb.Options {
 	return koyeb.Options{
 		APIToken: token, Region: cfg.Koyeb.Region, InstanceTypeBySize: cfg.Koyeb.InstanceTypes,
 		PartBytes: cfg.Transfers.KoyebPart, BufferTotal: cfg.Transfers.KoyebBufferTotal,
-		OrganizationID: cfg.Koyeb.OrganizationID,
+		OrganizationID:       cfg.Koyeb.OrganizationID,
+		PoolIdleHourlyMicros: cfg.Koyeb.PoolIdleHourlyMicros,
 	}
 }
 
