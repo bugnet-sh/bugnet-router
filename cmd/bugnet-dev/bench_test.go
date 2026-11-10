@@ -223,7 +223,7 @@ func TestBenchRouterTimesOrdersAndStopsThem(t *testing.T) {
 	}
 	eq(t, r.created.Load(), int32(6))
 	eq(t, r.stopped.Load(), int32(6))
-	for _, want := range []string{"start_path cold", "6 runs, concurrency 3", "ok 5   failed 1",
+	for _, want := range []string{"start_path plain", "6 runs, concurrency 3", "ok 5   failed 1",
 		"total"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table lacks %q:\n%s", want, out)
@@ -239,7 +239,7 @@ func TestBenchRouterTimesOrdersAndStopsThem(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("json %q: %v", out, err)
 	}
-	eq(t, parsed.StartPath, "cold")
+	eq(t, parsed.StartPath, "plain")
 	eq(t, len(parsed.Samples), 2)
 }
 

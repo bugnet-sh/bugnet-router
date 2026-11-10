@@ -59,10 +59,15 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   pubkey --event                         print the public half of BUGNET_EVENT_SIGNING_KEY
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
         [--priv K] [--payer A] [--fee-payer A] [--tx S] [--allowance-micros N]
-                                         print a signed order token
+        [--no-issued-at]                 print a signed order token, with issued_at set to now
+                                         unless --no-issued-at
   create --package P [--order O] [--token T] [--payer A] [--fee-payer A] [--tx S]
-         [--allowance-micros N] [--estimate-id ID]
-                                         create a placement and wait until it is ready
+         [--allowance-micros N] [--estimate-id ID] [--quote Q] [--no-issued-at]
+                                         create a placement and wait until it is ready, the
+                                         token signed with issued_at unless --no-issued-at
+  reserve --quote Q --package P [--ssh] [--preview] [--secrets] [--client-ip A]
+                                         hold a prepared sandbox for the quote and print what
+                                         Reserve answered, then create --quote Q binds it
   fetch-source --handle H                put the placement's GitHub source in its sandbox and
                                          print the bootstrap state
   get --handle H                         print a placement
@@ -136,9 +141,12 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
         [--provider P] [--json]
                                          print the start timings of a benchmark or a window,
                                          one table per provider, size and kind
-  bench router --package P [--runs 20] [--concurrency 2] [--json]
-                                         time orders from CreatePlacement to the first command
-                                         against a development router, with dev order tokens
+  bench router --package P [--runs 20] [--concurrency 2] [--path plain|reserved]
+        [--pay-delay 8s] [--json]
+                                         time orders from payment to the first command against a
+                                         development router, with dev order tokens, one table per
+                                         start path, reserved calling Reserve and waiting the
+                                         pay delay before each order
   simulate [--since 7d] [--budget-seconds 30[,N...]] [--providers A,B] [--orders 1000]
         [--json]
                                          replay the recorded start samples through the saga's
@@ -234,7 +242,8 @@ func run(
 	c := &cli{ctx: ctx, stdout: stdout, stderr: stderr, getenv: getenv}
 	commands := map[string]func([]string) error{
 		"keys": c.keys, "pubkey": c.pubkey, "token": c.token, "create": c.create, "get": c.get,
-		"extend": c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
+		"reserve": c.reserve,
+		"extend":  c.extend, "check-extend": c.checkExtend, "extensions": c.extensions,
 		"stop": c.stop, "exec": c.exec, "watch": c.watch, "deploy": c.deploy,
 		"transfer": c.transfer, "owned": c.owned, "preview": c.preview,
 		"revoke-preview": c.revokePreview, "secret": c.secret, "ssh-key": c.sshKey,
@@ -433,6 +442,8 @@ type order struct {
 	feePayer  string
 	tx        string
 	allowance int64
+	// noIssuedAt leaves the issued_at claim out, which Payments adds after settlement
+	noIssuedAt bool
 }
 
 // paymentFlags adds --payer, --fee-payer, --tx and --allowance-micros to fs
@@ -441,6 +452,7 @@ func paymentFlags(fs *flag.FlagSet, o *order) {
 	fs.StringVar(&o.feePayer, "fee-payer", "", "base58 address of the facilitator's fee payer")
 	fs.StringVar(&o.tx, "tx", "", "base58 signature of the payment's transaction")
 	fs.Int64Var(&o.allowance, "allowance-micros", 0, "x402 allowance inside the amount, start only")
+	fs.BoolVar(&o.noIssuedAt, "no-issued-at", false, "leave the issued_at claim out")
 }
 
 func (c *cli) token(args []string) error {
@@ -486,6 +498,10 @@ func (c *cli) sign(o order) (string, error) {
 	}
 	if claims.OrderID == "" {
 		claims.OrderID = "dev-" + strings.ToLower(rand.Text())
+	}
+	if !o.noIssuedAt {
+		issued := time.Now().UTC()
+		claims.IssuedAt = &issued
 	}
 	switch {
 	case o.kind == ordertoken.KindExtend:
@@ -597,6 +613,7 @@ func (c *cli) create(args []string) error {
 	fs.StringVar(&o.id, "order", "", "order id")
 	given := fs.String("token", "", "order token")
 	estimate := fs.String("estimate-id", "", "estimate id from Estimate")
+	quote := fs.String("quote", "", "quote id Reserve was called with")
 	paymentFlags(fs, &o)
 	if err := parse(fs, args, false); err != nil {
 		return err
@@ -610,7 +627,7 @@ func (c *cli) create(args []string) error {
 		return err
 	}
 	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
-		OrderToken: token, EstimateId: *estimate,
+		OrderToken: token, EstimateId: *estimate, QuoteId: *quote,
 	}))
 	if err != nil {
 		return err

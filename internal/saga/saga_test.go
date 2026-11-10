@@ -407,7 +407,9 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 		adjust(&deps)
 	}
 	s := saga.New(deps)
+	// Close runs first, so no reservation keeper outlives the test
 	t.Cleanup(s.Wait)
+	t.Cleanup(s.Close)
 	return &env{
 		saga: s, store: st, pool: pool, river: rc, vk: vk, prefix: prefix, priv: priv,
 		handleKey: hk, keys: deps.Keys,
