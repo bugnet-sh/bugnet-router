@@ -1114,7 +1114,8 @@ func (e *env) subscribed(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("client list: %v", err)
 	}
-	for line := range strings.Lines(list) {
+	// RESP3 answers with a verbatim string, and valkey-go keeps its format prefix on line one
+	for line := range strings.Lines(strings.TrimPrefix(list, "txt:")) {
 		f := map[string]string{}
 		for _, kv := range strings.Fields(line) {
 			k, v, _ := strings.Cut(kv, "=")
