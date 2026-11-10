@@ -38,6 +38,11 @@ type Event struct {
 	UnusedSeconds *int64 `json:"unused_seconds,omitzero"`
 	// Refunds prices UnusedSeconds per order, newest first, on placement.terminated alone
 	Refunds []Refund `json:"refunds,omitzero"`
+	// CostMicros is our meter's provider cost, EdgeBytes and EgressBytes what the edges and the
+	// egress proxy counted, on placement.terminated alone
+	CostMicros  *int64 `json:"cost_micros,omitzero"`
+	EdgeBytes   *int64 `json:"edge_bytes,omitzero"`
+	EgressBytes *int64 `json:"egress_bytes,omitzero"`
 }
 
 func newEvent(p store.Placement, reason string) Event {

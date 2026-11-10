@@ -7,6 +7,8 @@ package spend
 import (
 	"math/big"
 	"time"
+
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // AttemptCost is the provider cost in micros of one attempt from start to end. The billed time is
@@ -39,4 +41,18 @@ func Judge(cost, paid int64, floor float64) Verdict {
 		BelowFloor: float64(cost) > (1-floor)*float64(paid),
 		Loss:       cost > paid,
 	}
+}
+
+// SpansCost prices attempts that made a sandbox, a sandbox still alive running to end, and
+// incrOf giving the billing increment of a provider by name
+func SpansCost(spans []store.AttemptSpan, end time.Time, incrOf func(string) time.Duration) int64 {
+	var total int64
+	for _, a := range spans {
+		to := end
+		if a.DestroyedAt != nil {
+			to = *a.DestroyedAt
+		}
+		total += AttemptCost(a.CreatedAt, to, incrOf(a.Provider), a.HourlyMicros, a.StartFeeMicros)
+	}
+	return total
 }

@@ -94,13 +94,15 @@ type ProviderHealth struct {
 	// AccountCheckedAt is zero before the first check
 	AccountCheckedAt time.Time
 	UpdatedAt        time.Time
+	// ForeignSandboxes counts sandboxes no known deployment owns
+	ForeignSandboxes int
 }
 
 // ProviderHealths returns every provider's shared health row
 func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 	rows, err := s.q.Query(ctx, `
 		select provider, state, state_since, samples, ready_p95_ms, coalesce(blocked, ''),
-			blocked_detail, blocked_since, account_checked_at, updated_at
+			blocked_detail, blocked_since, account_checked_at, updated_at, foreign_sandboxes
 		from provider_health order by provider`)
 	if err != nil {
 		return nil, fmt.Errorf("select provider health: %w", err)
@@ -110,7 +112,7 @@ func (s *Store) ProviderHealths(ctx context.Context) ([]ProviderHealth, error) {
 		var since, checked *time.Time
 		var p95 int
 		err := r.Scan(&h.Provider, &h.State, &h.StateSince, &h.Samples, &p95, &h.Blocked,
-			&h.BlockedDetail, &since, &checked, &h.UpdatedAt)
+			&h.BlockedDetail, &since, &checked, &h.UpdatedAt, &h.ForeignSandboxes)
 		h.StateSince = utc(h.StateSince)
 		h.ReadyP95 = time.Duration(p95) * time.Millisecond
 		if since != nil {

@@ -10,8 +10,9 @@ alter table placements
     add column egress_bytes bigint not null default 0;
 
 alter table placement_attempts
-    -- the size the attempt asked for, which prices its provider time
+    -- the size the attempt asked for and what its hour costs, which price its provider time
     add column size_name text,
+    add column hourly_micros bigint not null default 0,
     -- the start fee the provider quoted when the slot was reserved
     add column start_fee_micros bigint not null default 0,
     -- when the attempt's sandbox was destroyed, null while it lives or never existed
@@ -40,6 +41,7 @@ create table provider_cost_daily (
 drop table provider_cost_daily;
 alter table placement_attempts drop column destroyed_at;
 alter table placement_attempts drop column start_fee_micros;
+alter table placement_attempts drop column hourly_micros;
 alter table placement_attempts drop column size_name;
 alter table placements drop column egress_bytes;
 alter table placements drop column edge_bytes;
