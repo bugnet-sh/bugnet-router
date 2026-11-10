@@ -209,7 +209,7 @@ func (s *Server) tunnelServable(ctx context.Context, p store.Placement) error {
 	if p.State != store.PlacementReady || p.Deadline == nil || p.EgressCAVersion <= 0 {
 		return errNotReady
 	}
-	spent, err := s.meter.Spent(ctx, budget.Egress, p.ID)
+	spent, err := s.meter.SpentFor(ctx, budget.Egress, s.limit(p, budget.Egress))
 	if err != nil {
 		return err
 	}

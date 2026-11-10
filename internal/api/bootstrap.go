@@ -65,11 +65,12 @@ var _ bootstrap.Counter = egressCounter{}
 
 // Left is what remains of the placement's egress budget, none once it was crossed
 func (c egressCounter) Left(ctx context.Context, p store.Placement) (uint64, error) {
-	spent, err := c.s.meter.Spent(ctx, budget.Egress, p.ID)
+	lim := c.s.limit(p, budget.Egress)
+	spent, err := c.s.meter.SpentFor(ctx, budget.Egress, lim)
 	if err != nil || spent {
 		return 0, err
 	}
-	return c.s.meter.Remaining(ctx, budget.Egress, c.s.limit(p, budget.Egress))
+	return c.s.meter.Remaining(ctx, budget.Egress, lim)
 }
 
 // Add counts n bytes like the proxy's own reports do, announcing the budget when n crosses it
@@ -86,5 +87,6 @@ func (c egressCounter) Add(ctx context.Context, p store.Placement, n uint64) (ui
 				PlacementId: id.String(), Kind: routerv1.BudgetKind_BUDGET_KIND_EGRESS},
 		}})
 	}
+	c.s.walletSpent(ctx, answers, map[uuid.UUID]budget.Limit{p.ID: lim})
 	return answers[p.ID].Remaining, nil
 }

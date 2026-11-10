@@ -13,7 +13,7 @@ func walletEnds(c *config.Config) (words map[string]string, failedRefundsPerDay 
 	}, int64(c.Wallets.FailedRefundsPerDay)
 }
 
-// walletBytesPerDay is Task 29's switch point, knowing no wallets.bytes_per_day until then
-func walletBytesPerDay(_ *config.Config) (int64, bool) {
-	return 0, false
+// walletBytesPerDay is wallets.bytes_per_day, always known
+func walletBytesPerDay(c *config.Config) (int64, bool) {
+	return c.Wallets.BytesPerDay, true
 }

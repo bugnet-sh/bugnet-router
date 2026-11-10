@@ -287,6 +287,20 @@ func (s *Store) LivePlacementsOf(ctx context.Context, payer string) ([]Placement
 	return out, nil
 }
 
+// ReadyPlacementIDsOf returns the ready placements whose decided payer is payer
+func (s *Store) ReadyPlacementIDsOf(ctx context.Context, payer string) ([]uuid.UUID, error) {
+	rows, err := s.q.Query(ctx, `select id from placements
+		where state = 'ready' and payer = $1 order by created_at, id`, payer)
+	if err != nil {
+		return nil, fmt.Errorf("select ready placements of a payer: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("select ready placements of a payer: %w", err)
+	}
+	return out, nil
+}
+
 // ExtendClaims returns each distinct payer and fee_payer claim of a placement's extension orders
 // that claim a payer, the payer as the token named it
 func (s *Store) ExtendClaims(ctx context.Context, id uuid.UUID) ([]Order, error) {

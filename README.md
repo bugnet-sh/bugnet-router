@@ -672,6 +672,7 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 | `refund_stopped_live` | `false` | Those `wallet_blocked` ends refund their unused time |
 | `failed_refunds_per_day` | `2` | Refundable `provider_failed` ends per start payer in 24 h |
 | `anonymous_failed_refunds_per_day` | `20` | The same for every placement without a payer, together |
+| `bytes_per_day` | `"50GiB"` | Edge and egress bytes one payer's placements carry together per UTC day |
 
 `[boat]`, `[e2b]`, `[boxd]` and `[koyeb]` each take `ops_per_second`, the user operations a
 second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
@@ -1115,6 +1116,19 @@ deadline and bytes left, and the egress check its `secrets_version`. Ended place
 `CheckEdgeLeases` also answers, among the previews the edge holds, each one that was revoked, whose
 generation moved, or that the router never made, so a lost `PreviewRevoked` is repaired.
 
+### Wallet byte cap
+
+A placement with a payer also counts its bytes against `wallets.bytes_per_day` (default `50GiB`),
+edge and egress together, per payer and UTC day. The same report script adds each delta to
+`wallet:bytes:<payer>:<yyyymmdd>` and answers the smaller of the placement's bytes left and the
+wallet's. The router's private fetch counts through the same script. The first report that reaches
+the cap takes `wallet:spent:<payer>:<yyyymmdd>` with `SET NX` and writes `BudgetSpent` of both
+kinds for every ready placement of the payer, without setting their own spent marks. Previews,
+transfers, SSH and tunnels refuse a spent wallet like a spent budget. Both keys expire 48 h after
+they are made. The next UTC day starts empty, so the next lease check, within 60 s, carries the
+placement's own figure again. A placement without a payer has only its own budget, and the wallet
+cap is never folded into `edge_budget_bytes`.
+
 ### Edge events
 
 The edges learn of stops, extensions and spent budgets from one Valkey stream, `edge:events` under
@@ -1126,7 +1140,7 @@ after the commit that causes an event, retrying a failed append 3 times before l
 | --- | --- |
 | `PlacementEnded` | A stop (`STOPPED`) or the deadline (`EXPIRED`) moves a placement out of ready, before its sandbox is destroyed |
 | `DeadlineMoved` | An extension commits, after both spent marks are cleared, with the new deadline and both budgets' bytes left |
-| `BudgetSpent` | A report first reaches a placement's edge or egress budget |
+| `BudgetSpent` | A report first reaches a placement's edge or egress budget, or a payer's `wallets.bytes_per_day` for each of its ready placements |
 | `PreviewRevoked` | `RevokePreview` commits, and again on each repeat of it |
 | `SshKeyRemoved` | `RemoveSshKey` marks a live key removed |
 
@@ -1396,7 +1410,6 @@ one function:
 | --- | --- | --- | --- |
 | `startP50Ms`, `startP95Ms`, `failed7d` | Task 33's start samples | Built | `statsStartSamples` in `internal/store/stats.go` reads kind `placement` samples, the percentiles `null` under 5 |
 | `spentMicros` in the totals and each day | Task 35's cost meter | `null` | `statsSpent` in `internal/store/stats.go` |
-| `wallet.bytes_per_day` | Task 29's byte cap | Left out | `walletBytesPerDay` in `internal/stats/sources.go` |
 
 ### Session page
 
