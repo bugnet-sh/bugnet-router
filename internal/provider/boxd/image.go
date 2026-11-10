@@ -194,3 +194,12 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// SnapshotStorage says where a snapshot's bytes are, local when a machine can restore it now
+func (p *Provider) SnapshotStorage(ctx context.Context, name string) (string, error) {
+	got, err := p.api.GetSnapshot(ctx, &boxdpb.GetSnapshotRequest{Name: name})
+	if err != nil {
+		return "", classify(ctx, err)
+	}
+	return got.GetSnapshot().GetStorage(), nil
+}

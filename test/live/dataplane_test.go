@@ -54,6 +54,9 @@ type row struct {
 	providers []string
 	// vps means the row needs the dev front, so it fails at once in the local mode
 	vps bool
+	// noStack means the row drives a provider directly and starts no router stack, so its run
+	// gets a nil stack and reads its provider from the test's name
+	noStack bool
 	// settings changes the router's settings of the stack the row runs on, as a row that needs two
 	// providers or a hedge delay must
 	settings func(provider string, m map[string]any)
@@ -131,7 +134,9 @@ func runRows(t *testing.T, rows []row) {
 
 // needsStack is false when every row would fail at once for want of the dev front
 func needsStack(rows []row, mode string) bool {
-	return slices.ContainsFunc(rows, func(r row) bool { return !r.vps || mode == "vps" })
+	return slices.ContainsFunc(rows, func(r row) bool {
+		return !r.noStack && (!r.vps || mode == "vps")
+	})
 }
 
 // wanted reports whether go test's -run pattern selects the subtest with these path names

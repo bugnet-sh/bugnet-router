@@ -202,3 +202,13 @@ func TestBoxdDeleteImage(t *testing.T) {
 		}
 	}
 }
+
+func TestBoxdSnapshotStorage(t *testing.T) {
+	f := newFake(t)
+	f.addSnapshot("s", "archived")
+	p := snapshotProvider(t, f, nil)
+	got, err := p.SnapshotStorage(t.Context(), "s")
+	if err != nil || got != "archived" {
+		t.Fatalf("SnapshotStorage gave %q, %v", got, err)
+	}
+}
