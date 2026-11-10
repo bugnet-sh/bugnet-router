@@ -261,7 +261,8 @@ func TestAbuseFindShowsAHedgedStart(t *testing.T) {
 	find := func(hedged bool) string {
 		t.Helper()
 		settings := serveBoth(t, &reserveRouter{}, &pathOperator{path: "cold", hedged: hedged})
-		out, stderr, code := runCLI(t, vars, "--config", settings, "abuse", "find", "pl-1")
+		out, stderr, code := runCLI(t, vars, "--config", settings, "abuse", "find",
+			"11111111-2222-3333-4444-555555555555")
 		if code != 0 {
 			t.Fatalf("exited %d: %s", code, stderr)
 		}
