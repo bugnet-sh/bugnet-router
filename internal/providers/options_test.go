@@ -70,3 +70,22 @@ func TestE2BOptionsCarryTheDenyRanges(t *testing.T) {
 		t.Fatalf("e2b options %+v, want the deny ranges, domain and key", got)
 	}
 }
+
+func TestImageArtifactsReachEachAdapter(t *testing.T) {
+	var cfg config.Config
+	digest := "ghcr.io/bugnet-sh/base@sha256:" + strings.Repeat("a", 64)
+	cfg.Images.Koyeb = config.ProviderImage{Version: "2026.11.1", Ref: digest}
+	cfg.Images.Boxd = config.ProviderImage{
+		Version: "2026.11.1", Refs: map[string]string{"2x8": "bugnet-dev-2026-11-1-2x8"},
+	}
+	if got := koyebOptions(cfg, "k").Image; got != digest {
+		t.Errorf("koyeb image %q, want the digest", got)
+	}
+	if got := boxdOptions(cfg, "b").Snapshots["2x8"]; got != "bugnet-dev-2026-11-1-2x8" {
+		t.Errorf("boxd snapshots %v", boxdOptions(cfg, "b").Snapshots)
+	}
+	p, err := buildBoat(config.Boat{}, "boat_test", nil, "", 0, "bugnet-dev-2026-11-1")
+	if err != nil || p == nil {
+		t.Fatalf("buildBoat gave %v", err)
+	}
+}
