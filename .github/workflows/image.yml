@@ -129,10 +129,11 @@ jobs:
           cat "$record"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "image-records/$CHANNEL-$version"
+          branch="image-records/$CHANNEL-$version-$GITHUB_RUN_ID"
+          git checkout -b "$branch"
           git add "$record"
           git commit -m "image: the $CHANNEL $version build record"
           git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "HEAD:refs/heads/image-records/$CHANNEL-$version"
+            "HEAD:refs/heads/$branch"
           echo "### $CHANNEL $version" >> "$GITHUB_STEP_SUMMARY"
           echo "\`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
