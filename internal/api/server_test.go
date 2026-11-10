@@ -339,7 +339,7 @@ func newEnv(t *testing.T, opts options) *env {
 		t.Fatal(err)
 	}
 	tracker := placement.NewTracker(time.Now)
-	engine := placement.New(reg, tracker)
+	engine := placement.New(reg, tracker, nil)
 	sess := sessionSettings
 	if opts.sessions != nil {
 		sess = *opts.sessions

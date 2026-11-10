@@ -280,7 +280,7 @@ func newEnv(t *testing.T, o options) *env {
 		store.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	sd := saga.Deps{
 		Store:        st,
-		Engine:       placement.New(reg, tracker),
+		Engine:       placement.New(reg, tracker, nil),
 		Registry:     reg,
 		Catalog:      cat,
 		Valkey:       vk,

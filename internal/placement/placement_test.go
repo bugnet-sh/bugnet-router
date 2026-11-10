@@ -90,7 +90,7 @@ func engine(h Health, ps ...provider.Provider) *Engine {
 	if err != nil {
 		panic(err)
 	}
-	return New(reg, h)
+	return New(reg, h, nil)
 }
 
 func TestCandidatesCheapestFirst(t *testing.T) {
@@ -391,7 +391,7 @@ func TestCandidatesSkipProviderWithoutSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := New(reg, fakeHealth{}).Candidates(Inputs{
+	got, err := New(reg, fakeHealth{}, nil).Candidates(Inputs{
 		Package: pkg(10, 100000), Requirements: Requirements{Secrets: true},
 	})
 	eq(t, err, nil)
@@ -415,7 +415,7 @@ func TestCandidatesReadCapabilitiesThroughTheRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := New(reg, fakeHealth{})
+	e := New(reg, fakeHealth{}, nil)
 	got, err := e.Candidates(Inputs{
 		Package: pkg(10, 100000), Requirements: Requirements{SSH: true, Preview: true},
 	})

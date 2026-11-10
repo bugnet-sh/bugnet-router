@@ -17,6 +17,9 @@ const QueueDataplane = "dataplane"
 // QueueProbes is the River queue of the probes
 const QueueProbes = "probes"
 
+// QueuePools is the River queue of the pool fills
+const QueuePools = "pools"
+
 // Deadline asks the worker to end a placement once its paid deadline has passed
 type Deadline struct {
 	PlacementID uuid.UUID `json:"placement_id"`
@@ -332,4 +335,48 @@ func (CostDaily) Kind() string { return "cost_daily" }
 // InsertOpts runs a page on the default queue, five attempts for a failed read of the provider
 func (CostDaily) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 5}
+}
+
+// PoolTick asks the worker to size every pool, fill its deficit and retire what has aged
+type PoolTick struct{}
+
+// Kind returns the River job kind
+func (PoolTick) Kind() string { return "pool_tick" }
+
+// InsertOpts runs it once, one at a time, since the next tick comes seconds later
+func (PoolTick) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: river.QueueDefault, MaxAttempts: 1}
+}
+
+// PoolFill asks the worker to create, boot and park one pool member
+type PoolFill struct {
+	Member uuid.UUID `json:"member"`
+}
+
+// Kind returns the River job kind
+func (PoolFill) Kind() string { return "pool_fill" }
+
+// poolFillAttempts bounds the retries of one fill, which finds its sandbox again by its key
+const poolFillAttempts = 3
+
+// InsertOpts puts the fill on the pools queue
+func (PoolFill) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueuePools, MaxAttempts: poolFillAttempts}
+}
+
+// PoolRetire asks the worker to destroy one pool member's sandbox and free its slot
+type PoolRetire struct {
+	Member uuid.UUID `json:"member" river:"unique"`
+	Reason string    `json:"reason"`
+}
+
+// Kind returns the River job kind
+func (PoolRetire) Kind() string { return "pool_retire" }
+
+// InsertOpts runs it once per member while one waits or runs, retried a few times
+func (PoolRetire) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 5,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
 }

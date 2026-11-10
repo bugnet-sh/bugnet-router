@@ -203,9 +203,12 @@ var ErrPoolFull = errors.New("store: pool provider has no room for another membe
 // StartFill reserves one slot with the placements' margin and inserts a filling member, in one
 // transaction, so no member exists without its slot
 //
-// capacityShare bounds the members a provider holds to that share of its max_concurrent.
+// capacityShare bounds the members a provider holds to that share of its max_concurrent. then,
+// when not nil, runs in the same transaction after the row exists, as an insert of the fill job
+// must, and an error from it rolls the member and its slot back.
 func (s *Store) StartFill(
 	ctx context.Context, provider, size string, capacityShare float64,
+	then func(ctx context.Context, tx pgx.Tx, m Member) error,
 ) (Member, error) {
 	var m Member
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
@@ -234,7 +237,10 @@ func (s *Store) StartFill(
 				holds_slot)
 			values ($1, $2, $3, 'pool', 'filling', $4, true)
 			returning `+memberColumns, id, provider, size, "pool-"+id.String()))
-		return err
+		if err != nil || then == nil {
+			return err
+		}
+		return then(ctx, tx, m)
 	})
 	return m, err
 }
@@ -438,6 +444,25 @@ func (s *Store) resealMember(ctx context.Context, m *Member, placement uuid.UUID
 	return nil
 }
 
+// RetireWarm sets every warm member of one pool to retiring and returns their ids
+func (s *Store) RetireWarm(
+	ctx context.Context, provider, size, reason string,
+) ([]uuid.UUID, error) {
+	rows, err := s.q.Query(ctx, `
+		with warm as (select id from pool_members
+			where provider = $1 and size_name = $2 and state = 'warm' for update skip locked)
+		update pool_members m set state = 'retiring', end_reason = $3
+		from warm where m.id = warm.id returning m.id`, provider, size, reason)
+	if err != nil {
+		return nil, fmt.Errorf("retire warm members: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("retire warm members: %w", err)
+	}
+	return ids, nil
+}
+
 // WarmCounts counts the claimable members of every pool, by provider and size
 func (s *Store) WarmCounts(ctx context.Context) (map[[2]string]int, error) {
 	rows, err := s.q.Query(ctx, `
@@ -457,4 +482,19 @@ func (s *Store) WarmCounts(ctx context.Context) (map[[2]string]int, error) {
 		out[[2]string{provider, size}] = n
 	}
 	return out, rows.Err()
+}
+
+// ReservationKeepsMember reports whether a held member's reservation is still open, and, once an
+// order awaits it, whether that order's placement is still placing
+func (s *Store) ReservationKeepsMember(ctx context.Context, member uuid.UUID) (bool, error) {
+	var keeps bool
+	err := s.q.QueryRow(ctx, `
+		select coalesce(bool_or(r.state in ('preparing', 'ready')
+				or r.state = 'awaited' and exists (select 1 from placements p
+					where p.id = r.placement_id and p.state = 'placing')), false)
+		from reservations r where r.member_id = $1`, member).Scan(&keeps)
+	if err != nil {
+		return false, fmt.Errorf("select reservations of member: %w", err)
+	}
+	return keeps, nil
 }

@@ -58,7 +58,7 @@ func x402Env(t *testing.T, secrets bool) (*env, gatedReady) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d.Registry, d.Engine = reg, placement.New(reg, d.Tracker)
+		d.Registry, d.Engine = reg, placement.New(reg, d.Tracker, nil)
 	}, g), g
 }
 

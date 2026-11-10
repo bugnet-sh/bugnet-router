@@ -55,6 +55,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/probe"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/reconcile"
@@ -85,6 +86,7 @@ const (
 	dataplaneWorkers = 8
 	defaultWorkers   = 20
 	probeWorkers     = 4
+	poolWorkers      = 4
 )
 
 // The session settings' defaults, for Deps that leave them unset
@@ -124,6 +126,8 @@ type Deps struct {
 	Abuse config.Abuse
 	// Reconcile sets the lost-placement check and the drift bound, each zero value at its default
 	Reconcile config.Reconcile
+	// Pools sets the warm pools, the settings' defaults when its tick is zero
+	Pools config.Pools
 }
 
 // Worker works the deadline, sweep and outbox jobs
@@ -159,6 +163,8 @@ type Worker struct {
 	probe    *probe.Probe
 	// reconciler ends the placements their provider lost
 	reconciler *reconcile.Reconciler
+	// pools keeps the warm pools
+	pools *poolpkg.Manager
 	// probeAges is the age of each provider's oldest probe sandbox at the last sweep
 	probesMu  sync.Mutex
 	probeAges map[string]time.Duration
@@ -188,6 +194,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	d.ObservationsKeep = cmp.Or(d.ObservationsKeep, defaultObservationsKeep)
 	d.Abuse = d.Abuse.OrDefaults()
 	d.Reconcile = d.Reconcile.OrDefaults()
+	if d.Pools.Tick == 0 {
+		d.Pools = config.DefaultPools()
+	}
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}
@@ -235,6 +244,9 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &foreignWorker{w: w})
 	river.AddWorker(workers, &costTickWorker{w: w})
 	river.AddWorker(workers, &costDailyWorker{w: w})
+	river.AddWorker(workers, &poolTickWorker{w: w})
+	river.AddWorker(workers, &poolFillWorker{w: w})
+	river.AddWorker(workers, &poolRetireWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -254,6 +266,13 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		Saga: w.saga, Store: sd.Store, Registry: sd.Registry, River: rc, Valkey: sd.Valkey,
 		Prefix: sd.Prefix, Abuse: d.Abuse, Settings: d.Reconcile, Now: d.Now, Log: sd.Log,
 	})
+	w.pools, err = poolpkg.New(poolpkg.Deps{
+		Store: sd.Store, Registry: sd.Registry, Saga: w.saga, River: rc, Valkey: sd.Valkey,
+		Prefix: sd.Prefix, Settings: d.Pools, Replica: sd.ReplicaID, Now: d.Now, Log: sd.Log,
+	})
+	if err != nil {
+		return nil, err
+	}
 	w.probe = probe.New(probe.Deps{
 		Registry: sd.Registry, Store: sd.Store, Saga: w.saga, Replica: sd.ReplicaID,
 		Now: d.Now, Log: sd.Log,
@@ -273,6 +292,7 @@ func queues(d Deps) map[string]river.QueueConfig {
 		river.QueueDefault:     {MaxWorkers: cmp.Or(d.DefaultWorkers, defaultWorkers)},
 		jobargs.QueueDataplane: {MaxWorkers: cmp.Or(d.DataplaneWorkers, dataplaneWorkers)},
 		jobargs.QueueProbes:    {MaxWorkers: cmp.Or(d.Health.ProbeWorkers, probeWorkers)},
+		jobargs.QueuePools:     {MaxWorkers: cmp.Or(d.Pools.Workers, poolWorkers)},
 	}
 }
 
@@ -366,6 +386,9 @@ func periodic(d Deps) []periodicJob {
 	}
 	if d.Stats != nil {
 		out = append(out, periodicJob{statsEvery, jobargs.StatsSnapshot{}})
+	}
+	if d.Pools.Enabled && len(d.Pools.Pool) > 0 {
+		out = append(out, periodicJob{d.Pools.Tick, jobargs.PoolTick{}})
 	}
 	return out
 }

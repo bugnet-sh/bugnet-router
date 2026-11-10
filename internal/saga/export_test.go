@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
 // SetCleanupTimeout shortens the bound on each cleanup call for one test
@@ -31,6 +32,16 @@ func SetupSpecFor(
 	b BootSettings, name string, ref provider.Ref, key string, sample bool,
 ) SetupSpecFields {
 	return b.setupSpecFor(name, ref, key, sample)
+}
+
+// PoolSetupSpecFor is the setup spec Boot writes for a pool member's sandbox
+func PoolSetupSpecFor(b BootSettings, name string, ref provider.Ref) SetupSpecFields {
+	return b.poolSetupSpecFor(name, ref)
+}
+
+// WithinLifetime is the check an extension of a placement runs against the provider's limit
+func WithinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
+	return withinLifetime(prov, p, deadline)
 }
 
 // HardenSpecFor is the harden spec Boot writes for provider name, false when it runs none

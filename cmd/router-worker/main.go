@@ -30,6 +30,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	sharedhealth "github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
@@ -177,9 +178,15 @@ func serve(
 		return err
 	}
 	tracker := placement.NewTracker(time.Now)
+	var warmth *poolpkg.Warmth
+	var warm placement.Warm
+	if cfg.Pools.Enabled && len(cfg.Pools.Pool) > 0 {
+		warmth = poolpkg.NewWarmth(st, poolpkg.Configs(cfg.Pools), nil)
+		warm = warmth
+	}
 	w, err := worker.New(pool, saga.Deps{
 		Store:         st,
-		Engine:        placement.New(reg, sharedhealth.NewShared(st, tracker, log)),
+		Engine:        placement.New(reg, sharedhealth.NewShared(st, tracker, log), warm),
 		Registry:      reg,
 		Catalog:       cat,
 		Valkey:        vk,
@@ -204,6 +211,9 @@ func serve(
 		// The hold of D-b (a), for abuse and operator ends
 		SessionAbuseHold: cfg.Sessions.AbuseHold,
 		CreatesPerSecond: cfg.CreatesPerSecond,
+		Pools:            warmth,
+		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
+		PoolRoom:         cfg.Pools.ExtensionRoom,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
@@ -215,7 +225,7 @@ func serve(
 		LimitsPoll: cfg.LimitsPoll, MaxConcurrent: cfg.MaxConcurrent, Health: cfg.Health,
 		EstimatesKeep: cfg.Estimator.EstimatesKeep, SourceFactsKeep: cfg.Estimator.SourceFactsKeep,
 		ObservationsKeep: cfg.Estimator.ObservationsKeep,
-		Abuse:            cfg.Abuse, Reconcile: cfg.Reconcile,
+		Abuse:            cfg.Abuse, Reconcile: cfg.Reconcile, Pools: cfg.Pools,
 	})
 	if err != nil {
 		return err
@@ -239,7 +249,8 @@ func serve(
 		spendCheck{
 			marginFloor:       cfg.MarginFloor,
 			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
-		}))
+		},
+		poolLines(log, st, w.Pools())))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

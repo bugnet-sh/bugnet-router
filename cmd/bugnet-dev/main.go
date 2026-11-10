@@ -153,6 +153,11 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
                                          BUGNET_HOOK_PATH_SECRET and Boat's admin key from
                                          BOAT_ADMIN_API_KEY, each asked for with echo off
   hooks delete PROVIDER ID               remove an endpoint
+  pools                                  list every warm pool with its members, target, demand
+                                         and pause, as OperatorService serves it
+  pools drain --provider P --size S [--pause D] [--actor A]
+                                         retire the warm members of one pool, and with --pause
+                                         keep its refill off that long
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -178,7 +183,7 @@ Settings
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
   BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, abuse, placement end, signals,
-                            providers, estimate, bench start and report, and session hold,
+                            providers, pools, estimate, bench start and report, and session hold,
                             which call OperatorService
   BUGNET_DATABASE_URL       Postgres URL, read only by simulate
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
@@ -237,7 +242,7 @@ func run(
 		"session":      c.session,
 		"fetch-source": c.fetchSource, "hooks": c.hooks, "bench": c.benchCmd,
 		"simulate": c.simulate, "abuse": c.abuse, "placement": c.placementCmd,
-		"signals": c.signals, "providers": c.providers,
+		"signals": c.signals, "providers": c.providers, "pools": c.pools,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

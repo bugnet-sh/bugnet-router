@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -107,6 +109,24 @@ type setupSpec struct {
 	CAVersion     int    `json:"ca_version,omitempty"`
 	PreviewDomain string `json:"preview_domain,omitempty"`
 	Sample        bool   `json:"sample"`
+	// Seed is fresh router randomness the runner mixes into the kernel before any other step
+	Seed string `json:"seed"`
+	// Phase is "pool" for a member that only gets the CA and the env lines
+	Phase string `json:"phase,omitempty"`
+}
+
+// phasePool is setupSpec.Phase for a pool member, which gets no gate key and no gate
+const phasePool = "pool"
+
+// seedBytes is the randomness each setup spec carries
+const seedBytes = 32
+
+// newSeed is seedBytes of the router's own randomness in base64, fresh for each setup spec
+func newSeed() string {
+	b := make([]byte, seedBytes)
+	// crypto/rand does not fail on the platforms the router runs on
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 // hardenSpec is what bugnet-run harden reads from hardenSpecPath
@@ -128,6 +148,8 @@ type runnerAnswer struct {
 	// Port and HostKey are ssh-up's answer
 	Port    int    `json:"port"`
 	HostKey string `json:"host_key"`
+	// Reseed is setup's answer for the seed, ioctl, write or failed
+	Reseed string `json:"reseed"`
 }
 
 func (b BootSettings) gatePort() int {
@@ -145,6 +167,7 @@ func (b BootSettings) setupSpecFor(
 	spec := setupSpec{
 		V: 1, GateKey: gateKey, GateListen: ":" + strconv.Itoa(b.gatePort()),
 		PreviewDomain: b.PreviewDomain, Sample: sample, DenyPorts: b.denyPorts(name, ref),
+		Seed: newSeed(),
 	}
 	// A local sandbox shares the host, so its gate listens on its own loopback port
 	if port := metaPort(ref, "gate_port"); port > 0 {
@@ -159,6 +182,13 @@ func (b BootSettings) setupSpecFor(
 			spec.CAPEM = string(b.CAPEM)
 		}
 	}
+	return spec
+}
+
+// poolSetupSpecFor builds the spec of a pool member's setup, which has no gate key to write
+func (b BootSettings) poolSetupSpecFor(name string, ref provider.Ref) setupSpec {
+	spec := b.setupSpecFor(name, ref, "", false)
+	spec.Phase, spec.GateListen, spec.DenyPorts = phasePool, "", nil
 	return spec
 }
 
@@ -251,6 +281,7 @@ var errorValue = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 // rootCommand writes spec to path, runs the runner's subcommand as root and reads its answer
 func rootCommand(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, sub, path string, spec any,
+	extra ...string,
 ) (runnerAnswer, error) {
 	data, err := json.Marshal(spec)
 	if err != nil {
@@ -259,7 +290,7 @@ func rootCommand(
 	if err := prov.WriteFile(ctx, ref, path, data, 0o600); err != nil {
 		return runnerAnswer{}, fmt.Errorf("write the %s spec: %w", sub, err)
 	}
-	return runRoot(ctx, prov, ref, sub, "--spec", path)
+	return runRoot(ctx, prov, ref, sub, append([]string{"--spec", path}, extra...)...)
 }
 
 // runRoot runs the runner's subcommand sub as root and reads its answer
@@ -321,6 +352,17 @@ func (s *Saga) setup(
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
 	spec := s.d.Boot.setupSpecFor(prov.Name(), ref, gateKey, sample)
+	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
+}
+
+// setupPool runs bugnet-run setup in its pool phase, which reseeds, installs the CA and writes the
+// env lines and nothing that needs a placement
+func (s *Saga) setupPool(
+	ctx context.Context, prov provider.Provider, ref provider.Ref,
+) (runnerAnswer, error) {
+	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
+	defer cancel()
+	spec := s.d.Boot.poolSetupSpecFor(prov.Name(), ref)
 	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
 }
 

@@ -68,6 +68,9 @@ type feedHealth struct {
 	present, noPaymentsPart bool
 }
 
+// problemSource lists the problem lines of one part of the router, none when it is well
+type problemSource func(ctx context.Context) []string
+
 // diskPercent reads the session tables' share of their disk budget
 type diskPercent func(ctx context.Context) (int64, error)
 
@@ -84,7 +87,7 @@ const (
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
 	poolList string, feed feedCheck, disk diskPercent, limits limitsCheck, sourced []string,
-	canaries canaryCheck, losses lossCheck, spend spendCheck,
+	canaries canaryCheck, losses lossCheck, spend spendCheck, extra ...problemSource,
 ) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout)
@@ -102,8 +105,15 @@ func monitor(
 		wg.Go(func() { h.canaries = checkCanaries(ctx, log, st, canaries) })
 		wg.Go(func() { h.losses = checkLosses(ctx, log, st, losses) })
 		wg.Go(func() { h.spend = checkSpend(ctx, log, st, spend) })
+		extras := make([][]string, len(extra))
+		for i, source := range extra {
+			wg.Go(func() { extras[i] = source(ctx) })
+		}
 		wg.Wait()
 		problems := h.problems()
+		for _, lines := range extras {
+			problems = append(problems, lines...)
+		}
 		if len(problems) == 0 {
 			_, _ = io.WriteString(rw, "ok\n")
 			return

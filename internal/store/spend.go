@@ -151,6 +151,15 @@ func (s *Store) SpansCreatedBetween(
 	return collectSpans(rows)
 }
 
+// MembersCreatedBetween lists a provider's pool members made in [from, to), whose own time the
+// meter prices apart from the placements that claimed them
+func (s *Store) MembersCreatedBetween(
+	ctx context.Context, provider string, from, to time.Time,
+) ([]Member, error) {
+	return s.members(ctx, `where provider = $1 and created_at >= $2 and created_at < $3
+		order by created_at`, provider, utc(from), utc(to))
+}
+
 // ProbeCostBetween sums the cost of a provider's canary and bench sandboxes started in [from, to)
 func (s *Store) ProbeCostBetween(
 	ctx context.Context, provider string, from, to time.Time,
@@ -177,7 +186,11 @@ func (s *Store) SandboxIDsBetween(
 		union
 		select sandbox_id from start_samples
 		where provider = $1 and sandbox_id is not null and sandbox_id <> ''
-			and started_at >= $2 and started_at < $3`, provider, utc(from), utc(to))
+			and started_at >= $2 and started_at < $3
+		union
+		select provider_ref->>'id' from pool_members
+		where provider = $1 and provider_ref is not null and created_at >= $2
+			and created_at < $3`, provider, utc(from), utc(to))
 	if err != nil {
 		return nil, fmt.Errorf("select sandbox ids: %w", err)
 	}
@@ -191,7 +204,10 @@ func (s *Store) OursAmong(
 	rows, err := s.q.Query(ctx, `
 		select sandbox_id from placement_attempts where provider = $1 and sandbox_id = any($2)
 		union
-		select sandbox_id from start_samples where provider = $1 and sandbox_id = any($2)`,
+		select sandbox_id from start_samples where provider = $1 and sandbox_id = any($2)
+		union
+		select provider_ref->>'id' from pool_members
+		where provider = $1 and provider_ref->>'id' = any($2)`,
 		provider, ids)
 	if err != nil {
 		return nil, fmt.Errorf("select known sandboxes: %w", err)

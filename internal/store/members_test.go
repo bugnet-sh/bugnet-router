@@ -33,7 +33,7 @@ func fillWarmWith(
 	ctx := context.Background()
 	var out []store.Member
 	for range n {
-		m, err := s.StartFill(ctx, name, size, 1)
+		m, err := s.StartFill(ctx, name, size, 1, nil)
 		if err != nil {
 			t.Fatalf("start fill: %v", err)
 		}
@@ -68,7 +68,7 @@ func memberHolds(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) bool {
 func TestStartFillReservesASlotAndTheRow(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	ctx := context.Background()
-	m, err := s.StartFill(ctx, "local", "small", 1)
+	m, err := s.StartFill(ctx, "local", "small", 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,11 +87,11 @@ func TestStartFillStopsAtTheCapacityShare(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := s.StartFill(ctx, "local", "small", 0.25); err != nil {
+		if _, err := s.StartFill(ctx, "local", "small", 0.25, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, err := s.StartFill(ctx, "local", "small", 0.25)
+	_, err := s.StartFill(ctx, "local", "small", 0.25, nil)
 	eq(t, err, store.ErrPoolFull)
 	eq(t, inUse(t, pool, "local"), 2)
 }
@@ -102,10 +102,10 @@ func TestStartFillKeepsTheProbeMargin(t *testing.T) {
 	if err := s.SetCapacity(ctx, "local", 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StartFill(ctx, "local", "small", 1); err != nil {
+	if _, err := s.StartFill(ctx, "local", "small", 1, nil); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.StartFill(ctx, "local", "small", 1)
+	_, err := s.StartFill(ctx, "local", "small", 1, nil)
 	eq(t, err, store.ErrPoolFull)
 	eq(t, inUse(t, pool, "local"), 1)
 }
@@ -381,7 +381,7 @@ func TestFillFailuresCountInARow(t *testing.T) {
 	ctx := context.Background()
 	since := time.Now().Add(-time.Hour)
 	for range 3 {
-		m, err := s.StartFill(ctx, "local", "small", 1)
+		m, err := s.StartFill(ctx, "local", "small", 1, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -402,7 +402,7 @@ func TestPoolStatsCountsMembersAndDemand(t *testing.T) {
 	s, _ := newStoreWithPool(t)
 	ctx := context.Background()
 	fillWarm(t, s, "local", "small", 3)
-	if _, err := s.StartFill(ctx, "local", "small", 1); err != nil {
+	if _, err := s.StartFill(ctx, "local", "small", 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	p := newPlacement(t, s, "o-stats")

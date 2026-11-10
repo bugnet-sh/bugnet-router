@@ -83,6 +83,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/hostrules"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -188,6 +189,8 @@ type Deps struct {
 	// Hooks and HookSecrets say which providers' webhooks DeliverHook verifies and with what
 	Hooks       config.Hooks
 	HookSecrets map[string]config.HookSecret
+	// Pools answers ListPools and DrainPool from Postgres alone, no pool is known when nil
+	Pools *pool.Manager
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler

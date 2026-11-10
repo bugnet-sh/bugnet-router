@@ -387,7 +387,7 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
 	deps := saga.Deps{
 		Store:       st,
-		Engine:      placement.New(reg, tracker),
+		Engine:      placement.New(reg, tracker, nil),
 		Registry:    reg,
 		Catalog:     cat,
 		River:       rc,
@@ -883,7 +883,7 @@ func TestCreateStoresNeedsSecrets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d.Registry, d.Engine = reg, placement.New(reg, d.Tracker)
+		d.Registry, d.Engine = reg, placement.New(reg, d.Tracker, nil)
 	}, a)
 	for _, c := range []struct {
 		order string
