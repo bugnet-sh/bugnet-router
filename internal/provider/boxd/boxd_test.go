@@ -529,6 +529,22 @@ func TestBoxdWaitReady(t *testing.T) {
 	}
 }
 
+func TestBoxdWaitReadyRetriesAHungProbe(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, fakeKey)
+	p.probeWithin = 200 * time.Millisecond
+	vm := f.add("probe-hung", nil)
+	f.setVM(vm.id, func(v *fakeVM) { v.agentHungExecs = 1 })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := p.WaitReady(ctx, provider.Ref{Provider: "boxd", ID: vm.id}); err != nil {
+		t.Fatalf("wait after a hung probe gave %v, want ready", err)
+	}
+	if n := f.callCount("Exec"); n != 2 {
+		t.Fatalf("probe ran %d times, want the hung one and one more", n)
+	}
+}
+
 func TestBoxdWaitReadyProbeGivesUp(t *testing.T) {
 	cases := []struct {
 		name string

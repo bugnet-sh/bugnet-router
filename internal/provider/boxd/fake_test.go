@@ -65,6 +65,8 @@ type fakeVM struct {
 	status         string
 	startingPolls  int
 	agentDownExecs int
+	// agentHungExecs is how many execs from now on the agent takes and never answers
+	agentHungExecs int
 	// proxyPort is the default proxy's port, auto when boxd detects it from the guest
 	proxyPort string
 	sshOff    bool
@@ -698,6 +700,10 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 		vm.agentDownExecs--
 		err = status.Error(codes.Unavailable, "cannot connect to VM agent: connection refused")
 	}
+	hung := err == nil && vm.agentHungExecs > 0
+	if hung {
+		vm.agentHungExecs--
+	}
 	if err == nil {
 		f.commands = append(f.commands, first.GetCommand())
 	}
@@ -705,6 +711,10 @@ func (f *fakeBoxd) Exec(stream grpc.BidiStreamingServer[boxdpb.ExecChunk, boxdpb
 	f.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if hung {
+		<-stream.Context().Done()
+		return stream.Context().Err()
 	}
 	if scripted {
 		for _, c := range script {
