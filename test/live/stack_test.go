@@ -49,6 +49,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
@@ -1011,6 +1012,30 @@ func (s *stack) fail(t *testing.T, format string, args ...any) {
 	t.FailNow()
 }
 
+// sweepOwned destroys what the stack's router left on its providers, such as a canary probe
+func (s *stack) sweepOwned(t *testing.T) {
+	cfg, err := config.LoadFile(s.settings)
+	if err != nil {
+		t.Logf("live: sweep: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for _, name := range cfg.Providers {
+		p := liveAdapter(t, name)
+		owned, err := p.ListOwned(ctx, map[string]string{"bugnet_deployment": cfg.DeploymentID})
+		if err != nil {
+			t.Logf("live: sweep %s: %v", name, err)
+			continue
+		}
+		for _, o := range owned {
+			if err := p.Destroy(ctx, o.Ref); err != nil {
+				t.Logf("live: destroy %s %s: %v", name, o.Ref.ID, err)
+			}
+		}
+	}
+}
+
 // stop ends every process with SIGTERM, then SIGKILL, and logs their tails when t failed
 func (s *stack) stop(t testing.TB) {
 	s.stopOnce.Do(func() {
@@ -1030,6 +1055,9 @@ func (s *stack) stop(t testing.TB) {
 			})
 		}
 		wg.Wait()
+		if tt, ok := t.(*testing.T); ok && s.provider != "local" && s.settings != "" {
+			s.sweepOwned(tt)
+		}
 		if s.provider == "local" {
 			// A local sandbox's gate and sampler outlive the stack until a destroy
 			p := local.New(local.Options{Name: "local", Root: filepath.Join(s.dir, "local")})
