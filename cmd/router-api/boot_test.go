@@ -17,6 +17,8 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
 
 func TestStartRefusesThePayerClaimWithoutPayments(t *testing.T) {
@@ -167,6 +169,52 @@ func TestStartRefusesRestrictedOnE2BWithoutProxyIPv4(t *testing.T) {
 		if err != nil && (!strings.Contains(err.Error(), "secrets.egress_ips") ||
 			!strings.Contains(err.Error(), "locked")) {
 			t.Fatalf("%s: %v, want the setting and the package named", tc.name, err)
+		}
+	}
+}
+
+// plain hides everything of a local provider but the port, so it can neither park nor list sizes
+type plain struct{ provider.Provider }
+
+func TestStartRefusesBadPools(t *testing.T) {
+	loc := local.New(local.Options{
+		Name: "local", Root: t.TempDir(), Sizes: []provider.Size{{Name: "small"}},
+	})
+	named := func(name string) provider.Provider {
+		return plain{local.New(local.Options{Name: name, Root: t.TempDir()})}
+	}
+	reg := func(ps ...provider.Provider) *provider.Registry {
+		r, err := provider.NewRegistry(ps, provider.Features{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	pools := func(p, size string) config.Config {
+		var cfg config.Config
+		cfg.Pools.Pool = []config.Pool{{Provider: p, Size: size, Min: 1, Max: 2,
+			MaxAge: time.Hour}}
+		return cfg
+	}
+	for _, tc := range []struct {
+		name string
+		reg  *provider.Registry
+		cfg  config.Config
+		want string
+	}{
+		{"a parked pool", reg(loc), pools("local", "small"), ""},
+		{"no pools", reg(loc), config.Config{}, ""},
+		{"boat", reg(named("boat")), pools("boat", "small"), "boat"},
+		{"a size not sold", reg(loc), pools("local", "huge"), `"huge"`},
+		{"no parker and no claimer", reg(named("e2b")), pools("e2b", "small"), "keeps no pools"},
+		{"a provider not listed", reg(loc), pools("boxd", "small"), "not in providers"},
+	} {
+		err := checkPools(tc.reg, tc.cfg)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: got %v, want an error naming %s", tc.name, err, tc.want)
 		}
 	}
 }

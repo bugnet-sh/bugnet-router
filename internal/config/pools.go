@@ -192,5 +192,7 @@ func (t poolFile) read(i int) (Pool, error) {
 		return Pool{}, fmt.Errorf(
 			"%s.max_age must be a Go duration from 1m to 720h such as 24h", where)
 	}
-	return Pool{Provider: t.Provider, Size: t.Size, Min: int(t.Min), Max: int(t.Max), MaxAge: age}, nil
+	return Pool{
+		Provider: t.Provider, Size: t.Size, Min: int(t.Min), Max: int(t.Max), MaxAge: age,
+	}, nil
 }

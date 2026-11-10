@@ -153,8 +153,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err := api.CheckHooks(cfg.Hooks, cfg.HookSecrets, reg); err != nil {
 		return err
 	}
-	// A pool on a provider that cannot keep one would fill nothing and say nothing
-	if err := poolpkg.Validate(reg, cfg.Pools); err != nil {
+	if err := checkPools(reg, cfg); err != nil {
 		return err
 	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
@@ -332,6 +331,12 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
 	scanner.Wait()
 	return serveErr
+}
+
+// checkPools refuses a pool on a provider that cannot keep one, which would fill nothing and say
+// nothing
+func checkPools(reg *provider.Registry, cfg config.Config) error {
+	return poolpkg.Validate(reg, cfg.Pools)
 }
 
 // poolWarmth is the view of warm members that marks candidates, none while no pool is on

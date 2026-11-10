@@ -45,8 +45,9 @@ func (s *Store) DemandSince(
 		select (select count(*) from pool_members
 				where provider = $1 and size_name = $2 and claimed_at >= $3)::int,
 			coalesce((select sum(misses) from pool_misses
-				where provider = $1 and size_name = $2 and minute >= date_trunc('minute', $3::timestamptz)
-				), 0)::int`, provider, size, utc(since)).Scan(&d.Claims, &d.Misses)
+				where provider = $1 and size_name = $2
+					and minute >= date_trunc('minute', $3::timestamptz)), 0)::int`,
+		provider, size, utc(since)).Scan(&d.Claims, &d.Misses)
 	if err != nil {
 		return Demand{}, fmt.Errorf("count pool demand: %w", err)
 	}

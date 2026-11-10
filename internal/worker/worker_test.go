@@ -36,6 +36,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -209,6 +210,8 @@ type options struct {
 	// abuse and reconcile set the class and drift settings, each zero value at its default
 	abuse     config.Abuse
 	reconcile config.Reconcile
+	// pools lists the warm pools of the first provider, none when nil
+	pools *config.Pools
 }
 
 type env struct {
@@ -296,6 +299,11 @@ func newEnv(t *testing.T, o options) *env {
 		Keys:         keys,
 		Wallets:      o.wallets,
 	}
+	if o.pools != nil {
+		w := poolpkg.NewWarmth(st, poolpkg.Configs(*o.pools), nil)
+		sd.Pools, sd.PoolRoom = w, o.pools.ExtensionRoom
+		sd.Engine = placement.New(reg, tracker, w)
+	}
 	if o.sagaClock != nil {
 		sd.Now = o.sagaClock.Now
 	}
@@ -304,6 +312,9 @@ func newEnv(t *testing.T, o options) *env {
 		Egress: o.egress, DefaultWorkers: o.defaultWorkers, Stats: o.stats,
 		Sessions: o.sessions, LimitsPoll: o.limitsPoll, MaxConcurrent: o.maxConcurrent,
 		Abuse: o.abuse, Reconcile: o.reconcile,
+	}
+	if o.pools != nil {
+		wd.Pools = *o.pools
 	}
 	if o.sources != nil {
 		sdeps := secrets.SourcesDeps{

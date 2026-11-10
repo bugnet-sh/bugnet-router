@@ -127,7 +127,8 @@ func TestHoldRaisesCostAndLifetime(t *testing.T) {
 	if err == nil {
 		t.Fatal("a hold that outlasts the provider's lifetime was a candidate")
 	}
-	if _, err = e.Candidates(Inputs{Package: pkg(10, 200000), HoldMax: 5 * time.Minute}); err != nil {
+	fits := Inputs{Package: pkg(10, 200000), HoldMax: 5 * time.Minute}
+	if _, err = e.Candidates(fits); err != nil {
 		t.Fatalf("a hold that fits was refused: %v", err)
 	}
 }

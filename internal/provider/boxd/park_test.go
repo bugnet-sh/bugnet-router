@@ -83,7 +83,7 @@ func TestBoxdParkedCostFollowsGiB(t *testing.T) {
 	eq(t, p.ParkedHourlyCostMicros(provider.Size{Name: "1x4"}), int64(920))
 }
 
-func TestBoxdIsAParker(t *testing.T) {
+func TestBoxdIsAParker(*testing.T) {
 	var _ provider.Parker = (*Provider)(nil)
 }
 

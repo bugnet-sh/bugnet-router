@@ -278,7 +278,7 @@ func (m *Manager) tickPool(
 			m.queueRetire(ctx, mem.ID, mem.EndReason)
 		}
 	}
-	m.inspect(ctx, c, members, retired, now)
+	m.inspect(ctx, members, retired, now)
 	have := 0
 	for _, mem := range members {
 		if !retired[mem.ID] && (mem.State == store.MemberFilling || mem.State == store.MemberWarm) {
@@ -365,8 +365,7 @@ func (m *Manager) fill(ctx context.Context, c Config, deficit int) error {
 //
 // An error proves nothing and keeps the member. A parked member is expected to read stopped.
 func (m *Manager) inspect(
-	ctx context.Context, c Config, members []store.Member, retired map[uuid.UUID]bool,
-	now time.Time,
+	ctx context.Context, members []store.Member, retired map[uuid.UUID]bool, now time.Time,
 ) {
 	var pick *store.Member
 	m.mu.Lock()
@@ -436,7 +435,8 @@ func (m *Manager) queueRetire(ctx context.Context, id uuid.UUID, reason string) 
 	if reason == "" {
 		reason = store.EndGone
 	}
-	if _, err := m.d.River.Insert(ctx, jobargs.PoolRetire{Member: id, Reason: reason}, nil); err != nil {
+	args := jobargs.PoolRetire{Member: id, Reason: reason}
+	if _, err := m.d.River.Insert(ctx, args, nil); err != nil {
 		m.d.Log.Error("insert pool_retire", "member", id, "err", err)
 	}
 }
@@ -509,23 +509,23 @@ func (m *Manager) Fill(ctx context.Context, id uuid.UUID) error {
 		return nil
 	}
 	if err := m.d.Store.MarkMemberCreated(ctx, mem.ID, ref, m.now()); err != nil {
-		m.failFillAfter(ctx, mem, &smp, size, prov, ref, err)
+		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
 	}
 	ref, boot, err := m.d.Saga.BootPool(ctx, prov, ref)
 	smp.RunnerMS = boot.RunnerMS
 	if err != nil {
-		m.failFillAfter(ctx, mem, &smp, size, prov, ref, err)
+		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
 	}
 	if pk, ok := prov.(provider.Parker); ok {
 		if err := pk.Park(ctx, ref); err != nil {
-			m.failFillAfter(ctx, mem, &smp, size, prov, ref, fmt.Errorf("park: %w", err))
+			m.failFillAfter(ctx, mem, &smp, size, ref, fmt.Errorf("park: %w", err))
 			return nil
 		}
 	}
 	if err := m.d.Store.MarkMemberWarm(ctx, mem.ID, ref, "", m.now()); err != nil {
-		m.failFillAfter(ctx, mem, &smp, size, prov, ref, err)
+		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
 	}
 	smp.ReadyMS = int(m.now().Sub(started).Milliseconds())
@@ -537,7 +537,7 @@ func (m *Manager) Fill(ctx context.Context, id uuid.UUID) error {
 // member row holds, or the label when the row never got it
 func (m *Manager) failFillAfter(
 	ctx context.Context, mem store.Member, smp *store.StartSample, size provider.Size,
-	prov provider.Provider, ref provider.Ref, err error,
+	ref provider.Ref, err error,
 ) {
 	smp.SandboxID = ref.ID
 	m.failFill(ctx, mem, smp, size, err)
@@ -618,7 +618,9 @@ func (m *Manager) Retire(ctx context.Context, id uuid.UUID, reason string) error
 }
 
 // Drain retires every warm member of k and keeps refill off for pause
-func (m *Manager) Drain(ctx context.Context, k Key, pause time.Duration, actor string) (int, error) {
+func (m *Manager) Drain(
+	ctx context.Context, k Key, pause time.Duration, actor string,
+) (int, error) {
 	if _, ok := m.by[k]; !ok {
 		return 0, ErrUnknownPool
 	}
