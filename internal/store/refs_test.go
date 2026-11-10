@@ -48,7 +48,7 @@ func readyPlacement(t *testing.T, s *store.Store, order string, ref provider.Ref
 	p := newPlacement(t, s, order)
 	now := time.Now()
 	if err := s.MarkPlacementReady(context.Background(), p.ID, ref, "small", now,
-		now.Add(time.Minute)); err != nil {
+		now.Add(time.Minute), nil); err != nil {
 		t.Fatalf("mark ready: %v", err)
 	}
 	return p.ID
@@ -146,7 +146,8 @@ func TestStoreWithoutSealerRefusesToWriteCredentials(t *testing.T) {
 	ctx := context.Background()
 	p := newPlacement(t, plain, "o-plain")
 	now := time.Now()
-	err := plain.MarkPlacementReady(ctx, p.ID, credentialRef(), "small", now, now.Add(time.Minute))
+	err := plain.MarkPlacementReady(ctx, p.ID, credentialRef(), "small", now,
+		now.Add(time.Minute), nil)
 	if err == nil {
 		t.Fatal("a store without a sealer wrote provider credentials")
 	}

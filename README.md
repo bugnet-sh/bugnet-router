@@ -65,7 +65,9 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `test/live` | The live stack and the data-plane live rows `scripts/live-test.sh` runs |
 | `config` | `example.toml` with every setting, `dev.toml`, the catalog and the pool list `dev-up.sh` runs with, `dev-front.toml` for the live stack behind the VPS |
 | `scripts` | `dev-up.sh` for a local stack and `live-test.sh` for the live provider tests |
-| `deploy/e2b` | E2B template definitions, one template per size |
+| `deploy/image` | The Bugnet base image: one Dockerfile, `setup-image.sh`, `build.sh`, the pins and the build records |
+| `deploy/e2b` | E2B templates, one per size, started from the base image |
+| `internal/image` | The base image manifest, the inputs hash and its rewrite rule |
 | `deploy/vps` | The VPS front: public names, site settings, the HAProxy template, the dev front |
 
 ## Prerequisites
@@ -106,7 +108,14 @@ BUGNET_TEST_STACK=1 go test ./test/live/ -run TestStackStartsOnTheLocalProvider 
 That test also sends a 3-byte file through the edge with `curl -T`, fetches it back, and sees the
 used URL answer 410.
 
-`make test`, `make lint` and `make build` wrap the usual commands.
+The container tests of the base image build it in Docker and run only with `BUGNET_TEST_DOCKER=1`:
+
+```sh
+BUGNET_TEST_DOCKER=1 go test -count=1 -timeout 60m ./test/image/...
+```
+
+`make test`, `make lint` and `make build` wrap the usual commands. `make image-inputs` rewrites
+`deploy/image/inputs.sha256`, which `TestImageInputsNeedANewVersion` checks.
 
 ## Live provider tests
 
@@ -2344,3 +2353,43 @@ lists it, against `hedge.loser_life`. KOYEBP1 claims two members of one pool and
 on the other's executor and an empty one on both. KOYEBP2 times a claim to a ready executor, KOYEBP3
 checks `PoolHeld`, KOYEBP4 holds idle members for a day (run it twice, a day apart) and KOYEBP5
 destroys an unused claim and counts the pool as it refills.
+
+## The Bugnet base image
+
+`deploy/image` builds one image for every provider (CP 19). `setup-image.sh` installs Ubuntu
+24.04's tools, Python 3.12 with uv, Node.js with pnpm, the Hugging Face CLI, openssh-server with
+its service masked, nftables, the Bugnet CA, `bugnet-run` at `/usr/local/lib/bugnet/bugnet-run`
+and a manifest at `/etc/bugnet/image.json`. Every input is pinned in `pins.conf`.
+`build.sh --channel dev|prod --ca FILE... [--no-push]` assembles the payload from an allowlist,
+scans it, builds and scans the OCI image, then pushes it and starts
+`builds/<channel>-<version>.json`. `bugnet-dev image scan --dir DIR | --oci TAG` runs the leak
+scanner in image mode and exits 1 on any finding, printing rules and paths and never values.
+
+The router reads the manifest first in `Saga.Boot`, before it writes anything. A baked runner
+whose SHA-256 equals the router's build is pinged where it is and nothing is uploaded, and the
+ref's `runner` meta entry names its path for every later `bugnet-run` call. The setup spec sends
+the CA's digest alone when the manifest lists it and the PEM too otherwise. A manifest that is
+malformed, on the wrong version or channel, or missing while `images.accept` is set and the
+provider is not exempt fails the attempt as `image_mismatch` and fails over. The version lands on
+`placements.image_version` and `Placement.image`, on the pool member row at `warm`, and on the
+start samples with setup's reseed answer.
+
+```toml
+[images]
+accept = []            # versions creates may start from, newest first, empty for any
+exempt = ["local"]     # providers placed on their own image while accept is set
+channel = "prod"       # prod or dev, the CA every accepted build trusts
+
+[images.koyeb]
+version = ""           # the artifact's image version, empty for the provider's own image
+ref = ""               # Koyeb and Boat, one artifact
+refs = {}              # boxd, size = snapshot
+os = ""
+tools = { git = "", node = "" }   # keys from the manifest's closed list
+```
+
+With `accept` empty and no provider version nothing changes. router-api refuses to start when
+`accept` is set and no provider is accepted or exempt, `ListProviders` shows `image_version` and
+`image_accepted`, `ListImageUse` counts live placements per provider and version, and `/monitor`
+names a provider `accept` keeps out, any `image_mismatch` and any refused reseed of the last hour.
+The adapters start from the artifacts, and the builds, checks and rollout come with Task 41B.

@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -418,15 +419,38 @@ func TestEgressCAVersionStored(t *testing.T) {
 	eq(t, q.GateReadyAt != nil, true)
 }
 
+func TestSetupSpecCAFollowsManifest(t *testing.T) {
+	ca := testCA(t)
+	sum := sha256.Sum256(ca)
+	b := saga.BootSettings{CAPEM: ca, CAVersion: 2}
+	ref := provider.Ref{ID: "x"}
+	listed := &image.Manifest{CAs: []image.CA{{Version: 2, SHA256: hex.EncodeToString(sum[:])}}}
+	other := &image.Manifest{CAs: []image.CA{{Version: 1, SHA256: hex.EncodeToString(sum[:])}}}
+	for _, name := range []string{"e2b", "boxd", "koyeb", "boat"} {
+		got := saga.SetupSpecForImage(b, name, ref, "key", listed)
+		eq(t, got.CASHA256, hex.EncodeToString(sum[:]))
+		eq(t, got.CAPEM, "")
+		for _, m := range []*image.Manifest{nil, {}, other} {
+			got = saga.SetupSpecForImage(b, name, ref, "key", m)
+			eq(t, got.CAPEM, string(ca))
+			eq(t, got.CASHA256, "")
+		}
+	}
+}
+
 func TestSetupSpecPerProvider(t *testing.T) {
 	ca := testCA(t)
 	sum := sha256.Sum256(ca)
 	b := saga.BootSettings{CAPEM: ca, CAVersion: 2, PreviewDomain: "preview.bugnet.sh"}
 	ref := provider.Ref{ID: "x"}
 	e2b := saga.SetupSpecFor(b, "e2b", ref, "key", false)
-	eq(t, e2b.CAPEM, "")
-	eq(t, e2b.CASHA256, hex.EncodeToString(sum[:]))
+	eq(t, e2b.CAPEM, string(ca))
+	eq(t, e2b.CASHA256, "")
 	eq(t, e2b.CAVersion, 2)
+	baked := saga.SetupSpecForImage(b, "e2b", ref, "key",
+		&image.Manifest{CAs: []image.CA{{Version: 2, SHA256: hex.EncodeToString(sum[:])}}})
+	eq(t, baked.CAPEM, "")
+	eq(t, baked.CASHA256, hex.EncodeToString(sum[:]))
 	eq(t, e2b.GateListen, ":29417")
 	eq(t, e2b.DenyPorts, []int{22, 2022, 29417, 49983})
 	eq(t, e2b.PreviewDomain, "preview.bugnet.sh")

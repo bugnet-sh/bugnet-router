@@ -185,7 +185,7 @@ func TestSetPlacementRouteKeepsAnEarlierGateTime(t *testing.T) {
 		store.ErrStateConflict) {
 		t.Fatalf("a placing placement's route: %v", err)
 	}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetPlacementRoute(ctx, p.ID, moved, &now); err != nil {
@@ -260,7 +260,7 @@ func TestMarkGateReadyKeepsAnEarlierTime(t *testing.T) {
 		t.Fatalf("a placing placement's gate: %v", err)
 	}
 	ref := provider.Ref{Provider: "local", ID: "sbx-1"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{now, now.Add(time.Minute)} {

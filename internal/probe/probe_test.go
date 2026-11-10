@@ -430,3 +430,25 @@ func TestProbeHardenSpecCarriesThePools(t *testing.T) {
 	eq(t, spec.Pools, []string{"203.0.113.0/24", "198.51.100.7/32"})
 	eq(t, spec.DenyRanges, []string{"10.0.0.0/8"})
 }
+
+func TestEstimateAndProbePassImageAccept(t *testing.T) {
+	r := newRig(t, "local", nil, saga.BootSettings{})
+	reg, err := provider.NewRegistry([]provider.Provider{r.prov},
+		provider.Features{Images: map[string]string{"local": "2026.10.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := probe.Deps{Registry: reg, Store: r.store, Saga: r.saga, Replica: "replica-test",
+		ImageAccept: []string{"2026.11.1"}}
+	m, ran, err := probe.New(deps).Run(t.Context(), canary("local"))
+	if err != nil || ran || m.Provider != "" {
+		t.Fatalf("Run = %+v, %v, %v, want no probe of a provider accept keeps out", m, ran, err)
+	}
+	if got := r.samples(t, "local"); len(got) != 0 {
+		t.Fatalf("samples %+v, want none", got)
+	}
+	deps.ImageAccept = []string{"2026.10.1"}
+	if _, ran, err := probe.New(deps).Run(t.Context(), canary("local")); err != nil || !ran {
+		t.Fatalf("Run = %v, %v, want a probe of an accepted provider", ran, err)
+	}
+}

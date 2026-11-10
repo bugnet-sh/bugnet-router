@@ -31,7 +31,7 @@ func (e *env) warmMembers(t *testing.T, n int) {
 			t.Fatal(err)
 		}
 		ref := provider.Ref{Provider: "local", ID: "sb-" + m.ID.String()[:8]}
-		if err := e.store.MarkMemberWarm(ctx, m.ID, ref, "", time.Now()); err != nil {
+		if err := e.store.MarkMemberWarm(ctx, m.ID, ref, "", nil, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}

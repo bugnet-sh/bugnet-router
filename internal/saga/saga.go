@@ -213,6 +213,10 @@ type Deps struct {
 	PoolRoom time.Duration
 	// Reserve are the Reserve settings, the defaults when its hold is zero
 	Reserve config.Reserve
+	// ImageAccept is images.accept, the base image versions creates may start from
+	ImageAccept []string
+	// ImageChannel is images.channel, the channel every accepted build must name
+	ImageChannel string
 	// ReserveShare is the share of a pool's target open reservations may hold, pools.reserve_share,
 	// one half when zero
 	ReserveShare float64
@@ -514,7 +518,7 @@ func (s *Saga) inputs(
 ) placement.Inputs {
 	return placement.Inputs{
 		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
-		WarmFirst: s.d.WarmFirst,
+		WarmFirst: s.d.WarmFirst, ImageAccept: s.d.ImageAccept,
 	}
 }
 
@@ -701,11 +705,18 @@ func (s *Saga) attemptCold(
 		smp.ReadyMS = smp.CreateMS + boot.ReadyMS
 	}
 	smp.RunnerMS, smp.GateMS = boot.RunnerMS, boot.GateMS
+	if boot.Image != nil {
+		smp.ImageVersion = boot.Image.Version
+	}
+	smp.Reseed = boot.Reseed
 	if err != nil {
 		noBuild := errors.Is(err, errNoRunnerBuild)
 		reason := reasonNoRunner
 		if !noBuild {
 			reason = reasonBootFailed
+			if errors.Is(err, errImageMismatch) {
+				reason = reasonImageMismatch
+			}
 			if s.countsAgainst(ctx, name, err, false) {
 				s.d.Tracker.RecordFailure(name)
 			}
@@ -720,7 +731,7 @@ func (s *Saga) attemptCold(
 	s.recordSample(ctx, prov, c.Size, smp, nil)
 	prep := Prepared{
 		Ref: ref, KeyID: p.KeyID, GateReadyAt: boot.GateReadyAt, SSHHost: boot.SSH,
-		CAVersion: boot.CAVersion, GateMS: boot.GateMS,
+		CAVersion: boot.CAVersion, GateMS: boot.GateMS, Image: boot.Image,
 	}
 	return s.commitReady(ctx, p, pkg, c, rec, prep, nil, started)
 }
@@ -822,6 +833,12 @@ func (s *Saga) attemptWarm(
 	prep, err := s.Prepare(pctx, prov, ref, p.ID, req, true)
 	pcancel()
 	smp.GateMS = prep.GateMS
+	// The fill's Boot read the manifest and the member row kept it
+	prep.Image = manifestOfRecord(m.Image)
+	if prep.Image != nil {
+		smp.ImageVersion = prep.Image.Version
+	}
+	smp.Reseed = prep.Reseed
 	if err != nil {
 		if s.countsAgainst(ctx, name, err, false) {
 			s.d.Tracker.RecordFailure(name)
@@ -953,7 +970,8 @@ func (s *Saga) readyWrites(
 	path string, readyAt, deadline time.Time,
 ) (Event, error) {
 	ts := s.d.Store.Tx(tx)
-	err := ts.MarkPlacementReady(ctx, p.ID, prep.Ref, size, readyAt, deadline)
+	err := ts.MarkPlacementReady(ctx, p.ID, prep.Ref, size, readyAt, deadline,
+		recordOfManifest(prep.Image))
 	if err != nil {
 		return Event{}, err
 	}

@@ -288,8 +288,38 @@ func (o *OperatorServer) ListProviders(
 				st.PolledAt = timestamppb.New(c.PolledAt)
 			}
 		}
+		st.ImageAccepted = true
+		if s.d.Registry != nil {
+			if p, ok := s.d.Registry.Get(name); ok {
+				st.ImageVersion = s.d.Registry.ImageVersion(p)
+				st.ImageAccepted = s.d.Registry.ImageAccepted(p, s.d.ImageAccept)
+			}
+		}
 		out.Providers = append(out.Providers, st)
 	}
 	s.d.Log.Info("operator listed providers", "actor", readActor)
+	return connect.NewResponse(out), nil
+}
+
+// ListImageUse counts live placements by provider and base image version, so an old artifact is
+// retired only once nothing runs on it
+func (o *OperatorServer) ListImageUse(
+	ctx context.Context, req *connect.Request[routerv1.ListImageUseRequest],
+) (*connect.Response[routerv1.ListImageUseResponse], error) {
+	s := o.s
+	rows, err := s.d.Store.ImageUse(ctx, req.Msg.GetProvider())
+	if err != nil {
+		return nil, s.status(err)
+	}
+	out := &routerv1.ListImageUseResponse{}
+	for _, r := range rows {
+		use := &routerv1.ImageUse{Provider: r.Provider, ImageVersion: r.Version,
+			LivePlacements: uint32(r.Live)}
+		if !r.LastReadyAt.IsZero() && r.LastReadyAt.Unix() > 0 {
+			use.LastReadyAt = timestamppb.New(r.LastReadyAt)
+		}
+		out.Uses = append(out.Uses, use)
+	}
+	s.d.Log.Info("operator listed image use", "actor", readActor)
 	return connect.NewResponse(out), nil
 }

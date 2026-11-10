@@ -41,6 +41,8 @@ const (
 	EndFailed  = "failed"
 	EndDrained = "drained"
 	EndGone    = "gone"
+	// EndImage is a warm member whose base image left images.accept
+	EndImage = "image"
 )
 
 // Member is one sandbox a pool keeps, claimed by an order or a reservation in time
@@ -52,8 +54,11 @@ type Member struct {
 	State          string
 	IdempotencyKey string
 	// ProviderRef is the member's sandbox with its credentials opened, nil before Create returned
-	ProviderRef      *provider.Ref
-	Image            string
+	ProviderRef *provider.Ref
+	// Template is the template or image the member was built from
+	Template string
+	// Image is the base image the fill's Boot read, nil for none
+	Image            *ReadyImage
 	SandboxCreatedAt *time.Time
 	HoldsSlot        bool
 	ReservationID    *uuid.UUID
@@ -76,15 +81,18 @@ type Holder struct {
 }
 
 const memberColumns = `id, provider, size_name, origin, state, idempotency_key, provider_ref,
-	coalesce(image, ''), sandbox_created_at, holds_slot, reservation_id, placement_id, created_at,
+	coalesce(image, ''), coalesce(image_version, ''), image_manifest, sandbox_created_at,
+	holds_slot, reservation_id, placement_id, created_at,
 	warm_at, parked_at, claimed_at, bound_at, ended_at, coalesce(end_reason, ''),
 	coalesce(error, '')`
 
 func (s *Store) scanMember(row pgx.Row) (Member, error) {
 	var m Member
-	var ref []byte
+	var ref, manifest []byte
+	var imgVersion string
 	err := row.Scan(&m.ID, &m.Provider, &m.SizeName, &m.Origin, &m.State, &m.IdempotencyKey,
-		&ref, &m.Image, &m.SandboxCreatedAt, &m.HoldsSlot, &m.ReservationID, &m.PlacementID,
+		&ref, &m.Template, &imgVersion, &manifest, &m.SandboxCreatedAt, &m.HoldsSlot,
+		&m.ReservationID, &m.PlacementID,
 		&m.CreatedAt, &m.WarmAt, &m.ParkedAt, &m.ClaimedAt, &m.BoundAt, &m.EndedAt,
 		&m.EndReason, &m.Error)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -92,6 +100,9 @@ func (s *Store) scanMember(row pgx.Row) (Member, error) {
 	}
 	if err != nil {
 		return Member{}, err
+	}
+	if imgVersion != "" {
+		m.Image = &ReadyImage{Version: imgVersion, Manifest: manifest}
 	}
 	m.CreatedAt = utc(m.CreatedAt)
 	for _, t := range []**time.Time{&m.SandboxCreatedAt, &m.WarmAt, &m.ParkedAt, &m.ClaimedAt,
@@ -272,8 +283,13 @@ func (s *Store) MarkMemberCreated(
 
 // MarkMemberWarm makes a filled member claimable, its ref sealed under its own id
 func (s *Store) MarkMemberWarm(
-	ctx context.Context, id uuid.UUID, ref provider.Ref, image string, at time.Time,
+	ctx context.Context, id uuid.UUID, ref provider.Ref, image string, img *ReadyImage,
+	at time.Time,
 ) error {
+	version, manifest, err := imageArgs(img)
+	if err != nil {
+		return fmt.Errorf("mark member warm %s: %w", id, err)
+	}
 	sealed, err := s.sealRef(id, ref)
 	if err != nil {
 		return fmt.Errorf("mark member warm %s: %w", id, err)
@@ -284,8 +300,9 @@ func (s *Store) MarkMemberWarm(
 	}
 	tag, err := s.q.Exec(ctx, `
 		update pool_members set state = 'warm', provider_ref = $2, image = $3, warm_at = $4,
-			parked_at = $4
-		where id = $1 and state = 'filling'`, id, raw, nullIfEmpty(image), utc(at))
+			parked_at = $4, image_version = $5, image_manifest = $6
+		where id = $1 and state = 'filling'`, id, raw, nullIfEmpty(image), utc(at), version,
+		manifest)
 	if err != nil {
 		return fmt.Errorf("mark member warm: %w", err)
 	}

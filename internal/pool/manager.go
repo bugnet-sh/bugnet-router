@@ -44,7 +44,13 @@ var ErrSnooze = errors.New("pool: the provider's creates are busy")
 var ErrUnknownPool = errors.New("pool: no such pool")
 
 // Booted is what a pool boot timed, in milliseconds, store.NoStep when a step did not run
-type Booted struct{ ReadyMS, RunnerMS int }
+type Booted struct {
+	ReadyMS, RunnerMS int
+	// Image is the base image record the boot read, nil for none
+	Image *store.ReadyImage
+	// Reseed is setup's answer for its seed, empty when it gave none
+	Reseed string
+}
 
 // Saga is what a fill needs of the saga, an interface so the saga can import this package
 type Saga interface {
@@ -89,6 +95,8 @@ type Deps struct {
 	Replica string
 	Now     func() time.Time
 	Log     *slog.Logger
+	// ImageAccept is images.accept, a warm member whose image version left it is retired
+	ImageAccept []string
 }
 
 // Manager sizes, fills, inspects and retires pools, router-worker runs it
@@ -317,6 +325,11 @@ func (m *Manager) tickPool(
 	if pause.Until.After(now) || !m.d.Settings.Enabled {
 		return nil
 	}
+	// A provider images.accept keeps out of placements gets no new members
+	if prov, ok := m.d.Registry.Get(c.Provider); ok &&
+		!m.d.Registry.ImageAccepted(prov, m.d.ImageAccept) {
+		return nil
+	}
 	return m.fill(ctx, c, target-have)
 }
 
@@ -352,6 +365,11 @@ func (m *Manager) staleReason(c Config, mem store.Member, now time.Time) string 
 		}
 		if now.Sub(born) > c.MaxAge {
 			return store.EndAged
+		}
+		// A member of a base image that images.accept dropped is never claimed
+		if mem.Image != nil && len(m.d.ImageAccept) > 0 &&
+			!slices.Contains(m.d.ImageAccept, mem.Image.Version) {
+			return store.EndImage
 		}
 	case store.MemberFilling:
 		if now.Sub(mem.CreatedAt) >= fillStuckAfter {
@@ -543,6 +561,10 @@ func (m *Manager) Fill(ctx context.Context, id uuid.UUID) error {
 	}
 	ref, boot, err := m.d.Saga.BootPool(ctx, prov, ref)
 	smp.RunnerMS = boot.RunnerMS
+	if boot.Image != nil {
+		smp.ImageVersion = boot.Image.Version
+	}
+	smp.Reseed = boot.Reseed
 	if err != nil {
 		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
@@ -553,7 +575,7 @@ func (m *Manager) Fill(ctx context.Context, id uuid.UUID) error {
 			return nil
 		}
 	}
-	if err := m.d.Store.MarkMemberWarm(ctx, mem.ID, ref, "", m.now()); err != nil {
+	if err := m.d.Store.MarkMemberWarm(ctx, mem.ID, ref, "", boot.Image, m.now()); err != nil {
 		m.failFillAfter(ctx, mem, &smp, size, ref, err)
 		return nil
 	}

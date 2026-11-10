@@ -246,7 +246,10 @@ type options struct {
 	fetch      config.Fetch
 	fetchToken string
 	images     map[string]config.ImageTools
-	upstream   bootstrap.Upstream
+	// imageVersions and imageAccept set the base image versions the registry names and accepts
+	imageVersions map[string]string
+	imageAccept   []string
+	upstream      bootstrap.Upstream
 	// hooks and hookSecrets set the webhook providers and their secrets
 	hooks       config.Hooks
 	hookSecrets map[string]config.HookSecret
@@ -317,7 +320,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Increment: time.Second, RunnerPath: runnerPath, ReadyDelay: opts.readyDelay,
 	})
 	t.Cleanup(func() { destroyAll(t, prov) })
-	var features provider.Features
+	features := provider.Features{Images: opts.imageVersions}
 	if opts.secrets {
 		features.Secrets = []string{name}
 		api.SetApplyPoll(t, 10*time.Millisecond)
@@ -440,7 +443,8 @@ func newEnv(t *testing.T, opts options) *env {
 		ProviderOps: opts.providerOps,
 		Sessions:    sess, SessionWriter: writer,
 		Bootstrap: opts.bootstrap, Fetch: opts.fetch, FetchToken: opts.fetchToken,
-		Images: opts.images, Upstream: opts.upstream, Hooks: opts.hooks,
+		Images: opts.images, ImageAccept: opts.imageAccept, Upstream: opts.upstream,
+		Hooks:       opts.hooks,
 		HookSecrets: opts.hookSecrets,
 	})
 	t.Cleanup(srv.Close)

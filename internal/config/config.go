@@ -103,7 +103,9 @@ type Config struct {
 	// Localrun is read only by a localrun build and zero in every other
 	Localrun Localrun
 	// Images holds each listed provider's image manifest
-	Images map[string]ImageTools
+	ImageTools map[string]ImageTools
+	// Images holds the base image settings of CP 19.13
+	Images Images
 	// GithubToken and HFToken read sources for the estimator, empty for anonymous reads
 	GithubToken string
 	HFToken     string
@@ -647,6 +649,7 @@ func defaults() file {
 		Wallets:    defaultWallets(),
 		Stats:      defaultStats(),
 		Estimator:  defaultEstimator(),
+		Images:     defaultImages(),
 		Sessions:   defaultSessions(),
 		Pools:      defaultPools(),
 		Reserve:    defaultReserve(),
@@ -867,7 +870,9 @@ func (f file) config() (Config, error) {
 	if c.Estimator, err = f.Estimator.read(d.Estimator); err != nil {
 		return Config{}, err
 	}
-	c.Images = f.Images.images(c.Providers)
+	if c.Images, c.ImageTools, err = f.Images.read(c.Providers, len(c.E2B.Templates)); err != nil {
+		return Config{}, err
+	}
 	c.ProviderOps = map[string]int{}
 	for _, o := range []struct {
 		name string

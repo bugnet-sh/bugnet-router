@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
@@ -149,7 +150,7 @@ func (e *env) readyPlacement(t *testing.T) store.Placement {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	err = e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, now, now.Add(time.Hour))
+	err = e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, now, now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2015,5 +2016,45 @@ func TestFirstFrameMSOnTheJobRow(t *testing.T) {
 	}
 	if got, _, _ := e.store.JobFirstFrame(t.Context(), res.JobID); got != ms {
 		t.Fatalf("first_frame_ms moved from %d to %d", ms, got)
+	}
+}
+
+// bakedRunner maps the base image's runner path to the host build, recording each runner call
+type bakedRunner struct {
+	*local.Provider
+	mu   *sync.Mutex
+	subs *[]string
+}
+
+func (b bakedRunner) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	argv := slices.Clone(spec.Argv)
+	if len(argv) > 1 && argv[0] == image.RunnerPath {
+		b.mu.Lock()
+		*b.subs = append(*b.subs, argv[1])
+		b.mu.Unlock()
+		argv[0] = "/tmp/bugnet/bin/bugnet-run"
+	}
+	spec.Argv = argv
+	return b.Provider.Exec(ctx, ref, spec)
+}
+
+func TestJobsUseTheRefsRunnerPath(t *testing.T) {
+	var mu sync.Mutex
+	var subs []string
+	e := newEnvWith(t, func(p *local.Provider) provider.Provider {
+		return bakedRunner{Provider: p, mu: &mu, subs: &subs}
+	})
+	e.place.ProviderRef.Meta = map[string]string{"runner": image.RunnerPath}
+	s := e.service(t, "r1")
+	res := e.exec(t, s, []string{"sh", "-c", "echo hi"}, "", 0, jobs.Until{})
+	if res.State != store.JobExited || string(res.StdoutTail) != "hi\n" {
+		t.Fatalf("job %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(subs, "start") {
+		t.Fatalf("runner calls %v, want start at %s", subs, image.RunnerPath)
 	}
 }

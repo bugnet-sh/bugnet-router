@@ -49,6 +49,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -184,6 +185,8 @@ type Deps struct {
 	FetchToken string
 	// Images is each provider's tool manifest, absent for none measured
 	Images map[string]config.ImageTools
+	// ImageAccept is images.accept, the base image versions creates may start from
+	ImageAccept []string
 	// Upstream names the hosts a private fetch talks to, the production ones when zero
 	Upstream bootstrap.Upstream
 	// Hooks and HookSecrets say which providers' webhooks DeliverHook verifies and with what
@@ -431,6 +434,7 @@ func (s *Server) startOption(
 ) *routerv1.PackageOption {
 	_, err := s.d.Engine.Candidates(placement.Inputs{
 		Package: pkg, Requirements: need, MarginFloor: s.d.MarginFloor,
+		ImageAccept: s.d.ImageAccept,
 	})
 	reason := ""
 	switch {
@@ -995,7 +999,24 @@ func placementMsg(p store.Placement) *routerv1.Placement {
 	if ended && p.TerminatedAt != nil {
 		out.EndedAt = timestamppb.New(*p.TerminatedAt)
 	}
+	out.Image = imageMsg(p)
 	return out
+}
+
+// imageMsg is the base image a ready placement started from, nil when it has none
+func imageMsg(p store.Placement) *routerv1.SandboxImage {
+	if p.ImageVersion == "" {
+		return nil
+	}
+	img := &routerv1.SandboxImage{Version: p.ImageVersion}
+	var kept struct {
+		OS    string            `json:"os"`
+		Tools map[string]string `json:"tools"`
+	}
+	if json.Unmarshal(p.ImageManifest, &kept) == nil {
+		img.Os, img.Tools = kept.OS, kept.Tools
+	}
+	return img
 }
 
 var placementStates = map[string]routerv1.PlacementState{

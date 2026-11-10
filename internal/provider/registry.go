@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 )
 
@@ -10,6 +11,10 @@ type Features struct {
 	Preview, SSH, Secrets []string
 	// BoatNativeSSH reaches Boat through its own SSH server instead of the gate
 	BoatNativeSSH bool
+	// Images is the base image version each provider's creates start from, absent for none
+	Images map[string]string
+	// ImageExempt lists providers placed on their own image while images.accept is set
+	ImageExempt []string
 }
 
 // Registry holds the configured providers by name and in the order they were listed
@@ -17,6 +22,8 @@ type Registry struct {
 	order  []Provider
 	byName map[string]Provider
 	flags  map[string]flags
+	images map[string]string
+	exempt []string
 }
 
 // flags are the data-plane features the registry computed for one provider at start
@@ -28,6 +35,8 @@ func NewRegistry(order []Provider, f Features) (*Registry, error) {
 		order:  slices.Clone(order),
 		byName: make(map[string]Provider, len(order)),
 		flags:  make(map[string]flags, len(order)),
+		images: maps.Clone(f.Images),
+		exempt: slices.Clone(f.ImageExempt),
 	}
 	for _, p := range order {
 		name := p.Name()
@@ -95,4 +104,23 @@ func (r *Registry) Capabilities(p Provider) Capabilities {
 // NativeSSH reports whether p's SSH runs through its own server instead of the gate
 func (r *Registry) NativeSSH(p Provider) bool {
 	return r.flags[p.Name()].native
+}
+
+// ImageVersion is the base image version p's creates start from, empty for none
+func (r *Registry) ImageVersion(p Provider) string {
+	return r.images[p.Name()]
+}
+
+// ImageAccepted reports whether p may host placements when accept lists the allowed versions
+func (r *Registry) ImageAccepted(p Provider, accept []string) bool {
+	if len(accept) == 0 || slices.Contains(r.exempt, p.Name()) {
+		return true
+	}
+	v := r.images[p.Name()]
+	return v != "" && slices.Contains(accept, v)
+}
+
+// ImageExempt reports whether p is placed on its own image while images.accept is set
+func (r *Registry) ImageExempt(p Provider) bool {
+	return slices.Contains(r.exempt, p.Name())
 }

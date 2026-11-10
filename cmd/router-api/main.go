@@ -19,6 +19,7 @@ import (
 	"io"
 	stdlog "log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -156,6 +157,12 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err := checkPools(reg, cfg); err != nil {
 		return err
 	}
+	if err := checkImages(reg, cfg); err != nil {
+		return err
+	}
+	if err := checkBoxdRefs(reg, cfg, cat); err != nil {
+		return err
+	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
 	runners, err := providers.Runners(cfg, reg)
 	if err != nil {
@@ -228,6 +235,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		CreatesPerSecond: cfg.CreatesPerSecond,
 		Pools:            warmth,
 		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
+		ImageAccept:      cfg.Images.Accept,
+		ImageChannel:     cfg.Images.Channel,
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
@@ -286,7 +295,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Bootstrap:           cfg.Bootstrap,
 		Fetch:               cfg.Fetch,
 		FetchToken:          cfg.EgressFetchToken,
-		Images:              cfg.Images,
+		Images:              cfg.ImageTools,
+		ImageAccept:         cfg.Images.Accept,
 		Hooks:               cfg.Hooks,
 		HookSecrets:         cfg.HookSecrets,
 		Pools:               pools,
@@ -345,6 +355,56 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 // nothing
 func checkPools(reg *provider.Registry, cfg config.Config) error {
 	return poolpkg.Validate(reg, cfg.Pools)
+}
+
+// checkImages refuses images.accept when no provider is accepted or exempt, and says which
+// providers it keeps out of placements
+func checkImages(reg *provider.Registry, cfg config.Config) error {
+	accept := cfg.Images.Accept
+	if len(accept) == 0 {
+		return nil
+	}
+	found := false
+	for _, p := range reg.Ordered() {
+		if reg.ImageAccepted(p, accept) {
+			found = true
+			continue
+		}
+		slog.Error("images.accept keeps a provider out of placements", "provider", p.Name(),
+			"version", reg.ImageVersion(p))
+	}
+	if !found {
+		return errors.New("images.accept lists no version that a provider has, and " +
+			"images.exempt names none of them")
+	}
+	return nil
+}
+
+// checkBoxdRefs refuses images.boxd.refs keys that are not sizes boxd sells, and a refs that
+// misses a size the catalog's packages land on
+func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
+	refs := cfg.Images.Boxd.Refs
+	p, ok := reg.Get("boxd")
+	sizer, isSizer := p.(provider.Sizer)
+	if len(refs) == 0 || !ok || !isSizer {
+		return nil
+	}
+	sold := map[string]bool{}
+	for _, s := range sizer.Sizes() {
+		sold[s.Name] = true
+	}
+	for _, size := range slices.Sorted(maps.Keys(refs)) {
+		if !sold[size] {
+			return fmt.Errorf("images.boxd.refs names %q, which is not a size boxd sells", size)
+		}
+	}
+	for _, pkg := range cat.All() {
+		if size, ok := p.SizeFor(pkg.Resources); ok && refs[size.Name] == "" {
+			return fmt.Errorf("images.boxd.refs has no artifact for size %q, which package %q "+
+				"lands on", size.Name, pkg.ID)
+		}
+	}
+	return nil
 }
 
 // poolWarmth is the view of warm members that marks candidates, none while no pool is on

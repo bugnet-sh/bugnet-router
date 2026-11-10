@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -36,7 +37,7 @@ var runnerErrors = map[string]error{
 func runner(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, args ...string,
 ) (provider.FileEntry, error) {
-	out, code, err := run(ctx, prov, ref, true, append([]string{RunnerPath}, args...)...)
+	out, code, err := run(ctx, prov, ref, true, append([]string{image.RunnerFor(ref)}, args...)...)
 	if err != nil {
 		return provider.FileEntry{}, err
 	}

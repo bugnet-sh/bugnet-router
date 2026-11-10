@@ -2,6 +2,7 @@ package saga
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +41,9 @@ func (s *Saga) recordSample(
 		return
 	default:
 		m.Outcome, m.ErrorCode = health.Outcome(err)
+	}
+	if errors.Is(err, errImageMismatch) {
+		m.ErrorCode = reasonImageMismatch
 	}
 	if err != nil {
 		m.Error = err.Error()

@@ -21,7 +21,10 @@ func (s *Saga) BootPool(
 	ctx context.Context, prov provider.Provider, ref provider.Ref,
 ) (provider.Ref, pool.Booted, error) {
 	ref, rep, err := s.Boot(ctx, prov, ref, BootPlan{Pool: true})
-	return ref, pool.Booted{ReadyMS: rep.ReadyMS, RunnerMS: rep.RunnerMS}, err
+	return ref, pool.Booted{
+		ReadyMS: rep.ReadyMS, RunnerMS: rep.RunnerMS, Image: recordOfManifest(rep.Image),
+		Reseed: rep.Reseed,
+	}, err
 }
 
 // DestroyRef destroys a sandbox, one already gone counting as destroyed

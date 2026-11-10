@@ -1,6 +1,7 @@
 package saga
 
 import (
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"testing"
 	"time"
 
@@ -31,12 +32,19 @@ type (
 func SetupSpecFor(
 	b BootSettings, name string, ref provider.Ref, key string, sample bool,
 ) SetupSpecFields {
-	return b.setupSpecFor(name, ref, key, sample)
+	return b.setupSpecFor(name, ref, key, sample, nil)
+}
+
+// SetupSpecForImage is SetupSpecFor for a sandbox whose image carries manifest m
+func SetupSpecForImage(
+	b BootSettings, name string, ref provider.Ref, key string, m *image.Manifest,
+) SetupSpecFields {
+	return b.setupSpecFor(name, ref, key, false, m)
 }
 
 // PoolSetupSpecFor is the setup spec Boot writes for a pool member's sandbox
 func PoolSetupSpecFor(b BootSettings, name string, ref provider.Ref) SetupSpecFields {
-	return b.poolSetupSpecFor(name, ref)
+	return b.poolSetupSpecFor(name, ref, nil)
 }
 
 // WithinLifetime is the check an extension of a placement runs against the provider's limit

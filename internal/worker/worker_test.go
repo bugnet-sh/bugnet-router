@@ -505,7 +505,7 @@ func (e *env) readyPlacement(
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, readyAt,
-		deadline); err != nil {
+		deadline, nil); err != nil {
 		t.Fatal(err)
 	}
 	return e.reload(t, p.ID), ref
@@ -1650,7 +1650,7 @@ func (e *env) overdue(t *testing.T, ago time.Duration) uuid.UUID {
 	now := time.Now()
 	ref := provider.Ref{Provider: "local", ID: "gone-" + p.ID.String()}
 	if err := e.store.MarkPlacementReady(t.Context(), p.ID, ref, small.Name,
-		now.Add(-ago-time.Hour), now.Add(-ago)); err != nil {
+		now.Add(-ago-time.Hour), now.Add(-ago), nil); err != nil {
 		t.Fatal(err)
 	}
 	e.held(t, p.ID)
@@ -1665,7 +1665,7 @@ func (e *env) endedAgo(t *testing.T, ago time.Duration) uuid.UUID {
 	at := time.Now().Add(-ago)
 	ref := provider.Ref{Provider: "local", ID: "gone-" + p.ID.String()}
 	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, at.Add(-time.Hour),
-		at.Add(time.Hour)); err != nil {
+		at.Add(time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	e.held(t, p.ID)

@@ -27,7 +27,7 @@ func TestStoreSealsProviderCredentials(t *testing.T) {
 	}
 	ref := provider.Ref{Provider: "e2b", ID: "sb", Meta: map[string]string{"envd_token": "tok"}}
 	now := time.Now()
-	err = st.MarkPlacementReady(t.Context(), p.ID, ref, "s", now, now.Add(time.Minute))
+	err = st.MarkPlacementReady(t.Context(), p.ID, ref, "s", now, now.Add(time.Minute), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

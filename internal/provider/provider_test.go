@@ -251,3 +251,21 @@ func TestRegistryRefusesListedProviderWithoutGater(t *testing.T) {
 		t.Fatalf("secrets need no interface, got %v", err)
 	}
 }
+
+func TestRegistryImageAccepted(t *testing.T) {
+	a, b, c := newNamed(t, "a"), newNamed(t, "b"), newNamed(t, "c")
+	reg, err := provider.NewRegistry([]provider.Provider{a, b, c}, provider.Features{
+		Images:      map[string]string{"a": "2026.11.1", "b": "2026.10.1"},
+		ImageExempt: []string{"c"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, reg.ImageVersion(a), "2026.11.1")
+	eq(t, reg.ImageVersion(c), "")
+	accept := []string{"2026.11.1"}
+	eq(t, reg.ImageAccepted(a, accept), true)
+	eq(t, reg.ImageAccepted(b, accept), false)
+	eq(t, reg.ImageAccepted(c, accept), true)
+	eq(t, reg.ImageAccepted(b, nil), true)
+}

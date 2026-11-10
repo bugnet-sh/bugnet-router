@@ -11,6 +11,7 @@ import (
 
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -23,8 +24,8 @@ var (
 )
 
 const (
-	// RunnerPath is where bugnet-run lives in every sandbox
-	RunnerPath = "/tmp/bugnet/bin/bugnet-run"
+	// RunnerPath is where the router uploads bugnet-run, a base image's own is image.RunnerFor
+	RunnerPath = image.UploadedRunnerPath
 	// stageDir holds each staged transfer's own directory, under the exec user's home
 	stageDir = ".bugnet/xfer"
 	// maxOutput bounds what one helper command may print

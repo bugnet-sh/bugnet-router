@@ -1,0 +1,8 @@
+{"v": 1, "version": "2026-11-1", "channel": "prod", "target": "boxd", "os": "ubuntu-24.04",
+ "inputs_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "built_at": "2026-11-20T10:00:00Z",
+ "runner_sha256": {"amd64": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+ "ca": [{"version": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+ "tools": {"git": "2.43", "tar": "1.35", "python3": "3.12", "node": "24.11", "docker": "none",
+           "pnpm": "10.2", "uv": "0.5", "hf": "0.27", "gcc": "13.3", "make": "4.3",
+           "sshd": "9.6", "nft": "1.0", "curl": "8.5"},
+ "disk_bytes": 812000000}

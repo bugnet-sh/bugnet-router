@@ -166,6 +166,9 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   pools drain --provider P --size S [--pause D] [--actor A]
                                          retire the warm members of one pool, and with --pause
                                          keep its refill off that long
+  image scan --dir DIR | --oci TAG       scan a payload directory or a local OCI image for every
+                                         secret of the environment, exit 1 on any finding, printing
+                                         rules and paths and never values
   owned PROVIDER                         count the provider account's sandboxes under Bugnet's
                                          labels and list their ids, its key read from the
                                          environment
@@ -251,7 +254,7 @@ func run(
 		"session":      c.session,
 		"fetch-source": c.fetchSource, "hooks": c.hooks, "bench": c.benchCmd,
 		"simulate": c.simulate, "abuse": c.abuse, "placement": c.placementCmd,
-		"signals": c.signals, "providers": c.providers, "pools": c.pools,
+		"signals": c.signals, "providers": c.providers, "pools": c.pools, "image": c.image,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

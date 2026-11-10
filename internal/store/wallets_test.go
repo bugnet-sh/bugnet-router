@@ -37,7 +37,7 @@ func ready(t *testing.T, s *store.Store, p store.Placement) {
 	now := time.Now()
 	ref := provider.Ref{Provider: "a", ID: "sbx-" + p.OrderID}
 	if err := s.MarkPlacementReady(t.Context(), p.ID, ref, "small", now,
-		now.Add(time.Minute)); err != nil {
+		now.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 }

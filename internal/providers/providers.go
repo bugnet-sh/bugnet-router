@@ -81,6 +81,7 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 	reg, err := provider.NewRegistry(ps, provider.Features{
 		Preview: cfg.Previews.Providers, SSH: cfg.SSH.Providers, Secrets: cfg.Secrets.Providers,
 		BoatNativeSSH: cfg.Boat.SSHPath == "native",
+		Images:        cfg.Images.Versions(cfg.Providers), ImageExempt: cfg.Images.Exempt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("providers: %w", err)
