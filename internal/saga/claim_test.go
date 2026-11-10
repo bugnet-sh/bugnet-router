@@ -48,7 +48,7 @@ func (c claimer) Claim(ctx context.Context, name, key string) (provider.Claim, e
 			Code: provider.CodeCapacity, CanFailOver: true, Err: errClaimRefused,
 		}
 	}
-	ref, err := c.Provider.Create(ctx, provider.CreateRequest{
+	ref, err := c.Create(ctx, provider.CreateRequest{
 		IdempotencyKey: key, Size: small, Lifetime: time.Hour,
 		Labels: map[string]string{
 			"bugnet": "1", "bugnet_deployment": "main", "bugnet_pool": "small",

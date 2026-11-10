@@ -43,11 +43,15 @@ func (p *Provider) poolDefinition(spec provider.PoolSpec, instanceType string) (
 	var target scalingTarget
 	target.SleepIdleDelay.LightSleepValue = poolLightSleepAfter
 	def := serviceDefinition{
-		Name:          spec.Name,
-		Type:          "SANDBOX",
-		Env:           []envVar{{Key: labelsEnv, Value: string(encoded)}},
-		Ports:         []portSpec{{Port: executorPort, Protocol: "http"}, {Port: appPort, Protocol: "http"}},
-		Routes:        []routeSpec{{Port: executorPort, Path: executorPath + "/"}, {Port: appPort, Path: "/"}},
+		Name: spec.Name,
+		Type: "SANDBOX",
+		Env:  []envVar{{Key: labelsEnv, Value: string(encoded)}},
+		Ports: []portSpec{
+			{Port: executorPort, Protocol: "http"}, {Port: appPort, Protocol: "http"},
+		},
+		Routes: []routeSpec{
+			{Port: executorPort, Path: executorPath + "/"}, {Port: appPort, Path: "/"},
+		},
 		InstanceTypes: []typeSpec{{Type: instanceType}},
 		Regions:       []string{p.region},
 		// One instance at all times, which Light Sleep suspends while nothing asks for it
@@ -268,7 +272,7 @@ func (p *Provider) claimed(ctx context.Context) (map[string]bool, bool) {
 func (p *Provider) markPoolHeld(ctx context.Context, owned []provider.Summary) {
 	var members []int
 	for i, s := range owned {
-		// A member the router made has its own app and a pool_member label, a provider-kept one neither
+		// A member the router made has its own app and a pool_member label, a kept one neither
 		if s.Labels["bugnet_pool"] != "" && s.Labels["pool_member"] == "" {
 			owned[i].Ref.Meta[metaPooled] = "1"
 			members = append(members, i)

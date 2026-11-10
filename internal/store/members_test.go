@@ -552,7 +552,9 @@ func TestBindProvidedRecordsTheMemberBeforeTheClaim(t *testing.T) {
 func TestHedgeLosersLeftNamesPlacementsWhoseLoserStillExists(t *testing.T) {
 	s, pool := newStoreWithPool(t)
 	ctx := context.Background()
-	made := func(order string, readyAgo time.Duration, loserSandbox string, destroyed bool) uuid.UUID {
+	made := func(
+		order string, readyAgo time.Duration, loserSandbox string, destroyed bool,
+	) uuid.UUID {
 		t.Helper()
 		p := newPlacement(t, s, order)
 		_, err := pool.Exec(ctx, `update placements set state = 'ready', hedged = true,

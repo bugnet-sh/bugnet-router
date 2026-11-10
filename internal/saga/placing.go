@@ -217,7 +217,8 @@ func (s *Saga) runAttempt(
 		return attemptResult{out: outcome{done: true}}
 	case err != nil:
 		return attemptResult{out: outcome{
-			reason: reasonInternal, detail: fmt.Sprintf("reserve on %s: %v", c.Provider.Name(), err),
+			reason: reasonInternal,
+			detail: fmt.Sprintf("reserve on %s: %v", c.Provider.Name(), err),
 		}}
 	case !reserved:
 		return attemptResult{full: true}

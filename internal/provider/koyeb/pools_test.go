@@ -42,8 +42,9 @@ func TestKoyebEnsurePoolBody(t *testing.T) {
 		"scalings.0.max":     `1`,
 		"scalings.0.targets": `[{"sleep_idle_delay": {"light_sleep_value": 60}}]`,
 		"mesh":               `"DEPLOYMENT_MESH_AUTO"`,
-		"ports":              `[{"port": 3030, "protocol": "http"}, {"port": 3031, "protocol": "http"}]`,
-		"routes.0.path":      `"/koyeb-sandbox/"`,
+		"ports": `[{"port": 3030, "protocol": "http"},
+			{"port": 3031, "protocol": "http"}]`,
+		"routes.0.path": `"/koyeb-sandbox/"`,
 	} {
 		if got := field(def, path); !jsonEqual(got, want) {
 			t.Errorf("definition.%s = %v, want %s", path, got, want)
