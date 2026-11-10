@@ -45,7 +45,7 @@ hourly_micros = 2500
 }
 
 func TestBuildLocal(t *testing.T) {
-	reg, err := providers.Build(localConfig(t), nil)
+	reg, err := providers.Build(localConfig(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestBuildLocal(t *testing.T) {
 func TestBuildLocalRefusesUnlessEnabled(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.LocalEnabled = false
-	_, err := providers.Build(cfg, nil)
+	_, err := providers.Build(cfg, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "local.enabled") {
 		t.Fatalf("build while disabled: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestBuildLocalRefusesUnlessEnabled(t *testing.T) {
 
 func TestBuildBoxd(t *testing.T) {
 	cfg := load(t, `providers = ["boxd"]`, map[string]string{"boxd": "bxd_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBuildBoxdEndpointOverride(t *testing.T) {
 region = "nyc"
 endpoint = "`+lis.Addr().String()+`"
 `, map[string]string{"boxd": "bxd_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ endpoint = "`+lis.Addr().String()+`"
 }
 
 func TestBuildBoxdNeedsKey(t *testing.T) {
-	_, err := providers.Build(load(t, `providers = ["boxd"]`, nil), nil)
+	_, err := providers.Build(load(t, `providers = ["boxd"]`, nil), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "BOXD_API_KEY") {
 		t.Fatalf("build boxd without a key: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestBuildE2B(t *testing.T) {
 domain = "e2b-juliett.dev"
 max_lifetime = "24h"
 `+e2bTemplates, map[string]string{"e2b": "e2b_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestBuildE2BDefaults(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	cfg := load(t, `providers = ["e2b"]`, map[string]string{"e2b": "e2b_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestBuildE2BDefaults(t *testing.T) {
 }
 
 func TestBuildE2BRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(load(t, `providers = ["e2b"]`+e2bTemplates, nil), nil)
+	_, err := providers.Build(load(t, `providers = ["e2b"]`+e2bTemplates, nil), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "E2B_API_KEY") {
 		t.Fatalf("build e2b without a key: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 	} {
 		cfg := load(t, "providers = [\"e2b\"]\n[[e2b.templates]]\n"+table,
 			map[string]string{"e2b": "e2b_test"})
-		_, err := providers.Build(cfg, nil)
+		_, err := providers.Build(cfg, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "e2b.templates") {
 			t.Errorf("%s: build gave %v, want an error naming e2b.templates", name, err)
 		}
@@ -220,7 +220,7 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 		"memory_mib = 2048\ndisk_gib = 10"
 	twice := load(t, "providers = [\"e2b\"]\n"+e2bTemplates+again,
 		map[string]string{"e2b": "e2b_test"})
-	if _, err := providers.Build(twice, nil); err == nil ||
+	if _, err := providers.Build(twice, nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "e2b.templates") || !strings.Contains(err.Error(), "two") {
 		t.Errorf("a size twice: build gave %v, want an error naming e2b.templates", err)
 	}
@@ -228,7 +228,7 @@ func TestBuildE2BRejectsBadConfig(t *testing.T) {
 
 func TestBuildKoyeb(t *testing.T) {
 	cfg := load(t, `providers = ["koyeb"]`, map[string]string{"koyeb": "koyeb_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ region = "par"
 [koyeb.instance_types]
 cpu = "large"
 `, map[string]string{"koyeb": "koyeb_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,13 +270,13 @@ cpu = "large"
 }
 
 func TestBuildKoyebRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(load(t, `providers = ["koyeb"]`, nil), nil)
+	_, err := providers.Build(load(t, `providers = ["koyeb"]`, nil), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "KOYEB_API_TOKEN") {
 		t.Fatalf("build koyeb without a token: %v", err)
 	}
 	cfg := load(t, "providers = [\"koyeb\"]\n[koyeb.instance_types]\ncpu = \"nano\"",
 		map[string]string{"koyeb": "koyeb_test"})
-	_, err = providers.Build(cfg, nil)
+	_, err = providers.Build(cfg, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "koyeb.instance_types") {
 		t.Fatalf("build koyeb with an unknown instance type: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestBuildKoyebRejectsBadConfig(t *testing.T) {
 
 func TestBuildBoat(t *testing.T) {
 	cfg := load(t, `providers = ["boat"]`, map[string]string{"boat": "boat_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestBuildBoatTypes(t *testing.T) {
 cpu2 = "small"
 cpu8 = "large"
 `, map[string]string{"boat": "boat_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,20 +324,20 @@ cpu8 = "large"
 }
 
 func TestBuildBoatRejectsBadConfig(t *testing.T) {
-	_, err := providers.Build(load(t, `providers = ["boat"]`, nil), nil)
+	_, err := providers.Build(load(t, `providers = ["boat"]`, nil), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "BOAT_API_KEY") {
 		t.Fatalf("build boat without a key: %v", err)
 	}
 	cfg := load(t, "providers = [\"boat\"]\n[boat.types]\ncpu = \"tiny\"",
 		map[string]string{"boat": "boat_test"})
-	_, err = providers.Build(cfg, nil)
+	_, err = providers.Build(cfg, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "boat.types") {
 		t.Fatalf("build boat with an unknown type: %v", err)
 	}
 }
 
 func TestBuildRejectsUnknownProviders(t *testing.T) {
-	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}}, nil)
+	_, err := providers.Build(config.Config{Providers: []string{"nimbus"}}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "nimbus") {
 		t.Fatalf("build nimbus: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestBuildPassesTheFeatureLists(t *testing.T) {
 [secrets]
 providers = ["e2b"]
 `+e2bTemplates, map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ providers = ["e2b", "boat"]
 [ssh]
 providers = ["e2b", "boat"]
 `+e2bTemplates, map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
-	reg, err = providers.Build(cfg, nil)
+	reg, err = providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("previews and ssh on two gated adapters gave %v", err)
 	}
@@ -434,7 +434,7 @@ providers = ["e2b", "boat"]
 	cfg = load(t, "providers = [\"e2b\", \"boat\"]\n[ssh]\nproviders = [\"boat\"]\n"+
 		"[boat]\nssh_path = \"native\"\n"+e2bTemplates,
 		map[string]string{"e2b": "e2b_test", "boat": "boat_test"})
-	reg, err = providers.Build(cfg, nil)
+	reg, err = providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("boat's native path gave %v", err)
 	}

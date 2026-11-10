@@ -60,6 +60,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
@@ -255,6 +256,8 @@ type options struct {
 	hookSecrets map[string]config.HookSecret
 	// pools lists the warm pools of the local provider, which ListPools and DrainPool serve
 	pools *config.Pools
+	// tel makes the spans of the saga, the jobs and the API server, off when nil
+	tel *telemetry.Telemetry
 }
 
 type env struct {
@@ -362,13 +365,14 @@ func newEnv(t *testing.T, opts options) *env {
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
 		Sessions: writer, SessionKeep: sess.Keep, SessionAbuseHold: sess.AbuseHold,
-		Reserve: opts.reserve,
+		Reserve: opts.reserve, Telemetry: opts.tel,
 	})
 	t.Cleanup(sg.Wait)
 	t.Cleanup(sg.Close)
 	js := jobs.New(jobs.Deps{
 		Store: st, Bus: streams.NewBus(vk, prefix), Registry: reg, ReplicaID: "api-test",
 		Log: discard, MaxRunning: opts.maxRunning, JobBudget: opts.jobBudget, Sessions: writer,
+		Telemetry: opts.tel,
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -446,6 +450,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Images: opts.images, ImageAccept: opts.imageAccept, Upstream: opts.upstream,
 		Hooks:       opts.hooks,
 		HookSecrets: opts.hookSecrets,
+		Telemetry:   opts.tel,
 	})
 	t.Cleanup(srv.Close)
 

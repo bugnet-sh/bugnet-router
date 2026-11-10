@@ -858,7 +858,7 @@ func (s *stack) gated(t *testing.T, h string) gated {
 		t.Fatal(err)
 	}
 	t.Cleanup(vk.Close)
-	reg, err := providers.Build(cfg, vk)
+	reg, err := providers.Build(cfg, vk, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

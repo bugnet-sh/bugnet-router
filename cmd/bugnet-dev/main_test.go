@@ -522,3 +522,11 @@ func TestExtensions(t *testing.T) {
 		t.Errorf("help exited %d with %q, want extensions listed", code, help)
 	}
 }
+
+func TestTraceIDCommand(t *testing.T) {
+	stdout, _, code := runCLI(t, env(nil), "trace-id", "--handle", "sbx_incf5d4j2g46mypgm6wajtyic5")
+	eq(t, code, 0)
+	eq(t, stdout, "trace_id=55a4dee648a7a4d0a70cd0a8b24c672f span_id=69923b8439c47854\n")
+	_, _, code = runCLI(t, env(nil), "trace-id", "--handle", "nope")
+	eq(t, code, 2)
+}

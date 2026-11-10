@@ -151,7 +151,7 @@ func liveAdapter(t *testing.T, name string) provider.Provider {
 	cfg := livetest.Settings(t)
 	cfg.Providers = []string{name}
 	cfg.ProviderKeys = map[string]string{name: key}
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
