@@ -79,6 +79,25 @@ func Prices(reg *provider.Registry) PriceFunc {
 	}
 }
 
+// IdleFunc gives the hourly cost of one unclaimed member of a provider-kept pool, false for a pool
+// the router keeps itself
+type IdleFunc func(provider, size string) (hourly int64, kept bool)
+
+// Idle gives the idle cost of the sizes the registry's provider-kept pools hold
+func Idle(reg *provider.Registry) IdleFunc {
+	return func(name, size string) (int64, bool) {
+		prov, ok := reg.Get(name)
+		if !ok || !providerKept(reg, name) {
+			return 0, false
+		}
+		sz, ok := sizeOf(prov, size)
+		if !ok {
+			return 0, false
+		}
+		return prov.(provider.PoolClaimer).IdleHourlyCostMicros(sz), true
+	}
+}
+
 // spendCapped reports whether the last day's waste and idle cost over all pools reached the cap
 func (m *Manager) spendCapped(ctx context.Context, now time.Time) (bool, int64, error) {
 	limit := m.d.Settings.MaxDailyMicros
@@ -94,6 +113,13 @@ func (m *Manager) spendCapped(ctx context.Context, now time.Time) (bool, int64, 
 	for _, mem := range members {
 		hourly, parked := prices(mem.Provider, mem.SizeName)
 		total += OverheadMicros(mem, hourly, parked, now.Add(-costDay), now)
+	}
+	idle, err := m.KeptIdleMicros(ctx)
+	if err != nil {
+		return false, 0, err
+	}
+	for _, micros := range idle {
+		total += micros
 	}
 	return total >= limit, total, nil
 }

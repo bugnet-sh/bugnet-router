@@ -99,6 +99,8 @@ type Manager struct {
 
 	mu        sync.Mutex
 	inspected map[uuid.UUID]time.Time
+	// ensured is the size each provider-kept pool was last set to by this process
+	ensured map[Key]int
 }
 
 // Configs turns the pool tables of the settings into pool configs
@@ -113,6 +115,26 @@ func Configs(s config.Pools) []Config {
 	return out
 }
 
+// ConfigsFor is Configs with each pool marked provider-kept when its provider keeps the members
+// itself, which a provider that claims members does
+func ConfigsFor(reg *provider.Registry, s config.Pools) []Config {
+	out := Configs(s)
+	for i, c := range out {
+		out[i].ProviderKept = providerKept(reg, c.Provider)
+	}
+	return out
+}
+
+// providerKept reports whether the provider keeps its pool members itself
+func providerKept(reg *provider.Registry, name string) bool {
+	prov, ok := reg.Get(name)
+	if !ok {
+		return false
+	}
+	_, claims := prov.(provider.PoolClaimer)
+	return claims
+}
+
 // New checks every pool against the registry and builds the manager
 //
 // A pool on a provider that is not listed, that neither parks nor claims, that does not sell the
@@ -124,11 +146,14 @@ func New(d Deps) (*Manager, error) {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	m := &Manager{d: d, by: map[Key]Config{}, inspected: map[uuid.UUID]time.Time{}}
+	m := &Manager{
+		d: d, by: map[Key]Config{}, inspected: map[uuid.UUID]time.Time{},
+		ensured: map[Key]int{},
+	}
 	if err := Validate(d.Registry, d.Settings); err != nil {
 		return nil, err
 	}
-	for _, c := range Configs(d.Settings) {
+	for _, c := range ConfigsFor(d.Registry, d.Settings) {
 		m.cfgs = append(m.cfgs, c)
 		m.by[c.Key] = c
 	}
@@ -277,6 +302,10 @@ func (m *Manager) tickPool(
 		if mem.State == store.MemberRetiring {
 			m.queueRetire(ctx, mem.ID, mem.EndReason)
 		}
+	}
+	// A provider keeps its own members, so the tick only sizes the pool there and nothing fills
+	if c.ProviderKept {
+		return m.keep(ctx, c, target, pause)
 	}
 	m.inspect(ctx, members, retired, now)
 	have := 0
@@ -646,4 +675,125 @@ func (m *Manager) Drain(
 		}
 	}
 	return len(ids), nil
+}
+
+/* Provider-kept pools */
+
+// spec is the pool a provider keeps for c at target members
+func (m *Manager) spec(c Config, size provider.Size, target int) provider.PoolSpec {
+	labels := m.d.Saga.OwnedLabels()
+	labels["bugnet_pool"] = c.Size
+	return provider.PoolSpec{
+		Name:   NameOf(labels["bugnet_deployment"], c.Size),
+		Size:   size,
+		Target: target,
+		Labels: labels,
+	}
+}
+
+// keep sets the size of a provider-kept pool to the tick's target, and to none while the pool is
+// paused or pools are off, when the size changed since this process last set it
+func (m *Manager) keep(ctx context.Context, c Config, target int, pause store.Pause) error {
+	if pause.Until.After(m.now()) || !m.d.Settings.Enabled {
+		target = 0
+	}
+	m.mu.Lock()
+	last, set := m.ensured[c.Key]
+	m.mu.Unlock()
+	if set && last == target {
+		return nil
+	}
+	return m.ensure(ctx, c, target)
+}
+
+// ensure creates the provider's pool or sets its size, an account the provider blocked being left
+// alone
+func (m *Manager) ensure(ctx context.Context, c Config, target int) error {
+	if block, err := store.ProviderBlock(ctx, m.d.Store.Querier(), c.Provider); err != nil ||
+		block != "" {
+		return err
+	}
+	prov, ok := m.d.Registry.Get(c.Provider)
+	if !ok {
+		return fmt.Errorf("pool %s %s is on a provider that is not configured", c.Provider, c.Size)
+	}
+	claimer, ok := prov.(provider.PoolClaimer)
+	if !ok {
+		return nil
+	}
+	size, ok := sizeOf(prov, c.Size)
+	if !ok {
+		return fmt.Errorf("pool %s does not sell the size %q", c.Provider, c.Size)
+	}
+	if err := claimer.EnsurePool(ctx, m.spec(c, size, target)); err != nil {
+		return fmt.Errorf("ensure the %s pool of size %s: %w", c.Provider, c.Size, err)
+	}
+	m.mu.Lock()
+	m.ensured[c.Key] = target
+	m.mu.Unlock()
+	return nil
+}
+
+// Ensure creates or sizes every provider-kept pool of a provider at its current target, which the
+// tick stored, so a pool the provider lost or a size it dropped comes back within the interval
+func (m *Manager) Ensure(ctx context.Context, name string) error {
+	now := m.now()
+	targets, err := m.targets(ctx, now)
+	if err != nil {
+		return err
+	}
+	pauses, err := m.d.Store.Pauses(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, c := range m.cfgs {
+		if c.Provider != name || !c.ProviderKept {
+			continue
+		}
+		target := targets[c.Key]
+		if pauseOf(pauses, c.Key).Until.After(now) || !m.d.Settings.Enabled {
+			target = 0
+		}
+		if err := m.ensure(ctx, c, target); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// targets is each pool's stored target, its min when the row is stale or missing
+func (m *Manager) targets(ctx context.Context, now time.Time) (map[Key]int, error) {
+	rows, err := m.d.Store.Targets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[Key]int{}
+	for _, c := range m.cfgs {
+		out[c.Key] = c.Min
+	}
+	for _, t := range rows {
+		k := Key{Provider: t.Provider, Size: t.SizeName}
+		if c, ok := m.by[k]; ok && now.Sub(t.ComputedAt) <= staleTarget {
+			out[k] = min(max(t.Target, c.Min), c.Max)
+		}
+	}
+	return out, nil
+}
+
+// KeptIdleMicros is what the unclaimed members of the provider-kept pools cost over a day, counted
+// at each pool's current target, since members nobody claimed have no row
+func (m *Manager) KeptIdleMicros(ctx context.Context) (map[Key]int64, error) {
+	targets, err := m.targets(ctx, m.now())
+	if err != nil {
+		return nil, err
+	}
+	idle := Idle(m.d.Registry)
+	out := map[Key]int64{}
+	for _, c := range m.cfgs {
+		if hourly, ok := idle(c.Provider, c.Size); ok {
+			out[c.Key] = int64(targets[c.Key]) * hourly * int64(costDay/time.Hour)
+		}
+	}
+	return out, nil
 }

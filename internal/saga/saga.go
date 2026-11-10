@@ -740,9 +740,7 @@ func (s *Saga) attemptWarm(
 	}
 	// A provider that keeps its own pool hands members out by claim, never by a row of ours
 	if cl, ok := c.Provider.(provider.PoolClaimer); ok {
-		if _, parks := c.Provider.(provider.Parker); !parks {
-			return s.attemptClaim(ctx, budget, cl, p, pkg, req, c, n)
-		}
+		return s.attemptClaim(ctx, budget, cl, p, pkg, req, c, n)
 	}
 	prov := c.Provider
 	name := prov.Name()

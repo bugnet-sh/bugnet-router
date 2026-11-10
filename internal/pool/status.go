@@ -8,7 +8,10 @@ import (
 )
 
 // KeptByRouter says the router keeps a pool's members, a provider-kept pool says provider
-const KeptByRouter = "router"
+const (
+	KeptByRouter   = "router"
+	KeptByProvider = "provider"
+)
 
 // Status is what ListPools answers for one pool
 type Status struct {
@@ -35,16 +38,18 @@ type Status struct {
 
 // Status reports every configured pool as ListPools answers, read from Postgres alone
 func (m *Manager) Status(ctx context.Context) ([]Status, error) {
-	return ReadStatus(ctx, m.d.Store, m.cfgs, m.now(), Prices(m.d.Registry))
+	return ReadStatus(ctx, m.d.Store, m.cfgs, m.now(), Prices(m.d.Registry),
+		Idle(m.d.Registry))
 }
 
 // PriceFunc gives the running and parked hourly prices of a provider's size
 type PriceFunc func(provider, size string) (hourly, parked int64)
 
 // ReadStatus reads the pools' status from Postgres, so router-api serves it without a worker's
-// memory, prices being nil for no costs
+// memory, prices and idle being nil for no costs and no provider-kept pools
 func ReadStatus(
 	ctx context.Context, st *store.Store, cfgs []Config, now time.Time, prices PriceFunc,
+	idle IdleFunc,
 ) ([]Status, error) {
 	stats, err := st.PoolStats(ctx, now)
 	if err != nil {
@@ -84,6 +89,13 @@ func ReadStatus(
 		}
 		if p := pauseOf(pauses, c.Key); p.Until.After(now) {
 			s.PausedUntil, s.PausedReason = p.Until, p.Reason
+		}
+		// A provider-kept pool has no member rows, so its idle cost is its target for the whole day
+		if idle != nil {
+			if hourly, kept := idle(c.Provider, c.Size); kept {
+				s.KeptBy = KeptByProvider
+				s.CostMicrosLastDay += int64(s.Target) * hourly * int64(costDay/time.Hour)
+			}
 		}
 		if prices != nil {
 			hourly, parked := prices(c.Provider, c.Size)

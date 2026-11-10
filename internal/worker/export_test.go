@@ -92,6 +92,8 @@ func PollEvery(d Deps, ps ...provider.Provider) map[string]time.Duration {
 			name += "/" + a.Provider
 		case jobargs.AccountCheck:
 			name += "/" + a.Provider
+		case jobargs.PoolEnsure:
+			name += "/" + a.Provider
 		}
 		out[name] = p.every
 	}

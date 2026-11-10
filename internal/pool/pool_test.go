@@ -132,3 +132,33 @@ func newStore(t *testing.T) *store.Store {
 	}
 	return store.New(pgPool)
 }
+
+func TestWarmthCountsAProviderKeptPoolWarmWhileItHasATarget(t *testing.T) {
+	st := newStore(t)
+	now := time.Now()
+	clk := &now
+	kept := pool.Config{
+		Key: pool.Key{Provider: "koyeb", Size: "medium"}, Min: 0, Max: 4, ProviderKept: true,
+	}
+	w := pool.NewWarmth(st, []pool.Config{kept}, func() time.Time { return *clk })
+	// The provider holds the members, so no row says one is ready, and a pool of min 0 has none
+	eq(t, w.WarmAvailable("koyeb", "medium"), false)
+	next := func() { *clk = clk.Add(3 * time.Second) }
+	eq(t, st.PutTarget(t.Context(), store.PoolTarget{Provider: "koyeb", SizeName: "medium",
+		Target: 2, ComputedAt: *clk}), nil)
+	next()
+	eq(t, w.WarmAvailable("koyeb", "medium"), true)
+	// A drained pool is held at none, so claims find no member the provider kept
+	eq(t, st.PutPause(t.Context(), store.Pause{Provider: "koyeb", SizeName: "medium",
+		Until: clk.Add(time.Hour), Reason: store.PauseDrained}), nil)
+	next()
+	eq(t, w.WarmAvailable("koyeb", "medium"), false)
+	// A router-kept pool of the same size counts warm members only
+	router := pool.Config{Key: pool.Key{Provider: "boxd", Size: "medium"}, Min: 2, Max: 4}
+	w = pool.NewWarmth(st, []pool.Config{router}, func() time.Time { return *clk })
+	eq(t, w.WarmAvailable("boxd", "medium"), false)
+}
+
+func TestNameOfAProviderKeptPool(t *testing.T) {
+	eq(t, pool.NameOf("main", "medium"), "bn-main-medium")
+}

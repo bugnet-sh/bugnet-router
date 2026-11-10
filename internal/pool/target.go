@@ -23,6 +23,9 @@ type Config struct {
 	Key
 	Min, Max int
 	MaxAge   time.Duration
+	// ProviderKept says the provider keeps the pool's members itself and the router only sizes it
+	// and claims, as Koyeb does, where the router parks and wakes the members of any other
+	ProviderKept bool
 }
 
 // Target is claims a second times the refill p95, plus headroom, within min and max
@@ -30,3 +33,6 @@ func Target(c Config, claimsPerSecond float64, refillP95 time.Duration, headroom
 	want := int(math.Ceil(claimsPerSecond*refillP95.Seconds())) + headroom
 	return min(max(want, c.Min), c.Max)
 }
+
+// NameOf is the name of a provider-kept pool, bn-<deployment>-<size>
+func NameOf(deployment, size string) string { return "bn-" + deployment + "-" + size }

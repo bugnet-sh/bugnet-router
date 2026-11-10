@@ -188,8 +188,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	st := openStore(pool, cfg, log)
 	writer := sessions.NewWriter(st, cfg.DataPlaneKeys, log)
 	tracker := placement.NewTracker(time.Now)
-	warmth, warm := poolWarmth(cfg, st)
-	engine := placement.New(reg, health.NewShared(st, tracker, log), warm)
+	warmth, warm := poolWarmth(cfg, reg, st)
+	shared := health.NewShared(st, tracker, log)
+	engine := placement.New(reg, shared, warm)
 	// Insert only, so it serves ListPools and DrainPool from Postgres alone
 	pools, err := poolpkg.New(poolpkg.Deps{
 		Store: st, Registry: reg, River: rc, Settings: cfg.Pools, Replica: cfg.ReplicaID, Log: log,
@@ -230,6 +231,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
+		Hedger: saga.NewHedger(saga.HedgerDeps{
+			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
+			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
+		}),
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {
@@ -343,11 +348,13 @@ func checkPools(reg *provider.Registry, cfg config.Config) error {
 }
 
 // poolWarmth is the view of warm members that marks candidates, none while no pool is on
-func poolWarmth(cfg config.Config, st *store.Store) (*poolpkg.Warmth, placement.Warm) {
+func poolWarmth(
+	cfg config.Config, reg *provider.Registry, st *store.Store,
+) (*poolpkg.Warmth, placement.Warm) {
 	if !cfg.Pools.Enabled || len(cfg.Pools.Pool) == 0 {
 		return nil, nil
 	}
-	w := poolpkg.NewWarmth(st, poolpkg.Configs(cfg.Pools), nil)
+	w := poolpkg.NewWarmth(st, poolpkg.ConfigsFor(reg, cfg.Pools), nil)
 	return w, w
 }
 

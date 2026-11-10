@@ -16,6 +16,9 @@ const (
 	poolTickTimeout   = 15 * time.Second
 	poolFillTimeout   = 170 * time.Second
 	poolRetireTimeout = 60 * time.Second
+	poolEnsureTimeout = 30 * time.Second
+	// poolEnsureEvery is how often a provider-kept pool is created or sized again
+	poolEnsureEvery = 5 * time.Minute
 	// poolSnooze is how long a fill waits when its provider has no create token
 	poolSnooze = 15 * time.Second
 )
@@ -67,6 +70,21 @@ func (*poolRetireWorker) Timeout(*river.Job[jobargs.PoolRetire]) time.Duration {
 // Work destroys one member's sandbox and frees its slot, retried by River while it fails
 func (pw *poolRetireWorker) Work(ctx context.Context, j *river.Job[jobargs.PoolRetire]) error {
 	return pw.w.pools.Retire(ctx, j.Args.Member, j.Args.Reason)
+}
+
+type poolEnsureWorker struct {
+	river.WorkerDefaults[jobargs.PoolEnsure]
+	w *Worker
+}
+
+func (*poolEnsureWorker) Timeout(*river.Job[jobargs.PoolEnsure]) time.Duration {
+	return poolEnsureTimeout
+}
+
+// Work creates or sizes the provider's own pools at their current targets, retried by River while
+// the provider refuses
+func (pw *poolEnsureWorker) Work(ctx context.Context, j *river.Job[jobargs.PoolEnsure]) error {
+	return pw.w.pools.Ensure(ctx, j.Args.Provider)
 }
 
 // Pools returns the pool manager, which has no pool when the settings list none

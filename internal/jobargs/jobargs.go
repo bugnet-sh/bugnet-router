@@ -381,6 +381,22 @@ func (PoolRetire) InsertOpts() river.InsertOpts {
 	}
 }
 
+// PoolEnsure asks the worker to create or size the provider-kept pools of one provider
+type PoolEnsure struct {
+	Provider string `json:"provider" river:"unique"`
+}
+
+// Kind returns the River job kind
+func (PoolEnsure) Kind() string { return "pool_ensure" }
+
+// InsertOpts runs it once per provider while one waits or runs, retried a few times
+func (PoolEnsure) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: river.QueueDefault, MaxAttempts: 3,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingStates},
+	}
+}
+
 // ReserveWatch asks the worker to lapse and fail reservations, retire the members left without
 // one and set or clear the brake
 type ReserveWatch struct{}
