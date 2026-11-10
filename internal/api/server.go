@@ -456,8 +456,10 @@ func (s *Server) CreatePlacement(
 			src = &ps
 		}
 	}
-	p, h, err := s.d.Saga.CreateWith(ctx, req.Msg.GetOrderToken(),
-		requirements(req.Msg.GetRequirements()), src)
+	p, h, err := s.d.Saga.Create(ctx, saga.CreateInput{
+		Token: req.Msg.GetOrderToken(), Requirements: requirements(req.Msg.GetRequirements()),
+		Source: src, QuoteID: req.Msg.GetQuoteId(),
+	})
 	if err != nil {
 		return nil, s.status(err)
 	}

@@ -135,6 +135,8 @@ const (
 	lifetimeSlack    = 5 * time.Minute
 	terminateTimeout = 60 * time.Second
 	heartbeatEvery   = 10 * time.Second
+	// issuedEvery spaces the log of an issued_at claim the router cannot use
+	issuedEvery = time.Minute
 )
 
 // LifetimeSlack is how long a sandbox outlives its placement's deadline at the provider
@@ -209,6 +211,11 @@ type Deps struct {
 	// PoolRoom is the lifetime a claimed member must still have past its package, one hour when
 	// zero
 	PoolRoom time.Duration
+	// Reserve are the Reserve settings, the defaults when its hold is zero
+	Reserve config.Reserve
+	// ReserveShare is the share of a pool's target open reservations may hold, pools.reserve_share,
+	// one half when zero
+	ReserveShare float64
 }
 
 // Saga runs placements from order to teardown
@@ -225,8 +232,14 @@ type Saga struct {
 	wallets  *wallets.Store
 	// unguardedAt is when step 4 of the payer decision was last logged, in Unix nanoseconds
 	unguardedAt atomic.Int64
+	// issuedAt is when an unusable issued_at claim was last logged, in Unix nanoseconds
+	issuedAt atomic.Int64
 	// beforeMark runs between End's first read and its row lock, set only by tests
 	beforeMark func()
+	// bg runs the goroutines that keep reservations alive, which Close ends
+	bg       sync.WaitGroup
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
 }
 
 var errNoKeys = errors.New("saga: no data-plane keys to create a placement under")
@@ -246,6 +259,10 @@ func New(deps Deps) *Saga {
 		deps.DeploymentID = defaultDeployment
 	}
 	deps.PoolRoom = cmp.Or(deps.PoolRoom, time.Hour)
+	if deps.Reserve.Hold == 0 {
+		deps.Reserve = config.DefaultReserve()
+	}
+	deps.ReserveShare = cmp.Or(deps.ReserveShare, 0.5)
 	deps.SessionKeep = cmp.Or(deps.SessionKeep, defaultSessionKeep)
 	deps.SessionAbuseHold = cmp.Or(deps.SessionAbuseHold, defaultAbuseHold)
 	w := deps.Wallets.OrDefaults()
@@ -262,31 +279,47 @@ func New(deps Deps) *Saga {
 			EmitEvents: w.EmitEvents, Now: deps.Now,
 		}),
 	}
+	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
 	if roots := deps.Keys.Roots(); len(roots) > 0 {
 		s.keyID = roots[0].ID
 	}
 	return s
 }
 
-// Wait blocks until every placing goroutine has finished
+// Wait blocks until every placing and preparing goroutine has finished
 func (s *Saga) Wait() { s.wg.Wait() }
+
+// Close stops the goroutines that keep reservations alive, which a reservation ready for its order
+// leaves running until it is bound, released or lapsed
+func (s *Saga) Close() {
+	s.bgCancel()
+	s.bg.Wait()
+}
 
 func (s *Saga) now() time.Time { return s.d.Now().UTC() }
 
 /* Create */
 
-// Create records a verified start order and places it, failing at once with ErrNoCandidate
-func (s *Saga) Create(
-	ctx context.Context, token string, req placement.Requirements,
-) (store.Placement, string, error) {
-	return s.CreateWith(ctx, token, req, nil)
+// CreateInput is one CreatePlacement call
+type CreateInput struct {
+	Token        string
+	Requirements placement.Requirements
+	// Source is the estimate's resolved source, which the placement copies, nil for none
+	Source *store.PlacementSource
+	// QuoteID binds the quote's reservation when the order matches it, empty for none
+	QuoteID string
 }
 
-// CreateWith is Create for an order whose quote had a source, which the placement copies
-func (s *Saga) CreateWith(
-	ctx context.Context, token string, req placement.Requirements, src *store.PlacementSource,
+// Create records a verified start order and places it, binding a matching reservation
+//
+// A package no provider can host fails at once with ErrNoCandidate, unless the quote's ready
+// reservation matches, since a prepared sandbox then exists.
+func (s *Saga) Create(
+	ctx context.Context, in CreateInput,
 ) (store.Placement, string, error) {
-	c, err := s.verify(token, ordertoken.KindStart)
+	arrived := s.now()
+	req := in.Requirements
+	c, err := s.verify(in.Token, ordertoken.KindStart)
 	if err != nil {
 		return store.Placement{}, "", err
 	}
@@ -303,24 +336,29 @@ func (s *Saga) CreateWith(
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
 		SecondsBought: int64(pkg.Minutes) * 60,
 		Tx:            c.Tx,
-		Source:        src,
+		Source:        in.Source,
+		PaidAt:        s.paidAt(c, arrived),
 	}
+	bind := s.bindTo(in, pkg)
 	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
 	switch {
 	case errors.Is(err, placement.ErrNoCandidate):
-		np.FailureReason = ReasonNoCandidate
+		if !s.readyFits(ctx, bind) {
+			np.FailureReason = ReasonNoCandidate
+		}
 	case err != nil:
 		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
 	}
-	p, created, wait, err := s.record(ctx, c, np)
+	rec, err := s.record(ctx, c, np, bind)
 	if err != nil {
 		return store.Placement{}, "", fmt.Errorf("record placement: %w", err)
 	}
+	p, wait := rec.p, rec.wait
 	if !bytes.Equal(p.HandleSHA256, sha) {
 		return store.Placement{}, "", fmt.Errorf(
 			"%w: order %s belongs to another placement", ErrBadToken, c.OrderID)
 	}
-	if created {
+	if rec.created {
 		s.sessionStarted(ctx, p, pkg, c)
 	}
 	if p.State == store.PlacementFailed {
@@ -331,37 +369,68 @@ func (s *Saga) CreateWith(
 		case ReasonWalletBusy:
 			refusal = ErrWalletBusy
 		case ReasonWalletRateLimited:
-			if !created {
+			if !rec.created {
 				wait = s.startWait(ctx, p.Payer)
 			}
 			refusal = &WaitError{Wait: wait}
 		}
 		if refusal != nil {
-			if created {
+			if rec.created {
 				s.publish(ctx, newEvent(p, p.FailureReason))
 				s.sessionEnded(ctx, p.ID)
 			}
 			return p, h, refusal
 		}
 	}
-	if created {
+	if rec.bound != nil {
+		s.afterBind(ctx, rec.bound, p, pkg, arrived)
+		return p, h, nil
+	}
+	if rec.created {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.place(context.WithoutCancel(ctx), p, pkg, req)
+			s.place(context.WithoutCancel(ctx), p, pkg, req, rec.awaiting, arrived)
 		}()
 	}
 	return p, h, nil
 }
 
-// record stores the order and its placement under the payer's lock, as CP 7.7 says
+// paidAt is when the order was paid as the 5 s target measures it, logging a claim it cannot use
+// once a minute
+func (s *Saga) paidAt(c ordertoken.Claims, arrived time.Time) time.Time {
+	at, ok := c.PaidAt(arrived)
+	if !ok {
+		now := s.now()
+		last := s.issuedAt.Load()
+		if now.UnixNano()-last >= int64(issuedEvery) &&
+			s.issuedAt.CompareAndSwap(last, now.UnixNano()) {
+			s.d.Log.Warn("an order's issued_at is not in the 60 s before it arrived, so the "+
+				"time it arrived counts as its payment time", "order", c.OrderID)
+		}
+	}
+	return at
+}
+
+// recorded is what the order's transaction did
+type recorded struct {
+	p       store.Placement
+	created bool
+	wait    time.Duration
+	// bound is the reservation's sandbox that became the placement's, nil for none
+	bound *boundStart
+	// awaiting is the reservation still preparing that the placement waits for, nil for none
+	awaiting *store.Reservation
+}
+
+// record stores the order and its placement under the payer's lock, as CP 7.7 says, and binds the
+// quote's reservation after the wallet checks pass and before the placement is inserted (CP 18.5.5)
 func (s *Saga) record(
-	ctx context.Context, c ordertoken.Claims, np store.NewPlacement,
-) (store.Placement, bool, time.Duration, error) {
-	var p store.Placement
-	var created bool
-	var wait time.Duration
+	ctx context.Context, c ordertoken.Claims, np store.NewPlacement, bind *bindRequest,
+) (recorded, error) {
+	var out recorded
 	err := s.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		out = recorded{}
 		ts := s.d.Store.Tx(tx)
 		var err error
 		if np.Payer, err = s.payer(ctx, ts, c); err != nil {
@@ -381,10 +450,10 @@ func (s *Saga) record(
 		}
 		if !inserted {
 			// A retried order answers as it did, with no check run again
-			p, err = ts.PlacementByID(ctx, id)
+			out.p, err = ts.PlacementByID(ctx, id)
 			return err
 		}
-		if wait, err = s.checkStart(ctx, tx, &np); err != nil {
+		if out.wait, err = s.checkStart(ctx, tx, &np); err != nil {
 			return err
 		}
 		if np.Payer != "" {
@@ -392,23 +461,50 @@ func (s *Saga) record(
 				return err
 			}
 		}
-		if p, err = ts.InsertPlacement(ctx, np); err != nil {
+		// A refused or unmatched order keeps its fresh id, so the reservation's stays free
+		var res *store.Reservation
+		if bind != nil && np.FailureReason == "" {
+			if res, err = s.reservationFor(ctx, tx, bind); err != nil {
+				return err
+			}
+			if res != nil {
+				np.ID, np.KeyID = res.PlacementID, res.KeyID
+				if err := ts.RepointOrder(ctx, np.OrderID, np.ID); err != nil {
+					return err
+				}
+			}
+		}
+		if out.p, err = ts.InsertPlacement(ctx, np); err != nil {
 			return err
 		}
-		created = true
+		out.created = true
 		// The record is made with the placement, so the first answer carries its link
-		if _, err := ts.CreateSessionRecord(ctx, p.ID); err != nil {
+		if _, err := ts.CreateSessionRecord(ctx, out.p.ID); err != nil {
 			return err
 		}
-		if np.FailureReason == "" {
+		if np.FailureReason != "" {
+			if err := s.endSession(ctx, tx, out.p); err != nil {
+				return err
+			}
+			return s.d.Store.InsertOutbox(ctx, tx, EventFailed, newEvent(out.p, np.FailureReason))
+		}
+		if res == nil {
 			return nil
 		}
-		if err := s.endSession(ctx, tx, p); err != nil {
+		if res.State == store.ReservationReady && res.Prepared != nil {
+			if out.bound, err = s.bindInTx(ctx, tx, out.p, bind.pkg, *res); err != nil {
+				return err
+			}
+			out.p, err = ts.PlacementByID(ctx, out.p.ID)
 			return err
 		}
-		return s.d.Store.InsertOutbox(ctx, tx, EventFailed, newEvent(p, np.FailureReason))
+		if err := ts.AwaitReservation(ctx, res.ID); err != nil {
+			return err
+		}
+		out.awaiting = res
+		return nil
 	})
-	return p, created, wait, err
+	return out, err
 }
 
 func (s *Saga) inputs(
@@ -466,14 +562,20 @@ type outcome struct {
 	detail   string
 }
 
-// place tries candidates until one is ready or the attempt or time budget runs out
+// place binds the reservation the order awaits, else tries candidates until one is ready or the
+// attempt or time budget runs out
 func (s *Saga) place(
 	ctx context.Context, p store.Placement, pkg catalog.Package, req placement.Requirements,
+	awaiting *store.Reservation, arrived time.Time,
 ) {
 	stopHeartbeat := s.heartbeat(ctx, p.ID)
 	defer stopHeartbeat()
 	budget, cancel := context.WithTimeout(ctx, placingBudget)
 	defer cancel()
+	// An order whose reservation is still preparing waits for it first, then goes on cold
+	if awaiting != nil && s.awaitReservation(budget, p, pkg, *awaiting, arrived) {
+		return
+	}
 	tried := map[string]bool{}
 	var attempted []provider.Provider
 	reason, detail := reasonExhausted, ""
@@ -681,6 +783,7 @@ func (s *Saga) attemptCold(
 			failOver: !noBuild, reason: reason, detail: fmt.Sprintf("boot on %s: %v", name, err),
 		}
 	}
+	s.stampReady(&smp, p)
 	s.recordSample(ctx, prov, c.Size, smp, nil)
 	prep := Prepared{
 		Ref: ref, KeyID: p.KeyID, GateReadyAt: boot.GateReadyAt, SSHHost: boot.SSH,
@@ -788,8 +891,19 @@ func (s *Saga) attemptWarm(
 			detail: fmt.Sprintf("prepare on %s: %v", name, err),
 		}, true
 	}
+	s.stampReady(&smp, p)
 	s.recordSample(ctx, prov, c.Size, smp, nil)
 	return s.commitReady(ctx, p, pkg, c, rec, prep, &m, started), true
+}
+
+// stampReady records on an attempt's sample how long the order took from its arrival and from its
+// payment to the sandbox being ready
+func (s *Saga) stampReady(smp *store.StartSample, p store.Placement) {
+	now := s.now()
+	smp.BindMS = max(1, int(now.Sub(p.CreatedAt).Milliseconds()))
+	if p.PaidAt != nil {
+		smp.PaidToReadyMS = max(1, int(now.Sub(*p.PaidAt).Milliseconds()))
+	}
 }
 
 // create retries a create whose outcome is unknown under the same key on the same provider
@@ -855,7 +969,11 @@ func (s *Saga) commitReady(
 	defer cancel()
 	err = s.d.Store.WithTx(tctx, func(tx pgx.Tx) error {
 		var err error
-		ev, err = s.readyWrites(tctx, tx, p, pkg, prov, c.Size.Name, rec, prep, mem, readyAt,
+		path := store.PathCold
+		if mem != nil {
+			path = store.PathPooled
+		}
+		ev, err = s.readyWrites(tctx, tx, p, pkg, prov, c.Size.Name, rec, prep, mem, path, readyAt,
 			deadline)
 		return err
 	})
@@ -880,12 +998,18 @@ func (s *Saga) commitReady(
 func (s *Saga) readyWrites(
 	ctx context.Context, tx pgx.Tx, p store.Placement, pkg catalog.Package,
 	prov provider.Provider, size string, rec store.Attempt, prep Prepared, mem *store.Member,
-	readyAt, deadline time.Time,
+	path string, readyAt, deadline time.Time,
 ) (Event, error) {
 	ts := s.d.Store.Tx(tx)
 	err := ts.MarkPlacementReady(ctx, p.ID, prep.Ref, size, readyAt, deadline)
 	if err != nil {
 		return Event{}, err
+	}
+	// A ready that is not the bind frees the reservation the placement awaited, if any
+	if path != store.PathReserved {
+		if err := s.releaseAwaitedTx(ctx, tx, p.ID); err != nil {
+			return Event{}, err
+		}
 	}
 	if err := s.x402AtReady(ctx, tx, p.ID, s.d.Registry.Capabilities(prov)); err != nil {
 		return Event{}, err
@@ -897,9 +1021,9 @@ func (s *Saga) readyWrites(
 	if err := ts.SetPlacementGate(ctx, p.ID, gateAt, prep.CAVersion); err != nil {
 		return Event{}, err
 	}
-	path, bornAt := store.PathCold, (*time.Time)(nil)
+	var bornAt *time.Time
 	if mem != nil {
-		path, bornAt = store.PathPooled, mem.SandboxCreatedAt
+		bornAt = mem.SandboxCreatedAt
 	}
 	if err := ts.SetPlacementStart(ctx, p.ID, path, bornAt); err != nil {
 		return Event{}, err
@@ -1093,6 +1217,10 @@ func (s *Saga) recordFailed(
 	if err := ts.DeleteSecretsOf(ctx, id); err != nil {
 		return Event{}, err
 	}
+	// The reservation an order awaited goes with it, as does its member
+	if err := s.releaseAwaitedTx(ctx, tx, id); err != nil {
+		return Event{}, err
+	}
 	cur, err := ts.PlacementByID(ctx, id)
 	if err != nil {
 		return Event{}, err
@@ -1102,6 +1230,16 @@ func (s *Saga) recordFailed(
 	}
 	ev := newEvent(cur, reason)
 	return ev, s.d.Store.InsertOutbox(ctx, tx, EventFailed, ev)
+}
+
+// releaseAwaitedTx releases the reservation a placement awaits and inserts pool_retire for its
+// member, in the transaction that moves the placement out of placing (CP 18.5.5.1)
+func (s *Saga) releaseAwaitedTx(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	member, ok, err := s.d.Store.Tx(tx).ReleaseAwaitedOf(ctx, id, s.now())
+	if err != nil || !ok {
+		return err
+	}
+	return s.retireMemberTx(ctx, tx, member, store.EndUnused, "the order left placing")
 }
 
 // sweep destroys every sandbox labelled for the placement on provs except keep

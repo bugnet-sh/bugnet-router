@@ -76,8 +76,7 @@ func (e *env) estimateRow(t *testing.T, entry string) (uuid.UUID, []byte) {
 func (e *env) placeEstimated(t *testing.T, order string) (store.Placement, string, uuid.UUID) {
 	t.Helper()
 	id, _ := e.estimateRow(t, "python run.py")
-	p, h, err := e.saga.CreateWith(t.Context(), e.startToken(t, order), placement.Requirements{},
-		&store.PlacementSource{EstimateID: id})
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, order), Requirements: placement.Requirements{}, Source: &store.PlacementSource{EstimateID: id}})
 	if err != nil {
 		t.Fatal(err)
 	}

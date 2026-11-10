@@ -12,6 +12,13 @@ import (
 
 // unbuilt maps each contract RPC the router does not serve yet to a call of it, none being left
 func unbuilt(
+	context.Context, routerv1connect.SandboxRouterServiceClient,
+) map[string]func() error {
+	return map[string]func() error{}
+}
+
+// reserveCalls maps the two reservation RPCs to a call of each
+func reserveCalls(
 	ctx context.Context, c routerv1connect.SandboxRouterServiceClient,
 ) map[string]func() error {
 	return map[string]func() error{
@@ -35,6 +42,7 @@ var built = []string{
 	"CreatePreview", "CreateSecretLink", "CreateSecretPutGrant", "GetSecretSealingKey",
 	"PutSecret", "ListSecrets", "DeleteSecret", "AddSshKey", "RemoveSshKey", "CheckX402",
 	"ListX402", "EnableX402", "AppendSessionEvents", "RotateSessionLink", "FetchSource",
+	"Reserve", "ReleaseReservation",
 }
 
 func TestUnbuiltHoldsEveryOtherRPC(t *testing.T) {
@@ -64,7 +72,7 @@ func TestNewRPCsAnswerUnimplemented(t *testing.T) {
 func TestNewRPCsNeedTheInternalToken(t *testing.T) {
 	e := newEnv(t, options{})
 	stranger := e.clientWith(t, "Bearer wrong-token-0123456789abcdef0123456789", true)
-	for name, call := range unbuilt(t.Context(), stranger) {
+	for name, call := range reserveCalls(t.Context(), stranger) {
 		t.Run(name, func(t *testing.T) {
 			mustCode(t, call(), connect.CodeUnauthenticated, "")
 		})

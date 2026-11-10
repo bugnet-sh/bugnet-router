@@ -77,8 +77,7 @@ func TestNewPlacementCarriesCurrentKeyID(t *testing.T) {
 
 	// A placement no provider can take records its root too
 	none := newEnvWith(t, func(d *saga.Deps) { d.Keys = k })
-	p, _, err := none.saga.Create(t.Context(), none.startToken(t, "order-2"),
-		placement.Requirements{})
+	p, _, err := none.saga.Create(t.Context(), saga.CreateInput{Token: none.startToken(t, "order-2"), Requirements: placement.Requirements{}})
 	eq(t, errors.Is(err, placement.ErrNoCandidate), true)
 	eq(t, none.reload(t, p.ID).KeyID, "k2")
 }
@@ -86,8 +85,7 @@ func TestNewPlacementCarriesCurrentKeyID(t *testing.T) {
 func TestCreateNeedsDataPlaneKeys(t *testing.T) {
 	e := newEnvWith(t, func(d *saga.Deps) { d.Keys = dpkeys.Keys{} },
 		newLocal(t, local.Options{Name: "a"}))
-	_, _, err := e.saga.Create(t.Context(), e.startToken(t, "order-1"),
-		placement.Requirements{})
+	_, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: e.startToken(t, "order-1"), Requirements: placement.Requirements{}})
 	if err == nil || !strings.Contains(err.Error(), "data-plane keys") {
 		t.Fatalf("create without data-plane keys gave %v", err)
 	}

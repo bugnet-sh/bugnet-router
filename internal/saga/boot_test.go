@@ -553,7 +553,7 @@ func TestRestrictedCreateCarriesTheEgressAllow(t *testing.T) {
 		OrderID: "order-2", Kind: ordertoken.KindStart, PackageID: restrictedPkg,
 		AmountMicros: smallPrice,
 	})
-	q, _, err := e.saga.Create(t.Context(), tok, placement.Requirements{})
+	q, _, err := e.saga.Create(t.Context(), saga.CreateInput{Token: tok, Requirements: placement.Requirements{}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -228,6 +228,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Pools:            warmth,
 		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
 		PoolRoom:         cfg.Pools.ExtensionRoom,
+		Reserve:          cfg.Reserve,
+		ReserveShare:     cfg.Pools.ReserveShare,
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {
@@ -329,6 +331,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		cancel()
 	}
 	shutdown(log, hs, srv, js, sg, cfg.Transfers.MaxDuration)
+	sg.Close()
 	scanner.Wait()
 	return serveErr
 }

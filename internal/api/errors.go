@@ -41,6 +41,8 @@ const (
 	reasonJobUnknown = "JOB_UNKNOWN"
 	// reasonPackageUnknown marks a package the catalog lacks
 	reasonPackageUnknown = "PACKAGE_UNKNOWN"
+	// reasonQuoteInvalid marks a quote id that is not 1 to 128 printable ASCII bytes
+	reasonQuoteInvalid = "QUOTE_INVALID"
 	// reasonNotStartPackage marks an extension package given where a start package is needed
 	reasonNotStartPackage = "NOT_START_PACKAGE"
 	// reasonFileNotFound marks a sandbox path that names no file
@@ -170,6 +172,7 @@ var codes = []struct {
 	{saga.ErrUnderpaid, connect.CodePermissionDenied, ""},
 	{saga.ErrHandleMismatch, connect.CodePermissionDenied, ""},
 	{saga.ErrUnknownPackage, connect.CodeInvalidArgument, ""},
+	{saga.ErrQuoteInvalid, connect.CodeInvalidArgument, reasonQuoteInvalid},
 	{saga.ErrNotExtension, connect.CodeInvalidArgument, ""},
 	{jobs.ErrInvalid, connect.CodeInvalidArgument, ""},
 	{streams.ErrBadCursor, connect.CodeInvalidArgument, ""},

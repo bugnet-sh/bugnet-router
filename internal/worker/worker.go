@@ -30,7 +30,9 @@
 // and ends the placement the provider lost. A hook_hint job does the same for a sandbox a verified
 // webhook names. capacity_recount sets each provider's in_use to the slots its placements and
 // probes hold every 5 minutes. foreign_count counts each provider's sandboxes no known deployment
-// owns every hour, 200 services a run. cost_daily_tick queues the check of the day before, and
+// owns every hour, 200 services a run. reserve_watch runs every 10 s and lapses reservations past
+// their grace, fails the stale ones and the awaited ones whose placement left placing, retires the
+// members they leave held and sets or clears the reservation brake. cost_daily_tick queues the check of the day before, and
 // cost_daily reads one page of a provider's usage into its provider_cost_daily row and queues
 // the next until the last.
 package worker
@@ -247,6 +249,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	river.AddWorker(workers, &poolTickWorker{w: w})
 	river.AddWorker(workers, &poolFillWorker{w: w})
 	river.AddWorker(workers, &poolRetireWorker{w: w})
+	river.AddWorker(workers, &reserveWatchWorker{w: w})
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:               queues(d),
 		Workers:              workers,
@@ -390,6 +393,7 @@ func periodic(d Deps) []periodicJob {
 	if d.Pools.Enabled && len(d.Pools.Pool) > 0 {
 		out = append(out, periodicJob{d.Pools.Tick, jobargs.PoolTick{}})
 	}
+	out = append(out, periodicJob{reserveWatchEvery, jobargs.ReserveWatch{}})
 	return out
 }
 
