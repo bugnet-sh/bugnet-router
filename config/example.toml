@@ -324,6 +324,31 @@ min = 2
 max = 5
 max_age = "24h"               # a warm member is replaced after this long
 
+[reserve]                     # Reserve, control-plane 18.5 and 18.15
+enabled = true                # false answers every Reserve with SKIPPED
+hold = "120s"                 # the expires_at Reserve answers
+max_hold = "300s"             # repeated Reserve calls renew up to this from the first
+lapse_grace = "30s"           # an order arriving this late still binds, then the sandbox goes
+keepalive = "30s"             # gate check of a ready reservation
+prep_budget = "45s"           # the whole preparation of one reservation
+await_max = "10s"             # how long an order waits for a reservation still preparing
+per_quote = 2                 # reservations per quote, ever
+max_open = 10                 # open reservations at once
+per_second = 1                # new reservations router-wide, with the burst below
+burst = 10
+per_ip_open = 2               # open reservations per client address outside shared_ranges
+shared_ranges = ["160.79.104.0/21"]   # Anthropic's connectors share these addresses
+speculative_providers = ["e2b", "koyeb", "boxd"]   # may start a sandbox before payment, never "boat"
+speculative_max_open = 5      # open reservations that started their own sandbox
+speculative_max_hourly_micros = 200000   # the dearest size started before payment, $0.20 an hour
+brake_unused = 20             # unused reservations in an hour before the brake can set
+brake_ratio = 5               # and at least this many unused per bound one
+brake_for = "30m"             # how long a brake lasts
+
+[targets]                     # the payment to first command target, control-plane 18.9
+first_command_p90 = "5s"      # /monitor warns when the hour's p90 is over this
+min_placements = 20           # reserved and pooled placements in the hour before it judges
+
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint

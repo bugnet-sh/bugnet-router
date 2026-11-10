@@ -61,6 +61,11 @@ size = "local"
 min = 1
 max = 2
 
+[reserve]                     # the dev stack's local provider may start a sandbox before payment
+speculative_providers = ["local"]
+hold = "60s"
+max_hold = "120s"
+
 [[e2b.templates]]
 size = "2x2"
 template = "bugnet-2x2"
