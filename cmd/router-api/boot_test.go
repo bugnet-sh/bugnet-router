@@ -218,3 +218,32 @@ func TestStartRefusesBadPools(t *testing.T) {
 		}
 	}
 }
+
+func TestStartRefusesAcceptWithNoProvider(t *testing.T) {
+	named := func(name string) provider.Provider {
+		return plain{local.New(local.Options{Name: name, Root: t.TempDir()})}
+	}
+	reg := func(f provider.Features, ps ...provider.Provider) *provider.Registry {
+		r, err := provider.NewRegistry(ps, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	accepting := config.Config{Images: config.Images{Accept: []string{"2026.11.1"}}}
+	on := reg(provider.Features{Images: map[string]string{"a": "2026.11.1"}}, named("a"))
+	off := reg(provider.Features{Images: map[string]string{"a": "2026.10.1"}}, named("a"))
+	exempt := reg(provider.Features{ImageExempt: []string{"a"}}, named("a"))
+	for name, err := range map[string]error{
+		"accepted": checkImages(on, accepting), "exempt": checkImages(exempt, accepting),
+		"no accept": checkImages(off, config.Config{}),
+	} {
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	err := checkImages(off, accepting)
+	if err == nil || !strings.Contains(err.Error(), "images.accept") {
+		t.Fatalf("error %v, want one naming images.accept", err)
+	}
+}

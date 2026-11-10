@@ -213,6 +213,8 @@ func serve(
 		CreatesPerSecond: cfg.CreatesPerSecond,
 		Pools:            warmth,
 		WarmFirst:        cfg.Pools.Order == config.OrderWarmFirst,
+		ImageAccept:      cfg.Images.Accept,
+		ImageChannel:     cfg.Images.Channel,
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
@@ -253,7 +255,8 @@ func serve(
 			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
 		},
 		poolLines(log, st, w.Pools()),
-		reserveLines(log, st, vk, cfg.ValkeyPrefix, cfg.Targets)))
+		reserveLines(log, st, vk, cfg.ValkeyPrefix, cfg.Targets),
+		imageLines(log, st, reg, cfg.Images.Accept)))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

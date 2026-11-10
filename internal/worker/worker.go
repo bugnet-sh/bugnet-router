@@ -272,13 +272,14 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	w.pools, err = poolpkg.New(poolpkg.Deps{
 		Store: sd.Store, Registry: sd.Registry, Saga: w.saga, River: rc, Valkey: sd.Valkey,
 		Prefix: sd.Prefix, Settings: d.Pools, Replica: sd.ReplicaID, Now: d.Now, Log: sd.Log,
+		ImageAccept: sd.ImageAccept,
 	})
 	if err != nil {
 		return nil, err
 	}
 	w.probe = probe.New(probe.Deps{
 		Registry: sd.Registry, Store: sd.Store, Saga: w.saga, Replica: sd.ReplicaID,
-		Now: d.Now, Log: sd.Log,
+		ImageAccept: sd.ImageAccept, Now: d.Now, Log: sd.Log,
 	})
 	ws := sd.Wallets.OrDefaults()
 	w.wallets = wallets.New(sd.Store, wallets.Settings{

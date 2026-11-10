@@ -54,7 +54,7 @@ func (e *env) paidPlacement(t *testing.T, payer string, placing bool) store.Plac
 	now := time.Now()
 	ref := provider.Ref{Provider: e.local.Name(), ID: "gone-" + p.ID.String()}
 	if err := e.store.MarkPlacementReady(ctx, p.ID, ref, small.Name, now,
-		now.Add(10*time.Minute)); err != nil {
+		now.Add(10*time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	return e.reload(t, p.ID)

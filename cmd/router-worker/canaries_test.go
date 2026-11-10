@@ -77,7 +77,7 @@ func TestMonitorShowsACanaryThreeIntervalsLate(t *testing.T) {
 	}
 	ref := provider.Ref{Provider: "boxd", ID: "sb"}
 	readyAt := now.Add(-time.Minute)
-	err = st.MarkPlacementReady(t.Context(), p.ID, ref, "s", readyAt, now.Add(time.Hour))
+	err = st.MarkPlacementReady(t.Context(), p.ID, ref, "s", readyAt, now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

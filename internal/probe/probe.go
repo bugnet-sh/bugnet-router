@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bugnet-sh/bugnet-router/internal/health"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -73,8 +74,10 @@ type Deps struct {
 	Saga     Runner
 	// Replica is recorded on each sample
 	Replica string
-	Now     func() time.Time // time.Now when nil
-	Log     *slog.Logger     // slog.Default when nil
+	// ImageAccept is images.accept, a provider it keeps out of placements is never probed
+	ImageAccept []string
+	Now         func() time.Time // time.Now when nil
+	Log         *slog.Logger     // slog.Default when nil
 }
 
 // Probe runs probes, safe for concurrent use
@@ -100,6 +103,9 @@ func (p *Probe) Run(ctx context.Context, s Spec) (store.StartSample, bool, error
 	prov, ok := p.d.Registry.Get(s.Provider)
 	if !ok {
 		return store.StartSample{}, false, fmt.Errorf("probe: unknown provider %q", s.Provider)
+	}
+	if !p.d.Registry.ImageAccepted(prov, p.d.ImageAccept) {
+		return store.StartSample{}, false, nil
 	}
 	bench := s.Kind == store.SampleBench
 	if (!bench || !s.AllowPaid) && !StartFree(prov, s.Size) {
@@ -289,7 +295,8 @@ func (p *Probe) exercise(
 
 // ping runs the runner's ping and waits for it to exit 0
 func ping(ctx context.Context, prov provider.Provider, ref provider.Ref) error {
-	stream, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: []string{saga.RunnerPath, "ping"}})
+	argv := []string{image.RunnerFor(ref), "ping"}
+	stream, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: argv})
 	if err != nil {
 		return err
 	}

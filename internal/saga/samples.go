@@ -2,6 +2,7 @@ package saga
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/health"
@@ -31,6 +32,9 @@ func (s *Saga) recordSample(
 		return
 	}
 	m.Outcome, m.ErrorCode = health.Outcome(err)
+	if errors.Is(err, errImageMismatch) {
+		m.ErrorCode = reasonImageMismatch
+	}
 	if err != nil {
 		m.Error = err.Error()
 	}

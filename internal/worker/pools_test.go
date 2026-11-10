@@ -304,7 +304,7 @@ func TestSweepPoolRules(t *testing.T) {
 		t.Fatalf("reserve: %v %v", ok, err)
 	}
 	if err := e.store.MarkPlacementReady(ctx, bound.ID, boundRef, small.Name, time.Now(),
-		time.Now().Add(time.Hour)); err != nil {
+		time.Now().Add(time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	lostRow := e.sandbox(t, local, poolLabels())

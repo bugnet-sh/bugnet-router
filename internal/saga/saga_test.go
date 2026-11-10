@@ -345,6 +345,14 @@ func newEnv(t *testing.T, ps ...provider.Provider) *env {
 // newEnvWith lets a test adjust the saga's dependencies before the saga is built
 func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) *env {
 	t.Helper()
+	return newEnvFeatures(t, adjust, provider.Features{}, ps...)
+}
+
+// newEnvFeatures is newEnvWith with the registry's features given
+func newEnvFeatures(
+	t *testing.T, adjust func(*saga.Deps), f provider.Features, ps ...provider.Provider,
+) *env {
+	t.Helper()
 	ctx := context.Background()
 	url := testenv.DatabaseURL(t)
 	if err := store.Migrate(ctx, url); err != nil {
@@ -376,7 +384,7 @@ func newEnvWith(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := provider.NewRegistry(ps, provider.Features{})
+	reg, err := provider.NewRegistry(ps, f)
 	if err != nil {
 		t.Fatal(err)
 	}

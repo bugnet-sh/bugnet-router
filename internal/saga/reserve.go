@@ -16,6 +16,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -98,6 +99,8 @@ type reservedPrep struct {
 	GateReadyAt *time.Time     `json:"gate_ready_at,omitempty"`
 	SSHHost     *store.SSHHost `json:"ssh_host,omitempty"`
 	CAVersion   int            `json:"ca_version,omitempty"`
+	// Image is the sandbox's base image record, which the bind writes with the ready
+	Image *image.Manifest `json:"image,omitempty"`
 }
 
 // reservationChannel is the Valkey channel that wakes the order awaiting a reservation
@@ -210,6 +213,7 @@ func (s *Saga) reserveTx(
 	cands, candErr := s.d.Engine.Candidates(placement.Inputs{
 		Package: pkg, Requirements: in.Requirements, MarginFloor: s.d.MarginFloor,
 		WarmFirst: s.d.WarmFirst, Hold: hold, HoldMax: cfg.MaxHold + cfg.LapseGrace,
+		ImageAccept: s.d.ImageAccept,
 	})
 	if candErr != nil && !errors.Is(candErr, placement.ErrNoCandidate) {
 		return reserved{}, fmt.Errorf("find candidates: %w", candErr)
@@ -335,7 +339,7 @@ func (s *Saga) renew(
 	cands, err := s.d.Engine.Candidates(placement.Inputs{
 		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor,
 		WarmFirst: s.d.WarmFirst, Hold: next.Sub(cur.CreatedAt) + cfg.LapseGrace,
-		HoldMax: cfg.MaxHold + cfg.LapseGrace,
+		HoldMax: cfg.MaxHold + cfg.LapseGrace, ImageAccept: s.d.ImageAccept,
 	})
 	fitsStill := false
 	if err == nil {
@@ -762,8 +766,10 @@ func (s *Saga) prepareReservation(
 		s.failReservation(ctx, r.ID, truncate(err.Error(), 200))
 	}
 	var ref provider.Ref
+	var img *image.Manifest
 	switch r.Path {
 	case store.ReservePooled:
+		img = manifestOfRecord(m.Image)
 		if m.ProviderRef == nil {
 			stop(errors.New("the pool member has no sandbox"), false)
 			return
@@ -793,17 +799,28 @@ func (s *Saga) prepareReservation(
 			smp.ReadyMS = smp.CreateMS + boot.ReadyMS
 		}
 		smp.RunnerMS = boot.RunnerMS
+		if boot.Image != nil {
+			smp.ImageVersion = boot.Image.Version
+		}
+		smp.Reseed = boot.Reseed
 		if err != nil {
 			stop(fmt.Errorf("boot: %w", err), true)
 			return
 		}
+		img = boot.Image
 	}
 	if !s.live(ctx, r.ID) {
 		s.retireMember(ctx, m.ID, store.EndUnused, "reservation ended while preparing")
 		return
 	}
-	prep, err := s.prepare(ctx, prov, ref, r.KeyID, r.PlacementID, req, true, 0)
+	prep, err := s.prepare(ctx, prov, ref, r.KeyID, r.PlacementID, req, true, 0, img)
 	smp.GateMS = prep.GateMS
+	if img != nil {
+		smp.ImageVersion = img.Version
+	}
+	if prep.Reseed != "" {
+		smp.Reseed = prep.Reseed
+	}
 	if err != nil {
 		stop(fmt.Errorf("prepare: %w", err), true)
 		return
@@ -815,7 +832,7 @@ func (s *Saga) prepareReservation(
 	s.setReservedLifetime(ctx, prov, prep.Ref, m, r, pkg)
 	raw, err := json.Marshal(reservedPrep{
 		KeyID: r.KeyID, GateReadyAt: timePtr(prep.GateReadyAt), SSHHost: prep.SSHHost,
-		CAVersion: prep.CAVersion,
+		CAVersion: prep.CAVersion, Image: prep.Image,
 	})
 	if err != nil {
 		stop(err, true)
@@ -998,7 +1015,7 @@ func (s *Saga) bindInTx(
 	}
 	prep := Prepared{
 		Ref: *m.ProviderRef, KeyID: rp.KeyID, SSHHost: rp.SSHHost, CAVersion: rp.CAVersion,
-		GateMS: store.NoStep,
+		GateMS: store.NoStep, Image: rp.Image,
 	}
 	if rp.GateReadyAt != nil {
 		prep.GateReadyAt = *rp.GateReadyAt

@@ -178,7 +178,7 @@ func (e *srcEnv) place(name string) store.Placement {
 	}
 	ref := provider.Ref{Provider: name, ID: "sbx-" + id.String()[:8]}
 	now := time.Now()
-	err = e.st.MarkPlacementReady(e.t.Context(), id, ref, "small", now, now.Add(time.Hour))
+	err = e.st.MarkPlacementReady(e.t.Context(), id, ref, "small", now, now.Add(time.Hour), nil)
 	if err != nil {
 		e.t.Fatal(err)
 	}

@@ -287,10 +287,12 @@ func (c *cli) providers(args []string) error {
 		}
 		fmt.Fprintf(&b, "%s state=%s blocked=%s samples=%s success_lower_bound=%.3f "+
 			"ready_p95_ms=%s in_use=%s external_in_use=%s max_concurrent=%s limit_source=%s "+
-			"polled_at=%s foreign_sandboxes=%s\n", p.GetProvider(), p.GetState(),
+			"polled_at=%s foreign_sandboxes=%s image_version=%s image_accepted=%t\n",
+			p.GetProvider(), p.GetState(),
 			p.GetBlocked(), u(p.GetSamples()), p.GetSuccessLowerBound(), u(p.GetReadyP95Ms()),
 			u(p.GetInUse()), u(p.GetExternalInUse()), u(p.GetMaxConcurrent()),
-			p.GetLimitSource(), polled, u(p.GetForeignSandboxes()))
+			p.GetLimitSource(), polled, u(p.GetForeignSandboxes()), p.GetImageVersion(),
+			p.GetImageAccepted())
 	}
 	_, err = fmt.Fprint(c.stdout, b.String())
 	return err

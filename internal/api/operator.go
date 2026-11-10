@@ -258,7 +258,7 @@ func operatorPlacementOf(p store.Placement, extend []string) *routerv1.OperatorP
 		PlacementId: p.ID.String(), State: placementState(p.State), Provider: p.Provider,
 		PackageId: p.PackageID, CreatedAt: timestamppb.New(p.CreatedAt), Payer: p.Payer,
 		ExtendPayers: extend, SourceLabel: p.SourceLabel, TerminationReason: p.TerminationReason,
-		StartPath: p.StartPath,
+		StartPath: p.StartPath, ImageVersion: p.ImageVersion,
 	}
 	if p.ProviderRef != nil {
 		out.ProviderSandboxId = p.ProviderRef.ID

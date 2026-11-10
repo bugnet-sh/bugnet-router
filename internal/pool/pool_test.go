@@ -41,7 +41,7 @@ func TestWarmthReadsEverySecondsAndNamesNoUnknownPool(t *testing.T) {
 
 	m, err := st.StartFill(t.Context(), "local", "small", 1, nil)
 	eq(t, err, nil)
-	eq(t, st.MarkMemberWarm(t.Context(), m.ID, refOf("sb-1"), "", now), nil)
+	eq(t, st.MarkMemberWarm(t.Context(), m.ID, refOf("sb-1"), "", nil, now), nil)
 	// The view is read again after two seconds, not before
 	eq(t, w.WarmAvailable("local", "small"), false)
 	*clk = now.Add(3 * time.Second)

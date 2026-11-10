@@ -30,6 +30,14 @@ type poolEnv struct {
 
 func newPoolEnv(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) *poolEnv {
 	t.Helper()
+	return newPoolEnvFeatures(t, provider.Features{}, adjust, ps...)
+}
+
+// newPoolEnvFeatures is newPoolEnv with the registry's features given
+func newPoolEnvFeatures(
+	t *testing.T, f provider.Features, adjust func(*saga.Deps), ps ...provider.Provider,
+) *poolEnv {
+	t.Helper()
 	settings := config.DefaultPools()
 	// With no headroom a pool that sees no demand sits at its min of one member
 	settings.Headroom = 0
@@ -37,14 +45,14 @@ func newPoolEnv(t *testing.T, adjust func(*saga.Deps), ps ...provider.Provider) 
 		Provider: ps[0].Name(), Size: "small", Min: 1, Max: 3, MaxAge: time.Hour,
 	}}
 	cfgs := pool.Configs(settings)
-	e := newEnvWith(t, func(d *saga.Deps) {
+	e := newEnvFeatures(t, func(d *saga.Deps) {
 		w := pool.NewWarmth(d.Store, cfgs, nil)
 		d.Pools = w
 		d.Engine = placement.New(d.Registry, d.Tracker, w)
 		if adjust != nil {
 			adjust(d)
 		}
-	}, ps...)
+	}, f, ps...)
 	mgr, err := pool.New(pool.Deps{
 		Store: e.store, Registry: mustRegistry(t, ps...), Saga: e.saga, River: e.river,
 		Valkey: e.vk, Prefix: e.prefix, Settings: settings,

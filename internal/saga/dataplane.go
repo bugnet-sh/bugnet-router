@@ -20,6 +20,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/gateclient"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
@@ -75,15 +76,13 @@ type profile struct {
 	denyPorts []int
 	// ca says the sandbox gets the Bugnet CA, false for local
 	ca bool
-	// caBaked says the template already holds the CA, so setup only checks its digest
-	caBaked bool
 	// rangesOutside says the IPv4 deny ranges are blocked at create, outside the VM
 	rangesOutside bool
 }
 
 // profiles holds the four providers of DP 6.3's deny list and CP 6.9's table, others are local
 var profiles = map[string]profile{
-	"e2b":   {denyPorts: []int{49983}, ca: true, caBaked: true, rangesOutside: true},
+	"e2b":   {denyPorts: []int{49983}, ca: true, rangesOutside: true},
 	"boxd":  {ca: true},
 	"koyeb": {denyPorts: []int{3030, 3031}, ca: true},
 	"boat":  {denyPorts: boatPorts(), ca: true},
@@ -160,8 +159,10 @@ func (b BootSettings) gatePort() int {
 }
 
 // setupSpecFor builds the spec for a sandbox of provider name, its local ports read from ref
+//
+// The CA goes as its digest alone when the image's manifest lists it, else with its PEM too.
 func (b BootSettings) setupSpecFor(
-	name string, ref provider.Ref, gateKey string, sample bool,
+	name string, ref provider.Ref, gateKey string, sample bool, img *image.Manifest,
 ) setupSpec {
 	pr := profiles[name]
 	spec := setupSpec{
@@ -175,8 +176,8 @@ func (b BootSettings) setupSpecFor(
 	}
 	if pr.ca && len(b.CAPEM) > 0 {
 		spec.CAVersion = b.CAVersion
-		if pr.caBaked {
-			sum := sha256.Sum256(b.CAPEM)
+		sum := sha256.Sum256(b.CAPEM)
+		if img != nil && img.HasCA(b.CAVersion, sum[:]) {
 			spec.CASHA256 = hex.EncodeToString(sum[:])
 		} else {
 			spec.CAPEM = string(b.CAPEM)
@@ -186,8 +187,10 @@ func (b BootSettings) setupSpecFor(
 }
 
 // poolSetupSpecFor builds the spec of a pool member's setup, which has no gate key to write
-func (b BootSettings) poolSetupSpecFor(name string, ref provider.Ref) setupSpec {
-	spec := b.setupSpecFor(name, ref, "", false)
+func (b BootSettings) poolSetupSpecFor(
+	name string, ref provider.Ref, img *image.Manifest,
+) setupSpec {
+	spec := b.setupSpecFor(name, ref, "", false, img)
 	spec.Phase, spec.GateListen, spec.DenyPorts = phasePool, "", nil
 	return spec
 }
@@ -297,7 +300,7 @@ func rootCommand(
 func runRoot(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, sub string, args ...string,
 ) (runnerAnswer, error) {
-	argv := append([]string{runnerPath, sub}, args...)
+	argv := append([]string{image.RunnerFor(ref), sub}, args...)
 	if user := prov.Capabilities().ExecUser; user != "" && user != "root" {
 		argv = append([]string{"sudo", "-n"}, argv...)
 	}
@@ -348,21 +351,22 @@ func (e *RunnerError) Error() string {
 // setup runs bugnet-run setup and answers the sandbox's CA state
 func (s *Saga) setup(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, gateKey string, sample bool,
+	img *image.Manifest,
 ) (runnerAnswer, error) {
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
-	spec := s.d.Boot.setupSpecFor(prov.Name(), ref, gateKey, sample)
+	spec := s.d.Boot.setupSpecFor(prov.Name(), ref, gateKey, sample, img)
 	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
 }
 
 // setupPool runs bugnet-run setup in its pool phase, which reseeds, installs the CA and writes the
 // env lines and nothing that needs a placement
 func (s *Saga) setupPool(
-	ctx context.Context, prov provider.Provider, ref provider.Ref,
+	ctx context.Context, prov provider.Provider, ref provider.Ref, img *image.Manifest,
 ) (runnerAnswer, error) {
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
-	spec := s.d.Boot.poolSetupSpecFor(prov.Name(), ref)
+	spec := s.d.Boot.poolSetupSpecFor(prov.Name(), ref, img)
 	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
 }
 

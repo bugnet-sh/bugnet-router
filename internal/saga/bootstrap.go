@@ -2,6 +2,8 @@ package saga
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,16 +12,23 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
-// runnerPath is where bugnet-run lives inside every sandbox
-const runnerPath = "/tmp/bugnet/bin/bugnet-run"
+// runnerPath is where the router uploads bugnet-run when the sandbox's image has none to use
+const runnerPath = image.UploadedRunnerPath
 
 // RunnerPath is runnerPath for a probe that runs the runner's ping
 const RunnerPath = runnerPath
+
+// errImageMismatch means the sandbox's manifest is not the base image the settings name
+var errImageMismatch = errors.New("saga: sandbox image is not the accepted base image")
+
+// reasonImageMismatch is the attempt and failure reason of errImageMismatch
+const reasonImageMismatch = "image_mismatch"
 
 const (
 	readyTimeout  = 60 * time.Second
@@ -51,6 +60,12 @@ type BootReport struct {
 	CAVersion int
 	// SSH is the sshd ssh-up made ready, nil when the order needs no SSH
 	SSH *store.SSHHost
+	// Image is the manifest the sandbox's image carries, nil when it has no base image
+	Image *image.Manifest
+	// RunnerBaked says the image's runner matched the router's build, so nothing was uploaded
+	RunnerBaked bool
+	// Reseed is setup's answer for its seed, ioctl, write or failed, empty when it gave none
+	Reseed string
 }
 
 // Prepared is what Prepare learned that the ready writes store
@@ -65,6 +80,10 @@ type Prepared struct {
 	CAVersion int
 	// GateMS is the time the gate steps took, store.NoStep when they did not run
 	GateMS int
+	// Image is the member row's record or the path's own Boot's, nil for none
+	Image *image.Manifest
+	// Reseed is setup's answer for its seed when Prepare ran it, empty otherwise
+	Reseed string
 }
 
 // errRestricted means a restricted package reached a provider without egress control
@@ -81,19 +100,19 @@ func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Re
 	if len(b.Restricted) > 0 && !prov.Capabilities().EgressControl {
 		return ref, rep, errRestricted
 	}
-	if err := s.boot(ctx, prov, ref, &rep); err != nil {
+	ref, err := s.boot(ctx, prov, ref, &rep)
+	if err != nil {
 		return ref, rep, err
 	}
 	var ans runnerAnswer
 	var key string
-	var err error
 	if b.Pool {
-		ans, err = s.setupPool(ctx, prov, ref)
+		ans, err = s.setupPool(ctx, prov, ref, rep.Image)
 	} else {
 		if key, err = s.d.Keys.GateKey(b.KeyID, b.Placement); err != nil {
 			return ref, rep, fmt.Errorf("gate key: %w", err)
 		}
-		ans, err = s.setup(ctx, prov, ref, key, false)
+		ans, err = s.setup(ctx, prov, ref, key, false, rep.Image)
 	}
 	if err != nil {
 		return ref, rep, fmt.Errorf("setup: %w", err)
@@ -101,6 +120,7 @@ func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Re
 	if slices.Contains(caTrusted, ans.CA) {
 		rep.CAVersion = s.d.Boot.CAVersion
 	}
+	rep.Reseed = ans.Reseed
 	s.d.Log.Info("sandbox set up", "placement", b.Placement, "provider", prov.Name(),
 		"ca", ans.CA, "init", ans.Init, "reseed", ans.Reseed, "pool", b.Pool)
 	if required, err := s.harden(ctx, prov, ref); err != nil {
@@ -115,7 +135,7 @@ func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Re
 	}
 	prep, err := s.prepare(ctx, prov, ref, b.KeyID, b.Placement, placement.Requirements{
 		Preview: b.NeedPreview, SSH: b.NeedSSH,
-	}, false, rep.CAVersion)
+	}, false, rep.CAVersion, rep.Image)
 	rep.GateMS = prep.GateMS
 	rep.GateReady, rep.GateReadyAt = !prep.GateReadyAt.IsZero(), prep.GateReadyAt
 	rep.SSH = prep.SSHHost
@@ -131,28 +151,31 @@ func (s *Saga) Prepare(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
 	req placement.Requirements, pooled bool,
 ) (Prepared, error) {
-	return s.prepare(ctx, prov, ref, s.keyID, id, req, pooled, 0)
+	return s.prepare(ctx, prov, ref, s.keyID, id, req, pooled, 0, nil)
 }
 
 // prepare is Prepare with the key id the placement was created under and, for a sandbox that
 // Boot set up, the CA version that setup reported
 func (s *Saga) prepare(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, keyID string, id uuid.UUID,
-	req placement.Requirements, pooled bool, caVersion int,
+	req placement.Requirements, pooled bool, caVersion int, img *image.Manifest,
 ) (Prepared, error) {
-	prep := Prepared{Ref: ref, KeyID: keyID, CAVersion: caVersion, GateMS: store.NoStep}
+	prep := Prepared{
+		Ref: ref, KeyID: keyID, CAVersion: caVersion, GateMS: store.NoStep, Image: img,
+	}
 	key, err := s.d.Keys.GateKey(keyID, id)
 	if err != nil {
 		return prep, fmt.Errorf("gate key: %w", err)
 	}
 	if pooled {
-		ans, err := s.setup(ctx, prov, ref, key, false)
+		ans, err := s.setup(ctx, prov, ref, key, false, img)
 		if err != nil {
 			return prep, fmt.Errorf("setup: %w", err)
 		}
 		if slices.Contains(caTrusted, ans.CA) {
 			prep.CAVersion = s.d.Boot.CAVersion
 		}
+		prep.Reseed = ans.Reseed
 		s.d.Log.Info("pooled sandbox set up", "placement", id, "provider", prov.Name(),
 			"ca", ans.CA, "init", ans.Init, "reseed", ans.Reseed)
 	}
@@ -177,32 +200,98 @@ func (s *Saga) prepare(
 		prep.SSHHost = &host
 	}
 	// The sampler starts last, so harden's and ssh-up's installs never count as the user's disk
-	if _, err := s.setup(ctx, prov, ref, key, true); err != nil {
+	if _, err := s.setup(ctx, prov, ref, key, true, img); err != nil {
 		s.d.Log.Warn("setup with the sampler", "placement", id,
 			"provider", prov.Name(), "err", err)
 	}
 	return prep, nil
 }
 
-// boot waits for a created sandbox and puts the runner in place when the provider lacks it
+// boot waits for a created sandbox, reads its image manifest and puts the runner in place
+//
+// The manifest is read before any write. A baked runner that matches the router's build is pinged
+// where it is and nothing is uploaded, otherwise the router's build goes to the upload path.
 func (s *Saga) boot(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, rep *BootReport,
-) error {
+) (provider.Ref, error) {
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	start := s.now()
 	err := prov.WaitReady(readyCtx, ref)
 	rep.ReadyMS = int(s.now().Sub(start).Milliseconds())
 	if err != nil {
-		return fmt.Errorf("wait ready: %w", err)
+		return ref, fmt.Errorf("wait ready: %w", err)
 	}
 	if !prov.Capabilities().NeedsRunnerUpload {
-		return nil
+		return ref, nil
+	}
+	if err := s.readImage(ctx, prov, ref, rep); err != nil {
+		return ref, err
 	}
 	start = s.now()
+	if rep.Image != nil && s.bakedRunner(ctx, prov, ref, *rep.Image) {
+		rep.RunnerBaked = true
+		return withMeta(ref, map[string]string{"runner": image.RunnerPath}), nil
+	}
 	err = s.uploadRunner(ctx, prov, ref)
 	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
-	return err
+	return ref, err
+}
+
+// readImage reads the sandbox's manifest and refuses one the settings do not accept
+func (s *Saga) readImage(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, rep *BootReport,
+) error {
+	m, ok, err := image.Read(ctx, prov, ref)
+	switch {
+	case errors.Is(err, image.ErrManifest):
+		return s.mismatch(prov, "the manifest is malformed")
+	case err != nil:
+		return fmt.Errorf("read the image manifest: %w", err)
+	case !ok:
+		if len(s.d.ImageAccept) > 0 && !s.d.Registry.ImageExempt(prov) {
+			return s.mismatch(prov, "the sandbox has no manifest")
+		}
+		return nil
+	}
+	switch {
+	case m.Version != s.d.Registry.ImageVersion(prov):
+		return s.mismatch(prov, "the manifest's version is not the provider's")
+	case len(s.d.ImageAccept) > 0 && !slices.Contains(s.d.ImageAccept, m.Version):
+		return s.mismatch(prov, "the manifest's version is not accepted")
+	case s.d.ImageChannel != "" && m.Channel != s.d.ImageChannel:
+		return s.mismatch(prov, "the manifest's channel is not the router's")
+	}
+	rep.Image = &m
+	return nil
+}
+
+func (s *Saga) mismatch(prov provider.Provider, why string) error {
+	s.d.Log.Error("sandbox image mismatch", "provider", prov.Name(), "why", why)
+	return fmt.Errorf("%w: %s", errImageMismatch, why)
+}
+
+// bakedRunner reports whether the image's runner is the router's build and answers a ping
+func (s *Saga) bakedRunner(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, m image.Manifest,
+) bool {
+	arch := "amd64"
+	if ref.Meta["arch"] == "arm64" {
+		arch = "arm64"
+	}
+	data := s.d.Runners[arch]
+	sum := sha256.Sum256(data)
+	if len(data) == 0 || m.RunnerSHA256[arch] != hex.EncodeToString(sum[:]) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
+	defer cancel()
+	if err := pingRunner(ctx, prov, ref, image.RunnerPath); err != nil {
+		s.d.Log.Warn("baked runner did not answer, uploading", "provider", prov.Name(),
+			"err", err)
+		return false
+	}
+	return true
 }
 
 // uploadRunner writes the build for the sandbox's architecture and checks that it runs there
@@ -220,7 +309,14 @@ func (s *Saga) uploadRunner(ctx context.Context, prov provider.Provider, ref pro
 	if err := prov.WriteFile(ctx, ref, runnerPath, data, 0o755); err != nil {
 		return fmt.Errorf("upload runner: %w", err)
 	}
-	stream, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: []string{runnerPath, "ping"}})
+	return pingRunner(ctx, prov, ref, runnerPath)
+}
+
+// pingRunner runs the runner at path with ping and waits for it to exit 0
+func pingRunner(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, path string,
+) error {
+	stream, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: []string{path, "ping"}})
 	if err != nil {
 		return fmt.Errorf("runner ping: %w", err)
 	}

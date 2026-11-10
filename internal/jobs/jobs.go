@@ -36,6 +36,7 @@ import (
 	"github.com/bugnet-sh/bugnet-run/frame"
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
@@ -43,7 +44,6 @@ import (
 )
 
 const (
-	runnerPath    = "/tmp/bugnet/bin/bugnet-run"
 	defaultWait   = 25 * time.Second
 	maxWait       = 45 * time.Second
 	tailSize      = 8 << 10
@@ -548,7 +548,7 @@ func (s *Service) Cancel(ctx context.Context, p store.Placement, jobID string) (
 
 // runCancel runs bugnet-run cancel, which exits 0 once the command is signalled or had ended
 func runCancel(ctx context.Context, prov provider.Provider, ref provider.Ref, jobID string) error {
-	argv := []string{runnerPath, "cancel", "--job", jobID}
+	argv := []string{image.RunnerFor(ref), "cancel", "--job", jobID}
 	es, err := prov.Exec(ctx, ref, provider.ExecSpec{Argv: argv})
 	if err != nil {
 		return fmt.Errorf("run bugnet-run cancel: %w", err)
@@ -914,7 +914,7 @@ func (o *owner) follow() bool {
 }
 
 func (o *owner) startArgv() []string {
-	argv := []string{runnerPath, "start", "--job", o.job()}
+	argv := []string{image.RunnerFor(*o.place.ProviderRef), "start", "--job", o.job()}
 	if o.cmd.cwd != "" {
 		argv = append(argv, "--cwd", o.cmd.cwd)
 	}
@@ -926,7 +926,7 @@ func (o *owner) startArgv() []string {
 
 func (o *owner) attachArgv() []string {
 	argv := []string{
-		runnerPath, "attach", "--job", o.job(),
+		image.RunnerFor(*o.place.ProviderRef), "attach", "--job", o.job(),
 		"--out", strconv.FormatInt(o.offsets[0], 10), "--err", strconv.FormatInt(o.offsets[1], 10),
 	}
 	if o.flood && !o.noTail {
