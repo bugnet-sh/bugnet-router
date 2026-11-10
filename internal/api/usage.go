@@ -40,7 +40,8 @@ func (s *Server) live(ctx context.Context, ids []string) ([]store.Placement, err
 
 // limit is what the placement may use of kind, at its start package's pace
 func (s *Server) limit(p store.Placement, kind budget.Kind) budget.Limit {
-	l := budget.Limit{Placement: p.ID, Budget: p.EdgeBudgetBytes, Deadline: *p.Deadline}
+	l := budget.Limit{Placement: p.ID, Budget: p.EdgeBudgetBytes, Deadline: *p.Deadline,
+		Payer: p.Payer}
 	if kind == budget.Egress {
 		l.Budget = p.EgressBudgetBytes
 	}
@@ -83,12 +84,41 @@ func (s *Server) report(
 			BudgetSpent: &routerv1.BudgetSpent{PlacementId: id.String(), Kind: budgetKinds[kind]},
 		}})
 	}
+	s.walletSpent(ctx, answers, limits)
 	left = make(map[string]uint64, len(answers))
 	pace = make(map[string]uint64, len(answers))
 	for id, a := range answers {
 		left[id.String()], pace[id.String()] = a.Remaining, a.Pace
 	}
 	return left, pace, nil
+}
+
+// walletSpent announces each payer whose daily cap a report just reached, once per payer
+func (s *Server) walletSpent(
+	ctx context.Context, answers map[uuid.UUID]budget.Answer, limits map[uuid.UUID]budget.Limit,
+) {
+	done := map[string]bool{}
+	for id, a := range answers {
+		payer := limits[id].Payer
+		if !a.WalletCrossed || done[payer] {
+			continue
+		}
+		done[payer] = true
+		ids, err := s.d.Store.ReadyPlacementIDsOf(ctx, payer)
+		if err != nil {
+			// The placements' own lease checks and resolves still read the wallet's spent key
+			s.d.Log.Warn("api: read the placements of a spent wallet", "err", err)
+			continue
+		}
+		for _, p := range ids {
+			for _, kind := range []budget.Kind{budget.Edge, budget.Egress} {
+				s.events.Publish(ctx, &routerv1.EdgeEvent{Event: &routerv1.EdgeEvent_BudgetSpent{
+					BudgetSpent: &routerv1.BudgetSpent{
+						PlacementId: p.String(), Kind: budgetKinds[kind]},
+				}})
+			}
+		}
+	}
 }
 
 // reportX402 adds unpaid x402 use by placement and host, logging each placement that lost fields

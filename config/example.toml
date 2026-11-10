@@ -154,6 +154,7 @@ stop_live_on_abuse = true              # an abuse end also ends the payers' othe
 refund_stopped_live = false            # wallet_blocked ends refund their unused time
 failed_refunds_per_day = 2             # refundable provider_failed ends per start payer in 24 h
 anonymous_failed_refunds_per_day = 20  # the same for all placements without a payer, together
+bytes_per_day = "50GiB"                # edge and egress bytes per payer and UTC day, all placements
 
 [stats]                                # the public stats feed of bugnet.sh/stats, control-plane 20
 listen_addr = ""                       # router-api's loopback listener, production "127.0.0.1:8082"

@@ -248,7 +248,7 @@ func New(deps Deps) *Server {
 		d:      deps,
 		notes:  newNotifier(deps.Valkey, saga.ChannelPattern(deps.Prefix), deps.Log),
 		ops:    ops,
-		meter:  budget.New(deps.Valkey, deps.Prefix, deps.Budget),
+		meter:  budget.New(deps.Valkey, deps.Prefix, deps.Budget).WithWalletCap(w.BytesPerDay),
 		events: events,
 		hub:    newHub(events, deps.Log),
 		xfers: transfer.NewStore(deps.Valkey, deps.Prefix, transfer.Limits{

@@ -242,7 +242,9 @@ func New(deps Deps) *Saga {
 	w := deps.Wallets.OrDefaults()
 	deps.Abuse = deps.Abuse.OrDefaults()
 	s := &Saga{
-		d: deps, meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget), w: w,
+		d: deps, w: w,
+		meter: budget.New(deps.Valkey, deps.Prefix, deps.Budget).
+			WithWalletCap(w.BytesPerDay),
 		guard:  wallet.Guard{UsePayer: w.UsePayer, Facilitators: w.FacilitatorAddresses},
 		limits: ratelimit.New(deps.Valkey, deps.Prefix, 0, 0),
 		wallets: wallets.New(deps.Store, wallets.Settings{
@@ -1030,7 +1032,7 @@ func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 	if s.d.Events == nil {
 		return
 	}
-	limit := budget.Limit{Placement: p.ID, Deadline: *p.Deadline}
+	limit := budget.Limit{Placement: p.ID, Deadline: *p.Deadline, Payer: p.Payer}
 	edge, egress := limit, limit
 	edge.Budget, egress.Budget = p.EdgeBudgetBytes, p.EgressBudgetBytes
 	edgeLeft, err := s.meter.Remaining(ctx, budget.Edge, edge)

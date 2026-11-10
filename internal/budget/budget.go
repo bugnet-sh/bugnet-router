@@ -8,6 +8,12 @@
 // later crossing writes it again. A report compares against the larger of that figure and the
 // budget it read, so a report that read the budget before an extension never spends the grown one.
 //
+// A placement with a payer also adds each delta to wallet:bytes:<payer>:<yyyymmdd> in the same
+// script and answers the smaller of its own remainder and the wallet's. The first report that
+// reaches the wallet's daily cap wins a SET NX on wallet:spent:<payer>:<yyyymmdd> and says so in
+// its Answer, so one replica announces it. The wallet's keys expire 48 hours after they are made
+// and a new UTC day starts empty, which restores every placement of the payer.
+//
 // The pace halves while both carriers carried the placement's bytes in the last 10 s, which
 // edge:seen:<placement> records by Valkey's clock and keeps for 30 s after the last report that
 // carried bytes. The used counters, budget figures and spent keys expire an hour after the
@@ -69,13 +75,18 @@ type Limit struct {
 	Placement uuid.UUID
 	Budget    int64
 	Deadline  time.Time
-	Payer     string // empty until Task 29 fills it
+	// Payer is the placement's payer as the router decided it, empty for none
+	Payer string
 	// BytesPerSecond is the placement's pace each way, the setting when zero
 	BytesPerSecond int64
 }
 
 // Answer is what is left of a placement's budget and the pace each way to keep
-type Answer struct{ Remaining, Pace uint64 }
+type Answer struct {
+	Remaining, Pace uint64
+	// WalletCrossed is set on the one report that first reached the payer's daily cap
+	WalletCrossed bool
+}
 
 // X402Unpaid is one host's unpaid use by one placement
 type X402Unpaid struct{ Requests, Bytes uint64 }
@@ -87,6 +98,8 @@ const (
 	maxDelta = 1 << 40
 	// x402Fields caps the fields of one placement's unpaid hash, two for each of 32 hosts
 	x402Fields = 64
+	// walletLife is how long a wallet's day keys live
+	walletLife = 48 * time.Hour
 )
 
 // reportScript adds one placement's delta and answers its sum, spent claim, carriers and budget
@@ -100,21 +113,35 @@ local crossed = 0
 if used >= budget and redis.call('SET', KEYS[2], '1', 'NX', 'PXAT', ARGV[3]) then
 	crossed = 1
 end
+local wused, wcrossed = -1, 0
+local w = tonumber(ARGV[6])
+if w > 0 then
+	wused = redis.call('INCRBY', KEYS[w], ARGV[1])
+	if redis.call('PTTL', KEYS[w]) < 0 then
+		redis.call('PEXPIRE', KEYS[w], ARGV[8])
+	end
+	if wused >= tonumber(ARGV[7]) then
+		if redis.call('SET', KEYS[w + 1], '1', 'NX', 'PX', ARGV[8]) then
+			wcrossed = 1
+		end
+	end
+end
 local both = 0
-if KEYS[4] then
+local seen = tonumber(ARGV[9])
+if seen > 0 then
 	local t = redis.call('TIME')
 	local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 	if tonumber(ARGV[1]) > 0 then
-		redis.call('HSET', KEYS[4], ARGV[4], now)
-		redis.call('PEXPIRE', KEYS[4], 30000)
+		redis.call('HSET', KEYS[seen], ARGV[4], now)
+		redis.call('PEXPIRE', KEYS[seen], 30000)
 	end
-	local seen = redis.call('HMGET', KEYS[4], ARGV[4], ARGV[5])
-	local mine, other = tonumber(seen[1]), tonumber(seen[2])
+	local got = redis.call('HMGET', KEYS[seen], ARGV[4], ARGV[5])
+	local mine, other = tonumber(got[1]), tonumber(got[2])
 	if mine and other and now - mine < 10000 and now - other < 10000 then
 		both = 1
 	end
 end
-return {used, crossed, both, budget}
+return {used, crossed, both, budget, wused, wcrossed}
 `)
 
 // keepScript moves the expiry of each key in KEYS that exists to ARGV[1] unless it lies later
@@ -160,15 +187,37 @@ return 0
 
 // Meter counts placements' bytes in Valkey under one key prefix
 type Meter struct {
-	c      valkey.Client
-	prefix string
-	s      config.EdgeBudget
+	c         valkey.Client
+	prefix    string
+	s         config.EdgeBudget
+	walletCap int64
+	now       func() time.Time
 }
 
-// New returns a Meter whose paces default to s
+// New returns a Meter whose paces default to s and that holds no wallet cap
 func New(c valkey.Client, prefix string, s config.EdgeBudget) *Meter {
-	return &Meter{c: c, prefix: prefix, s: s}
+	return &Meter{c: c, prefix: prefix, s: s, now: time.Now}
 }
+
+// WithWalletCap sets the bytes a payer's placements may carry together each UTC day, none for 0
+func (m *Meter) WithWalletCap(n int64) *Meter {
+	m.walletCap = max(n, 0)
+	return m
+}
+
+// WithClock makes the meter read the UTC day from now
+func (m *Meter) WithClock(now func() time.Time) *Meter {
+	m.now = now
+	return m
+}
+
+// walletKey names a payer's key of what for the current UTC day
+func (m *Meter) walletKey(what, payer string) string {
+	return m.prefix + "wallet:" + what + ":" + payer + ":" + m.now().UTC().Format("20060102")
+}
+
+// walletOn reports whether the limit's placement counts against a wallet cap
+func (m *Meter) walletOn(l Limit) bool { return m.walletCap > 0 && l.Payer != "" }
 
 func (m *Meter) key(kind Kind, what string, p uuid.UUID) string {
 	return m.prefix + string(kind) + ":" + what + ":" + p.String()
@@ -200,12 +249,20 @@ func (m *Meter) Report(
 	for i, p := range order {
 		l := limits[p]
 		keys := []string{m.key(kind, "used", p), m.key(kind, "spent", p), m.key(kind, "budget", p)}
+		seen, wallet := 0, 0
 		if kind == Edge {
 			keys = append(keys, m.key(kind, "seen", p))
+			seen = len(keys)
+		}
+		if m.walletOn(l) {
+			keys = append(keys, m.walletKey("bytes", l.Payer), m.walletKey("spent", l.Payer))
+			wallet = len(keys) - 1
 		}
 		execs[i] = valkey.LuaExec{Keys: keys, Args: []string{
 			strconv.FormatUint(deltas[p], 10), strconv.FormatInt(l.Budget, 10),
 			strconv.FormatInt(l.Deadline.Add(keyLife).UnixMilli(), 10), string(by), string(other),
+			strconv.Itoa(wallet), strconv.FormatInt(m.walletCap, 10),
+			strconv.FormatInt(walletLife.Milliseconds(), 10), strconv.Itoa(seen),
 		}}
 	}
 	answers := make(map[uuid.UUID]Answer, len(order))
@@ -213,7 +270,7 @@ func (m *Meter) Report(
 	for i, res := range reportScript.ExecMulti(ctx, m.c, execs...) {
 		p := order[i]
 		out, err := res.AsIntSlice()
-		if err == nil && len(out) != 4 {
+		if err == nil && len(out) != 6 {
 			err = fmt.Errorf("the script answered %d values", len(out))
 		}
 		if err != nil {
@@ -223,7 +280,11 @@ func (m *Meter) Report(
 		if out[2] == 1 {
 			pace /= 2
 		}
-		answers[p] = Answer{Remaining: left(out[3], out[0]), Pace: pace}
+		remaining := left(out[3], out[0])
+		if out[4] >= 0 {
+			remaining = min(remaining, left(m.walletCap, out[4]))
+		}
+		answers[p] = Answer{Remaining: remaining, Pace: pace, WalletCrossed: out[5] == 1}
 		if out[1] == 1 {
 			spent = append(spent, p)
 		}
@@ -263,22 +324,40 @@ func (m *Meter) RemainingAll(
 	for i, l := range ls {
 		keys[i] = m.key(kind, "used", l.Placement)
 	}
+	wallets := map[string]int{}
+	for _, l := range ls {
+		if _, ok := wallets[l.Payer]; m.walletOn(l) && !ok {
+			wallets[l.Payer] = len(keys)
+			keys = append(keys, m.walletKey("bytes", l.Payer))
+		}
+	}
 	vals, err := m.c.Do(ctx, m.c.B().Mget().Key(keys...).Build()).ToArray()
-	if err == nil && len(vals) != len(ls) {
-		err = fmt.Errorf("read %d counters, got %d", len(ls), len(vals))
+	if err == nil && len(vals) != len(keys) {
+		err = fmt.Errorf("read %d counters, got %d", len(keys), len(vals))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("budget: read %s usage: %w", kind, err)
 	}
+	count := func(i int) (int64, error) {
+		n, err := vals[i].AsInt64()
+		if valkey.IsValkeyNil(err) {
+			return 0, nil
+		}
+		return n, err
+	}
 	for i, l := range ls {
-		used, err := vals[i].AsInt64()
-		switch {
-		case valkey.IsValkeyNil(err):
-			used = 0
-		case err != nil:
+		used, err := count(i)
+		if err != nil {
 			return nil, fmt.Errorf("budget: read %s usage of %s: %w", kind, l.Placement, err)
 		}
 		out[l.Placement] = left(l.Budget, used)
+		if at, ok := wallets[l.Payer]; ok && m.walletOn(l) {
+			wused, err := count(at)
+			if err != nil {
+				return nil, fmt.Errorf("budget: read the wallet usage for %s: %w", l.Placement, err)
+			}
+			out[l.Placement] = min(out[l.Placement], left(m.walletCap, wused))
+		}
 	}
 	return out, nil
 }
@@ -290,6 +369,20 @@ func (m *Meter) Spent(ctx context.Context, kind Kind, placement uuid.UUID) (bool
 		return false, fmt.Errorf("budget: read the %s spent key of %s: %w", kind, placement, err)
 	}
 	return n == 1, nil
+}
+
+// SpentFor reports whether the placement's budget of kind was crossed and not grown since, or
+// its payer's wallet reached its cap today
+func (m *Meter) SpentFor(ctx context.Context, kind Kind, l Limit) (bool, error) {
+	keys := []string{m.key(kind, "spent", l.Placement)}
+	if m.walletOn(l) {
+		keys = append(keys, m.walletKey("spent", l.Payer))
+	}
+	n, err := m.c.Do(ctx, m.c.B().Exists().Key(keys...).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("budget: read the %s spent keys of %s: %w", kind, l.Placement, err)
+	}
+	return n > 0, nil
 }
 
 // Grow records an extension's budgets for the reports and clears both spent keys in one step

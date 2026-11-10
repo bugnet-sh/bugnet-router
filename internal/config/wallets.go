@@ -46,6 +46,8 @@ type Wallets struct {
 	FailedRefundsPerDay int
 	// AnonymousFailedRefundsPerDay is the same for every placement without a payer, together
 	AnonymousFailedRefundsPerDay int
+	// BytesPerDay is the edge and egress bytes one payer's placements carry together each UTC day
+	BytesPerDay int64
 }
 
 type walletsFile struct {
@@ -70,7 +72,8 @@ type walletsFile struct {
 	RefundStoppedLive      bool     `toml:"refund_stopped_live"`
 	FailedRefundsPerDay    int64    `toml:"failed_refunds_per_day"`
 	// AnonymousFailedRefunds is anonymous_failed_refunds_per_day
-	AnonymousFailedRefunds int64 `toml:"anonymous_failed_refunds_per_day"`
+	AnonymousFailedRefunds int64  `toml:"anonymous_failed_refunds_per_day"`
+	BytesPerDay            string `toml:"bytes_per_day"`
 }
 
 // maxWalletLimit keeps every count and rate far inside what the buckets and Postgres hold
@@ -82,6 +85,7 @@ func defaultWallets() walletsFile {
 		AnonymousMaxConcurrent: 20, OpsPerSecond: 20, OpsBurst: 40, RefusalsPerHour: 10,
 		RefusalBlockFor: "1h", StrikeThreshold: 2, StrikeWindow: "24h", StrikeBlockFor: "168h",
 		StopLiveOnAbuse: true, FailedRefundsPerDay: 2, AnonymousFailedRefunds: 20,
+		BytesPerDay: "50GiB",
 	}
 }
 
@@ -104,6 +108,7 @@ func (w Wallets) OrDefaults() Wallets {
 	w.FailedRefundsPerDay = cmp.Or(w.FailedRefundsPerDay, d.FailedRefundsPerDay)
 	w.AnonymousFailedRefundsPerDay = cmp.Or(w.AnonymousFailedRefundsPerDay,
 		d.AnonymousFailedRefundsPerDay)
+	w.BytesPerDay = cmp.Or(w.BytesPerDay, d.BytesPerDay)
 	return w
 }
 
@@ -163,6 +168,11 @@ func (f walletsFile) read(d walletsFile) (Wallets, error) {
 		}
 		w.AbuseBlockFor = v
 	}
+	bytes, err := byteSize("wallets.bytes_per_day", cmp.Or(f.BytesPerDay, d.BytesPerDay))
+	if err != nil {
+		return Wallets{}, err
+	}
+	w.BytesPerDay = bytes
 	for i, addr := range f.FacilitatorAddresses {
 		if _, err := wallet.ParseSolana(addr); err != nil {
 			// An entry is never quoted, since a secret could have been pasted there

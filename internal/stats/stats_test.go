@@ -513,13 +513,10 @@ func TestRouterLimits(t *testing.T) {
 	lim := RouterLimits(cfg(t, "wallets.use_payer = true", `ssh.providers = ["e2b"]`))
 	eq(t, lim, map[string]int64{
 		"wallet.max_concurrent": 5, "wallet.starts_per_hour": 30, "wallet.starts_per_day": 200,
-		"wallet.failed_refunds_per_day": 2, "sandbox.max_running_jobs": 16,
-		"transfer.max_file_bytes": 1 << 30, "sandbox.max_ssh_connections": 8,
+		"wallet.failed_refunds_per_day": 2, "wallet.bytes_per_day": 50 << 30,
+		"sandbox.max_running_jobs": 16,
+		"transfer.max_file_bytes":  1 << 30, "sandbox.max_ssh_connections": 8,
 	})
-	// Task 29 adds its key at its switch point
-	if _, ok := lim["wallet.bytes_per_day"]; ok {
-		t.Error("wallet.bytes_per_day sent before its source exists")
-	}
 	lim = RouterLimits(cfg(t, "wallets.use_payer = true", "wallets.failed_refunds_per_day = 7"))
 	eq(t, lim["wallet.failed_refunds_per_day"], int64(7))
 	for k := range lim {

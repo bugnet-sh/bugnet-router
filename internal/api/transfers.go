@@ -356,11 +356,12 @@ func probe(rec transfer.Record, now time.Time) error {
 
 // edgeLeft is the placement's edge bytes left, refusing a placement that spent its budget
 func (s *Server) edgeLeft(ctx context.Context, p store.Placement) (uint64, error) {
-	spent, err := s.meter.Spent(ctx, budget.Edge, p.ID)
+	lim := s.limit(p, budget.Edge)
+	spent, err := s.meter.SpentFor(ctx, budget.Edge, lim)
 	if err != nil {
 		return 0, err
 	}
-	left, err := s.meter.Remaining(ctx, budget.Edge, s.limit(p, budget.Edge))
+	left, err := s.meter.Remaining(ctx, budget.Edge, lim)
 	if err != nil {
 		return 0, err
 	}
@@ -552,7 +553,8 @@ func (st *stream) reread() {
 	}
 	st.deadline.Store(p.Deadline.UnixNano())
 	// A BudgetSpent the hub never read, lost in its resubscribe gap or by a publish, ends here
-	if spent, err := st.s.meter.Spent(st.ctx, budget.Edge, st.p.ID); err == nil && spent {
+	lim := st.s.limit(st.p, budget.Edge)
+	if spent, err := st.s.meter.SpentFor(st.ctx, budget.Edge, lim); err == nil && spent {
 		st.cut(errBudgetSpent)
 	}
 }

@@ -15,6 +15,7 @@ var walletDefaults = Wallets{
 	AnonymousMaxConcurrent: 20, OpsPerSecond: 20, OpsBurst: 40, RefusalBlockFor: time.Hour,
 	StrikeThreshold: 2, StrikeWindow: 24 * time.Hour, StrikeBlockFor: 168 * time.Hour,
 	StopLiveOnAbuse: true, FailedRefundsPerDay: 2, AnonymousFailedRefundsPerDay: 20,
+	BytesPerDay: 50 << 30,
 }
 
 func TestWalletsDefaults(t *testing.T) {
@@ -37,6 +38,7 @@ func TestWalletsSettings(t *testing.T) {
 	c, err := LoadFile(writeFile(t, `[wallets]
 use_payer = true
 require_payer = true
+bytes_per_day = "3GiB"
 max_concurrent = 1
 starts_per_hour = 2
 starts_burst = 3
@@ -73,6 +75,7 @@ ops_per_second = 0
 		FacilitatorAddresses: []string{facilitatorAddr}, EmitEvents: true, StrikeThreshold: 3,
 		StrikeWindow: time.Hour, StrikeBlockFor: time.Minute, AbuseBlockFor: 720 * time.Hour,
 		RefundStoppedLive: true, FailedRefundsPerDay: 9, AnonymousFailedRefundsPerDay: 10,
+		BytesPerDay: 3 << 30,
 	})
 	eq(t, c.ProviderOps, map[string]int{"e2b": 7})
 }
@@ -92,7 +95,9 @@ func TestWalletsBounds(t *testing.T) {
 			facilitatorAddr + "\"]", "wallets.facilitator_addresses entry 2 repeats entry 1"},
 		{"[boat]\nops_per_second = -1", "boat.ops_per_second must be 0 to 1000000"},
 		{"[wallets]\nuse_payer = 1", "line 4: wallets.use_payer must be true or false"},
-		{"[wallets]\nbytes_per_day = \"50GiB\"", "line 4: wallets.bytes_per_day is not a setting"},
+		{"[wallets]\nbytes_per_day = \"0\"", "wallets.bytes_per_day must be 1 byte to 1 TiB"},
+		{"[wallets]\nbytes_per_day = \"2TiB\"", "wallets.bytes_per_day must be 1 byte to 1 TiB"},
+		{"[wallets]\nbytes_per_day = 5", "line 4: wallets.bytes_per_day must be a string"},
 		{"[wallets]\nfailed_refunds_per_day = 0",
 			"wallets.failed_refunds_per_day must be 1 to 1000000"},
 		{"[wallets]\nanonymous_failed_refunds_per_day = 0",
