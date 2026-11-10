@@ -65,6 +65,8 @@ const (
 	diskGiB          = 100
 	defaultPoll      = 500 * time.Millisecond
 	afterCreateLimit = 15 * time.Second
+	// probeTimeout bounds one agent probe as E2B and Koyeb bound theirs, so a hung one is retried
+	probeTimeout = 5 * time.Second
 	// usdPerEURCents is a conservative fixed 1.15 USD per EUR, set on 2026-11-04
 	usdPerEURCents = 115
 	// fallbackArch is assumed because boxd's API reports no architecture
@@ -125,6 +127,7 @@ type Provider struct {
 	log          *slog.Logger
 	pollInterval time.Duration
 	afterCreate  time.Duration
+	probeWithin  time.Duration
 	gatePort     int
 	gateRoute    string
 	parkedGiB    int
@@ -180,7 +183,8 @@ func New(opts Options) (*Provider, error) {
 	return &Provider{
 		conn: conn, api: boxdpb.NewBoxdApiClient(conn), streamConn: streamConn,
 		streams: boxdpb.NewBoxdApiClient(streamConn), log: log, pollInterval: defaultPoll,
-		afterCreate: afterCreateLimit, gatePort: cmp.Or(opts.GatePort, provider.DefaultGatePort),
+		afterCreate: afterCreateLimit, probeWithin: probeTimeout,
+		gatePort:  cmp.Or(opts.GatePort, provider.DefaultGatePort),
 		gateRoute: route, parkedGiB: cmp.Or(opts.ParkedGiB, defaultParkedGiB),
 		pingArgv: pingArgv, snapshots: maps.Clone(opts.Snapshots),
 		imagePoll: snapshotPoll, imageWait: snapshotWait,
@@ -525,6 +529,8 @@ func (p *Provider) pause(ctx context.Context) error {
 
 // probe runs true in the machine, which succeeds once its agent takes commands
 func (p *Provider) probe(ctx context.Context, ref provider.Ref) error {
+	ctx, cancel := context.WithTimeout(ctx, p.probeWithin)
+	defer cancel()
 	stream, err := p.Exec(ctx, ref, provider.ExecSpec{Argv: []string{"true"}})
 	if err != nil {
 		return err
