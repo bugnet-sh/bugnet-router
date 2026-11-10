@@ -181,12 +181,13 @@ func serve(
 	var warmth *poolpkg.Warmth
 	var warm placement.Warm
 	if cfg.Pools.Enabled && len(cfg.Pools.Pool) > 0 {
-		warmth = poolpkg.NewWarmth(st, poolpkg.Configs(cfg.Pools), nil)
+		warmth = poolpkg.NewWarmth(st, poolpkg.ConfigsFor(reg, cfg.Pools), nil)
 		warm = warmth
 	}
+	shared := sharedhealth.NewShared(st, tracker, log)
 	w, err := worker.New(pool, saga.Deps{
 		Store:         st,
-		Engine:        placement.New(reg, sharedhealth.NewShared(st, tracker, log), warm),
+		Engine:        placement.New(reg, shared, warm),
 		Registry:      reg,
 		Catalog:       cat,
 		Valkey:        vk,
@@ -216,6 +217,10 @@ func serve(
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
+		Hedger: saga.NewHedger(saga.HedgerDeps{
+			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
+			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
+		}),
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,
@@ -253,7 +258,8 @@ func serve(
 			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
 		},
 		poolLines(log, st, w.Pools()),
-		reserveLines(log, st, vk, cfg.ValkeyPrefix, cfg.Targets)))
+		reserveLines(log, st, vk, cfg.ValkeyPrefix, cfg.Targets),
+		hedgeLines(log, st)))
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	failed := make(chan error, 1)
 	go func() { failed <- hs.Serve(ln) }()

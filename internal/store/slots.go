@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -187,4 +188,21 @@ func (s *Store) SetPlacementHedged(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("set hedged on %s: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// HedgeLosersLeft lists the placements whose hedge loser still has a sandbox the router never saw
+// destroyed, though the placement became ready before the time
+func (s *Store) HedgeLosersLeft(
+	ctx context.Context, readyBefore time.Time, limit int,
+) ([]uuid.UUID, error) {
+	rows, err := s.q.Query(ctx, `
+		select distinct a.placement_id
+		from placement_attempts a join placements p on p.id = a.placement_id
+		where a.error_code = 'hedge_lost' and a.sandbox_id is not null and a.destroyed_at is null
+			and p.ready_at is not null and p.ready_at < $1
+		order by a.placement_id limit $2`, utc(readyBefore), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select hedge losers left: %w", err)
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 }

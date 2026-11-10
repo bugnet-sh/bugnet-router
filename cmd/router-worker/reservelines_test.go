@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
@@ -160,4 +161,59 @@ func eq[T any](t *testing.T, got, want T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
+}
+
+func TestMonitorHedgeLoserLine(t *testing.T) {
+	p := migrated(t)
+	st := store.New(p)
+	ctx := t.Context()
+	lines := func() []string { return hedgeLines(discard, st)(ctx) }
+	// a hedged placement ready for readyAgo, whose loser's sandbox was or was not destroyed
+	hedged := func(readyAgo time.Duration, sandbox string, destroyed bool) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		_, err := p.Exec(ctx, `insert into placements (id, handle_sha256, order_id, package_id,
+				state, ready_at, hedged)
+			values ($1, $2, $3, 'p', 'ready', now() - make_interval(secs => $4), true)`,
+			id, []byte(id.String()), id.String(), readyAgo.Seconds())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gone any
+		if destroyed {
+			gone = time.Now()
+		}
+		_, err = p.Exec(ctx, `insert into placement_attempts (placement_id, attempt, provider,
+				state, error_code, sandbox_id, destroyed_at, hedge)
+			values ($1, 1, 'slow', 'failed', 'hedge_lost', nullif($2, ''), $3, false),
+				($1, 2, 'fast', 'ready', null, 'winner', null, true)`, id, sandbox, gone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	eq(t, lines(), []string(nil))
+	// A loser destroyed, one still inside its create without a sandbox id, and one too young
+	hedged(10*time.Minute, "gone", true)
+	hedged(10*time.Minute, "", false)
+	hedged(time.Minute, "young", false)
+	eq(t, lines(), []string(nil))
+	// A loser with a sandbox the router never saw destroyed, 10 minutes after the ready
+	left := hedged(10*time.Minute, "left", false)
+	eq(t, lines(), []string{fmt.Sprintf(
+		"hedge loser of placement %s still exists after 5 minutes", left)})
+
+	// The line reaches /monitor beside the others
+	rec := httptest.NewRecorder()
+	monitor(discard, st, vk(t), testPrefix, healthy, testPools, feedCheck{}, nil, limitsCheck{},
+		nil, canaryCheck{}, lossCheck{}, spendCheck{}, hedgeLines(discard, st))(rec,
+		httptest.NewRequest(http.MethodGet, "/monitor", nil))
+	eq(t, rec.Code, http.StatusServiceUnavailable)
+	eq(t, strings.Contains(rec.Body.String(), "hedge loser of placement "+left.String()), true)
+}
+
+func vk(t *testing.T) valkey.Client {
+	t.Helper()
+	c, _ := testenv.Valkey(t)
+	return c
 }
