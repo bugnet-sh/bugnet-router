@@ -198,3 +198,14 @@ func TestConfigStanza(t *testing.T) {
 `)
 	eq(t, strings.Contains(h.Command(), "$TMPDIR/bugnet/k "), true)
 }
+
+func TestThrowawayLineIsAGatewayLineThatDiffers(t *testing.T) {
+	a, err := sshkeys.Throwaway()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := sshkeys.Throwaway()
+	if a == b || !strings.HasPrefix(a, "restrict,pty,") || !strings.HasSuffix(a, " bn-gw") {
+		t.Errorf("throwaway lines %q and %q", a, b)
+	}
+}

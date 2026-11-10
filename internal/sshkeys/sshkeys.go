@@ -10,6 +10,7 @@
 package sshkeys
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base32"
@@ -114,6 +115,23 @@ func GatewayLine(wire []byte) (line, fingerprint string, err error) {
 		return "", "", fmt.Errorf("%w: the gateway's key must be plain ed25519", ErrInvalid)
 	}
 	return gatewayOptions + " " + bare(pub) + " bn-gw", ssh.FingerprintSHA256(pub), nil
+}
+
+// Throwaway is the authorized_keys line of a gateway key made now and never kept
+//
+// The private half is dropped at once, so nothing can connect with the line. A base image check
+// hands it to ssh-up to see the host key a fresh sandbox makes.
+func Throwaway() (string, error) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", err
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return "", err
+	}
+	line, _, err := GatewayLine(sshPub.Marshal())
+	return line, err
 }
 
 // HostKey checks a host key line and answers its type and base64, without a comment

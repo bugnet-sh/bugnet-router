@@ -87,7 +87,7 @@ func (p *Provider) builderRequest(
 	case req.Egress != nil:
 		return nil, nil, invalid(errors.New("a boxd builder has no egress rules"))
 	case req.Image != "" && !isOCI:
-		return nil, nil, invalid(errors.New("a boxd builder starts from boxd's image or an oci one"))
+		return nil, nil, invalid(errors.New("a boxd builder starts from boxd's image or oci"))
 	case isOCI && oci == "":
 		return nil, nil, invalid(errors.New("an oci image needs a reference"))
 	}
@@ -129,7 +129,9 @@ func (p *Provider) missingSnapshot(err error, snapshot string) error {
 }
 
 // SaveImage saves the builder as a snapshot called name and returns once boxd says it is ready
-func (p *Provider) SaveImage(ctx context.Context, sandbox provider.Ref, name string) (string, error) {
+func (p *Provider) SaveImage(
+	ctx context.Context, sandbox provider.Ref, name string,
+) (string, error) {
 	id, err := machineID(sandbox)
 	if err != nil {
 		return "", err

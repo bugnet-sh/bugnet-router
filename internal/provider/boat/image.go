@@ -23,7 +23,9 @@ const (
 //
 // A builder carries no labels and has snapshots on, since Boat saves only such a sandbox. Every
 // sandbox keeps noEnv, which a saved snapshot and every deploy from it inherit.
-func (p *Provider) createBody(req provider.CreateRequest, s size) (api.CreateSandboxRequest, error) {
+func (p *Provider) createBody(
+	req provider.CreateRequest, s size,
+) (api.CreateSandboxRequest, error) {
 	body := api.CreateSandboxRequest{
 		Type:       new(api.CreateSandboxRequestType(s.typ.name)),
 		TtlSeconds: new(wholeSeconds(req.Lifetime)),
@@ -90,7 +92,9 @@ func (p *Provider) savedStatus(ctx context.Context, name string) (string, bool, 
 }
 
 // SaveImage saves the builder as a snapshot called name and returns once Boat says it is ready
-func (p *Provider) SaveImage(ctx context.Context, sandbox provider.Ref, name string) (string, error) {
+func (p *Provider) SaveImage(
+	ctx context.Context, sandbox provider.Ref, name string,
+) (string, error) {
 	id, err := sandboxID(sandbox)
 	if err != nil {
 		return "", err
@@ -113,8 +117,7 @@ func (p *Provider) SaveImage(ctx context.Context, sandbox provider.Ref, name str
 		if err == nil && st == "ready" {
 			return name, nil
 		}
-		if e, ok := provider.AsError(err); st == "failed" || ok && e.Code != provider.CodeInternal &&
-			e.Code != provider.CodeRateLimited && e.Code != provider.CodeOutcomeUnknown {
+		if st == "failed" || fatal(err) {
 			return "", err
 		}
 		if time.Now().After(deadline) {
@@ -136,4 +139,11 @@ func (p *Provider) DeleteImage(ctx context.Context, ref string) error {
 		return nil
 	}
 	return err
+}
+
+// fatal reports an error a poll cannot wait out, which is any but a transient one
+func fatal(err error) bool {
+	e, ok := provider.AsError(err)
+	return ok && e.Code != provider.CodeInternal && e.Code != provider.CodeRateLimited &&
+		e.Code != provider.CodeOutcomeUnknown
 }
