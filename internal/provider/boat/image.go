@@ -19,10 +19,7 @@ const (
 	savedWait = 30 * time.Minute
 )
 
-// createBody builds a create's body, for a sold sandbox or for a builder an image is saved from
-//
-// A builder carries no labels and has snapshots on, since Boat saves only such a sandbox. Every
-// sandbox keeps noEnv, which a saved snapshot and every deploy from it inherit.
+// createBody builds a create's body, a builder having snapshots on and no labels
 func (p *Provider) createBody(
 	req provider.CreateRequest, s size,
 ) (api.CreateSandboxRequest, error) {

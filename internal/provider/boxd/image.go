@@ -27,10 +27,7 @@ const (
 
 var snapshotWord = regexp.MustCompile(`(?i)snapshot|archiv`)
 
-// createRequest builds the CreateVm request for a sandbox, a builder or a restore of a snapshot
-//
-// The returned labels are the ones the machine must carry, and the request's own map, so a key
-// label added later reaches the spec.
+// createRequest builds the CreateVm request and the label map a key label is later added to
 func (p *Provider) createRequest(
 	req provider.CreateRequest,
 ) (*boxdpb.CreateVmRequest, map[string]string, error) {
@@ -75,9 +72,7 @@ func (p *Provider) createRequest(
 	return in, labels, nil
 }
 
-// builderRequest builds the request of a machine an image is saved from, which carries no labels
-//
-// Restores inherit a snapshot's labels, so a builder's labels would reach every sandbox.
+// builderRequest builds the request of a labelless machine an image is saved from
 func (p *Provider) builderRequest(
 	req provider.CreateRequest, oci string, isOCI bool,
 ) (*boxdpb.CreateVmRequest, map[string]string, error) {

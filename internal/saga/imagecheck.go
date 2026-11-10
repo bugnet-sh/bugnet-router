@@ -20,10 +20,7 @@ const (
 	MetaReseed = "check_reseed"
 )
 
-// CheckBoot builds the start steps a base image check runs on a fresh sandbox of the image
-//
-// They are the manifest read, the baked runner's ping, setup with a throwaway gate key, no CA and
-// a fresh seed, and ssh-up with a throwaway key. They use no router secret and no database.
+// CheckBoot builds the start steps of a base image check, which use no router secret or database
 func CheckBoot(
 	b BootSettings, ssh SSHSettings,
 ) func(context.Context, provider.Provider, provider.Ref) (provider.Ref, error) {

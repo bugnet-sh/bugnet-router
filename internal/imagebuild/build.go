@@ -75,9 +75,7 @@ var (
 	setupLine           = regexp.MustCompile(`(?m)^setup-image: .{1,200}$`)
 )
 
-// Name is the artifact name of one size at provider p, as CP 19.6.1 gives it
-//
-// Boat has one artifact for every size, so its name has no size.
+// Name is the artifact name of one size at a provider, Boat's having no size
 func Name(provider, channel, version, size string) string {
 	v := strings.ReplaceAll(version, ".", "-")
 	switch provider {
@@ -93,10 +91,6 @@ func Name(provider, channel, version, size string) string {
 }
 
 // Build runs setup-image.sh in one builder per size, scans it, saves it and destroys it
-//
-// Boat has one artifact for every size, so it builds on the first size alone. Every builder is
-// destroyed on every path, with a context of its own. A failure, a finding included, deletes
-// each artifact an earlier size already saved.
 func Build(
 	ctx context.Context, p provider.Provider, s provider.ImageSaver, spec Spec,
 ) ([]Artifact, error) {

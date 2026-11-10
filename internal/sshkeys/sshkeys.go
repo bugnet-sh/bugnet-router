@@ -117,10 +117,7 @@ func GatewayLine(wire []byte) (line, fingerprint string, err error) {
 	return gatewayOptions + " " + bare(pub) + " bn-gw", ssh.FingerprintSHA256(pub), nil
 }
 
-// Throwaway is the authorized_keys line of a gateway key made now and never kept
-//
-// The private half is dropped at once, so nothing can connect with the line. A base image check
-// hands it to ssh-up to see the host key a fresh sandbox makes.
+// Throwaway is the authorized_keys line of a gateway key whose private half is dropped at once
 func Throwaway() (string, error) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

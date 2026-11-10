@@ -62,8 +62,6 @@ type BootFunc func(
 ) (provider.Ref, error)
 
 // Check starts sandboxes from ref as a placement would, scans them and compares them
-//
-// The scan runs before any start step, so it sees what the image and the provider put there.
 func Check(
 	ctx context.Context, p provider.Provider, boot BootFunc, ref string, size provider.Size,
 	n leakscan.Needles,
