@@ -488,8 +488,10 @@ func TestRenewalRefusedPastTheFloor(t *testing.T) {
 	// The renewal would hold 210 s, which no candidate clears, so the hold keeps its expiry
 	again := e.reserve(t, "q2.f", smallPkg)
 	eq(t, again.Skip, saga.Skip(""))
-	eq(t, again.ExpiresAt.Equal(first.ExpiresAt), true)
-	eq(t, e.reservation(t, "q2.f").ExpiresAt.Equal(first.ExpiresAt), true)
+	// The held expiry comes back from Postgres, which keeps microseconds
+	kept := first.ExpiresAt.Truncate(time.Microsecond)
+	eq(t, again.ExpiresAt.Equal(kept), true)
+	eq(t, e.reservation(t, "q2.f").ExpiresAt.Equal(kept), true)
 	e.saga.Wait()
 }
 
