@@ -41,7 +41,7 @@ host_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ5Uj5xh80oFhcYJCELNpDMzCVBjPg
 
 [secrets]
 # x402 pays only on providers listed here
-providers = ["boat", "boxd"]  # E2B joins once its templates carry this CA
+providers = ["boat", "e2b", "boxd"]
 egress_ips = ["62.72.21.74", "2a02:4780:c:ab47::1"]
 ca_cert_file = "/etc/bugnet/egress-ca.pem"
 ca_version = 1
