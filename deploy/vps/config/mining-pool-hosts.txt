@@ -1,0 +1,54 @@
+# Mining pool stratum hosts that deploy/vps/mining-pools.py resolves into mining-pools.txt
+# CPU-mined coins first (RandomX and similar), since sandboxes have no GPU. One host per line.
+# A host that no longer resolves is skipped, so stale entries cost nothing.
+
+# Monero
+pool.supportxmr.com
+xmr.2miners.com
+xmr-eu1.nanopool.org
+xmr-eu2.nanopool.org
+xmr-us-east1.nanopool.org
+xmr-us-west1.nanopool.org
+xmr-asia1.nanopool.org
+xmr-jp1.nanopool.org
+xmr-au1.nanopool.org
+gulf.moneroocean.stream
+pool.hashvault.pro
+mine.c3pool.com
+auto.c3pool.org
+monero.herominers.com
+de.monero.herominers.com
+fi.monero.herominers.com
+ca.monero.herominers.com
+us.monero.herominers.com
+hk.monero.herominers.com
+xmrpool.eu
+fr.xmrpool.eu
+de.xmrpool.eu
+xmr.f2pool.com
+xmr.kryptex.network
+xmr-eu.kryptex.network
+xmr-us.kryptex.network
+xmr.pool.minergate.com
+xmr.zeropool.io
+pool.xmr.pt
+
+# Multi-coin pools that pay out in other coins
+rx.unmineable.com
+rx-eu.unmineable.com
+rx-us.unmineable.com
+rx-asia.unmineable.com
+randomxmonero.auto.nicehash.com
+randomx.mine.zergpool.com
+verushash.mine.zergpool.com
+
+# Other CPU coins
+zephyr.herominers.com
+salvium.herominers.com
+raptoreum.herominers.com
+na.luckpool.net
+eu.luckpool.net
+ap.luckpool.net
+stratum-eu.rplant.xyz
+stratum-na.rplant.xyz
+stratum-asia.rplant.xyz
