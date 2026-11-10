@@ -247,3 +247,45 @@ func TestStartRefusesAcceptWithNoProvider(t *testing.T) {
 		t.Fatalf("error %v, want one naming images.accept", err)
 	}
 }
+
+func TestStartRefusesBadBoxdRefs(t *testing.T) {
+	sizes := []provider.Size{
+		{Name: "1x4", Resources: provider.Resources{VCPU: 1, MemoryMiB: 4096, DiskGiB: 20}},
+		{Name: "2x8", Resources: provider.Resources{VCPU: 2, MemoryMiB: 8192, DiskGiB: 20}},
+	}
+	boxd := local.New(local.Options{Name: "boxd", Root: t.TempDir(), Sizes: sizes})
+	r, err := provider.NewRegistry([]provider.Provider{boxd}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load(writeTemp(t, "packages.json", []byte(`{"packages": [{"id": "big", `+
+		`"resources": {"vcpu": 2, "memory_mib": 6000, "disk_gib": 10}, "minutes": 10, `+
+		`"price_micros": 50000}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	with := func(refs map[string]string) config.Config {
+		var cfg config.Config
+		cfg.Images.Boxd.Refs = refs
+		return cfg
+	}
+	for _, tc := range []struct {
+		name string
+		refs map[string]string
+		want string
+	}{
+		{"no refs", nil, ""},
+		{"all sizes", map[string]string{"1x4": "a", "2x8": "b"}, ""},
+		{"only the landing size", map[string]string{"2x8": "b"}, ""},
+		{"unknown size", map[string]string{"99x99": "x", "2x8": "b"}, `"99x99"`},
+		{"missing size", map[string]string{"1x4": "a"}, `"2x8"`},
+	} {
+		err := checkBoxdRefs(r, with(tc.refs), cat)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: got %v, want an error naming %s", tc.name, err, tc.want)
+		}
+	}
+}

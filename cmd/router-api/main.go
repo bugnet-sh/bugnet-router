@@ -19,6 +19,7 @@ import (
 	"io"
 	stdlog "log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -157,6 +158,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		return err
 	}
 	if err := checkImages(reg, cfg); err != nil {
+		return err
+	}
+	if err := checkBoxdRefs(reg, cfg, cat); err != nil {
 		return err
 	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
@@ -367,6 +371,33 @@ func checkImages(reg *provider.Registry, cfg config.Config) error {
 	if !found {
 		return errors.New("images.accept lists no version that a provider has, and " +
 			"images.exempt names none of them")
+	}
+	return nil
+}
+
+// checkBoxdRefs refuses images.boxd.refs keys that are not sizes boxd sells, and a refs that
+// misses a size the catalog's packages land on
+func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
+	refs := cfg.Images.Boxd.Refs
+	p, ok := reg.Get("boxd")
+	sizer, isSizer := p.(provider.Sizer)
+	if len(refs) == 0 || !ok || !isSizer {
+		return nil
+	}
+	sold := map[string]bool{}
+	for _, s := range sizer.Sizes() {
+		sold[s.Name] = true
+	}
+	for _, size := range slices.Sorted(maps.Keys(refs)) {
+		if !sold[size] {
+			return fmt.Errorf("images.boxd.refs names %q, which is not a size boxd sells", size)
+		}
+	}
+	for _, pkg := range cat.All() {
+		if size, ok := p.SizeFor(pkg.Resources); ok && refs[size.Name] == "" {
+			return fmt.Errorf("images.boxd.refs has no artifact for size %q, which package %q "+
+				"lands on", size.Name, pkg.ID)
+		}
 	}
 	return nil
 }
