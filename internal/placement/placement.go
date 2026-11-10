@@ -51,6 +51,8 @@ type Inputs struct {
 	Hold time.Duration
 	// HoldMax is the longest a renewed hold can run, which the candidate's lifetime must cover
 	HoldMax time.Duration
+	// ImageAccept lists the base image versions creates may start from, nil for any
+	ImageAccept []string
 }
 
 // Health reports how well each provider has been behaving
@@ -90,6 +92,9 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	for _, p := range e.reg.Ordered() {
 		name := p.Name()
 		if in.Exclude[name] || !e.health.Healthy(name) {
+			continue
+		}
+		if !e.reg.ImageAccepted(p, in.ImageAccept) {
 			continue
 		}
 		caps := e.reg.Capabilities(p)

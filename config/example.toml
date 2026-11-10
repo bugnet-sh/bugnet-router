@@ -204,18 +204,35 @@ estimates_keep = "168h"                # unreferenced estimates
 source_facts_keep = "168h"             # unreferenced facts, past their last use
 observations_keep = "2160h"
 
-# One table per provider, filled from live test E9: a version, "none", or "" when not measured
-[images.e2b]
-tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+[images]                               # the Bugnet base image, CP 19
+accept = []                            # base image versions creates may start from, newest first
+exempt = ["local"]                     # providers placed on their own image while accept is set
+channel = "prod"                       # prod or dev, the CA every accepted build trusts
 
-[images.boat]
+# One table per provider, copied from deploy/image/builds/<channel>-<version>.json
+[images.e2b]
+version = ""                           # the version [[e2b.templates]] were built from, "" for E2B's own
+os = ""                                # such as ubuntu-24.04
 tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
 
 [images.boxd]
+version = ""
+refs = {}                              # size = snapshot name, one for every size the catalog uses
+os = ""
 tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
 
 [images.koyeb]
+version = ""
+ref = ""                               # OCI reference by digest, koyeb/sandbox when empty
+os = ""
 tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
+[images.boat]
+version = ""
+ref = ""                               # saved snapshot name, Boat's own image when empty
+os = ""
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
 [sessions]                             # the session page, SP 6 and 7
 base_url = ""                          # https://sessions.<domain>, no session link while empty
 keep = "48h"                           # how long a page lives after its sandbox ends

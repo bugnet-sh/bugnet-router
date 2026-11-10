@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -87,7 +88,12 @@ func refusedAsRedundant(err error) bool {
 
 // ping runs the runner's ping, which succeeds once the machine's agent and disk answer
 func (p *Provider) ping(ctx context.Context, ref provider.Ref) error {
-	stream, err := p.Exec(ctx, ref, provider.ExecSpec{Argv: p.pingArgv})
+	argv := p.pingArgv
+	// A machine that booted with a baked runner keeps it under the path its ref names
+	if r := ref.Meta["runner"]; r != "" && slices.Equal(argv, runnerPing) {
+		argv = []string{r, "ping"}
+	}
+	stream, err := p.Exec(ctx, ref, provider.ExecSpec{Argv: argv})
 	if err != nil {
 		return err
 	}

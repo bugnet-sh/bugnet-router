@@ -93,3 +93,16 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestBoxdUnparkPingsTheBakedRunnerPath(t *testing.T) {
+	f, p, ref := parkProvider(t)
+	must(t, p.Park(context.Background(), ref))
+	p.pingArgv = runnerPing
+	vm, err := f.vm(ref.ID)
+	must(t, err)
+	f.mu.Lock()
+	vm.agentDownExecs = 0
+	f.mu.Unlock()
+	ref.Meta = map[string]string{"runner": "/usr/bin/true"}
+	must(t, p.Unpark(context.Background(), ref))
+}

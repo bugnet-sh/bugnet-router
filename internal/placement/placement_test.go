@@ -598,3 +598,40 @@ func TestRestrictedPackageNeverOnBoatOrKoyeb(t *testing.T) {
 	slices.Sort(have)
 	eq(t, have, []string{"boxd", "e2b"})
 }
+
+func imageEngine(t *testing.T, exempt ...string) (*Engine, []provider.Provider) {
+	t.Helper()
+	ps := []provider.Provider{
+		newLocal(t, "old", 1000, time.Second), newLocal(t, "fresh", 2000, time.Second),
+		newLocal(t, "own", 3000, time.Second),
+	}
+	reg, err := provider.NewRegistry(ps, provider.Features{
+		Images:      map[string]string{"old": "2026.10.1", "fresh": "2026.11.1"},
+		ImageExempt: exempt,
+	})
+	eq(t, err, nil)
+	return New(reg, fakeHealth{}, nil), ps
+}
+
+func TestCandidatesDropProviderOffAccept(t *testing.T) {
+	e, _ := imageEngine(t)
+	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000), ImageAccept: []string{"2026.11.1"}})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"fresh"})
+	_, err = e.Candidates(Inputs{Package: pkg(10, 1000000), ImageAccept: []string{"2025.1.1"}})
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+}
+
+func TestExemptProviderStaysWithoutImage(t *testing.T) {
+	e, _ := imageEngine(t, "own")
+	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000), ImageAccept: []string{"2026.11.1"}})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"fresh", "own"})
+}
+
+func TestEmptyAcceptFiltersNothing(t *testing.T) {
+	e, _ := imageEngine(t)
+	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000)})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"old", "fresh", "own"})
+}

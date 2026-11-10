@@ -161,6 +161,11 @@ type ImageTools struct {
 type Image struct {
 	Provider string     `json:"provider"`
 	Tools    ImageTools `json:"tools"`
+	// Version and OS name the base image, empty for a provider's own
+	Version string `json:"version,omitempty"`
+	OS      string `json:"os,omitempty"`
+	// MoreTools holds the tools beyond the five the rules read, which only the catalog hash sees
+	MoreTools map[string]string `json:"more_tools,omitempty"`
 }
 
 // Input is everything a rule may read, and nothing else

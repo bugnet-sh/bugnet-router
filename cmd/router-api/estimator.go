@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"time"
 
@@ -40,8 +39,9 @@ func buildEstimator(
 	hf := fetch.NewHuggingFace(cfg.Estimator, cfg.HFToken, cache, guard, log)
 	svc, err := estimator.New(estimator.Deps{
 		Store: st, Valkey: vk, Prefix: cfg.ValkeyPrefix, Config: cfg.Estimator, Catalog: cat,
-		Images: imageManifests(cfg.Images), MaxLifetimeMinutes: maxLifetimeMinutes(reg),
-		GitHub: gh, HuggingFace: hf, Log: log,
+		Images:             imageManifests(cfg.Images, cfg.Providers),
+		MaxLifetimeMinutes: maxLifetimeMinutes(reg),
+		GitHub:             gh, HuggingFace: hf, Log: log,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("estimator: %w", err)
@@ -54,16 +54,33 @@ func buildEstimator(
 }
 
 // imageManifests turns the [images] tables into the rules' manifests, in provider order
-func imageManifests(images map[string]config.ImageTools) []rules.Image {
+func imageManifests(images config.Images, providers []string) []rules.Image {
 	var out []rules.Image
-	for _, name := range slices.Sorted(maps.Keys(images)) {
-		t := images[name]
-		out = append(out, rules.Image{Provider: name, Tools: rules.ImageTools{
-			Git: t.Git, Tar: t.Tar, Python3: t.Python3, Node: t.Node, Docker: t.Docker,
-		}})
+	for _, name := range slices.Sorted(slices.Values(providers)) {
+		p, ok := images.Of(name)
+		if !ok {
+			continue
+		}
+		t := p.Tools
+		img := rules.Image{Provider: name, Version: p.Version, OS: p.OS, Tools: rules.ImageTools{
+			Git: t["git"], Tar: t["tar"], Python3: t["python3"], Node: t["node"],
+			Docker: t["docker"],
+		}}
+		for tool, v := range t {
+			if !slices.Contains(estimatorTools, tool) {
+				if img.MoreTools == nil {
+					img.MoreTools = map[string]string{}
+				}
+				img.MoreTools[tool] = v
+			}
+		}
+		out = append(out, img)
 	}
 	return out
 }
+
+// estimatorTools are the five tools the rules read
+var estimatorTools = []string{"git", "tar", "python3", "node", "docker"}
 
 // maxLifetimeMinutes is the longest run any provider allows, 0 when one has no limit
 func maxLifetimeMinutes(reg *provider.Registry) int {

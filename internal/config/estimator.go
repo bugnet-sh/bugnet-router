@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"slices"
 	"time"
 )
 
@@ -96,26 +95,6 @@ type estimatorFile struct {
 	EstimatesKeep             string  `toml:"estimates_keep"`
 	SourceFactsKeep           string  `toml:"source_facts_keep"`
 	ObservationsKeep          string  `toml:"observations_keep"`
-}
-
-// imagesFile holds one table per provider
-type imagesFile struct {
-	E2B   imageFile `toml:"e2b"`
-	Boat  imageFile `toml:"boat"`
-	Boxd  imageFile `toml:"boxd"`
-	Koyeb imageFile `toml:"koyeb"`
-}
-
-type imageFile struct {
-	Tools imageToolsFile `toml:"tools"`
-}
-
-type imageToolsFile struct {
-	Git     string `toml:"git"`
-	Tar     string `toml:"tar"`
-	Python3 string `toml:"python3"`
-	Node    string `toml:"node"`
-	Docker  string `toml:"docker"`
 }
 
 func defaultEstimator() estimatorFile {
@@ -240,22 +219,6 @@ func upstreamURL(key, raw string) (string, error) {
 		return "", fmt.Errorf("%s must be an http or https URL with a host and no path", key)
 	}
 	return u.Scheme + "://" + u.Host, nil
-}
-
-// images checks the image manifests and returns one per listed provider that has a table
-func (f imagesFile) images(providers []string) map[string]ImageTools {
-	out := map[string]ImageTools{}
-	for _, p := range []struct {
-		name string
-		file imageFile
-	}{{"boat", f.Boat}, {"boxd", f.Boxd}, {"e2b", f.E2B}, {"koyeb", f.Koyeb}} {
-		if !slices.Contains(providers, p.name) {
-			continue
-		}
-		t := p.file.Tools
-		out[p.name] = ImageTools(t)
-	}
-	return out
 }
 
 // DefaultEstimator returns the estimator settings at their defaults

@@ -29,8 +29,8 @@ func TestEstimatorDefaults(t *testing.T) {
 		[]int64{1 << 20, 8 << 10, 4 << 10})
 	eq(t, e.GithubReserve, 0.1)
 	eq(t, e.HistoryMayLower, true)
-	eq(t, len(c.Images), 4)
-	eq(t, c.Images["e2b"], ImageTools{})
+	eq(t, len(c.ImageTools), 4)
+	eq(t, c.ImageTools["e2b"], ImageTools{})
 }
 
 func TestExampleTomlHoldsEstimatorDefaults(t *testing.T) {
@@ -45,7 +45,7 @@ func TestExampleTomlHoldsEstimatorDefaults(t *testing.T) {
 		if len(s.path) == 2 && s.path[0] == "estimator" {
 			written = append(written, s.path[1])
 		}
-		if len(s.path) == 3 && s.path[0] == "images" && s.path[2] == "tools" {
+		if len(s.path) == 3 && s.path[0] == "images" && len(s.path[1]) > 2 && s.path[2] == "tools" {
 			images = append(images, s.path[1])
 		}
 	}
@@ -88,7 +88,7 @@ tools = { git = "9" }
 		[]any{"http://127.0.0.1:9000", 2 * time.Second, 7, 0.25, int64(16 << 10),
 			time.Duration(0), false})
 	// Only the listed providers keep a manifest
-	eq(t, c.Images, map[string]ImageTools{
+	eq(t, c.ImageTools, map[string]ImageTools{
 		"e2b":  {Git: "2.43.0", Tar: "1.35", Python3: "none"},
 		"boxd": {},
 	})
@@ -112,7 +112,7 @@ func TestEstimatorBounds(t *testing.T) {
 		{"[estimator]\ngithub_raw = \"https://example.com/x\"",
 			"estimator.github_raw must be an http or https URL with a host and no path"},
 		{"[estimator]\ntoken = \"x\"", "line 4: estimator.token is not a setting"},
-		{"[images.e2b]\ntools = { make = \"1\" }", "make"},
+		{"[images.e2b]\ntools = { rust = \"1\" }", "images.e2b.tools"},
 	}
 	for _, c := range cases {
 		msg := problem(t, c.toml+"\n")
