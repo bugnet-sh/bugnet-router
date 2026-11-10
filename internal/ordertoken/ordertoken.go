@@ -54,6 +54,28 @@ type Claims struct {
 	Tx string `json:"tx,omitempty"`
 	// AllowanceMicros is the x402 allowance inside AmountMicros, start tokens only
 	AllowanceMicros int64 `json:"allowance_micros,omitempty"`
+	// IssuedAt is when Payments signed the token after settlement, the start of the 5 s target
+	IssuedAt *time.Time `json:"issued_at,omitempty"`
+}
+
+// paidWindow is how long before an order arrives its issued_at still counts as the payment time
+const paidWindow = 60 * time.Second
+
+// PaidAt is when the order was paid as the 5 s target measures it, and whether the claim was
+// usable
+//
+// An issued_at in the 60 s before created is the payment time. A later one means the clocks
+// differ and an earlier one that the agent came back late, and neither is used, so created stands
+// in and ok is false. A token without the claim gives created and true.
+func (c Claims) PaidAt(created time.Time) (paid time.Time, ok bool) {
+	if c.IssuedAt == nil {
+		return created, true
+	}
+	at := *c.IssuedAt
+	if at.After(created) || at.Before(created.Add(-paidWindow)) {
+		return created, false
+	}
+	return at, true
 }
 
 // PackageMicros is what the order paid for its package, the x402 allowance left out

@@ -33,14 +33,14 @@ const (
 	modePeek = "peek"
 )
 
-// takeScript takes one token from every bucket in KEYS when each has one, and none otherwise
-var takeScript = valkey.NewLuaScript(`
+// takeBody takes one token from every bucket in BUCKETS when each has one, and none otherwise
+const takeBody = `
 local mode = ARGV[1]
 local now = redis.call('TIME')
 now = tonumber(now[1]) * 1000000 + tonumber(now[2])
 local wait = 0
 local held = {}
-for i, key in ipairs(KEYS) do
+for i, key in ipairs(BUCKETS) do
 	local rate, cap = tonumber(ARGV[i * 2]), tonumber(ARGV[i * 2 + 1]) * 1000000
 	local got = redis.call('HMGET', key, 'tokens', 'at')
 	local tokens, at = tonumber(got[1]) or cap, tonumber(got[2]) or now
@@ -62,14 +62,17 @@ if wait > 0 then
 	return {0, wait}
 end
 if mode == 'take' then
-	for i, key in ipairs(KEYS) do
+	for i, key in ipairs(BUCKETS) do
 		local tokens, cap, rate = held[i][1] - 1000000, held[i][2], held[i][3]
 		redis.call('HSET', key, 'tokens', tokens, 'at', now)
 		redis.call('PEXPIRE', key, math.ceil((cap - tokens) / rate / 1000))
 	end
 end
 return {1, 0}
-`)
+`
+
+// takeScript takes one token from every bucket in KEYS when each has one, and none otherwise
+var takeScript = valkey.NewLuaScript("local BUCKETS = KEYS\n" + takeBody)
 
 // Bucket names one keyed bucket, its refill a second (fractions allowed) and its capacity
 type Bucket struct {
