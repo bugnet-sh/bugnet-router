@@ -317,3 +317,32 @@ func (s *Store) FeePayerSeen(ctx context.Context, addr string) (bool, error) {
 	}
 	return seen, nil
 }
+
+// DayCount is one UTC day's count
+type DayCount struct {
+	Day   time.Time
+	Count int64
+}
+
+// AnonymousRefusals counts per UTC day the starts without a payer refused at the anonymous cap
+func (s *Store) AnonymousRefusals(ctx context.Context, since time.Time) ([]DayCount, error) {
+	rows, err := s.q.Query(ctx, `select date_trunc('day', created_at at time zone 'UTC'),
+			count(*)
+		from placements
+		where state = $1 and failure_reason = 'wallet_busy' and payer is null
+			and created_at >= $2
+		group by 1 order by 1`, PlacementFailed, utc(since))
+	if err != nil {
+		return nil, fmt.Errorf("anonymous refusals: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (DayCount, error) {
+		var d DayCount
+		err := r.Scan(&d.Day, &d.Count)
+		d.Day = d.Day.UTC()
+		return d, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("anonymous refusals: %w", err)
+	}
+	return out, nil
+}
