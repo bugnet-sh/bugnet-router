@@ -19,7 +19,7 @@ func (p *Provider) ReadLimits(ctx context.Context) (provider.Limits, error) {
 	return provider.Limits{MaxConcurrent: int(lim.GetMaxVms()), Active: int(lim.GetVmCount())}, nil
 }
 
-// CheckAccount reads the subscription from Whoami, then the credit balance of the organization
+// CheckAccount reads the subscription from Whoami, then the organization's credits where readable
 func (p *Provider) CheckAccount(ctx context.Context) (provider.Account, error) {
 	who, err := p.api.Whoami(ctx, &boxdpb.WhoamiRequest{})
 	if err != nil {
@@ -40,7 +40,11 @@ func (p *Provider) CheckAccount(ctx context.Context) (provider.Account, error) {
 		return p.accountError(ctx, err)
 	}
 	org, err := p.api.GetOrgBilling(ctx, &boxdpb.GetOrgBillingRequest{Org: lim.GetOrgName()})
-	if err != nil {
+	switch {
+	case status.Code(err) == codes.PermissionDenied:
+		// boxd keeps an organization's billing behind an interactive login that no API key holds
+		return provider.Account{}, nil
+	case err != nil:
 		return p.accountError(ctx, err)
 	}
 	if org.GetBillingMode() == "credits" && org.GetBalanceMicro() <= 0 {
