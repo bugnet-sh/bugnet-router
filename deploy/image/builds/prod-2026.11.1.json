@@ -1,0 +1,11 @@
+{
+  "version": "2026.11.1",
+  "channel": "prod",
+  "inputs_sha256": "cbc9fcc1ab8de9c2c1850829a92a46300045d5dc7d45c042987188c963a69358",
+  "runner_sha256": {
+    "amd64": "d89964c5cca7c9a8240f52ee2ae9bc7fc0de240af7b8231eff5e981d48fb3419"
+  },
+  "oci": {
+    "ref": "bugnet-base@sha256:47352508e6a4588e06131a3fbb6e4ac204e3fafb3c6f9a7fc2e49e0b591c2ce3"
+  }
+}
