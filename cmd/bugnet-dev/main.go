@@ -178,8 +178,8 @@ Settings
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
   BUGNET_OPERATOR_TOKEN     bearer token for revoke-preview, wallet, abuse, placement end, signals,
-                            providers, estimate, bench start and report, and session hold, which call
-                            OperatorService
+                            providers, estimate, bench start and report, and session hold,
+                            which call OperatorService
   BUGNET_DATABASE_URL       Postgres URL, read only by simulate
   BUGNET_ORDER_PRIVATE_KEY  signs order tokens when --priv or --token is not given
 `
