@@ -72,6 +72,14 @@ type fakeVM struct {
 	proxies      map[string]uint32
 	accessDomain string
 	botMode      string
+	// snapshot is the snapshot the machine restored, imageRef the OCI image it booted
+	snapshot, imageRef string
+}
+
+// fakeSnapshot is one saved snapshot, pending for polls more reads
+type fakeSnapshot struct {
+	name, status, storage string
+	polls                 int
 }
 
 // setProxyPort is one SetProxyPort call as the fake received it
@@ -138,6 +146,9 @@ type fakeBoxd struct {
 	peers        map[string][]string
 	cleanupPaths []string
 	running      atomic.Int64
+	// snapshots are the saved snapshots by name, and snapshotPolls how long a save stays pending
+	snapshots     map[string]*fakeSnapshot
+	snapshotPolls int
 	// readHook runs with the path at the start of every FsRead, before boxd looks at it
 	readHook func(name string)
 }
@@ -146,7 +157,7 @@ func newFake(t *testing.T) *fakeBoxd {
 	t.Helper()
 	f := &fakeBoxd{
 		t: t, vms: map[string]*fakeVM{}, faults: map[string]*fault{}, calls: map[string]int{},
-		peers: map[string][]string{},
+		peers: map[string][]string{}, snapshots: map[string]*fakeSnapshot{},
 	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -336,6 +347,9 @@ func (f *fakeBoxd) CreateVm(
 	_ context.Context, req *boxdpb.CreateVmRequest,
 ) (*boxdpb.CreateVmResponse, error) {
 	spec := req.GetSpec()
+	if spec == nil && req.GetImageRef() != "" {
+		return f.createFromImage(req)
+	}
 	switch {
 	case spec == nil:
 		return nil, status.Error(codes.InvalidArgument, "fake boxd takes only spec creates")
@@ -350,6 +364,18 @@ func (f *fakeBoxd) CreateVm(
 	case !fakeSizes[spec.GetSize()]:
 		return nil, status.Errorf(codes.InvalidArgument, "spec.size: %q is not a size",
 			spec.GetSize())
+	}
+	if name := spec.GetBase().GetSnapshot(); name != "" {
+		f.mu.Lock()
+		snap := f.snapshots[name]
+		f.mu.Unlock()
+		switch {
+		case snap == nil:
+			return nil, status.Errorf(codes.NotFound, "snapshot %q not found", name)
+		case snap.storage != "local":
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"snapshot %q is archived, not local", name)
+		}
 	}
 	for k, v := range spec.GetLabels() {
 		if !fakeLabelKey.MatchString(k) || strings.HasPrefix(k, "boxd/") || len(v) > 256 {
@@ -379,6 +405,7 @@ func (f *fakeBoxd) CreateVm(
 		proxyPort:      "auto",
 		accessDomain:   fakeAccessDomain,
 		botMode:        "on",
+		snapshot:       spec.GetBase().GetSnapshot(),
 	}
 	if n := req.GetConfig().GetNetwork(); n != nil && n.Ssh != nil {
 		vm.sshOff = !n.GetSsh()
@@ -1217,4 +1244,82 @@ func (f *fakeBoxd) GetOrgBilling(
 		return &boxdpb.GetOrgBillingResponse{BillingMode: "stripe"}, nil
 	}
 	return f.orgBilling, nil
+}
+
+// createFromImage makes a machine from an OCI image, which a spec cannot be combined with
+func (f *fakeBoxd) createFromImage(req *boxdpb.CreateVmRequest) (*boxdpb.CreateVmResponse, error) {
+	if len(req.GetLabels()) > 0 || !req.GetIsolated() {
+		return nil, status.Error(codes.InvalidArgument, "fake builders are isolated and unlabelled")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.creates = append(f.creates, req)
+	f.nextID++
+	vm := &fakeVM{
+		id: fmt.Sprintf("vm-%04d", f.nextID), name: req.GetName(), created: time.Now(),
+		autoHibernate: fakeHibernateSecs, status: "running", proxyPort: "auto",
+		accessDomain: fakeAccessDomain, botMode: "on", imageRef: req.GetImageRef(),
+	}
+	if vm.name == "" {
+		vm.name = "auto-" + vm.id
+	}
+	if req.DeleteAfterSecs != nil {
+		vm.deleteAt = vm.created.Add(time.Duration(req.GetDeleteAfterSecs()) * time.Second)
+	}
+	f.vms[vm.id] = vm
+	return &boxdpb.CreateVmResponse{
+		VmId: vm.id, Name: vm.name, Status: vm.status, Machine: toMachine(vm),
+	}, nil
+}
+
+func (f *fakeBoxd) CreateSnapshot(
+	_ context.Context, req *boxdpb.CreateSnapshotRequest,
+) (*boxdpb.CreateSnapshotResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, err := f.lookup(req.GetVm()); err != nil {
+		return nil, err
+	}
+	f.snapshots[req.GetName()] = &fakeSnapshot{
+		name: req.GetName(), status: "pending", storage: "local", polls: f.snapshotPolls,
+	}
+	return &boxdpb.CreateSnapshotResponse{Name: req.GetName(), Status: "pending"}, nil
+}
+
+func (f *fakeBoxd) GetSnapshot(
+	_ context.Context, req *boxdpb.GetSnapshotRequest,
+) (*boxdpb.GetSnapshotResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.snapshots[req.GetName()]
+	if s == nil {
+		return nil, status.Errorf(codes.NotFound, "snapshot %q not found", req.GetName())
+	}
+	if s.status == "pending" {
+		if s.polls--; s.polls <= 0 {
+			s.status = "ready"
+		}
+	}
+	return &boxdpb.GetSnapshotResponse{Snapshot: &boxdpb.SnapshotInfo{
+		Name: s.name, Status: s.status, Storage: s.storage,
+	}}, nil
+}
+
+func (f *fakeBoxd) DeleteSnapshot(
+	_ context.Context, req *boxdpb.DeleteSnapshotRequest,
+) (*boxdpb.DeleteSnapshotResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.snapshots[req.GetName()] == nil {
+		return nil, status.Errorf(codes.NotFound, "snapshot %q not found", req.GetName())
+	}
+	delete(f.snapshots, req.GetName())
+	return &boxdpb.DeleteSnapshotResponse{}, nil
+}
+
+// addSnapshot places a ready snapshot, as an earlier build would have
+func (f *fakeBoxd) addSnapshot(name, storage string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshots[name] = &fakeSnapshot{name: name, status: "ready", storage: storage}
 }
