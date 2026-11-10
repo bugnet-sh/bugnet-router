@@ -122,7 +122,9 @@ func (o *OperatorServer) EndPlacement(
 }
 
 // findTarget resolves an abuse report's target to its placement, errTargetUnknown for none
-func (s *Server) findTarget(ctx context.Context, t *routerv1.PlacementTarget) (store.Placement, error) {
+func (s *Server) findTarget(
+	ctx context.Context, t *routerv1.PlacementTarget,
+) (store.Placement, error) {
 	var p store.Placement
 	var err error
 	switch {
