@@ -21,7 +21,8 @@ The build also bakes the Bugnet CA (DP 6.9, 10.6). The certificate lands byte fo
 `/usr/local/share/ca-certificates/bugnet-egress-v<version>.crt` and `update-ca-certificates` runs,
 so `bugnet-run setup` finds the file by the SHA-256 the router sends and answers `checked`.
 `templates.json` names, per template, which CA it takes. The production CA is
-`ca.production.cert_file`, empty until the production CA exists. The dev CA is made once on the
+`ca.production.cert_file`, a copy of the VPS's public `/etc/bugnet/egress-ca.pem` kept on the Mac
+outside every repository (`scp` it there before a build). The dev CA is made once on the
 Mac, outside every repository, with
 `bugnet-egress ca init --out ~/.local/state/bugnet-dev/egress-ca` in `bugnet-edges`. A file that
 holds a private key is refused.

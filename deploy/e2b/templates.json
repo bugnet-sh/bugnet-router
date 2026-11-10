@@ -1,6 +1,6 @@
 {
     "ca": {
-        "production": { "cert_file": "", "version": 1 },
+        "production": { "cert_file": "~/.local/state/bugnet-prod/egress-ca/egress-ca.pem", "version": 1 },
         "dev": { "cert_file": "~/.local/state/bugnet-dev/egress-ca/egress-ca.pem", "version": 1 }
     },
     "templates": [
