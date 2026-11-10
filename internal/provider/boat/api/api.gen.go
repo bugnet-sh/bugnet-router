@@ -980,6 +980,30 @@ func (e SandboxListResponseType) Valid() bool {
 	}
 }
 
+// Defines values for SandboxUsageResponseSandboxType.
+const (
+	SandboxUsageResponseSandboxTypeDefault SandboxUsageResponseSandboxType = "default"
+	SandboxUsageResponseSandboxTypeLarge   SandboxUsageResponseSandboxType = "large"
+	SandboxUsageResponseSandboxTypeSmall   SandboxUsageResponseSandboxType = "small"
+	SandboxUsageResponseSandboxTypeXlarge  SandboxUsageResponseSandboxType = "xlarge"
+)
+
+// Valid indicates whether the value is a known member of the SandboxUsageResponseSandboxType enum.
+func (e SandboxUsageResponseSandboxType) Valid() bool {
+	switch e {
+	case SandboxUsageResponseSandboxTypeDefault:
+		return true
+	case SandboxUsageResponseSandboxTypeLarge:
+		return true
+	case SandboxUsageResponseSandboxTypeSmall:
+		return true
+	case SandboxUsageResponseSandboxTypeXlarge:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StopOperationStatus.
 const (
 	StopOperationStatusCompleted  StopOperationStatus = "completed"
@@ -2011,6 +2035,53 @@ type SandboxListResponse struct {
 // SandboxListResponseType defines model for SandboxListResponse.Type.
 type SandboxListResponseType string
 
+// SandboxUsageResponse defines model for SandboxUsageResponse.
+type SandboxUsageResponse struct {
+	// BillingMultiplier Rate at which this sandbox consumes machine time. 0.5 for `small`, 1 for `default`, 2 for `large`, and 50/9 (about 5.56) for `xlarge`.
+	//
+	// Examples: 1
+	BillingMultiplier float32 `json:"billingMultiplier"`
+
+	// Dollars `seconds` at list price (`seconds / secondsPerDollar`), whatever plan, trial or gift actually paid for it. Up to six decimals.
+	//
+	// Examples: 0.0498
+	Dollars float32 `json:"dollars"`
+
+	// Ok Examples: true
+	Ok bool `json:"ok"`
+
+	// Running The meter is still moving: the sandbox is up and no refused stop is holding it paused. Read again after it stops for the final figure. `false` on a sandbox that is up but paused past a refused stop, whose figure will not change until it is used again.
+	Running bool `json:"running"`
+
+	// SandboxId Examples: bx_23456789
+	SandboxId string `json:"sandboxId"`
+
+	// SandboxType The sandbox's current machine size, which sets `billingMultiplier`.
+	SandboxType SandboxUsageResponseSandboxType `json:"sandboxType"`
+
+	// Seconds Billable machine-seconds inside the window, the type multiplier already applied: a `large` sandbox that ran ten minutes reads 1200. Includes a running sandbox's time up to `until`. Time while stopped is never counted and time past a refused stop is excluded.
+	//
+	// Examples: 4980
+	Seconds int `json:"seconds"`
+
+	// SecondsPerDollar How many billable seconds one dollar buys, so you can price `seconds` yourself.
+	//
+	// Examples: 100000
+	SecondsPerDollar int `json:"secondsPerDollar"`
+
+	// Since Start of the window the figures cover. The sandbox's creation time when the request did not pass `since`.
+	Since time.Time `json:"since"`
+
+	// Type Examples: sandbox.usage
+	Type string `json:"type"`
+
+	// Until End of the window. Now when the request did not pass `until`, or passed one in the future.
+	Until time.Time `json:"until"`
+}
+
+// SandboxUsageResponseSandboxType The sandbox's current machine size, which sets `billingMultiplier`.
+type SandboxUsageResponseSandboxType string
+
 // SshKeyRequest defines model for SshKeyRequest.
 type SshKeyRequest struct {
 	// Key Public SSH key in OpenSSH format. Private keys are rejected.
@@ -2323,6 +2394,15 @@ type GetFileInfoParams struct {
 // ListFilesParams defines parameters for ListFiles.
 type ListFilesParams struct {
 	Path *string `form:"path,omitempty" json:"path,omitempty"`
+}
+
+// UsageParams defines parameters for Usage.
+type UsageParams struct {
+	// Since Count from this time, ISO 8601 or Unix epoch seconds. Default is the sandbox's creation.
+	Since *string `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until Count up to this time, ISO 8601 or Unix epoch seconds. Default is now.
+	Until *string `form:"until,omitempty" json:"until,omitempty"`
 }
 
 // CreateJSONRequestBody defines body for Create for application/json ContentType.
@@ -3105,6 +3185,13 @@ type ClientInterface interface {
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// Usage Get boat usage
+	//
+	// Machine time one sandbox consumed, and what it costs, so you can bill your own users per sandbox. Same meter as `GET /limits`: billable seconds with the sandbox type's multiplier applied, paused past a refused stop, never counting time stopped. Narrow it to a billing period with `since` and `until`; a period boundary that falls inside a running stretch splits that stretch pro rata. Works while the sandbox runs and after it stops.
+	//
+	// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
+	Usage(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListWebhooks List webhooks
 	//
 	// Lists account-wide sandbox lifecycle webhook endpoints. Signing secrets are never included.
@@ -3764,6 +3851,23 @@ func (c *Client) SshKeyWithBody(ctx context.Context, sandboxId SandboxId, conten
 // Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 func (c *Client) SshKey(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSshKeyRequest(c.Server, sandboxId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// Usage Get boat usage
+//
+// Machine time one sandbox consumed, and what it costs, so you can bill your own users per sandbox. Same meter as `GET /limits`: billable seconds with the sandbox type's multiplier applied, paused past a refused stop, never counting time stopped. Narrow it to a billing period with `since` and `until`; a period boundary that falls inside a running stretch splits that stretch pro rata. Works while the sandbox runs and after it stops.
+//
+// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
+func (c *Client) Usage(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUsageRequest(c.Server, sandboxId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5147,6 +5251,79 @@ func NewSshKeyRequestWithBody(server string, sandboxId SandboxId, contentType st
 	return req, nil
 }
 
+// NewUsageRequest constructs an http.Request for the Usage method
+func NewUsageRequest(server string, sandboxId SandboxId, params *UsageParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "sandboxId", sandboxId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sandboxes/%s/usage", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if params.Since != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "since", *params.Since, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.Until != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "until", *params.Until, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListWebhooksRequest constructs an http.Request for the ListWebhooks method
 func NewListWebhooksRequest(server string) (*http.Request, error) {
 	var err error
@@ -5706,6 +5883,15 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sandboxes/{sandboxId}/sshkey (the `SshKey` operationId).
 	SshKeyWithResponse(ctx context.Context, sandboxId SandboxId, body SshKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SshKeyResponse2, error)
+
+	// UsageWithResponse Get boat usage
+	//
+	// Machine time one sandbox consumed, and what it costs, so you can bill your own users per sandbox. Same meter as `GET /limits`: billable seconds with the sandbox type's multiplier applied, paused past a refused stop, never counting time stopped. Narrow it to a billing period with `since` and `until`; a period boundary that falls inside a running stretch splits that stretch pro rata. Works while the sandbox runs and after it stops.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
+	UsageWithResponse(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*UsageResponse, error)
 
 	// ListWebhooksWithResponse List webhooks
 	//
@@ -7009,6 +7195,68 @@ func (r SshKeyResponse2) ContentType() string {
 	return ""
 }
 
+type UsageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *SandboxUsageResponse
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r UsageResponse) GetJSON200() *SandboxUsageResponse {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r UsageResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r UsageResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r UsageResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetBody returns the raw response body bytes
+func (r UsageResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r UsageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UsageResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r UsageResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type ListWebhooksResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -7843,6 +8091,21 @@ func (c *ClientWithResponses) SshKeyWithResponse(ctx context.Context, sandboxId 
 		return nil, err
 	}
 	return ParseSshKeyResponse2(rsp)
+}
+
+// UsageWithResponse Get boat usage
+//
+// Machine time one sandbox consumed, and what it costs, so you can bill your own users per sandbox. Same meter as `GET /limits`: billable seconds with the sandbox type's multiplier applied, paused past a refused stop, never counting time stopped. Narrow it to a billing period with `since` and `until`; a period boundary that falls inside a running stretch splits that stretch pro rata. Works while the sandbox runs and after it stops.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /sandboxes/{sandboxId}/usage (the `Usage` operationId).
+func (c *ClientWithResponses) UsageWithResponse(ctx context.Context, sandboxId SandboxId, params *UsageParams, reqEditors ...RequestEditorFn) (*UsageResponse, error) {
+	rsp, err := c.Usage(ctx, sandboxId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUsageResponse(rsp)
 }
 
 // ListWebhooksWithResponse List webhooks
@@ -8869,6 +9132,53 @@ func ParseSshKeyResponse2(rsp *http.Response) (*SshKeyResponse2, error) {
 			return nil, err
 		}
 		response.JSON402 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUsageResponse parses an HTTP response from a UsageWithResponse call
+func ParseUsageResponse(rsp *http.Response) (*UsageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UsageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SandboxUsageResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound

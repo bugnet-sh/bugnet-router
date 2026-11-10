@@ -159,7 +159,7 @@ func (f abuseFile) read(d abuseFile) (Abuse, error) {
 	return a, nil
 }
 
-// Reconcile holds the lost-placement check and lifetime drift settings (CP 10.8)
+// Reconcile holds the reconciliation settings (CP 10.8)
 type Reconcile struct {
 	// ReadyGrace is how long a fresh placement may be missing from a listing that lags
 	ReadyGrace time.Duration
@@ -167,16 +167,55 @@ type Reconcile struct {
 	MaxPerSweep int
 	// LifetimeDrift is how far a provider-side lifetime may stray from the deadline
 	LifetimeDrift time.Duration
+	// RecountEvery is how often the capacity recount runs
+	RecountEvery time.Duration
+	// ForeignEvery is how often each provider is searched for sandboxes no deployment owns
+	ForeignEvery time.Duration
+	// ForeignAlertAfter is the age a sandbox no deployment owns reaches before it counts
+	ForeignAlertAfter time.Duration
+	// KnownDeployments are the deployment labels whose sandboxes are not foreign
+	KnownDeployments []string
+	// CostDailyAt is the time of day, UTC, as an offset from midnight, the daily cost check runs
+	CostDailyAt time.Duration
+	// CostAlertFraction is how far over our meter a provider's bill may be before it alerts
+	CostAlertFraction float64
+}
+
+// OrDefaults fills each zero setting with its default
+func (r Reconcile) OrDefaults() Reconcile {
+	d := DefaultReconcile()
+	r.ReadyGrace = cmp.Or(r.ReadyGrace, d.ReadyGrace)
+	r.MaxPerSweep = cmp.Or(r.MaxPerSweep, d.MaxPerSweep)
+	r.LifetimeDrift = cmp.Or(r.LifetimeDrift, d.LifetimeDrift)
+	r.RecountEvery = cmp.Or(r.RecountEvery, d.RecountEvery)
+	r.ForeignEvery = cmp.Or(r.ForeignEvery, d.ForeignEvery)
+	r.ForeignAlertAfter = cmp.Or(r.ForeignAlertAfter, d.ForeignAlertAfter)
+	if r.KnownDeployments == nil {
+		r.KnownDeployments = d.KnownDeployments
+	}
+	r.CostDailyAt = cmp.Or(r.CostDailyAt, d.CostDailyAt)
+	r.CostAlertFraction = cmp.Or(r.CostAlertFraction, d.CostAlertFraction)
+	return r
 }
 
 type reconcileFile struct {
-	ReadyGrace    string `toml:"ready_grace"`
-	MaxPerSweep   int64  `toml:"max_per_sweep"`
-	LifetimeDrift string `toml:"lifetime_drift"`
+	ReadyGrace        string   `toml:"ready_grace"`
+	MaxPerSweep       int64    `toml:"max_per_sweep"`
+	LifetimeDrift     string   `toml:"lifetime_drift"`
+	RecountEvery      string   `toml:"recount_every"`
+	ForeignEvery      string   `toml:"foreign_every"`
+	ForeignAlertAfter string   `toml:"foreign_alert_after"`
+	KnownDeployments  []string `toml:"known_deployments"`
+	CostDailyAt       string   `toml:"cost_daily_at"`
+	CostAlertFraction float64  `toml:"cost_alert_fraction"`
 }
 
 func defaultReconcile() reconcileFile {
-	return reconcileFile{ReadyGrace: "30s", MaxPerSweep: 200, LifetimeDrift: "2m"}
+	return reconcileFile{
+		ReadyGrace: "30s", MaxPerSweep: 200, LifetimeDrift: "2m", RecountEvery: "5m",
+		ForeignEvery: "1h", ForeignAlertAfter: "2h", KnownDeployments: []string{"main", "dev"},
+		CostDailyAt: "03:00", CostAlertFraction: 0.1,
+	}
 }
 
 // DefaultReconcile is the reconcile table of an empty settings file
@@ -194,6 +233,9 @@ func (f reconcileFile) read(d reconcileFile) (Reconcile, error) {
 	}{
 		{"ready_grace", f.ReadyGrace, d.ReadyGrace, &r.ReadyGrace},
 		{"lifetime_drift", f.LifetimeDrift, d.LifetimeDrift, &r.LifetimeDrift},
+		{"recount_every", f.RecountEvery, d.RecountEvery, &r.RecountEvery},
+		{"foreign_every", f.ForeignEvery, d.ForeignEvery, &r.ForeignEvery},
+		{"foreign_alert_after", f.ForeignAlertAfter, d.ForeignAlertAfter, &r.ForeignAlertAfter},
 	} {
 		v, err := time.ParseDuration(cmp.Or(p.raw, p.def))
 		if err != nil || v < time.Second || v > 24*time.Hour {
@@ -206,5 +248,28 @@ func (f reconcileFile) read(d reconcileFile) (Reconcile, error) {
 		return Reconcile{}, fmt.Errorf("reconcile.max_per_sweep must be 1 to 10000")
 	}
 	r.MaxPerSweep = int(f.MaxPerSweep)
+	at, err := time.Parse("15:04", cmp.Or(f.CostDailyAt, d.CostDailyAt))
+	if err != nil {
+		return Reconcile{}, fmt.Errorf("reconcile.cost_daily_at must be a UTC time such as 03:00")
+	}
+	r.CostDailyAt = time.Duration(at.Hour())*time.Hour + time.Duration(at.Minute())*time.Minute
+	if f.CostAlertFraction < 0 || f.CostAlertFraction > 10 {
+		return Reconcile{}, fmt.Errorf("reconcile.cost_alert_fraction must be 0 to 10")
+	}
+	r.CostAlertFraction = f.CostAlertFraction
+	if r.CostAlertFraction == 0 {
+		r.CostAlertFraction = d.CostAlertFraction
+	}
+	known := f.KnownDeployments
+	if known == nil {
+		known = d.KnownDeployments
+	}
+	for _, name := range known {
+		if !deploymentID.MatchString(name) {
+			return Reconcile{}, fmt.Errorf(
+				"reconcile.known_deployments holds %q, which is not a deployment id", name)
+		}
+	}
+	r.KnownDeployments = slices.Clone(known)
 	return r, nil
 }

@@ -179,9 +179,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 	d.SourceFactsKeep = cmp.Or(d.SourceFactsKeep, defaultSourceFactsKeep)
 	d.ObservationsKeep = cmp.Or(d.ObservationsKeep, defaultObservationsKeep)
 	d.Abuse = d.Abuse.OrDefaults()
-	if d.Reconcile == (config.Reconcile{}) {
-		d.Reconcile = config.DefaultReconcile()
-	}
+	d.Reconcile = d.Reconcile.OrDefaults()
 	if sd.Log == nil {
 		sd.Log = slog.Default()
 	}

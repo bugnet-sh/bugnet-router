@@ -283,6 +283,18 @@ func (m *Meter) RemainingAll(
 	return out, nil
 }
 
+// Used reads the bytes counted for the placement's budget of kind, zero when none were
+func (m *Meter) Used(ctx context.Context, kind Kind, placement uuid.UUID) (int64, error) {
+	n, err := m.c.Do(ctx, m.c.B().Get().Key(m.key(kind, "used", placement)).Build()).AsInt64()
+	if valkey.IsValkeyNil(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("budget: read the %s usage of %s: %w", kind, placement, err)
+	}
+	return max(n, 0), nil
+}
+
 // Spent reports whether the placement's budget of kind was crossed and not grown since
 func (m *Meter) Spent(ctx context.Context, kind Kind, placement uuid.UUID) (bool, error) {
 	n, err := m.c.Do(ctx, m.c.B().Exists().Key(m.key(kind, "spent", placement)).Build()).AsInt64()
