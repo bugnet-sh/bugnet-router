@@ -1,0 +1,128 @@
+name: image
+
+# Builds the Bugnet base image for one channel, pushes it to ghcr.io/bugnet-sh/bugnet-base with
+# this repository's own token, and pushes the build record to an image-records/ branch
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: dev or prod
+        required: true
+        default: prod
+  push:
+    tags:
+      - "image-prod-*"
+      - "image-dev-*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: bugnet-router
+    env:
+      SIBLINGS_REF: feat/router-v1-rest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: bugnet-router
+          persist-credentials: false
+
+      # go.mod replaces bugnet-proto and bugnet-run with ../bugnet-proto and ../bugnet-run
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bugnet-sh/bugnet-proto
+          ref: ${{ env.SIBLINGS_REF }}
+          path: bugnet-proto
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bugnet-sh/bugnet-run
+          ref: ${{ env.SIBLINGS_REF }}
+          path: bugnet-run
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bugnet-router/go.mod
+          cache-dependency-path: bugnet-router/go.sum
+
+      - name: Pick the channel
+        id: channel
+        env:
+          INPUT: ${{ github.event.inputs.channel }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          channel="$INPUT"
+          if [ -z "$channel" ]; then
+            channel=$(echo "$REF" | sed -n 's/^image-\(dev\|prod\)-.*/\1/p')
+          fi
+          case "$channel" in dev | prod) ;; *) echo "no channel in '$INPUT' or '$REF'" >&2; exit 1 ;; esac
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Build bugnet-run
+        run: make -C ../bugnet-run build
+
+      # The CA is public, kept outside every repository, and checked against pins.conf by build.sh
+      - name: Write the CA certificate
+        env:
+          CA_PROD: ${{ vars.EGRESS_CA_PROD_V1 }}
+          CA_DEV: ${{ vars.EGRESS_CA_DEV_V1 }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          ca="$CA_PROD"
+          [ "$CHANNEL" = prod ] || ca="$CA_DEV"
+          [ -n "$ca" ] || { echo "the EGRESS_CA_${CHANNEL^^}_V1 variable is empty" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ca"
+          printf '%s\n' "$(printf '%s' "$ca" | tr -d '\r')" > "$RUNNER_TEMP/ca/bugnet-egress-v1.crt"
+          sha256sum "$RUNNER_TEMP/ca/bugnet-egress-v1.crt"
+
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build, scan and push
+        id: build
+        env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          deploy/image/build.sh --channel "$CHANNEL" --ca "$RUNNER_TEMP/ca/bugnet-egress-v1.crt" \
+            | tee "$RUNNER_TEMP/build.out"
+          echo "digest=$(tail -n 1 "$RUNNER_TEMP/build.out")" >> "$GITHUB_OUTPUT"
+
+      # The record names the pushed digest, which every provider build reads
+      - name: Push the build record
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < deploy/image/VERSION)
+          record="deploy/image/builds/$CHANNEL-$version.json"
+          cat "$record"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "image-records/$CHANNEL-$version"
+          git add "$record"
+          git commit -m "image: the $CHANNEL $version build record"
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/image-records/$CHANNEL-$version"
+          echo "### $CHANNEL $version" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
