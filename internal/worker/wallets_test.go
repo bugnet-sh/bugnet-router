@@ -295,7 +295,7 @@ func TestDefaultQueueHasTwentyWorkers(t *testing.T) {
 	eq(t, q[river.QueueDefault].MaxWorkers, 20)
 	eq(t, worker.Queues(worker.Deps{DefaultWorkers: 3})[river.QueueDefault].MaxWorkers, 3)
 	e := newEnv(t, options{})
-	eq(t, e.worker.Workers(), 32)
+	eq(t, e.worker.Workers(), 36)
 	e = newEnv(t, options{defaultWorkers: 5, dataplaneWorkers: 2})
-	eq(t, e.worker.Workers(), 11)
+	eq(t, e.worker.Workers(), 15)
 }

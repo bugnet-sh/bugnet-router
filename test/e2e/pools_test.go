@@ -9,6 +9,7 @@ import (
 const poolSettings = `
 [pools]
 tick = "1s"
+headroom = 0
 
 [[pools.pool]]
 provider = "local"
