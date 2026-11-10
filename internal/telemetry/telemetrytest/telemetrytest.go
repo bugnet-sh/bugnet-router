@@ -4,11 +4,16 @@ package telemetrytest
 import (
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -187,4 +192,47 @@ func (x *Telemetry) Flushed(t testing.TB) []Span {
 		t.Fatal(err)
 	}
 	return x.Recv.Spans()
+}
+
+// Scan reports the label of each needle that any exported span holds, searching its raw form and
+// its base64, hex and URL-escaped ones through names, attributes, links, status and resource
+func Scan(spans []Span, needles map[string]string) []string {
+	var found []string
+	for label, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		forms := []string{
+			needle, url.QueryEscape(needle), url.PathEscape(needle),
+			hex.EncodeToString([]byte(needle)),
+			base64.StdEncoding.EncodeToString([]byte(needle)),
+			base64.RawURLEncoding.EncodeToString([]byte(needle)),
+		}
+		for _, s := range spans {
+			blob := spanText(s)
+			holds := func(f string) bool { return strings.Contains(blob, f) }
+			if slices.ContainsFunc(forms, holds) {
+				found = append(found, label)
+				break
+			}
+		}
+	}
+	slices.Sort(found)
+	return found
+}
+
+func spanText(s Span) string {
+	var b strings.Builder
+	b.WriteString(s.Name + "\n" + s.StatusText + "\n" + s.TraceState + "\n")
+	for _, m := range []map[string]any{s.Attrs, s.Resource} {
+		for k, v := range m {
+			fmt.Fprintf(&b, "%s=%v\n", k, v)
+		}
+	}
+	for _, l := range s.Links {
+		for k, v := range l.Attrs {
+			fmt.Fprintf(&b, "%s=%v\n", k, v)
+		}
+	}
+	return b.String()
 }
