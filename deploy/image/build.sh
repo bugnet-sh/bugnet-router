@@ -94,7 +94,10 @@ fi
 REMOTE="$REGISTRY:$VERSION-$CHANNEL"
 docker tag "$TAG" "$REMOTE"
 docker push "$REMOTE"
-DIGEST="$(docker image inspect "$REMOTE" --format '{{index .RepoDigests 0}}')"
+# The local tag shares the digest, so the record takes the one under the registry's name
+DIGEST="$(docker image inspect "$REMOTE" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+    grep -m1 "^$REGISTRY@sha256:" || true)"
+[ -n "$DIGEST" ] || die "the push left no digest under $REGISTRY"
 RECORD="$HERE/builds/$CHANNEL-$VERSION.json"
 [ ! -e "$RECORD" ] || die "$RECORD exists, a version is built once per channel"
 jq -n --arg version "$VERSION" --arg channel "$CHANNEL" --arg inputs "$INPUTS" \
