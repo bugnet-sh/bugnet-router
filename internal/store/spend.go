@@ -11,9 +11,10 @@ import (
 )
 
 // RecountCapacity sets the provider's in_use to what its placements, attempts, pool members and
-// probe slots hold and returns the old and new values. It is CP 10.5's transaction, the capacity row locked first so
-// every reserve and release that committed before is counted and one that waits adds its own
-// after.
+// probe slots hold and returns the old and new values
+//
+// It is CP 10.5's transaction, the capacity row locked first so every reserve and release that
+// committed before is counted and one that waits adds its own after.
 func (s *Store) RecountCapacity(
 	ctx context.Context, provider string, probeAge time.Duration, now time.Time,
 ) (oldValue, newValue int, err error) {
