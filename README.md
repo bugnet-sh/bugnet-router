@@ -129,6 +129,7 @@ scripts/live-test.sh boxd koyeb boat
 scripts/live-test.sh --suite dataplane --run 'LiveDataplane/T1' e2b
 scripts/live-test.sh --suite dataplane --front vps e2b boxd
 scripts/live-test.sh --suite sessions e2b
+scripts/live-test.sh --suite image e2b boxd koyeb boat
 scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 ```
 
@@ -139,6 +140,7 @@ scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 | `control` | `TestLiveControl` in `test/live` | Zero or more | Each named provider's, from `.env` |
 | `leak` | `TestLiveLeak` in `test/live` | At least one | Each named provider's, from `.env` |
 | `sessions` | `TestLiveSessions` in `test/live`, rows SESS1 to SESS6, with `sessions.keep` at 3 minutes | At least one | Each named provider's, from `.env` |
+| `image` | `TestLiveImage` in `test/live`, rows IMG1 to IMG10 and each provider's own, from the artifacts of `deploy/image/builds`, with no stack | At least one | Each named provider's, from `.env` |
 | `bench` | `bugnet-dev bench` against `--router URL` | Zero or more | None. It sources no `.env` and needs `BUGNET_OPERATOR_TOKEN` set |
 
 The script fails with the variable's name when a key is empty. `--run REGEX` replaces the suite's
@@ -2392,4 +2394,26 @@ With `accept` empty and no provider version nothing changes. router-api refuses 
 `accept` is set and no provider is accepted or exempt, `ListProviders` shows `image_version` and
 `image_accepted`, `ListImageUse` counts live placements per provider and version, and `/monitor`
 names a provider `accept` keeps out, any `image_mismatch` and any refused reseed of the last hour.
-The adapters start from the artifacts, and the builds, checks and rollout come with Task 41B.
+
+Each adapter starts from its artifact. `CreateRequest.Image` overrides the artifact of one create
+and `Builder` asks for a sandbox an image is saved from. E2B names a template, Koyeb an OCI digest
+for `docker.image`, boxd a snapshot for `spec.base`, and Boat a saved snapshot for `from`. A create
+refused for a missing or archived artifact fails over to the next provider. `bugnet-dev image
+build|check|retire|use` and `scripts/image.sh` make, test and remove the artifacts. Only the
+controller runs them, since each step calls a provider with a key.
+
+```sh
+scripts/image.sh build e2b --channel dev
+scripts/image.sh build boxd --channel dev
+scripts/image.sh build boat --channel dev      # asks for Boat's image key, echo off
+scripts/image.sh check e2b boxd koyeb boat --channel dev
+scripts/image.sh retire boxd --version 2026.11.1
+```
+
+`image build` runs `setup-image.sh` in one builder per size, scans the builder, saves it and
+destroys it, and a finding deletes what it already saved. `image check` starts two fresh sandboxes
+from each artifact, scans them before any start step, compares the tools a job sees with the
+manifest, compares the random bytes and host keys of the two, deletes an artifact that fails and
+prints the `[images.PROVIDER]` block to paste. `image retire` refuses a version that is on
+`images.accept`, that a placement runs on, or that became ready in the last hour. The runbook is
+in `deploy/image/README.md`.
