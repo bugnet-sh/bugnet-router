@@ -38,6 +38,8 @@ type Placement struct {
 	CapacityProvider string
 	// StartPath is how the sandbox came to be, cold or pooled, empty before it is ready
 	StartPath string
+	// Hedged says a second attempt ran beside the first
+	Hedged bool
 	// SandboxCreatedAt is when the provider made a pooled sandbox, nil for a cold start, whose
 	// sandbox is as old as the placement
 	SandboxCreatedAt *time.Time
@@ -173,6 +175,8 @@ type Attempt struct {
 	Path string
 	// MemberID is the pool member a pooled attempt claimed, the zero id for none
 	MemberID uuid.UUID
+	// Hedge says the attempt started beside another that was still running
+	Hedge bool
 }
 
 const placementColumns = `id, handle_sha256, order_id, package_id, state, coalesce(provider, ''),
@@ -189,7 +193,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 			and not (placements.state = 'failed' and placements.refundable)),
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
 	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes,
-	coalesce(start_path, ''), sandbox_created_at, paid_at`
+	coalesce(start_path, ''), sandbox_created_at, paid_at, hedged`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -207,7 +211,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
 		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes, &p.StartPath,
-		&p.SandboxCreatedAt, &p.PaidAt)
+		&p.SandboxCreatedAt, &p.PaidAt, &p.Hedged)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -422,8 +426,8 @@ func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 		insert into placement_attempts
 			(placement_id, attempt, provider, idempotency_key, state, error_code, error,
 				sandbox_id, size_name, hourly_micros, start_fee_micros, destroyed_at, path,
-				member_id)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+				member_id, hedge)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		on conflict (placement_id, attempt) do update set provider = excluded.provider,
 			idempotency_key = excluded.idempotency_key, state = excluded.state,
 			error_code = excluded.error_code, error = excluded.error,
@@ -431,11 +435,12 @@ func (s *Store) RecordAttempt(ctx context.Context, a Attempt) error {
 			size_name = coalesce(excluded.size_name, placement_attempts.size_name),
 			hourly_micros = excluded.hourly_micros, start_fee_micros = excluded.start_fee_micros,
 			destroyed_at = coalesce(placement_attempts.destroyed_at, excluded.destroyed_at),
-			path = excluded.path, member_id = excluded.member_id`,
+			path = excluded.path, member_id = excluded.member_id,
+			hedge = excluded.hedge or placement_attempts.hedge`,
 		a.PlacementID, a.Attempt, nullIfEmpty(a.Provider), nullIfEmpty(a.IdempotencyKey),
 		nullIfEmpty(a.State), nullIfEmpty(a.ErrorCode), nullIfEmpty(a.Error),
 		nullIfEmpty(a.SandboxID), nullIfEmpty(a.SizeName), a.HourlyMicros, a.StartFeeMicros,
-		utcPtr(a.DestroyedAt), nullIfEmpty(a.Path), nilUUID(a.MemberID))
+		utcPtr(a.DestroyedAt), nullIfEmpty(a.Path), nilUUID(a.MemberID), a.Hedge)
 	if err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
@@ -463,7 +468,7 @@ func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt,
 		select placement_id, attempt, coalesce(provider, ''), coalesce(idempotency_key, ''),
 			coalesce(state, ''), coalesce(error_code, ''), coalesce(error, ''),
 			coalesce(sandbox_id, ''), coalesce(size_name, ''), hourly_micros, start_fee_micros,
-			destroyed_at, coalesce(path, ''), member_id
+			destroyed_at, coalesce(path, ''), member_id, hedge
 		from placement_attempts where placement_id = $1 order by attempt`, placementID)
 	if err != nil {
 		return nil, fmt.Errorf("select attempts: %w", err)
@@ -473,7 +478,7 @@ func (s *Store) Attempts(ctx context.Context, placementID uuid.UUID) ([]Attempt,
 		var member *uuid.UUID
 		err := r.Scan(&a.PlacementID, &a.Attempt, &a.Provider, &a.IdempotencyKey, &a.State,
 			&a.ErrorCode, &a.Error, &a.SandboxID, &a.SizeName, &a.HourlyMicros,
-			&a.StartFeeMicros, &a.DestroyedAt, &a.Path, &member)
+			&a.StartFeeMicros, &a.DestroyedAt, &a.Path, &member, &a.Hedge)
 		if member != nil {
 			a.MemberID = *member
 		}
