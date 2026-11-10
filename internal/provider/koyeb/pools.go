@@ -58,7 +58,7 @@ func (p *Provider) poolDefinition(spec provider.PoolSpec, instanceType string) (
 		Scalings: []scalingSpec{{Min: 1, Max: 1, Targets: []scalingTarget{target}}},
 		Mesh:     "DEPLOYMENT_MESH_AUTO",
 	}
-	def.Docker.Image = sandboxImage
+	def.Docker.Image = p.image
 	return def, nil
 }
 

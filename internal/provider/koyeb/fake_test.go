@@ -216,6 +216,8 @@ type fakeKoyeb struct {
 	binds     []string
 	// pools holds the service pools and their claims
 	pools *poolState
+	// missingImages are the images a create is refused for, as Koyeb refuses a missing one
+	missingImages map[string]bool
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -566,6 +568,14 @@ func (f *fakeKoyeb) createService(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_argument", msg)
 		return
 	}
+	def, _ := field(body, "definition").(map[string]any)
+	f.mu.Lock()
+	missing := f.missingImages[fmt.Sprint(field(def, "docker.image"))]
+	f.mu.Unlock()
+	if missing {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "docker image not found")
+		return
+	}
 	appID, name := field(body, "app_id").(string), field(body, "name").(string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -611,8 +621,8 @@ func checkSandbox(body map[string]any) string {
 		return "a service needs a name, an app and a definition"
 	case field(def, "type") != "SANDBOX":
 		return "fake services are sandboxes"
-	case field(def, "docker.image") != "koyeb/sandbox":
-		return "fake sandboxes run koyeb/sandbox"
+	case !fakeImage(fmt.Sprint(field(def, "docker.image"))):
+		return "fake sandboxes run koyeb/sandbox or an image by digest"
 	case !jsonEqual(field(def, "regions"), `["fra"]`):
 		return "fake sandboxes run in fra"
 	case len(types) != 1 || !slices.Contains(fakeInstanceTypes, fmt.Sprint(field(def,
@@ -627,6 +637,11 @@ func checkSandbox(body map[string]any) string {
 		return "delete_after_create must be 60 s to 24 h"
 	}
 	return ""
+}
+
+// fakeImage accepts the stock image and any image named by digest
+func fakeImage(ref string) bool {
+	return ref == "koyeb/sandbox" || strings.Contains(ref, "@sha256:")
 }
 
 // definitionEnv reads the variables of a deployment definition decoded from JSON
