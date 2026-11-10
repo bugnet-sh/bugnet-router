@@ -142,18 +142,22 @@ type fakeE2B struct {
 	// requests counts every request to the REST API and to envd
 	requests atomic.Int64
 	connects []string
+	// images are the extra templates a create may name, and deletes are those removed
+	images  map[string]bool
+	deletes []string
 }
 
 func newFake(t *testing.T) *fakeE2B {
 	t.Helper()
 	f := &fakeE2B{
 		t: t, boxes: map[string]*fakeSandbox{}, kills: map[string]string{},
-		idem:   map[string]*idemEntry{},
+		idem: map[string]*idemEntry{}, images: map[string]bool{},
 		faults: map[string]*fault{}, calls: map[string]int{},
 	}
 	rest := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
 		"POST /v2/sandboxes":              f.create,
+		"DELETE /templates/{id}":          f.deleteTemplate,
 		"GET /v2/sandboxes":               f.list,
 		"GET /sandboxes/{id}":             f.get,
 		"DELETE /sandboxes/{id}":          f.kill,
@@ -374,7 +378,7 @@ func (f *fakeE2B) create(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(e.reply)
 		return
 	}
-	if !slices.ContainsFunc(fakeTemplates, func(t Template) bool {
+	if !f.images[req.TemplateID] && !slices.ContainsFunc(fakeTemplates, func(t Template) bool {
 		return t.TemplateID == req.TemplateID
 	}) {
 		writeError(w, http.StatusBadRequest, "", "template '"+req.TemplateID+"' not found")
@@ -1191,4 +1195,18 @@ func (f *fakeE2B) teamMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"value": f.runningTotal()})
+}
+
+// deleteTemplate removes an extra template, and answers 404 for one the account lacks
+func (f *fakeE2B) deleteTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.images[id] {
+		writeError(w, http.StatusNotFound, "", "template '"+id+"' not found")
+		return
+	}
+	delete(f.images, id)
+	f.deletes = append(f.deletes, id)
+	w.WriteHeader(http.StatusNoContent)
 }

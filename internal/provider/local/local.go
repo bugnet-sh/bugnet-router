@@ -175,6 +175,9 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if err := ctx.Err(); err != nil {
 		return provider.Ref{}, fmt.Errorf("create a %s sandbox: %w", p.opts.Name, err)
 	}
+	if req.Image != "" || req.Builder {
+		return provider.Ref{}, invalid(errors.New("a local sandbox has no base image"))
+	}
 	attempt := int(p.attempts.Add(1))
 	if p.opts.CreateHook != nil {
 		if err := p.opts.CreateHook(attempt, req); err != nil {
