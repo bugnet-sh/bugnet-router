@@ -153,6 +153,10 @@ func (s *Server) findTarget(
 	if errors.Is(err, store.ErrNotFound) {
 		return store.Placement{}, errTargetUnknown
 	}
+	if err == nil {
+		// OperatorService spans start at the call, so the join only links and tags the span
+		_ = s.d.Telemetry.JoinOrder(ctx, p)
+	}
 	return p, err
 }
 

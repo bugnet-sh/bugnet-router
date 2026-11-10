@@ -15,6 +15,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
 )
@@ -125,6 +126,8 @@ func (s *Saga) EndBlocked(
 	if err != nil {
 		return store.Placement{}, nil, err
 	}
+	ctx, span := s.orderSpan(ctx, p, "saga.end", attr.Reason(e.Reason))
+	defer span.End()
 	ended := p.State == store.PlacementTerminated
 	if !ended {
 		if s.beforeMark != nil {
@@ -163,6 +166,8 @@ func (s *Saga) FlagEnded(
 		return store.Placement{}, nil, fmt.Errorf("%w: flag %q", ErrBadReason, e.Reason)
 	}
 	e.Actor = cmp.Or(e.Actor, wallets.ActorRouter)
+	ctx, span := s.orderSpanByID(ctx, id, "saga.flag_ended", attr.Reason(e.Reason))
+	defer span.End()
 	var p store.Placement
 	var blocked []string
 	err := s.underPayers(ctx, id, false, func(tx pgx.Tx, cur store.Placement,

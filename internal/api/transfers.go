@@ -20,6 +20,7 @@ import (
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/bugnet-sh/bugnet-router/internal/budget"
@@ -29,6 +30,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
 )
 
@@ -131,7 +133,7 @@ func (s *Server) CreateTransfer(
 	if err != nil {
 		return nil, s.status(err)
 	}
-	p, prov, err := s.sandbox(ctx, req.Msg.GetHandle())
+	ctx, p, prov, err := s.sandbox(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -299,6 +301,8 @@ func (e *EdgeServer) OpenTransfer(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
+	trace.SpanFromContext(ctx).SetAttributes(attr.TransferHash(transfer.Short(rec.ID)))
 	prov, err := s.home(p)
 	if err == nil {
 		err = s.spendPlacement(ctx, p)
@@ -336,6 +340,7 @@ func (e *EdgeServer) OpenTransfer(
 		FileName: path.Base(rec.Path), Size: uint64(rec.Size), Etag: rec.ETag,
 		HardStop:  timestamppb.New(minTime(*p.Deadline, now.Add(s.x.MaxDuration))),
 		ExpiresAt: timestamppb.New(*p.Deadline), Budget: s.edgeBudget(p, left),
+		OrderTraceparent: orderTraceparent(ctx),
 	}
 	if rec.Direction == download {
 		out.ModifiedAt, out.Sha256 = timestamppb.New(rec.ModifiedAt), rec.SHA256
@@ -451,6 +456,7 @@ func (s *Server) openStream(
 	if err != nil {
 		return nil, err
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
 	prov, err := s.home(p)
 	if err != nil {
 		return nil, err
@@ -717,6 +723,7 @@ func (e *EdgeServer) EndTransfer(
 		if p, err := s.d.Store.PlacementByID(ctx, rec.Placement); err != nil {
 			log.Warn("api: read the placement of a delivered transfer", "err", err)
 		} else {
+			ctx = s.d.Telemetry.JoinOrder(ctx, p)
 			s.d.SessionWriter.Transfer(ctx, p, "out", rec.Path, rec.Size)
 		}
 	}

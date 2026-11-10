@@ -104,6 +104,7 @@ func (g *EgressServer) ResolveTunnel(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
 	lim := s.limit(p, budget.Egress)
 	left, err := s.meter.RemainingAll(ctx, budget.Egress, []budget.Limit{lim})
 	if err != nil {
@@ -136,6 +137,7 @@ func (g *EgressServer) ResolveTunnel(
 		BytesPerSecond: uint64(max(lim.BytesPerSecond, 0)),
 		RequestsInFlight: uint32(max(
 			cmp.Or(s.d.Budget.EgressRequestsInFlight, defaultRequestsInFlight), 0)),
+		OrderTraceparent: orderTraceparent(ctx),
 	}), nil
 }
 

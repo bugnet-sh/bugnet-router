@@ -256,6 +256,16 @@ placement_bytes = "256MiB"             # live bytes per placement, apart from th
 bytes_per_second = "1MiB"              # each live stream's pace, an idle one saving one second
 replay = "256KiB"                      # a first connection's replay of a job's newest output
 
+[telemetry]
+traces = false                         # export spans over OTLP, nothing is built or sent while false
+otlp_endpoint = ""                     # the full traces URL, https, or http to a loopback host only
+sample_ratio = 1.0                     # 0 to 1, share of new traces kept, the gateway uses the same
+environment = "main"                   # deployment.environment.name on every span
+export_timeout = "10s"                 # one export request
+batch_timeout = "5s"                   # the longest a finished span waits before export
+batch_size = 512                       # spans per export request, 1 to queue_size
+queue_size = 2048                      # finished spans waiting for export, more are dropped
+
 [hardening]                            # bugnet-run harden, outbound only, local never runs it
 mail_ports = [25, 465, 587]            # TCP to any address, at most 64
 deny_ranges = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7",

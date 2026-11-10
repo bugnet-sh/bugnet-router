@@ -72,7 +72,7 @@ func Prices(reg *provider.Registry) PriceFunc {
 			return 0, 0
 		}
 		hourly = prov.HourlyCostMicros(sz)
-		if pk, ok := prov.(provider.Parker); ok {
+		if pk, ok := provider.As[provider.Parker](prov); ok {
 			parked = pk.ParkedHourlyCostMicros(sz)
 		}
 		return hourly, parked
@@ -94,7 +94,11 @@ func Idle(reg *provider.Registry) IdleFunc {
 		if !ok {
 			return 0, false
 		}
-		return prov.(provider.PoolClaimer).IdleHourlyCostMicros(sz), true
+		claimer, ok := provider.As[provider.PoolClaimer](prov)
+		if !ok {
+			return 0, false
+		}
+		return claimer.IdleHourlyCostMicros(sz), true
 	}
 }
 

@@ -185,7 +185,7 @@ func liveImageAdapter(t *testing.T, cfg config.Config, name string, ours bool) p
 	if !ours {
 		cfg.Images = config.Images{Channel: cfg.Images.Channel}
 	}
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

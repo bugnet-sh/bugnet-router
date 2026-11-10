@@ -43,7 +43,7 @@ const accountFailures = 3
 // checkAccount reads one provider's account when it is due or asked for, and stores the answer
 func (w *Worker) checkAccount(ctx context.Context, name string, now bool) {
 	p, ok := w.registry.Get(name)
-	checker, can := p.(provider.AccountChecker)
+	checker, can := provider.As[provider.AccountChecker](p)
 	if !ok || !can {
 		return
 	}

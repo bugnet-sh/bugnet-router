@@ -47,7 +47,7 @@ func (t Target) StagedPath(id string) string {
 
 // Home is the exec user's home, the provider's own for a Pather
 func Home(prov provider.Provider, ref provider.Ref, caps provider.Capabilities) string {
-	if p, ok := prov.(provider.Pather); ok {
+	if p, ok := provider.As[provider.Pather](prov); ok {
 		return p.Home(ref)
 	}
 	if caps.ExecUser == "" || caps.ExecUser == "root" {
@@ -94,7 +94,7 @@ func Resolve(
 		return Target{}, ErrIsDirectory
 	}
 	t := Target{StageDir: path.Join(home, stageDir)}
-	if pather, ok := prov.(provider.Pather); ok {
+	if pather, ok := provider.As[provider.Pather](prov); ok {
 		if t.Path, err = pather.RealPath(ctx, ref, expanded); err != nil {
 			return Target{}, err
 		}

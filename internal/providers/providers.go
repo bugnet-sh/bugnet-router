@@ -19,6 +19,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/koyeb"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/traced"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 )
 
 // localSize covers every package, since a host sandbox has no fixed shape
@@ -27,8 +29,10 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 	GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32,
 }}
 
-// Build returns the configured providers in their listed order with the features they passed
-func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
+// Build returns the configured providers in their listed order with the features they passed,
+// each wrapped with traced.Wrap while tel is enabled
+func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry) (
+	*provider.Registry, error) {
 	var ps []provider.Provider
 	for _, name := range cfg.Providers {
 		switch name {
@@ -77,6 +81,12 @@ func Build(cfg config.Config, vk valkey.Client) (*provider.Registry, error) {
 			ps = append(ps, p)
 		default:
 			return nil, fmt.Errorf("providers: %s has no adapter", name)
+		}
+	}
+	if tel.Enabled() {
+		tr := tel.Tracer("bugnet-router/provider")
+		for i, p := range ps {
+			ps[i] = traced.Wrap(p, tr, tel.SandboxHash)
 		}
 	}
 	reg, err := provider.NewRegistry(ps, provider.Features{

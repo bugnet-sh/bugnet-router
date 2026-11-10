@@ -108,7 +108,7 @@ func (c *cli) owned(args []string) error {
 			return fmt.Errorf("%s is not set", env)
 		}
 	}
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		return err
 	}

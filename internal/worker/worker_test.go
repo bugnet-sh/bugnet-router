@@ -42,6 +42,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/secrets"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
 	"github.com/bugnet-sh/bugnet-router/internal/x402"
@@ -214,6 +215,8 @@ type options struct {
 	reconcile config.Reconcile
 	// pools lists the warm pools of the first provider, none when nil
 	pools *config.Pools
+	// tel makes the saga's and the worker's spans, off when nil
+	tel *telemetry.Telemetry
 }
 
 type env struct {
@@ -301,6 +304,7 @@ func newEnv(t *testing.T, o options) *env {
 		Keys:         keys,
 		Wallets:      o.wallets,
 		Reserve:      o.reserve,
+		Telemetry:    o.tel,
 	}
 	if o.pools != nil {
 		w := poolpkg.NewWarmth(st, poolpkg.Configs(*o.pools), nil)
@@ -1103,6 +1107,8 @@ type delivery struct {
 	eventType string
 	createdAt time.Time
 	payload   json.RawMessage
+	// traceparent and tracestate are the headers the POST carried
+	traceparent, tracestate string
 }
 
 // receiver is an events endpoint that verifies every request's signature
@@ -1165,6 +1171,7 @@ func (r *receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if problem == "" {
 		r.got = append(r.got, delivery{
 			raw: body, id: d.ID, eventType: d.Type, createdAt: d.CreatedAt, payload: d.Payload,
+			traceparent: req.Header.Get("traceparent"), tracestate: req.Header.Get("tracestate"),
 		})
 	}
 	delay := r.delay

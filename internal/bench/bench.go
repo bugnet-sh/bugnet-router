@@ -47,7 +47,7 @@ func SizeNamed(prov provider.Provider, name string) (provider.Size, bool) {
 	if name == "" {
 		return prov.SizeFor(provider.Resources{})
 	}
-	if s, ok := prov.(provider.Sizer); ok {
+	if s, ok := provider.As[provider.Sizer](prov); ok {
 		for _, size := range s.Sizes() {
 			if size.Name == name {
 				return size, true

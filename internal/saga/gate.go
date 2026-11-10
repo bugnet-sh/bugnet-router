@@ -41,7 +41,7 @@ func (s *Saga) Gate(p store.Placement) (provider.GateRoute, string, error) {
 	if err != nil {
 		return provider.GateRoute{}, "", err
 	}
-	g, ok := prov.(provider.Gater)
+	g, ok := provider.As[provider.Gater](prov)
 	if !ok {
 		return provider.GateRoute{}, "", fmt.Errorf("%w: %w", ErrGateUnavailable, errNoGate)
 	}
@@ -132,7 +132,7 @@ func (s *Saga) RepairGate(ctx context.Context, p store.Placement) (store.Placeme
 		if err != nil {
 			return err
 		}
-		g, ok := prov.(provider.Gater)
+		g, ok := provider.As[provider.Gater](prov)
 		if !ok {
 			return fmt.Errorf("%w: %w", ErrGateUnavailable, errNoGate)
 		}

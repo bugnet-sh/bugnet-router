@@ -116,7 +116,7 @@ exit 0`
 
 // Sweep removes leftovers older than an hour from the staging root and the target's directory
 func Sweep(ctx context.Context, prov provider.Provider, ref provider.Ref, t Target) error {
-	if _, ok := prov.(provider.Pather); ok {
+	if _, ok := provider.As[provider.Pather](prov); ok {
 		return nil
 	}
 	_, _, err := run(ctx, prov, ref, false, "sh", "-c", sweepScript, "sh", t.StageDir,
@@ -132,7 +132,7 @@ func Digest(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, caps provider.Capabilities,
 	t Target,
 ) ([]byte, error) {
-	if _, ok := prov.(provider.Pather); ok {
+	if _, ok := provider.As[provider.Pather](prov); ok {
 		r, err := prov.OpenReader(ctx, ref, t.Path, 0)
 		if err != nil {
 			return nil, err

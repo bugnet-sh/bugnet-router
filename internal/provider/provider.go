@@ -403,3 +403,22 @@ type PoolClaimer interface {
 	// IdleHourlyCostMicros is what one unclaimed member of size costs the account an hour
 	IdleHourlyCostMicros(size Size) int64
 }
+
+// Unwrapper is a provider that decorates another
+type Unwrapper interface{ Unwrap() Provider }
+
+// As finds an optional interface on p or on the providers it wraps
+func As[T any](p Provider) (T, bool) {
+	for p != nil {
+		if t, ok := p.(T); ok {
+			return t, true
+		}
+		u, ok := p.(Unwrapper)
+		if !ok {
+			break
+		}
+		p = u.Unwrap()
+	}
+	var zero T
+	return zero, false
+}

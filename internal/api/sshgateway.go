@@ -104,10 +104,11 @@ func (g *SSHGatewayServer) AuthorizeSshKey(
 	if err != nil {
 		return nil, s.status(err)
 	}
+	ctx = s.d.Telemetry.JoinOrder(ctx, p)
 	return connect.NewResponse(&routerv1.AuthorizeSshKeyResponse{
 		GrantId: s.d.Keys.GrantID(p.ID, key.Fingerprint), PlacementId: p.ID.String(),
 		Deadline: timestamppb.New(*p.Deadline), MaxSessions: maxSessions,
-		MaxForwards: maxForwards,
+		MaxForwards: maxForwards, OrderTraceparent: orderTraceparent(ctx),
 	}), nil
 }
 
@@ -116,7 +117,7 @@ func (g *SSHGatewayServer) AcquireSshConnection(
 	ctx context.Context, req *connect.Request[routerv1.AcquireSshConnectionRequest],
 ) (*connect.Response[routerv1.AcquireSshConnectionResponse], error) {
 	s := g.s
-	p, _, err := s.grant(ctx, req.Msg.GetGrantId())
+	ctx, p, _, err := s.grant(ctx, req.Msg.GetGrantId())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -140,7 +141,7 @@ func (g *SSHGatewayServer) RenewSshConnection(
 	ctx context.Context, req *connect.Request[routerv1.RenewSshConnectionRequest],
 ) (*connect.Response[routerv1.RenewSshConnectionResponse], error) {
 	s, m := g.s, req.Msg
-	p, _, err := s.grant(ctx, m.GetGrantId())
+	ctx, p, _, err := s.grant(ctx, m.GetGrantId())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -185,7 +186,7 @@ func (g *SSHGatewayServer) OpenSshUpstream(
 	ctx context.Context, req *connect.Request[routerv1.OpenSshUpstreamRequest],
 ) (*connect.Response[routerv1.OpenSshUpstreamResponse], error) {
 	s := g.s
-	p, _, err := s.grant(ctx, req.Msg.GetGrantId())
+	ctx, p, _, err := s.grant(ctx, req.Msg.GetGrantId())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -305,22 +306,23 @@ func (g *SSHGatewayServer) WatchSshEvents(
 /* Helpers */
 
 // grant returns the placement and fingerprint of a grant that still stands
-func (s *Server) grant(ctx context.Context, id string) (store.Placement, string, error) {
+func (s *Server) grant(ctx context.Context, id string) (
+	context.Context, store.Placement, string, error) {
 	placement, fp, err := s.d.Keys.ParseGrantID(id)
 	if err != nil {
-		return store.Placement{}, "", errGrantInvalid
+		return ctx, store.Placement{}, "", errGrantInvalid
 	}
 	p, err := s.d.Store.PlacementByID(ctx, placement)
 	if errors.Is(err, store.ErrNotFound) {
-		return store.Placement{}, "", errGrantUnknown
+		return ctx, store.Placement{}, "", errGrantUnknown
 	}
 	if err == nil {
 		err = s.keyStands(ctx, p, fp)
 	}
 	if err != nil {
-		return store.Placement{}, "", err
+		return ctx, store.Placement{}, "", err
 	}
-	return p, fp, nil
+	return s.d.Telemetry.JoinOrder(ctx, p), p, fp, nil
 }
 
 // keyStands checks that a placement is in its paid time with SSH and holds the key unremoved

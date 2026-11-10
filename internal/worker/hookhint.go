@@ -40,9 +40,12 @@ func (hw *hookHintWorker) Work(ctx context.Context, job *river.Job[jobargs.HookH
 	default:
 		return nil
 	}
-	return w.reconciler.Reconcile(ctx, p, &reconcile.Observation{
+	ctx, span := w.tel.InOrder(ctx, p, "hook.hint")
+	err = w.reconciler.Reconcile(ctx, p, &reconcile.Observation{
 		Source: "hook", EventID: a.EventID,
 	})
+	span.End()
+	return err
 }
 
 // hintPlacement finds the placement by the event's label, else by the sandbox's id

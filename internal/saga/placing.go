@@ -7,10 +7,13 @@ import (
 	"maps"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 )
 
 // maxPre is the longest a reservation's sandbox ran before the order, which a hedge's cost counts,
@@ -203,6 +206,21 @@ func pathOf(c placement.Candidate) Path {
 
 // runAttempt claims a warm member for the attempt when it can and else holds a slot and creates
 func (s *Saga) runAttempt(
+	ctx, budget context.Context, pl *placing, r *run,
+) attemptResult {
+	c, n := r.cand, r.n
+	ctx, span := s.span(ctx, "saga.attempt", attr.Attempt(n), attr.Provider(c.Provider.Name()),
+		attr.Size(c.Size.Name))
+	budget = trace.ContextWithSpan(budget, span)
+	res := s.runAttemptIn(ctx, budget, pl, r)
+	if res.out.reason != "" && !res.out.done {
+		span.SetAttributes(attr.Reason(res.out.reason))
+	}
+	span.End()
+	return res
+}
+
+func (s *Saga) runAttemptIn(
 	ctx, budget context.Context, pl *placing, r *run,
 ) attemptResult {
 	c, n := r.cand, r.n

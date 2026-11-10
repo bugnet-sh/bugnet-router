@@ -96,6 +96,14 @@ var errRestricted = errors.New("a restricted package needs a provider with egres
 // none at all for a parked member, so no sandbox runs Prepare twice.
 func (s *Saga) Boot(ctx context.Context, prov provider.Provider, ref provider.Ref,
 	b BootPlan) (provider.Ref, BootReport, error) {
+	ctx, span := s.span(ctx, "saga.boot")
+	ref, rep, err := s.bootSteps(ctx, prov, ref, b)
+	finish(span, err)
+	return ref, rep, err
+}
+
+func (s *Saga) bootSteps(ctx context.Context, prov provider.Provider, ref provider.Ref,
+	b BootPlan) (provider.Ref, BootReport, error) {
 	rep := BootReport{ReadyMS: store.NoStep, RunnerMS: store.NoStep, GateMS: store.NoStep}
 	if len(b.Restricted) > 0 && !prov.Capabilities().EgressControl {
 		return ref, rep, errRestricted
@@ -151,7 +159,10 @@ func (s *Saga) Prepare(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
 	req placement.Requirements, pooled bool,
 ) (Prepared, error) {
-	return s.prepare(ctx, prov, ref, s.keyID, id, req, pooled, 0, nil)
+	ctx, span := s.span(ctx, "saga.prepare")
+	prep, err := s.prepare(ctx, prov, ref, s.keyID, id, req, pooled, 0, nil)
+	finish(span, err)
+	return prep, err
 }
 
 // prepare is Prepare with the key id the placement was created under and, for a sandbox that
@@ -225,15 +236,20 @@ func (s *Saga) boot(
 	if !prov.Capabilities().NeedsRunnerUpload {
 		return ref, nil
 	}
-	if err := s.readImage(ctx, prov, ref, rep); err != nil {
+	ictx, ispan := s.span(ctx, "saga.image_read")
+	err = s.readImage(ictx, prov, ref, rep)
+	finish(ispan, err)
+	if err != nil {
 		return ref, err
 	}
 	start = s.now()
-	if rep.Image != nil && s.bakedRunner(ctx, prov, ref, *rep.Image) {
+	uctx, uspan := s.span(ctx, "saga.runner_upload")
+	defer func() { finish(uspan, err) }()
+	if rep.Image != nil && s.bakedRunner(uctx, prov, ref, *rep.Image) {
 		rep.RunnerBaked = true
 		return withMeta(ref, map[string]string{"runner": image.RunnerPath}), nil
 	}
-	err = s.uploadRunner(ctx, prov, ref)
+	err = s.uploadRunner(uctx, prov, ref)
 	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
 	return ref, err
 }

@@ -27,6 +27,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/shell"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/traced"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/telemetrytest"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
@@ -46,6 +48,40 @@ func TestBoatContract(t *testing.T) {
 	f := newFake(t)
 	f.startPolls = 2
 	contract.Run(t, func(t *testing.T) provider.Provider { return f.provider(t, fakeKey) })
+}
+
+// TestNoTraceHeadersToProviders runs the port under a span through the traced wrapper, and the
+// fake sees no trace header (DP 20.1)
+func TestNoTraceHeadersToProviders(t *testing.T) {
+	f := newFake(t)
+	tel := telemetrytest.New(t, "router-api", 1, nil)
+	p := traced.Wrap(f.provider(t, fakeKey), tel.Tracer("test"), nil)
+	ctx, span := tel.Tracer("test").Start(t.Context(), "saga.attempt")
+	size, _ := p.SizeFor(provider.Resources{VCPU: 1, MemoryMiB: 512})
+	ref, err := p.Create(ctx, provider.CreateRequest{IdempotencyKey: "k", Size: size,
+		Lifetime: 15 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.WaitReady(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.WriteFile(ctx, ref, "/tmp/a", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.ReadFile(ctx, ref, "/tmp/a", 0, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Destroy(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	if got := len(tel.Flushed(t)); got < 5 {
+		t.Fatalf("exported %d spans, want the calls too", got)
+	}
+	if n := f.traceHeaders.Load(); n != 0 || f.totalCalls() == 0 {
+		t.Fatalf("%d of %d requests carried a trace header", n, f.totalCalls())
+	}
 }
 
 func TestBoatSendsNoEnvAndSnapshotsOff(t *testing.T) {

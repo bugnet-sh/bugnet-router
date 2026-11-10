@@ -195,6 +195,9 @@ func (c *cli) printOperatorPlacement(p *routerv1.OperatorPlacement, blocked []st
 	if p.GetHedged() {
 		kv = append(kv, [2]string{"hedged", "true"})
 	}
+	if p.GetOrderTraceId() != "" {
+		kv = append(kv, [2]string{"order_trace_id", p.GetOrderTraceId()})
+	}
 	if blocked != nil {
 		kv = append(kv, [2]string{"blocked_payers", strings.Join(blocked, ",")})
 	}

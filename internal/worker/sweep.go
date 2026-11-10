@@ -8,12 +8,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 )
 
 const (
@@ -90,7 +92,7 @@ func (w *Worker) sweepProvider(ctx context.Context, prov provider.Provider) {
 			return
 		}
 		if w.leftover(ctx, prov, o) {
-			w.destroy(ctx, prov, o.Ref)
+			w.destroySwept(ctx, prov, o)
 		}
 	}
 }
@@ -148,6 +150,20 @@ func (w *Worker) judge(
 // stuckTerminating reports whether a stop started long enough ago to count as broken off
 func stuckTerminating(p store.Placement, now time.Time) bool {
 	return p.TerminatingAt == nil || now.Sub(*p.TerminatingAt) > terminatingAfter
+}
+
+// destroySwept destroys a leftover sandbox, in the order trace of the placement it belonged to
+func (w *Worker) destroySwept(ctx context.Context, prov provider.Provider, o provider.Summary) {
+	if w.tel.Enabled() {
+		if id, err := uuid.Parse(o.Labels["placement"]); err == nil {
+			if p, err := w.store.PlacementByID(ctx, id); err == nil {
+				var span trace.Span
+				ctx, span = w.tel.InOrder(ctx, p, "sweep.destroy", attr.Provider(prov.Name()))
+				defer span.End()
+			}
+		}
+	}
+	w.destroy(ctx, prov, o.Ref)
 }
 
 // destroy treats a sandbox that is already gone as destroyed

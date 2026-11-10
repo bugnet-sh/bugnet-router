@@ -38,7 +38,7 @@ func (s *Server) AddSshKey(
 	ctx context.Context, req *connect.Request[routerv1.AddSshKeyRequest],
 ) (*connect.Response[routerv1.AddSshKeyResponse], error) {
 	m := req.Msg
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -84,7 +84,7 @@ func (s *Server) RemoveSshKey(
 	ctx context.Context, req *connect.Request[routerv1.RemoveSshKeyRequest],
 ) (*connect.Response[routerv1.RemoveSshKeyResponse], error) {
 	m := req.Msg
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}

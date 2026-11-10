@@ -182,7 +182,7 @@ func (p *Probe) refused(
 
 // StartFree reports whether the next start of size costs nothing
 func StartFree(prov provider.Provider, size provider.Size) bool {
-	c, ok := prov.(provider.StartCoster)
+	c, ok := provider.As[provider.StartCoster](prov)
 	if !ok {
 		return true
 	}

@@ -44,7 +44,7 @@ func listLabelled(
 	ctx context.Context, prov provider.Provider, cursor string,
 ) (provider.ForeignPage, error) {
 	labels := map[string]string{"bugnet": "1"}
-	if l, ok := prov.(provider.ForeignLister); ok {
+	if l, ok := provider.As[provider.ForeignLister](prov); ok {
 		return l.ListLabelled(ctx, labels, cursor, foreignBatch)
 	}
 	owned, err := prov.ListOwned(ctx, labels)

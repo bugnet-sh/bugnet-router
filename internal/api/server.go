@@ -92,6 +92,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/streams"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/carrier"
 	"github.com/bugnet-sh/bugnet-router/internal/transfer"
 	"github.com/bugnet-sh/bugnet-router/internal/wallet"
 	"github.com/bugnet-sh/bugnet-router/internal/wallets"
@@ -194,6 +196,8 @@ type Deps struct {
 	HookSecrets map[string]config.HookSecret
 	// Pools answers ListPools and DrainPool from Postgres alone, no pool is known when nil
 	Pools *pool.Manager
+	// Telemetry makes the spans of DP 20, telemetry.Off when nil
+	Telemetry *telemetry.Telemetry
 }
 
 // Server implements routerv1connect.SandboxRouterServiceHandler
@@ -229,6 +233,9 @@ var _ routerv1connect.SandboxRouterServiceHandler = (*Server)(nil)
 func New(deps Deps) *Server {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
+	}
+	if deps.Telemetry == nil {
+		deps.Telemetry = telemetry.Off()
 	}
 	if deps.Bench == (config.Bench{}) {
 		deps.Bench = config.DefaultBench()
@@ -311,6 +318,8 @@ type Servers struct {
 	Operator *OperatorServer
 	Payments *PaymentsServer
 	Sessions *SessionPageServer
+	// Telemetry installs the trace interceptor on every service while traces are on
+	Telemetry *telemetry.Telemetry
 }
 
 // Servers returns s and one server per other caller service, all sharing s's deps and Close
@@ -319,14 +328,20 @@ func (s *Server) Servers() Servers {
 		Router: s, Edge: &EdgeServer{s: s}, Secrets: &SecretsRouteServer{s: s},
 		SSH: &SSHGatewayServer{s: s}, Egress: &EgressServer{s: s}, Operator: &OperatorServer{s: s},
 		Payments: &PaymentsServer{s: s}, Sessions: &SessionPageServer{s: s, live: s.livePage},
+		Telemetry: s.d.Telemetry,
 	}
 }
 
 // Mount serves each service on mux behind its own token, with /healthz and /readyz left open
 func Mount(mux *http.ServeMux, s Servers, t Tokens) {
 	opts := func(token string) []connect.HandlerOption {
+		// The trace interceptor goes first, so a refused call gets its span too
+		chain := []connect.Interceptor{auth{token: []byte(token)}}
+		if s.Telemetry.Enabled() {
+			chain = []connect.Interceptor{s.Telemetry.Interceptor(), chain[0]}
+		}
 		return []connect.HandlerOption{
-			connect.WithInterceptors(auth{token: []byte(token)}),
+			connect.WithInterceptors(chain...),
 			connect.WithReadMaxBytes(maxRequestBytes),
 		}
 	}
@@ -476,7 +491,7 @@ func (s *Server) CreatePlacement(
 func (s *Server) GetPlacement(
 	ctx context.Context, req *connect.Request[routerv1.GetPlacementRequest],
 ) (*connect.Response[routerv1.GetPlacementResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -527,7 +542,7 @@ func (s *Server) WatchPlacement(
 	ctx context.Context, req *connect.Request[routerv1.WatchPlacementRequest],
 	stream *connect.ServerStream[routerv1.WatchPlacementResponse],
 ) error {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err != nil {
 		return s.status(err)
 	}
@@ -623,30 +638,42 @@ func ended(state string) bool {
 }
 
 // placement looks a handle up, reporting a malformed one as unknown like one never issued
-func (s *Server) placement(ctx context.Context, h string) (store.Placement, error) {
+func (s *Server) placement(ctx context.Context, h string) (
+	context.Context, store.Placement, error) {
 	sha, err := handle.Hash(h)
 	if err != nil {
-		return store.Placement{}, fmt.Errorf("%w: %w", store.ErrUnknownHandle, err)
+		return ctx, store.Placement{}, fmt.Errorf("%w: %w", store.ErrUnknownHandle, err)
 	}
-	return s.d.Store.PlacementByHandle(ctx, sha)
+	p, err := s.d.Store.PlacementByHandle(ctx, sha)
+	if err != nil {
+		return ctx, store.Placement{}, err
+	}
+	return s.d.Telemetry.JoinOrder(ctx, p), p, nil
 }
 
 // sandbox returns a ready placement and the provider its sandbox runs on, spending an operation
 func (s *Server) sandbox(
 	ctx context.Context, h string,
-) (store.Placement, provider.Provider, error) {
-	p, err := s.placement(ctx, h)
+) (context.Context, store.Placement, provider.Provider, error) {
+	ctx, p, err := s.placement(ctx, h)
 	if err != nil {
-		return store.Placement{}, nil, err
+		return ctx, store.Placement{}, nil, err
 	}
 	prov, err := s.home(p)
 	if err != nil {
-		return store.Placement{}, nil, err
+		return ctx, store.Placement{}, nil, err
 	}
 	if err := s.spend(ctx, p); err != nil {
-		return store.Placement{}, nil, err
+		return ctx, store.Placement{}, nil, err
 	}
-	return p, prov, nil
+	return ctx, p, prov, nil
+}
+
+// orderTraceparent is the W3C context of the call's span for an edge answer, empty while traces
+// are off
+func orderTraceparent(ctx context.Context) string {
+	parent, _ := carrier.Carrier(ctx)
+	return parent
 }
 
 // home is the provider a ready placement's sandbox runs on
@@ -724,7 +751,7 @@ func (s *Server) Exec(
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.sandbox(ctx, m.GetHandle())
+	ctx, p, _, err := s.sandbox(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -762,7 +789,7 @@ func (s *Server) WatchJob(
 		return err
 	}
 	// An attach takes an operation token, so a reconnect loop runs into the same limits (CP 7.6)
-	p, err := s.placement(ctx, m.GetHandle())
+	ctx, p, err := s.placement(ctx, m.GetHandle())
 	if err == nil {
 		err = s.spend(ctx, p)
 	}
@@ -826,7 +853,7 @@ func (s *Server) WatchJob(
 func (s *Server) CancelJob(
 	ctx context.Context, req *connect.Request[routerv1.CancelJobRequest],
 ) (*connect.Response[routerv1.CancelJobResponse], error) {
-	p, err := s.placement(ctx, req.Msg.GetHandle())
+	ctx, p, err := s.placement(ctx, req.Msg.GetHandle())
 	if err == nil {
 		err = s.spend(ctx, p)
 	}
@@ -878,7 +905,7 @@ func (s *Server) ReadFile(
 	if m.GetOffset() > math.MaxInt64 {
 		return nil, invalid("offset %d is too large", m.GetOffset())
 	}
-	p, prov, err := s.sandbox(ctx, m.GetHandle())
+	ctx, p, prov, err := s.sandbox(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -906,7 +933,7 @@ func (s *Server) WriteFile(
 	case mode&^fs.ModePerm != 0:
 		return nil, invalid("mode %#o has bits beyond the permission bits", m.GetMode())
 	}
-	p, prov, err := s.sandbox(ctx, m.GetHandle())
+	ctx, p, prov, err := s.sandbox(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -926,7 +953,7 @@ func (s *Server) ListFiles(
 	if depth > maxListDepth {
 		return nil, invalid("depth %d is over %d", depth, maxListDepth)
 	}
-	p, prov, err := s.sandbox(ctx, m.GetHandle())
+	ctx, p, prov, err := s.sandbox(ctx, m.GetHandle())
 	if err != nil {
 		return nil, s.status(err)
 	}

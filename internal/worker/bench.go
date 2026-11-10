@@ -94,7 +94,7 @@ func (w *Worker) launchWave(
 	if n <= 0 {
 		return false, w.finishBench(ctx, b, "")
 	}
-	if _, costly := prov.(provider.StartCoster); costly && !a.AllowPaid {
+	if _, costly := provider.As[provider.StartCoster](prov); costly && !a.AllowPaid {
 		if !probe.StartFree(prov, size) {
 			return false, w.finishBench(ctx, b, "the next start would cost a fee")
 		}

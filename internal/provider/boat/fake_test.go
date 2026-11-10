@@ -241,8 +241,10 @@ type fakeBoat struct {
 	sshKeys  []string
 	sshReply map[string]any
 	requests atomic.Int64
-	cleanup  []string
-	cmds     []*exec.Cmd
+	// traceHeaders counts requests that carried a traceparent, tracestate or baggage header
+	traceHeaders atomic.Int64
+	cleanup      []string
+	cmds         []*exec.Cmd
 }
 
 func newFake(t *testing.T) *fakeBoat {
@@ -367,6 +369,11 @@ func (f *fakeBoat) totalCalls() int {
 // gate checks the key, keeps the body size and applies any fault injected for the route
 func (f *fakeBoat) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		for _, h := range []string{"Traceparent", "Tracestate", "Baggage"} {
+			if r.Header.Get(h) != "" {
+				f.traceHeaders.Add(1)
+			}
+		}
 		if r.Header.Get("Authorization") != "Bearer "+fakeKey {
 			f.fail(w, http.StatusUnauthorized, "unauthorized", "Unauthorized", nil, nil)
 			return

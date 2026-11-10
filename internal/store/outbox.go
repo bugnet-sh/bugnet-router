@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/bugnet-sh/bugnet-router/internal/telemetry/carrier"
 )
 
 // MaxOutboxAttempts is how many failed deliveries make an event stuck, which raises an alert
@@ -21,6 +24,10 @@ type OutboxEvent struct {
 	CreatedAt time.Time
 	Attempts  int
 	LastError string
+	// Traceparent and Tracestate are the W3C context of the span that wrote the row, empty for
+	// NULL
+	Traceparent string
+	Tracestate  string
 }
 
 // InsertOutbox adds an event on tx so it commits with the state change that caused it
@@ -29,13 +36,32 @@ func (s *Store) InsertOutbox(ctx context.Context, tx pgx.Tx, eventType string, p
 	if err != nil {
 		return fmt.Errorf("marshal outbox payload: %w", err)
 	}
+	parent, state := traceColumns(carrier.Carrier(ctx))
 	_, err = tx.Exec(ctx,
-		`insert into outbox (id, event_type, payload) values ($1, $2, $3)`,
-		uuid.New(), eventType, raw)
+		`insert into outbox (id, event_type, payload, traceparent, tracestate)
+		values ($1, $2, $3, $4, $5)`,
+		uuid.New(), eventType, raw, parent, state)
 	if err != nil {
 		return fmt.Errorf("insert outbox: %w", err)
 	}
 	return nil
+}
+
+var traceparentShape = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
+// maxTracestate is the longest tracestate the outbox keeps
+const maxTracestate = 512
+
+// traceColumns is the context as the columns hold it, NULL for anything malformed, since a bad
+// trace must never fail the state change that wrote the event
+func traceColumns(parent, state string) (any, any) {
+	if !traceparentShape.MatchString(parent) {
+		return nil, nil
+	}
+	if state == "" || len(state) > maxTracestate {
+		return parent, nil
+	}
+	return parent, state
 }
 
 // PendingOutbox locks up to limit events due at now, oldest first, skipping ones locked elsewhere
@@ -43,7 +69,8 @@ func (s *Store) PendingOutbox(
 	ctx context.Context, now time.Time, limit int,
 ) ([]OutboxEvent, error) {
 	rows, err := s.q.Query(ctx, `
-		select id, event_type, payload, created_at, attempts, coalesce(last_error, '')
+		select id, event_type, payload, created_at, attempts, coalesce(last_error, ''),
+			coalesce(traceparent, ''), coalesce(tracestate, '')
 		from outbox
 		where delivered_at is null and (next_attempt_at is null or next_attempt_at <= $1)
 		order by created_at, id limit $2
@@ -57,6 +84,7 @@ func (s *Store) PendingOutbox(
 		var e OutboxEvent
 		if err := rows.Scan(
 			&e.ID, &e.EventType, &e.Payload, &e.CreatedAt, &e.Attempts, &e.LastError,
+			&e.Traceparent, &e.Tracestate,
 		); err != nil {
 			return nil, fmt.Errorf("scan outbox: %w", err)
 		}

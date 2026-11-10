@@ -83,7 +83,7 @@ func (w *Worker) canaryTick(ctx context.Context) {
 			w.log.Warn("cannot read the canary facts", "provider", prov.Name(), "err", err)
 			continue
 		}
-		_, costly := prov.(provider.StartCoster)
+		_, costly := provider.As[provider.StartCoster](prov)
 		in := health.Inputs{
 			Name: prov.Name(), Facts: facts, Costly: costly, StartFree: probe.StartFree(prov, size),
 		}

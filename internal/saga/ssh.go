@@ -99,6 +99,16 @@ func (s *Saga) sshUp(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
 	authorize []string, newHostKey bool,
 ) (store.SSHHost, error) {
+	ctx, span := s.span(ctx, "saga.ssh_up")
+	host, err := s.sshUpIn(ctx, prov, ref, id, authorize, newHostKey)
+	finish(span, err)
+	return host, err
+}
+
+func (s *Saga) sshUpIn(
+	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
+	authorize []string, newHostKey bool,
+) (store.SSHHost, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.d.SSH.installTimeout()+sshUpSlack)
 	defer cancel()
 	spec := s.d.SSH.specFor(prov, ref, authorize)
@@ -259,7 +269,7 @@ func (s *Saga) authorizeNative(
 	if has && herr == nil && ref.Meta[metaSSHAddress] != "" {
 		return SSHUpstream{Host: host, Address: ref.Meta[metaSSHAddress]}, nil
 	}
-	n, ok := prov.(provider.NativeSSHer)
+	n, ok := provider.As[provider.NativeSSHer](prov)
 	if !ok {
 		return SSHUpstream{}, fmt.Errorf("provider %s has no SSH server of its own", prov.Name())
 	}

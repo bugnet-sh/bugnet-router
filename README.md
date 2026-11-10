@@ -129,6 +129,7 @@ scripts/live-test.sh boxd koyeb boat
 scripts/live-test.sh --suite dataplane --run 'LiveDataplane/T1' e2b
 scripts/live-test.sh --suite dataplane --front vps e2b boxd
 scripts/live-test.sh --suite sessions e2b
+scripts/live-test.sh --suite trace e2b boxd koyeb boat
 scripts/live-test.sh --suite image e2b boxd koyeb boat
 scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 ```
@@ -140,6 +141,7 @@ scripts/live-test.sh --suite bench --router http://127.0.0.1:8080
 | `control` | `TestLiveControl` in `test/live` | Zero or more | Each named provider's, from `.env` |
 | `leak` | `TestLiveLeak` in `test/live` | At least one | Each named provider's, from `.env` |
 | `sessions` | `TestLiveSessions` in `test/live`, rows SESS1 to SESS6, with `sessions.keep` at 3 minutes | At least one | Each named provider's, from `.env` |
+| `trace` | `TestLiveTrace` in `test/live`, rows TRACE1 and TRACE2, with the stack's `otlp_endpoint` pointing at a receiver in the test | At least one | Each named provider's, from `.env` |
 | `image` | `TestLiveImage` in `test/live`, rows IMG1 to IMG10 and each provider's own, from the artifacts of `deploy/image/builds`, with no stack | At least one | Each named provider's, from `.env` |
 | `bench` | `bugnet-dev bench` against `--router URL` | Zero or more | None. It sources no `.env` and needs `BUGNET_OPERATOR_TOKEN` set |
 
@@ -468,6 +470,7 @@ does not know.
 | `BUGNET_OPERATOR_TOKEN` | `router-api`, and `bugnet-dev`'s operator commands, the bearer token of `OperatorService`, empty or 32 characters or more |
 | `BUGNET_PAYMENTS_ROUTER_TOKEN` | `router-api`, and Payments in its own environment with the same value, the bearer token of `PaymentsService`, empty or 32 characters or more. `router-worker` sends it to Payments' totals call while the stats feed is on |
 | `BUGNET_SESSIONS_TOKEN` | `router-api`, and `bugnet-edge --role sessions`, the bearer token of `SessionPageService`, empty or 32 characters or more |
+| `BUGNET_OTLP_AUTHORIZATION` | `router-api` and `router-worker`, the whole Authorization header value the trace backend takes, `Basic <base64 of instance id:token>` for Grafana Cloud, empty for a local collector |
 | `BUGNET_HOOK_PATH_SECRET` | The edge, and `bugnet-dev hooks`, base64url of 32 bytes in the provider webhook path |
 | `E2B_WEBHOOK_SECRET`, `BOAT_WEBHOOK_SECRET` | `router-api`, the signing secret `bugnet-dev hooks register` prints once, needed for each provider in `hooks.providers`. The same name with `_PREVIOUS` holds the replaced secret for a day after `hooks rotate` |
 | `BOAT_ADMIN_API_KEY` | `bugnet-dev hooks` for Boat only, typed at its prompt with echo off when unset, never in a service |
@@ -1798,6 +1801,31 @@ error level with their count whenever it changes and every 10 minutes while any 
 which is the signal to alert on, and `/monitor` reports their count. `router-worker
 outbox-redrive` (which reads only `BUGNET_DATABASE_URL`) gives every stuck event its attempts back
 so it is sent at once, for example after the events endpoint is fixed.
+
+## Traces
+
+With `telemetry.traces = true` the router exports one OpenTelemetry trace per order over OTLP/HTTP
+(DP 20). The trace id and the id of the order's root span come from the handle's SHA-256, so the
+gateway, `router-api`, `router-worker`, the outbox event and the edges all join one trace without
+asking each other. `bugnet-dev trace-id --handle sbx_...` prints them offline, and
+`bugnet-dev abuse find` prints `order_trace_id`, which the router fills whether traces are on or
+not.
+
+| Setting | Meaning |
+|---|---|
+| `traces` | `false` builds no span, sends no header and connects nowhere |
+| `otlp_endpoint` | The full traces URL, `https`, or `http` to a loopback host only |
+| `sample_ratio` | 0 to 1, one decision per order, and the same value in the gateway and the edges |
+| `environment` | `deployment.environment.name` on every span |
+| `export_timeout`, `batch_timeout`, `batch_size`, `queue_size` | The exporter's bounds, a full queue dropping new spans |
+
+`BUGNET_OTLP_AUTHORIZATION` holds the whole `Authorization` header value and stays out of the
+settings file. `OTEL_` variables are ignored and their names logged once. Every attribute passes
+an allowlist before it leaves the process, so handles, tokens, paths, commands, provider
+sandbox ids and Payments' order ids never reach the backend. A sandbox id and an order id appear
+only as `bugnet.sandbox_hash` and `bugnet.order_hash`, keyed under the data-plane keys. No trace
+header reaches a sandbox or a provider, and each outbox event's POST carries a `traceparent` that
+Payments may continue and must not treat as authenticated.
 
 ## Providers
 

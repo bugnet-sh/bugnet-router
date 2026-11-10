@@ -353,10 +353,13 @@ func (s *Saga) setup(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, gateKey string, sample bool,
 	img *image.Manifest,
 ) (runnerAnswer, error) {
+	ctx, span := s.span(ctx, "saga.setup")
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
 	spec := s.d.Boot.setupSpecFor(prov.Name(), ref, gateKey, sample, img)
-	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
+	ans, err := rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
+	finish(span, err)
+	return ans, err
 }
 
 // setupPool runs bugnet-run setup in its pool phase, which reseeds, installs the CA and writes the
@@ -364,10 +367,13 @@ func (s *Saga) setup(
 func (s *Saga) setupPool(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, img *image.Manifest,
 ) (runnerAnswer, error) {
+	ctx, span := s.span(ctx, "saga.setup")
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
 	spec := s.d.Boot.poolSetupSpecFor(prov.Name(), ref, img)
-	return rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
+	ans, err := rootCommand(ctx, prov, ref, "setup", setupSpecPath, spec)
+	finish(span, err)
+	return ans, err
 }
 
 // harden runs bugnet-run harden where the provider has a rule, reporting whether a failure counts
@@ -378,9 +384,11 @@ func (s *Saga) harden(
 	if !ok {
 		return false, nil
 	}
+	ctx, span := s.span(ctx, "saga.harden")
 	ctx, cancel := context.WithTimeout(ctx, hardenTimeout)
 	defer cancel()
 	ans, err := rootCommand(ctx, prov, ref, "harden", hardenSpecPath, spec)
+	finish(span, err)
 	if err == nil {
 		s.d.Log.Info("sandbox hardened", "provider", prov.Name(), "firewall", ans.Firewall)
 	}
@@ -393,36 +401,43 @@ var errNoGate = errors.New("the provider has no gate route")
 func (s *Saga) openGate(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, gateKey string,
 ) (provider.Ref, time.Time, error) {
-	g, ok := prov.(provider.Gater)
+	g, ok := provider.As[provider.Gater](prov)
 	if !ok {
 		return ref, time.Time{}, errNoGate
 	}
 	port := s.d.Boot.gatePort()
-	pctx, cancel := context.WithTimeout(ctx, gateTimeout)
+	sctx, span := s.span(ctx, "saga.prepare_gate")
+	pctx, cancel := context.WithTimeout(sctx, gateTimeout)
 	meta, err := g.PrepareGate(pctx, ref, port)
 	cancel()
 	if err != nil {
+		finish(span, err)
 		return ref, time.Time{}, fmt.Errorf("prepare the gate route: %w", err)
 	}
 	ref = withMeta(ref, meta)
 	route, err := g.GateRoute(ref, port)
+	finish(span, err)
 	if err != nil {
 		return ref, time.Time{}, fmt.Errorf("gate route: %w", err)
 	}
+	hctx, hspan := s.span(ctx, "saga.gate_health")
 	for i := range gateTries {
 		if i > 0 {
 			timer := time.NewTimer(gateRetry)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
+				finish(hspan, ctx.Err())
 				return ref, time.Time{}, ctx.Err()
 			case <-timer.C:
 			}
 		}
-		if err = gateclient.Health(ctx, route, gateKey); err == nil {
+		if err = gateclient.Health(hctx, route, gateKey); err == nil {
+			hspan.End()
 			return ref, s.now(), nil
 		}
 	}
+	finish(hspan, err)
 	return ref, time.Time{}, fmt.Errorf("gate health: %w", err)
 }
 

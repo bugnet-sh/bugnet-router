@@ -74,6 +74,8 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   fetch-source --handle H                put the placement's GitHub source in its sandbox and
                                          print the bootstrap state
   get --handle H                         print a placement
+  trace-id --handle H                    print the order trace id and root span id of a handle,
+                                         derived offline
   extend --handle H --package P [--order O] [--token T]
                                          extend a ready placement
   check-extend --handle H --package P    print a placement and an extension's deadline and price
@@ -280,6 +282,7 @@ func run(
 		"fetch-source": c.fetchSource, "hooks": c.hooks, "bench": c.benchCmd,
 		"simulate": c.simulate, "abuse": c.abuse, "placement": c.placementCmd,
 		"signals": c.signals, "providers": c.providers, "pools": c.pools, "image": c.image,
+		"trace-id": c.traceID,
 	}
 	global := newFlags("bugnet-dev")
 	global.StringVar(&c.configPath, "config", defaultConfig, "settings file")

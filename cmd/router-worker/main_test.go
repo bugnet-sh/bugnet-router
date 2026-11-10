@@ -163,7 +163,7 @@ func TestServeAnswersHealthWorksJobsAndDrains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := providers.Build(cfg, nil)
+	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
