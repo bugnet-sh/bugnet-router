@@ -119,6 +119,8 @@ type Config struct {
 	// Reserve holds the Reserve settings and Targets the 5 s target's
 	Reserve Reserve
 	Targets Targets
+	// Hedge holds the hedged start settings
+	Hedge Hedge
 	// EdgeToken admits bugnet-edge to EdgeService, no caller when empty
 	EdgeToken string
 	// SecretsToken admits bugnet-secrets to SecretsRouteService, no caller when empty
@@ -174,6 +176,9 @@ type Koyeb struct {
 	InstanceTypes map[string]string `toml:"instance_types"`
 	// OrganizationID is read from the account when empty
 	OrganizationID string `toml:"organization_id"`
+	// PoolIdleHourlyMicros is what one unclaimed member of a Koyeb-kept pool costs an hour, 0
+	// while Light Sleep is free
+	PoolIdleHourlyMicros int64 `toml:"pool_idle_hourly_micros"`
 }
 
 // Boat holds the Boat adapter's settings
@@ -404,6 +409,7 @@ type file struct {
 	Pools               poolsFile      `toml:"pools"`
 	Reserve             reserveFile    `toml:"reserve"`
 	Targets             targetsFile    `toml:"targets"`
+	Hedge               hedgeFile      `toml:"hedge"`
 	Localrun            localrunFile   `toml:"localrun"`
 }
 
@@ -478,6 +484,8 @@ type koyebFile struct {
 	OrganizationID string            `toml:"organization_id"`
 	MaxConcurrent  int64             `toml:"max_concurrent"`
 	CreatesPerSec  int64             `toml:"creates_per_second"`
+	// PoolIdleHourlyMicros is one unclaimed Light Sleep member's cost an hour
+	PoolIdleHourlyMicros int64 `toml:"pool_idle_hourly_micros"`
 }
 
 type boatFile struct {
@@ -643,6 +651,7 @@ func defaults() file {
 		Pools:      defaultPools(),
 		Reserve:    defaultReserve(),
 		Targets:    defaultTargets(),
+		Hedge:      defaultHedge(),
 	}
 }
 
@@ -749,9 +758,10 @@ func (f file) config() (Config, error) {
 			Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates), TeamID: f.E2B.TeamID,
 		},
 		Koyeb: Koyeb{
-			Region:         cmp.Or(f.Koyeb.Region, d.Koyeb.Region),
-			InstanceTypes:  maps.Clone(f.Koyeb.InstanceTypes),
-			OrganizationID: f.Koyeb.OrganizationID,
+			Region:               cmp.Or(f.Koyeb.Region, d.Koyeb.Region),
+			InstanceTypes:        maps.Clone(f.Koyeb.InstanceTypes),
+			OrganizationID:       f.Koyeb.OrganizationID,
+			PoolIdleHourlyMicros: f.Koyeb.PoolIdleHourlyMicros,
 		},
 		Boat: Boat{
 			Types: maps.Clone(f.Boat.Types), SSHPath: cmp.Or(f.Boat.SSHPath, d.Boat.SSHPath),
@@ -878,6 +888,9 @@ func (f file) config() (Config, error) {
 	if f.Boxd.ParkedGiB < 1 || f.Boxd.ParkedGiB > 100_000 {
 		return Config{}, errors.New("boxd.parked_gib must be 1 to 100000")
 	}
+	if f.Koyeb.PoolIdleHourlyMicros < 0 || f.Koyeb.PoolIdleHourlyMicros > 1_000_000_000 {
+		return Config{}, errors.New("koyeb.pool_idle_hourly_micros must be 0 to 1000000000")
+	}
 	if c.Sessions, err = f.Sessions.read(d.Sessions); err != nil {
 		return Config{}, err
 	}
@@ -888,6 +901,9 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	if c.Targets, err = f.Targets.read(d.Targets); err != nil {
+		return Config{}, err
+	}
+	if c.Hedge, err = f.Hedge.read(d.Hedge); err != nil {
 		return Config{}, err
 	}
 	c.Localrun = f.Localrun.read()
