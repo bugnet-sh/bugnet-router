@@ -122,10 +122,10 @@ func TestPlacementLifecycle(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	deadline := now.Add(time.Minute)
 
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "small", now, deadline); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "small", now, deadline, nil); err != nil {
 		t.Fatal(err)
 	}
-	err := s.MarkPlacementReady(ctx, p.ID, ref, "small", now, deadline)
+	err := s.MarkPlacementReady(ctx, p.ID, ref, "small", now, deadline, nil)
 	if !errors.Is(err, store.ErrStateConflict) {
 		t.Fatalf("second ready err = %v", err)
 	}
@@ -263,7 +263,7 @@ func TestExtendDeadlineAppliesOnce(t *testing.T) {
 	now := time.Now().UTC()
 	deadline := now.Add(time.Minute)
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, applied, err := s.ExtendDeadline(ctx, "ext-1", p.ID, 10*time.Minute)
@@ -548,7 +548,7 @@ func TestReadyOrTerminatingPastDeadline(t *testing.T) {
 		overdue.ID: now.Add(-time.Second), due.ID: now.Add(time.Second),
 		ending.ID: now.Add(-time.Hour), ended.ID: now.Add(-time.Hour),
 	} {
-		err := s.MarkPlacementReady(ctx, p, ref, "s", now.Add(-2*time.Hour), deadline)
+		err := s.MarkPlacementReady(ctx, p, ref, "s", now.Add(-2*time.Hour), deadline, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -579,7 +579,7 @@ func TestMarkPlacementTerminatingRecordsReason(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	p := newPlacement(t, s, "reason")
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	if moved, err := s.MarkPlacementTerminating(ctx, p.ID, "stop", now); err != nil || !moved {
@@ -604,7 +604,7 @@ func TestMarkPlacementDueHonoursDeadline(t *testing.T) {
 	deadline := now.Add(time.Minute)
 	p := newPlacement(t, s, "due")
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline, nil); err != nil {
 		t.Fatal(err)
 	}
 	early := deadline.Add(-time.Second)
@@ -639,7 +639,8 @@ func TestTerminatingSince(t *testing.T) {
 	recent := newPlacement(t, s, "recent")
 	ready := newPlacement(t, s, "ready")
 	for _, p := range []store.Placement{old, unknown, recent, ready} {
-		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour)); err != nil {
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Hour),
+			nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -682,7 +683,7 @@ func TestLongTerminatingCount(t *testing.T) {
 		{name: "ready", deadline: now.Add(time.Hour)},
 	} {
 		p := newPlacement(t, s, c.name)
-		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, c.deadline); err != nil {
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, c.deadline, nil); err != nil {
 			t.Fatal(err)
 		}
 		if !c.terminating {
@@ -825,7 +826,8 @@ func TestMarkPlacementTerminatedGuards(t *testing.T) {
 	ready := newPlacement(t, s, "term-ready")
 	now := time.Now().UTC()
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, ready.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+	if err := s.MarkPlacementReady(ctx, ready.ID, ref, "s", now,
+		now.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MarkPlacementTerminated(ctx, ready.ID, now); !errors.Is(
@@ -880,7 +882,8 @@ func TestExtendDeadlineRejectsForeignOrderID(t *testing.T) {
 	now := time.Now().UTC()
 	ref := provider.Ref{Provider: "local", ID: "sb"}
 	for _, p := range []store.Placement{a, b} {
-		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+		if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now,
+			now.Add(time.Minute), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -963,7 +966,7 @@ func TestExtendDeadlineConcurrentSameOrder(t *testing.T) {
 	now := time.Now().UTC()
 	deadline := now.Add(time.Minute)
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, deadline, nil); err != nil {
 		t.Fatal(err)
 	}
 	const n = 20
@@ -1113,7 +1116,7 @@ func TestHeartbeatPlacement(t *testing.T) {
 	}
 
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", at, at.Add(time.Minute)); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", at, at.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	err := s.HeartbeatPlacement(ctx, p.ID, "replica-2", at.Add(time.Minute))
@@ -1133,7 +1136,8 @@ func TestHasExtendOrder(t *testing.T) {
 	b := newPlacement(t, s, "start-b")
 	now := time.Now().UTC()
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, a.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+	if err := s.MarkPlacementReady(ctx, a.ID, ref, "s", now,
+		now.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.ExtendDeadline(ctx, "ext-a", a.ID, time.Minute); err != nil {
@@ -1591,7 +1595,8 @@ func TestOrderByID(t *testing.T) {
 	p := newPlacement(t, s, "o-start")
 	now := time.Now().UTC()
 	ref := provider.Ref{Provider: "local", ID: "sb"}
-	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now, now.Add(time.Minute)); err != nil {
+	if err := s.MarkPlacementReady(ctx, p.ID, ref, "s", now,
+		now.Add(time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.ExtendDeadline(ctx, "o-extend", p.ID, time.Minute); err != nil {

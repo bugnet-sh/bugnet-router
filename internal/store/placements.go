@@ -87,6 +87,10 @@ type Placement struct {
 	// CostMicros is our meter's provider cost, EdgeBytes and EgressBytes what the edges and the
 	// egress proxy counted, all written at termination and zero before
 	CostMicros, EdgeBytes, EgressBytes int64
+	// ImageVersion and ImageManifest are the base image the sandbox's manifest named, empty for
+	// none, and the manifest holds os and tools
+	ImageVersion  string
+	ImageManifest []byte
 }
 
 // PlacementSource is the resolved source of an estimate, which a placement copies at create
@@ -189,7 +193,8 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 			and not (placements.state = 'failed' and placements.refundable)),
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
 	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes,
-	coalesce(start_path, ''), sandbox_created_at, paid_at`
+	coalesce(start_path, ''), sandbox_created_at, paid_at, coalesce(image_version, ''),
+	image_manifest`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -207,7 +212,7 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
 		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes, &p.StartPath,
-		&p.SandboxCreatedAt, &p.PaidAt)
+		&p.SandboxCreatedAt, &p.PaidAt, &p.ImageVersion, &p.ImageManifest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -567,8 +572,13 @@ func (s *Store) transition(ctx context.Context, id uuid.UUID, name, sql string, 
 // MarkPlacementReady moves a placing placement to ready with its sandbox and deadline
 func (s *Store) MarkPlacementReady(
 	ctx context.Context, id uuid.UUID, ref provider.Ref, size string, readyAt, deadline time.Time,
+	img *ReadyImage,
 ) error {
-	ref, err := s.sealRef(id, ref)
+	version, manifest, err := imageArgs(img)
+	if err != nil {
+		return fmt.Errorf("mark ready %s: %w", id, err)
+	}
+	ref, err = s.sealRef(id, ref)
 	if err != nil {
 		return fmt.Errorf("mark ready %s: %w", id, err)
 	}
@@ -578,9 +588,10 @@ func (s *Store) MarkPlacementReady(
 	}
 	return s.transition(ctx, id, "mark ready", `
 		update placements set state = $2, provider = $3, provider_ref = $4, size_name = $5,
-			ready_at = $6, deadline = $7
+			ready_at = $6, deadline = $7, image_version = $9, image_manifest = $10
 		where id = $1 and state = $8`,
-		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing)
+		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing,
+		version, manifest)
 }
 
 // SetPlacementStart records how a placing placement's sandbox came to be and, for a pooled one,

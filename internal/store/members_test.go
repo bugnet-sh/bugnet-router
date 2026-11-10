@@ -42,7 +42,7 @@ func fillWarmWith(
 		if err := s.MarkMemberCreated(ctx, m.ID, ref, now); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.MarkMemberWarm(ctx, m.ID, ref, "", now); err != nil {
+		if err := s.MarkMemberWarm(ctx, m.ID, ref, "", nil, now); err != nil {
 			t.Fatal(err)
 		}
 		m, err = s.MemberByID(ctx, m.ID)

@@ -83,6 +83,10 @@ type StartSample struct {
 	// FirstFrameMS is the first frame time of the placement's first job, read with the sample
 	// and zero for none
 	FirstFrameMS int
+	// ImageVersion is the base image the sandbox booted from, empty for none
+	ImageVersion string
+	// Reseed is setup's answer for its seed, ioctl, write or failed, empty before setup ran
+	Reseed string
 }
 
 // NoStep marks a StartSample timing that did not run
@@ -107,15 +111,17 @@ func (s *Store) InsertStartSample(ctx context.Context, m StartSample) error {
 			insert into start_samples (id, kind, bench_id, placement_id, provider, size_name,
 				sandbox_id, started_at, create_ms, ready_ms, runner_ms, gate_ms, first_cmd_ms,
 				warm_cmd_ms, destroy_ms, outcome, error_code, error, cost_micros, replica,
-				start_path, member_id, wake_ms, reservation_id, hedge, bind_ms, paid_to_ready_ms)
+				start_path, member_id, wake_ms, reservation_id, hedge, bind_ms, paid_to_ready_ms,
+				image_version, reseed)
 			values ($1, $2, nullif($3, ''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-				$16, $17, $18, $19, $20, nullif($21, ''), $22, $23, $24, $25, $26, $27)`,
+				$16, $17, $18, $19, $20, nullif($21, ''), $22, $23, $24, $25, $26, $27,
+				nullif($28, ''), nullif($29, ''))`,
 			m.ID, string(m.Kind), m.BenchID, nilUUID(m.PlacementID), m.Provider, m.SizeName,
 			m.SandboxID, utc(m.StartedAt), step(m.CreateMS), step(m.ReadyMS), step(m.RunnerMS),
 			step(m.GateMS), step(m.FirstCmdMS), step(m.WarmCmdMS), step(m.DestroyMS), m.Outcome,
 			m.ErrorCode, m.Error, m.CostMicros, m.Replica, m.StartPath, nilUUID(m.MemberID),
 			step(m.WakeMS), nilUUID(m.ReservationID), m.Hedge, nullIf0(m.BindMS),
-			nullIf0(m.PaidToReadyMS))
+			nullIf0(m.PaidToReadyMS), m.ImageVersion, m.Reseed)
 		if err != nil {
 			return fmt.Errorf("insert start sample: %w", err)
 		}
