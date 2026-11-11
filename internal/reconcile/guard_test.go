@@ -108,6 +108,15 @@ func TestGuardTriggers(t *testing.T) {
 			t.Fatal("held or operator signals tripped the guard")
 		}
 	})
+	t.Run("alerts on placements left as they were do not count", func(t *testing.T) {
+		g := newGuardEnv(t)
+		for range 3 {
+			g.signal(t, "lium", "control_lost", store.SignalAlerted, time.Minute)
+		}
+		if g.guard(t, "lium", reconcile.ClassControlLost) {
+			t.Fatal("alerted signals tripped the guard")
+		}
+	})
 	t.Run("a blocked account", func(t *testing.T) {
 		g := newGuardEnv(t)
 		if g.guard(t, "boat", reconcile.ClassSandboxExited) {

@@ -95,7 +95,7 @@ func LockProviderSignals(ctx context.Context, q Querier, provider string) error 
 }
 
 // LostCount counts the placements of a provider that got one of classes since then, an
-// operator's end left out
+// operator's end, a held end and a bare alert left out
 func LostCount(
 	ctx context.Context, q Querier, provider string, classes []string, since time.Time,
 ) (int, error) {
@@ -103,8 +103,8 @@ func LostCount(
 	err := q.QueryRow(ctx, `
 		select count(distinct placement_id) from provider_signals
 		where provider = $1 and class = any($2) and created_at > $3 and source <> 'operator'
-			and action <> 'held'
-			and placement_id is not null`, provider, classes, utc(since)).Scan(&n)
+			and action <> 'held' and action <> $4
+			and placement_id is not null`, provider, classes, utc(since), SignalAlerted).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count provider signals: %w", err)
 	}
@@ -169,6 +169,9 @@ func (s *Store) UnaskedKills(ctx context.Context, since time.Time) (map[string]i
 
 // AlertUnaskedKill is the alert a signal's evidence carries for a kill no router asked for
 const AlertUnaskedKill = "unasked_kill"
+
+// SignalAlerted is the action of a signal that raised an alert and left its placement as it was
+const SignalAlerted = "alerted"
 
 func collectCounts(rows pgx.Rows) (map[string]int, error) {
 	out := map[string]int{}

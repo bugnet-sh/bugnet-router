@@ -30,8 +30,6 @@ const (
 	maxReason = 500
 	// recheckSlack lands a scheduled re-check just after the grace it waits for
 	recheckSlack = time.Second
-	// actionAlerted is the provider_signals action of an alert on a placement left as it was
-	actionAlerted = "alerted"
 )
 
 // Observation is one reading of a live placement's sandbox, read from the provider when its
@@ -155,7 +153,7 @@ func (r *Reconciler) keepAlert(
 	}
 	return r.d.Store.InsertSignal(ctx, store.Signal{
 		Class: string(v.Class), Provider: p.Provider, PlacementID: p.ID, Source: o.Source,
-		Observed: r.evidence(p, o, v), Action: actionAlerted, CreatedAt: r.now(),
+		Observed: r.evidence(p, o, v), Action: store.SignalAlerted, CreatedAt: r.now(),
 	})
 }
 
