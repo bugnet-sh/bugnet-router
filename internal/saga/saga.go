@@ -104,7 +104,7 @@ var (
 	ErrNotReady        = errors.New("saga: placement is not ready")
 	ErrHandleMismatch  = errors.New("saga: order token is for another handle")
 	ErrNotExtension    = errors.New("saga: package does not extend this placement")
-	ErrExceedsLifetime = errors.New("saga: extension outlasts the provider's maximum lifetime")
+	ErrExceedsLifetime = errors.New("saga: extension outlasts the sandbox's lifetime")
 	// ErrNotDue means a deadline termination found the deadline moved past the time it was due
 	ErrNotDue = errors.New("saga: placement deadline is not due")
 )
@@ -1370,7 +1370,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 				// The provider's words can name it or its sandbox, which the caller never sees
 				s.d.Log.Warn("provider refused an extension's lifetime", "placement", id,
 					"provider", prov.Name(), "err", err)
-				return fmt.Errorf("%w: past the sandbox's own end", ErrExceedsLifetime)
+				return fmt.Errorf("%w: the provider refused the lifetime", ErrExceedsLifetime)
 			}
 			return fmt.Errorf("set lifetime: %w", err)
 		}

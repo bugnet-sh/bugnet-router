@@ -2175,6 +2175,10 @@ func TestExtendRefusedBeforePayment(t *testing.T) {
 	if !errors.Is(err, saga.ErrExceedsLifetime) {
 		t.Fatalf("extend past the end gave %v, want ErrExceedsLifetime", err)
 	}
+	const outlasts = "saga: extension outlasts the sandbox's lifetime: "
+	if want := outlasts + "past the sandbox's own end"; err.Error() != want {
+		t.Fatalf("extend past the end said %q, want %q", err, want)
+	}
 	if n := a.calls.Load() - before; n != 0 {
 		t.Fatalf("%d lifetime calls for an extension refused by its check", n)
 	}
@@ -2185,6 +2189,10 @@ func TestExtendRefusedBeforePayment(t *testing.T) {
 	_, err = e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-2", "small-30m-cheap", 20000, h))
 	if !errors.Is(err, saga.ErrExceedsLifetime) {
 		t.Fatalf("extend refused by the provider gave %v, want ErrExceedsLifetime", err)
+	}
+	// Boat, E2B and Koyeb answer invalid for a provider-wide limit, not only a sandbox's own end
+	if !strings.HasSuffix(err.Error(), outlasts+"the provider refused the lifetime") {
+		t.Fatalf("extend refused by the provider said %q", err)
 	}
 	if strings.Contains(err.Error(), "sbx-1") {
 		t.Fatalf("refusal %q carries the provider's words", err)
