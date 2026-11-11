@@ -2126,8 +2126,9 @@ window failed. A held end becomes a refundable `provider_failed` with `correlate
 evidence, and its wallet actions are recorded in `provider_signals` as `held`. `Reconcile` inspects
 a placement's sandbox, classifies the reading and ends the placement through `Saga.End`, or flags
 an ended one through `Saga.FlagEnded`. Only an `abuse` verdict acts on a placement that is
-terminating or ended. Another verdict there that carries an alert still logs it and writes its
-evidence to `provider_signals` with action `alerted`, so `/monitor` counts it. The correlation guard
+terminating or ended. Another verdict there that carries an alert logs it and writes its evidence
+to `provider_signals` with action `alerted`, so `/monitor` counts it. A placement already holding a
+signal with that alert gets neither again, so a repeated reading is one alert. The correlation guard
 and the outage count leave an `alerted` signal out, since it ended nothing.
 
 - A degraded sandbox sets `placements.degraded_since`. Past `degraded_grace` the setting's class
@@ -2168,8 +2169,9 @@ drops a hint whose labels name another deployment, reconciles a ready or termina
 and for one that ended inside `late_window` acts only on an `abuse` verdict. With the worker
 registered, `hooks.providers` may list `e2b` and `boat`.
 
-`/monitor` adds `provider X: N sandboxes killed that no router asked for` and `provider X: N
-placements ended as provider_failed in the last hour` over `abuse.lost_alert_per_hour`.
+`/monitor` adds `provider X: N sandboxes killed that no router asked for`, each placement counted
+once, and `provider X: N placements ended as provider_failed in the last hour` over
+`abuse.lost_alert_per_hour`.
 
 Every slot has exactly one holder row, and the transaction that moves `in_use` also writes that
 row.
