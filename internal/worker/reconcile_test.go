@@ -392,6 +392,39 @@ func TestLiumDisputeBlockAlertsAndReadsTheAccount(t *testing.T) {
 	eq(t, e.accountChecks(t, "lium"), 1)
 }
 
+// A dispute_block read again on the placement it ended raises its alert once
+func TestLiumDisputeBlockReadAgainAlertsOnce(t *testing.T) {
+	lium := newInspecting(t, "lium")
+	var logs syncBuffer
+	e := newEnv(t, options{log: &logs, providers: []provider.Provider{lium}})
+	ctx, now := t.Context(), time.Now()
+	p, ref := e.readyPlacement(t, lium, now, now.Add(time.Hour))
+	lium.set(ref.ID, provider.Status{
+		State: provider.StateGone, KillReason: gpustatus.LiumEventDisputeBlock,
+	})
+	rc := e.worker.Reconciler()
+	if err := rc.Reconcile(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := e.reload(t, p.ID)
+	eq(t, []string{got.State, got.TerminationReason},
+		[]string{store.PlacementTerminated, saga.ReasonProviderFailed})
+	if err := rc.Reconcile(ctx, got, nil); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, strings.Count(logs.String(), "a sandbox was killed and no router asked"), 1)
+	kills, err := e.store.UnaskedKills(ctx, got.CreatedAt.Add(-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, kills, map[string]int{"lium": 1})
+	sg := e.signals(t, p.ID)
+	if len(sg) != 1 {
+		t.Fatalf("signals %+v, want the end's one", sg)
+	}
+	eq(t, []string{sg[0].Class, sg[0].Action}, []string{"provider_failed", "ended"})
+}
+
 // A dispute_block during our own stop leaves the stop alone and still records its alert
 func TestLiumDisputeBlockWhileTerminatingKeepsTheAlert(t *testing.T) {
 	lium := newInspecting(t, "lium")
@@ -405,6 +438,11 @@ func TestLiumDisputeBlockWhileTerminatingKeepsTheAlert(t *testing.T) {
 	lium.set(ref.ID, provider.Status{
 		State: provider.StateGone, KillReason: gpustatus.LiumEventDisputeBlock,
 	})
+	if err := e.worker.Reconciler().Reconcile(ctx, e.reload(t, p.ID), nil); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, e.accountChecks(t, "lium"), 1)
+	// A second reading, a degraded re-check or a stale sweep job, finds the alert already kept
 	if err := e.worker.Reconciler().Reconcile(ctx, e.reload(t, p.ID), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +467,6 @@ func TestLiumDisputeBlockWhileTerminatingKeepsTheAlert(t *testing.T) {
 	}
 	eq(t, []any{observed["kill_reason"], observed["alert"]},
 		[]any{gpustatus.LiumEventDisputeBlock, store.AlertUnaskedKill})
-	eq(t, e.accountChecks(t, "lium"), 1)
 }
 
 func TestLateAbuseHintBlocksThePayer(t *testing.T) {

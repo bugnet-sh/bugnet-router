@@ -133,28 +133,51 @@ func (r *Reconciler) Reconcile(ctx context.Context, p store.Placement, o *Observ
 	if v.Class == ClassNone {
 		return nil
 	}
-	if v.Alert != "" {
-		r.d.Log.Error("a sandbox was killed and no router asked", "placement", p.ID,
-			"provider", p.Provider, "alert", v.Alert)
-	}
 	// A stop in flight yields only to abuse, and an ended placement takes only an abuse flag
 	if v.Class != ClassAbuse && p.State != store.PlacementReady {
 		return r.keepAlert(ctx, p, o, v)
 	}
+	r.alert(p, v)
 	return r.act(ctx, p, o, v)
 }
 
-// keepAlert records the evidence of an alerted verdict that ends nothing, which /monitor counts
+// alert logs a verdict's alert, nothing for a verdict without one
+func (r *Reconciler) alert(p store.Placement, v Verdict) {
+	if v.Alert != "" {
+		r.d.Log.Error("a sandbox was killed and no router asked", "placement", p.ID,
+			"provider", p.Provider, "alert", v.Alert)
+	}
+}
+
+// keepAlert logs and records an alert that ends nothing once per placement, which /monitor counts
 func (r *Reconciler) keepAlert(
 	ctx context.Context, p store.Placement, o *Observation, v Verdict,
 ) error {
 	if v.Alert == "" {
 		return nil
 	}
-	return r.d.Store.InsertSignal(ctx, store.Signal{
-		Class: string(v.Class), Provider: p.Provider, PlacementID: p.ID, Source: o.Source,
-		Observed: r.evidence(p, o, v), Action: store.SignalAlerted, CreatedAt: r.now(),
+	kept := false
+	// The placement row lock orders this after an end or another reading that kept the alert
+	err := r.d.Store.WithTx(ctx, func(tx pgx.Tx) error {
+		ts := r.d.Store.Tx(tx)
+		if _, err := ts.PlacementForUpdate(ctx, p.ID); err != nil {
+			return err
+		}
+		has, err := ts.HasAlert(ctx, p.ID, v.Alert)
+		if err != nil || has {
+			return err
+		}
+		kept = true
+		return ts.InsertSignal(ctx, store.Signal{
+			Class: string(v.Class), Provider: p.Provider, PlacementID: p.ID, Source: o.Source,
+			Observed: r.evidence(p, o, v), Action: store.SignalAlerted, CreatedAt: r.now(),
+		})
 	})
+	if err != nil || !kept {
+		return err
+	}
+	r.alert(p, v)
+	return nil
 }
 
 // recheck schedules another look when the grace of a degraded sandbox ends

@@ -167,6 +167,18 @@ func (s *Store) UnaskedKills(ctx context.Context, since time.Time) (map[string]i
 	return collectCounts(rows)
 }
 
+// HasAlert reports whether a placement holds a signal whose evidence carries the alert
+func (s *Store) HasAlert(ctx context.Context, placementID uuid.UUID, alert string) (bool, error) {
+	var has bool
+	err := s.q.QueryRow(ctx, `
+		select exists (select 1 from provider_signals
+			where placement_id = $1 and observed ->> 'alert' = $2)`, placementID, alert).Scan(&has)
+	if err != nil {
+		return false, fmt.Errorf("select placement alert: %w", err)
+	}
+	return has, nil
+}
+
 // AlertUnaskedKill is the alert a signal's evidence carries for a kill no router asked for
 const AlertUnaskedKill = "unasked_kill"
 
