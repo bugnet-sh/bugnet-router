@@ -41,6 +41,9 @@ func TestLiumReadyMeta(t *testing.T) {
 		t.Fatalf("ready_at %q", meta["ready_at"])
 	}
 	delete(meta, "ready_at")
+	// The host key is the one the pod's sshd showed on the first connection
+	eq(t, meta[provider.MetaHostKey], f.sshd(pod.id).hostPublicKey())
+	delete(meta, provider.MetaHostKey)
 	eq(t, meta, map[string]string{
 		"ssh_host": "203.0.113.7", "ssh_port": "40022", "node": "node-a",
 		"hourly_micros": "250000",

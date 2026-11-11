@@ -28,6 +28,8 @@ type fakePod struct {
 	terminationHours          int
 	nodeOffline, outage       bool
 	billingPaused, diskPaused bool
+	// keys are the pod's authorized_keys lines, the rent's user_public_key
+	keys []string
 }
 
 // fakeEvent is one entry of a pod's event log
@@ -255,7 +257,11 @@ func (f *fakeLium) deletePod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(f.pods, id)
+	sshd := f.sshds[id]
 	f.mu.Unlock()
+	if sshd != nil {
+		sshd.close()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
@@ -324,9 +330,10 @@ func (f *fakeLium) rentLocked(node string, body []byte) (int, []byte) {
 		return refuse(ft.status, ft.code)
 	}
 	var req struct {
-		Name     string `json:"pod_name"`
-		Template string `json:"template_id"`
-		Hours    int    `json:"termination_hours"`
+		Name     string   `json:"pod_name"`
+		Template string   `json:"template_id"`
+		Hours    int      `json:"termination_hours"`
+		Keys     []string `json:"user_public_key"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.Name == "" {
 		return refuse(http.StatusUnprocessableEntity, "validation_error")
@@ -350,7 +357,7 @@ func (f *fakeLium) rentLocked(node string, body []byte) (int, []byte) {
 		status: f.startStatus, node: node, template: req.Template,
 		created: time.Now().UTC(), machine: n.machine, tier: n.tier, country: n.country,
 		ip: f.podIP, nodeGPUs: n.gpus, gpus: n.gpus, price: n.price * float64(n.gpus),
-		sshPort: 40000 + f.nextID, terminationHours: req.Hours,
+		sshPort: 40000 + f.nextID, terminationHours: req.Hours, keys: req.Keys,
 	}
 	f.pods[p.id] = p
 	f.events[p.id] = append(f.events[p.id], fakeEvent{at: p.created, eventType: "pod_created"})

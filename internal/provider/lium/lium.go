@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"path"
@@ -125,9 +126,17 @@ type Provider struct {
 	pollEvery time.Duration
 	// refuses names the addresses a pod may never be reached at
 	refuses func(netip.Addr) bool
-	// hostKey dials the pod's sshd at addr and returns its host key, nil while the adapter
-	// holds no SSH client
+	// hostKey dials the pod's sshd at addr and returns the host key it pinned
 	hostKey func(ctx context.Context, ref provider.Ref, addr string) (string, error)
+
+	// dial reaches a pod's sshd, only through netguard outside tests
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	ssh  sshLimits
+	// smu guards pools, each pod's SSH connections by pod id
+	smu   sync.Mutex
+	pools map[string]*sshPool
+	// execDir holds the pid file of each command's group in the pod, setsid is the pod's setsid
+	execDir, setsid string
 }
 
 // New checks the options and starts the listing loop, which Close stops
@@ -145,12 +154,13 @@ func New(opts Options) (*Provider, error) {
 	return p, nil
 }
 
-// Close stops the listing loop and waits for it to end
+// Close stops the listing loop, waits for it to end and closes every SSH connection
 func (p *Provider) Close() error {
 	if p.stop != nil {
 		p.stop()
 		<-p.done
 	}
+	p.closePools()
 	return nil
 }
 
@@ -194,7 +204,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		ops:     limiter(opts.OpsPerSecond),
 		creates: limiter(opts.CreatesPerSecond),
 	}
-	return &Provider{
+	p := &Provider{
 		api:            a,
 		log:            log,
 		sshSeed:        slices.Clone(opts.SSHSeed),
@@ -216,7 +226,14 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		rentals:        map[string]keptRental{},
 		pollEvery:      podPollEvery,
 		refuses:        netguard.Refused,
-	}, nil
+		dial:           netguard.Dialer{Timeout: defaultSSHLimits.dial}.DialContext,
+		ssh:            defaultSSHLimits,
+		pools:          map[string]*sshPool{},
+		execDir:        defaultExecDir,
+		setsid:         podSetsid,
+	}
+	p.hostKey = p.pinHostKey
+	return p, nil
 }
 
 // countrySet holds country codes in capitals, as the node cache writes them

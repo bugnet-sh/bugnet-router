@@ -343,13 +343,15 @@ func hasLabels(have, want map[string]string) bool {
 	return true
 }
 
-// Destroy deletes the pod, only while it has the name the ref knows, nil once it is gone
+// Destroy deletes the pod, only while it has the name the ref knows, and closes its connections
 func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
 	id, ok := podID(ref)
 	if !ok {
 		return nil
 	}
-	return p.destroyPod(ctx, id, ref.Meta[metaPodName])
+	err := p.destroyPod(ctx, id, ref.Meta[metaPodName])
+	p.dropPool(id)
+	return err
 }
 
 // SetLifetime schedules the pod's removal at until, at most max_lifetime from its creation

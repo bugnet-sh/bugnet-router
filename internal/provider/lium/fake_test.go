@@ -150,6 +150,16 @@ type fakeLium struct {
 	startStatus string
 	// podIP is the executor address of every pod rented
 	podIP string
+
+	// sh is where the pods' sshds run commands, sshds each pod's sshd by pod id
+	sh    fakeShell
+	sshds map[string]*fakeSSHD
+	// dialed are the addresses the adapter dialled, execs the command lines the pods ran
+	dialed, execs []string
+	// signals are the signal requests the pods got
+	signals []string
+	// sshDown refuses every SSH dial, as a pod whose sshd died would
+	sshDown bool
 }
 
 func newFake(t *testing.T) *fakeLium {
@@ -158,7 +168,7 @@ func newFake(t *testing.T) *fakeLium {
 		t: t, faults: map[string]*fault{}, pods: map[string]*fakePod{},
 		events: map[string][]fakeEvent{}, rentFaults: map[string]*fault{},
 		idem: map[string]idemRecord{}, userID: fakeUserID, startStatus: "PENDING",
-		podIP: "203.0.113.7",
+		podIP: "203.0.113.7", sh: newFakeShell(t), sshds: map[string]*fakeSSHD{},
 	}
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -182,6 +192,7 @@ func newFake(t *testing.T) *fakeLium {
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+	t.Cleanup(f.closeSSHDs)
 	return f
 }
 
@@ -195,6 +206,8 @@ func (f *fakeLium) provider(t *testing.T, opts Options, now func() time.Time) *P
 	}
 	// Go resends a request with an Idempotency-Key when a reused connection drops, unseen
 	p.api.client.Transport = &http.Transport{DisableKeepAlives: true}
+	p.dial, p.execDir, p.setsid = f.dialSSH, f.sh.execDir, f.sh.setsid
+	t.Cleanup(func() { _ = p.Close() })
 	return p
 }
 
