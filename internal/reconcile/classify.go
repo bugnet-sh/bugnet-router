@@ -220,7 +220,8 @@ func hf(st provider.Status, p Live, now time.Time, r Rules) Verdict {
 	switch {
 	case gone && slices.Contains(hfAccountKills, k):
 		return Verdict{Class: ClassProviderFailed, CheckAccount: true}
-	case gone && k == gpustatus.HFTimeout && beforeDeadline(p, now):
+	case k == gpustatus.HFTimeout && beforeDeadline(p, now):
+		// HF writes the timeout in any stage, and only our create sets it
 		return Verdict{Class: ClassProviderFailed}
 	case gone && slices.Contains(hfUnaskedKills, k) && p.State == store.PlacementReady:
 		// No router asked, and no guest holds an HF token to ask
