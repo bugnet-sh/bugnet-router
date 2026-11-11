@@ -1,0 +1,11 @@
+{
+  "version": "2026.11.2",
+  "channel": "prod",
+  "inputs_sha256": "2c704d8fc884a2c99251ba7502ce01a3388afd45521a61e693fcfccb0085907c",
+  "runner_sha256": {
+    "amd64": "d89964c5cca7c9a8240f52ee2ae9bc7fc0de240af7b8231eff5e981d48fb3419"
+  },
+  "oci": {
+    "ref": "ghcr.io/bugnet-sh/bugnet-base@sha256:185859085c8229c25bb5d133dd23c6d36bcb34afc18cfd28d87f4a5d0032c147"
+  }
+}
