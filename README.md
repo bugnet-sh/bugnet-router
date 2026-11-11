@@ -561,7 +561,7 @@ features that read them land one by one, and until then the settings only load a
 | `[hardening]` | The mail ports and the private, link-local and metadata ranges `bugnet-run harden` blocks outbound, and the mining pool list |
 | `[limits_poll]` | How often each provider's limits and account standing are read, the slots placements leave for probes, and the missed polls before `/monitor` reports old limits |
 | `[bench]` | The estimate over which `bench start` needs `--yes`, and the most runs one benchmark may ask for |
-| `[abuse]` | How provider signals are classed: the class of E2B's `admin` kill and of a Boat sandbox degraded past `degraded_grace`, the word lists matched in Boat's stop text and Koyeb's instance events, the hourly `provider_failed` alert, the correlation guard (`correlated_max` ends in `correlated_window`) and the `late_window` in which a provider's abuse signal still blocks the payers of an ended placement |
+| `[abuse]` | How provider signals are classed: the class of E2B's `admin` kill, of a Boat sandbox degraded past `degraded_grace` and of a Lium `dispute_block` (`lium_dispute_block`), the word lists matched in Boat's stop text, Koyeb's instance events and an HF Job's status message (`hf_platform_words`), the hourly `provider_failed` alert, the correlation guard (`correlated_max` ends in `correlated_window`) and the `late_window` in which a provider's abuse signal still blocks the payers of an ended placement |
 | `[reconcile]` | `ready_grace` (a listing may lag a fresh create), `max_per_sweep` (reconcile jobs one sweep inserts per provider), `lifetime_drift`, `recount_every`, `foreign_every`, `foreign_alert_after`, `known_deployments`, `cost_daily_at` and `cost_alert_fraction` |
 | `[health]` | How often each provider gets a canary, the probe workers, the size a canary takes, the window and bounds that mark a provider `down` or `slow`, and when `/monitor` reports a provider down |
 
@@ -2108,11 +2108,14 @@ batch after 90 s of work.
 ### Reconciliation
 
 `Provider.Inspect` reads one sandbox into a `Status`: a `State` (`starting`, `running`, `degraded`,
-`stopped`, `failed` or `gone`), the provider's own words in `Reason`, E2B's kill reason in
-`KillReason` for a sandbox it no longer has, and `ExpiresAt`, the provider-side lifetime. A sandbox
-the provider answers 404 for is `gone` with a nil error. An unknown state or a failed call is an
-error, and an error never ends a placement. `Summary.State` and `Summary.ExpiresAt` carry the same
-from a listing where it says them. Koyeb cannot move a lifetime, so its drift is never fixed.
+`stopped`, `failed` or `gone`), the provider's own words in `Reason`, a reason code in
+`KillReason` (E2B's kill reason for a sandbox it no longer has, Lium's newest pod event, HF's cancel
+reason or stage), and `ExpiresAt`, the provider-side lifetime. A sandbox the provider answers 404
+for is `gone` with a nil error. An unknown state or a failed call is an error, and an error never
+ends a placement. `Summary.State` and `Summary.ExpiresAt` carry the same from a listing where it
+says them. Koyeb and HF cannot move a lifetime, so their drift is never fixed.
+`internal/provider/gpustatus` names the Lium and HF codes and words, for the adapters and
+`Classify` alike.
 
 `internal/reconcile` holds three pieces. `Classify` is the table of CP 6.3 as a pure function of
 the provider, the `Status`, the placement (`Live`) and the `[abuse]` settings. `Guard` is the
@@ -2133,6 +2136,22 @@ terminating or ended.
   Koyeb's exit words win over its platform words, since a user causes an exit.
 - E2B's `request` kill on a placement still `ready` is `provider_failed` and raises the alert
   `/monitor` shows. No sandbox holds an API key, so no guest can cause it.
+- Lium's `Reason` holds the pod status, its set flags and the adapter's own `lium_moved` or
+  `lium_rebooted` as whole words. A stop or an `insufficient_balance` event is `provider_failed`.
+  A `dispute_block` event takes `abuse.lium_dispute_block` (default `provider_failed`) and raises
+  the same alert. `BROKEN`, a `node_outage` flag, a move to another node, the events
+  `executor_offline`, `executor_reclaimed` and `broken_by_provider`, `node_offline` past
+  `degraded_grace`, a `user_initiated` delete of a `ready` placement (with the alert) and a
+  `scheduled_termination` before the deadline are `provider_failed`. Any other failure or end is
+  `sandbox_exited`, since root can fail Lium's SSH check or stop the container.
+- An HF Job canceled for `no_credits`, `no_subscription`, `spend_limit` or
+  `resource_group_limit`, a `timeout` before the deadline, a reasonless `canceled`, `deleted` or
+  `not_found` of a `ready` placement (with the alert), and an `ERROR` whose message holds a word
+  of `abuse.hf_platform_words` (empty by default) are `provider_failed`. Any other `ERROR` or end,
+  `completed` among them, is `sandbox_exited`, since PID 1 exits at root's hand.
+- A verdict with `CheckAccount` (a Lium stop, `insufficient_balance` or `dispute_block`, HF's four
+  account cancel reasons), like any `abuse` verdict, inserts `account_check{provider}` at once,
+  also when the placement is already terminating. The account checker then records the block.
 - A lifetime that differs from the deadline plus five minutes by more than `lifetime_drift` is set
   again under the placement's row lock, which an extension holds until its new deadline commits,
   and at most once per placement every 10 minutes (`reconcile:life:<placement>`).
