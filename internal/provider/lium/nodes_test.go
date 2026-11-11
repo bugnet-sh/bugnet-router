@@ -1,14 +1,20 @@
 package lium
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -390,4 +396,88 @@ func TestLiumListingSkipsNodesItCannotRead(t *testing.T) {
 	}
 	nodes, _ := p.nodes.listing()
 	eq(t, ids(nodes), []string{"good"})
+}
+
+func TestLiumNewKeepsTheListingFresh(t *testing.T) {
+	f := newFake(t)
+	f.setNodes(euNode("n3090"))
+	var logs syncBuffer
+	opts := testOptions()
+	opts.BaseURL, opts.NodesEvery = f.srv.URL, 20*time.Millisecond
+	opts.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	f.inject("GET /executors", fault{status: 503, code: "upstream_unavailable",
+		message: "down", times: 2})
+	p, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	floor := provider.Resources{GPUCount: 1}
+	waitFor(t, func() bool {
+		_, ok := p.SizeFor(floor)
+		return ok && len(f.requestsTo("GET", "/executors")) >= 5
+	})
+	if !strings.Contains(logs.String(), "level=WARN") ||
+		!strings.Contains(logs.String(), "upstream_unavailable") {
+		t.Fatalf("a failed listing was not logged: %q", logs.String())
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(f.requestsTo("GET", "/executors"))
+	time.Sleep(100 * time.Millisecond)
+	eq(t, len(f.requestsTo("GET", "/executors")), calls)
+	if err := p.Close(); err != nil {
+		t.Fatalf("a second Close: %v", err)
+	}
+	var _ io.Closer = p
+}
+
+func TestLiumListingEvery30Seconds(t *testing.T) {
+	opts := testOptions()
+	opts.BaseURL = "http://127.0.0.1:1"
+	p, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	eq(t, p.nodesEvery, 30*time.Second)
+	opts.NodesEvery = -time.Second
+	q, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+	eq(t, q.nodesEvery, 30*time.Second)
+}
+
+// waitFor polls cond for up to 5 seconds
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("the condition never held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// syncBuffer is a log sink the listing loop and the test may share
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

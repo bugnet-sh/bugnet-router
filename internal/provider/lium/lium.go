@@ -9,6 +9,7 @@ package lium
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -67,6 +68,8 @@ type Options struct {
 	OpsPerSecond int
 	// CreatesPerSecond paces every rent beside OpsPerSecond, none when 0
 	CreatesPerSecond int
+	// NodesEvery spaces the node listing reads, 30 seconds when 0 or less
+	NodesEvery time.Duration
 }
 
 // size is one size sold and the resources it guarantees
@@ -83,14 +86,37 @@ type Provider struct {
 	maxLifetime time.Duration
 	startBilled time.Duration
 	nodes       *nodeCache
+	nodesEvery  time.Duration
 	// countries are tried first, blocked never, others only while otherCountries is set
 	countries, blocked map[string]bool
 	otherCountries     bool
+	// stop ends the listing loop New starts, which closes done
+	stop context.CancelFunc
+	done chan struct{}
 }
 
-// New checks the options
+// New checks the options and starts the listing loop, which Close stops
 func New(opts Options) (*Provider, error) {
-	return newProvider(opts, time.Now)
+	p, err := newProvider(opts, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.stop, p.done = cancel, make(chan struct{})
+	go func() {
+		defer close(p.done)
+		p.nodes.run(ctx, p.nodesEvery)
+	}()
+	return p, nil
+}
+
+// Close stops the listing loop and waits for it to end
+func (p *Provider) Close() error {
+	if p.stop != nil {
+		p.stop()
+		<-p.done
+	}
+	return nil
 }
 
 // newProvider checks the options and reads time from now
@@ -109,6 +135,10 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		return nil, err
 	}
 	log := cmp.Or(opts.Log, slog.Default())
+	every := opts.NodesEvery
+	if every <= 0 {
+		every = nodesEvery
+	}
 	a := &api{
 		base:    strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
 		key:     opts.APIKey,
@@ -124,6 +154,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		maxLifetime:    cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled:    opts.StartBilled,
 		nodes:          newNodeCache(a, log, now, opts.MinDownloadMbps),
+		nodesEvery:     every,
 		countries:      countrySet(opts.Countries),
 		blocked:        countrySet(opts.BlockedCountries),
 		otherCountries: opts.OtherCountries,

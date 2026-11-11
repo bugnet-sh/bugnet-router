@@ -192,6 +192,25 @@ func (c *nodeCache) classOf(machineName string) (string, bool) {
 	return class, ok
 }
 
+// run reads the listing at once and then every interval until ctx ends
+func (c *nodeCache) run(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		rctx, cancel := context.WithTimeout(ctx, listTimeout)
+		err := c.refresh(rctx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			c.log.Warn("lium: the node listing could not be read, the last one stays", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // refresh reads the whole listing and keeps it, the old one staying when a page fails
 func (c *nodeCache) refresh(ctx context.Context) error {
 	at := c.now()
