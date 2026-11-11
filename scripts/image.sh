@@ -166,8 +166,10 @@ check() {
 	need "$(keyOf "$1")"
 	local args=()
 	case $1 in
-	e2b) mapfile -t args < <(jq -r '.e2b.templates[] | "--ref\n" + .size + "=" + .id' "$record") ;;
-	boxd) mapfile -t args < <(jq -r '.boxd.refs | to_entries[] | "--ref\n" + .key + "=" + .value' "$record") ;;
+	e2b) while IFS= read -r line; do args+=("$line"); done < <(jq -r \
+		'.e2b.templates[]? | "--ref\n" + .size + "=" + .id' "$record") ;;
+	boxd) while IFS= read -r line; do args+=("$line"); done < <(jq -r \
+		'.boxd.refs | to_entries[]? | "--ref\n" + .key + "=" + .value' "$record") ;;
 	koyeb | boat) args=(--ref "$(jq -r --arg p "$1" '.[$p].ref // empty' "$record")") ;;
 	esac
 	[ ${#args[@]} -gt 0 ] || die "$record names no $1 artifact, run build $1 first"
