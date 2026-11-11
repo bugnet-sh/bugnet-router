@@ -467,7 +467,9 @@ does not know.
 | `BUGNET_HANDLE_KEY` | `router-api` and `router-worker`, base64 of 32 bytes or more that derives handles |
 | `BUGNET_DATA_PLANE_KEYS` | `router-api` and `router-worker`, required, root keys as `<id>:<base64 of 32 bytes>` entries separated by commas, newest first |
 | `BUGNET_EVENT_SIGNING_KEY` | `router-worker`, which requires it, and `router-api` when set, base64 Ed25519 seed that signs events |
-| `BOXD_API_KEY`, `E2B_API_KEY`, `KOYEB_API_TOKEN`, `BOAT_API_KEY` | the binaries for each provider in `providers`, and the live tests |
+| `BOXD_API_KEY`, `E2B_API_KEY`, `KOYEB_API_TOKEN`, `BOAT_API_KEY`, `LIUM_API_KEY`, `HF_JOBS_TOKEN` | the binaries for each provider in `providers`, and the live tests |
+| `LIUM_SSH_SEED`, `HF_SANDBOX_SEED` | `router-api` and `router-worker`, each required while `providers` lists its provider, base64 of 32 bytes that derives each Lium pod's SSH key or each HF sandbox's token |
+| `LIUM_BUDGET_TEST_KEY` | the LIUM17 live test alone, a Lium key with a $1 daily budget |
 | `BUGNET_ORDER_PRIVATE_KEY` | `bugnet-dev` only, base64 Ed25519 seed it signs order tokens with |
 | `BUGNET_EDGE_TOKEN`, `BUGNET_SECRETS_TOKEN`, `BUGNET_SSH_TOKEN`, `BUGNET_EGRESS_TOKEN` | `router-api` and `router-worker`, one bearer token per edge process, each empty or 32 characters or more |
 | `BUGNET_EGRESS_FETCH_TOKEN` | `router-api` and `router-worker`, the `bnf_` token the router's private fetch opens egress tunnels with, empty or 32 characters or more |
@@ -477,6 +479,7 @@ does not know.
 | `BUGNET_OTLP_AUTHORIZATION` | `router-api` and `router-worker`, the whole Authorization header value the trace backend takes, `Basic <base64 of instance id:token>` for Grafana Cloud, empty for a local collector |
 | `BUGNET_HOOK_PATH_SECRET` | The edge, and `bugnet-dev hooks`, base64url of 32 bytes in the provider webhook path |
 | `E2B_WEBHOOK_SECRET`, `BOAT_WEBHOOK_SECRET` | `router-api`, the signing secret `bugnet-dev hooks register` prints once, needed for each provider in `hooks.providers`. The same name with `_PREVIOUS` holds the replaced secret for a day after `hooks rotate` |
+| `LIUM_WEBHOOK_SECRET` | `router-api`, the one-time secret Lium answers when the low-balance webhook URL is set, needed while `hooks.providers` lists `lium`. `LIUM_WEBHOOK_SECRET_PREVIOUS` holds the one it replaced |
 | `BOAT_ADMIN_API_KEY` | `bugnet-dev hooks` for Boat only, typed at its prompt with echo off when unset, never in a service |
 
 An empty caller token admits no calls, so a router without edges serves only the gateway. No two
@@ -581,13 +584,15 @@ once at start and refuses one that is not PEM certificates alone.
 `secrets.box_public_keys` takes `{ id, key }` tables, newest first, each key standard base64 of a
 32-byte X25519 public key.
 
-`[e2b]`, `[boxd]`, `[koyeb]` and `[boat]` each take `harden_required` (`true`), which fails a
-boot over to the next provider when `harden` fails there, and `harden_allow` (`[]`), the
-provider's own control addresses, open before any block. Ranges and addresses are IP addresses
-or CIDRs. `hardening.pool_list` names a file of mining pool addresses or CIDRs, one per line, at
-most 10000, with blank lines and `#` lines skipped. `router-api` reads it at start and refuses a
-malformed one, naming the line by number. A missing or empty list logs a warning, `/monitor`
-reports it, and every other rule still applies. `dev.toml` points at
+`[e2b]`, `[boxd]`, `[koyeb]`, `[boat]` and `[lium]` each take `harden_required` (`true`), which
+fails a boot over to the next provider when `harden` fails there, and `harden_allow` (`[]`), the
+provider's own control addresses, open before any block. `[hf]` takes both too, with
+`harden_required` `false`, since an HF Job lacks the rights `harden` needs. `lium.harden_no_gateway`
+(`true`) puts a pod's default gateway, the Lium host, under the blocks. Ranges and addresses are IP
+addresses or CIDRs. `hardening.pool_list` names a file of mining pool addresses or CIDRs, one per
+line, at most 10000, with blank lines and `#` lines skipped. `router-api` reads it at start and
+refuses a malformed one, naming the line by number. A missing or empty list logs a warning,
+`/monitor` reports it, and every other rule still applies. `dev.toml` points at
 `config/dev-mining-pools.txt`, a documentation range standing in for real pools.
 
 `worker.dataplane_workers` (8) sets the River workers of the `dataplane` queue, which keeps slow
@@ -1879,7 +1884,7 @@ A GPU package tries the providers `gpu_order` names first, in that order (`["liu
 default), ahead of warm members, speed and cost, and every other provider after them. `gpu_order`
 may name a provider that `providers` does not list, which then has no candidate. Each provider's
 table sets `ready_timeout`, how long a new sandbox may take to become ready, 60 s to 15 minutes
-(60 s by default, 6 minutes for `lium` and 5 for `hf`). A package without a GPU starts candidates
+(60 s by default, 6 minutes in `[lium]` and 5 in `[hf]`). A package without a GPU starts candidates
 for 30 s, a GPU package for `gpu_placing_budget` (13 minutes). The router refuses to start with a
 budget under Lium's slowest boot that fails plus the next provider's create, every boot step at
 its timeout and `harden` failing last (12 minutes 10 seconds with the default timeouts), so HF
