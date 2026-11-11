@@ -107,12 +107,16 @@ func TestConfigGPUMargin(t *testing.T) {
 	h200 := gpuPackage("gpu-h200-10m", gpu.H200, 141, 2_780_000)
 	cpu := catalog.Package{ID: "cpu-10m", Minutes: 10, PriceMicros: 1,
 		Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}}
+	// Placement never starts an extension, so its price is never held to the start fee
+	more := gpuPackage("gpu-h200-10m-more", gpu.H200, 141, 1_700_000)
+	more.ExtensionOf = h200.ID
 	for name, pkgs := range map[string][]catalog.Package{
 		"5.4's lowest price":       {h200},
 		"Q15's pick":               {gpuPackage("gpu-h200-10m", gpu.H200, 141, 3_060_000)},
 		"hf alone serves l4":       {gpuPackage("gpu-l4-10m", gpu.L4, 24, 360_000)},
 		"the cheapest flavor":      {t4Package("gpu-t4-10m", 180_000)},
 		"no package without a GPU": {cpu, h200},
+		"no extension":             {h200, more},
 	} {
 		if err := c.CheckGPUMargin(pkgs, both); err != nil {
 			t.Errorf("%s: %v", name, err)

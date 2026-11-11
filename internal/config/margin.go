@@ -14,7 +14,8 @@ import (
 // CheckGPUMargin refuses a GPU package that placement would drop from a built gpu_order provider
 func (c Config) CheckGPUMargin(pkgs []catalog.Package, provs []provider.Provider) error {
 	for _, pkg := range pkgs {
-		if pkg.Resources.GPUCount == 0 {
+		// Placement never starts an extension, so no start fee or candidate drop applies to one
+		if pkg.Resources.GPUCount == 0 || pkg.ExtensionOf != "" {
 			continue
 		}
 		for _, name := range c.GPUOrder {
