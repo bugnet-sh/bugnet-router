@@ -425,6 +425,35 @@ func TestLiumDisputeBlockReadAgainAlertsOnce(t *testing.T) {
 	eq(t, []string{sg[0].Class, sg[0].Action}, []string{"provider_failed", "ended"})
 }
 
+// A dispute_block set to abuse flags its ended placement again and still counts one kill
+func TestLiumDisputeBlockAbuseReadAgainCountsOneKill(t *testing.T) {
+	lium := newInspecting(t, "lium")
+	e := newEnv(t, options{
+		providers: []provider.Provider{lium}, abuse: config.Abuse{LiumDisputeBlock: "abuse"},
+	})
+	ctx, now := t.Context(), time.Now()
+	p, ref := e.readyPlacement(t, lium, now, now.Add(time.Hour))
+	lium.set(ref.ID, provider.Status{
+		State: provider.StateGone, KillReason: gpustatus.LiumEventDisputeBlock,
+	})
+	rc := e.worker.Reconciler()
+	if err := rc.Reconcile(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := e.reload(t, p.ID)
+	eq(t, []string{got.State, got.TerminationReason},
+		[]string{store.PlacementTerminated, saga.ReasonAbuse})
+	if err := rc.Reconcile(ctx, got, nil); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(e.signals(t, p.ID)), 2)
+	kills, err := e.store.UnaskedKills(ctx, got.CreatedAt.Add(-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, kills, map[string]int{"lium": 1})
+}
+
 // A dispute_block during our own stop leaves the stop alone and still records its alert
 func TestLiumDisputeBlockWhileTerminatingKeepsTheAlert(t *testing.T) {
 	lium := newInspecting(t, "lium")

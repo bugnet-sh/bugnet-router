@@ -155,10 +155,10 @@ func (s *Store) LostEnds(ctx context.Context, since time.Time) (map[string]int, 
 	return collectCounts(rows)
 }
 
-// UnaskedKills counts each provider's kills no router asked for since then
+// UnaskedKills counts each provider's placements killed that no router asked for since then
 func (s *Store) UnaskedKills(ctx context.Context, since time.Time) (map[string]int, error) {
 	rows, err := s.q.Query(ctx, `
-		select provider, count(*) from provider_signals
+		select provider, count(distinct placement_id) from provider_signals
 		where created_at > $1 and observed ->> 'alert' = $2 group by provider`,
 		utc(since), AlertUnaskedKill)
 	if err != nil {
