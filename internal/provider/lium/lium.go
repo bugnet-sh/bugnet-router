@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"path"
 	"slices"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/netguard"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -121,6 +123,11 @@ type Provider struct {
 	rentals map[string]keptRental
 	// pollEvery spaces the pod reads of ReadyMeta
 	pollEvery time.Duration
+	// refuses names the addresses a pod may never be reached at
+	refuses func(netip.Addr) bool
+	// hostKey dials the pod's sshd at addr and returns its host key, nil while the adapter
+	// holds no SSH client
+	hostKey func(ctx context.Context, ref provider.Ref, addr string) (string, error)
 }
 
 // New checks the options and starts the listing loop, which Close stops
@@ -208,6 +215,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		createBudget:   defaultCreateBudget,
 		rentals:        map[string]keptRental{},
 		pollEvery:      podPollEvery,
+		refuses:        netguard.Refused,
 	}, nil
 }
 
