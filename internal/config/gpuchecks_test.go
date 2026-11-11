@@ -260,3 +260,20 @@ func TestConfigLiumKeyBudget(t *testing.T) {
 		t.Fatalf("a budget under an overflowing bound gave %v", err)
 	}
 }
+
+// TestConfigHFPace is check 11 of 5.3, HF's calls paced under the token user's Hub rate limit
+func TestConfigHFPace(t *testing.T) {
+	pace := func(plan string, ops int) string {
+		return fmt.Sprintf("[hf]\ntoken_plan = %q\nops_per_second = %d\n", plan, ops)
+	}
+	free := `hf.ops_per_second must be 1 to 3 while hf.token_plan is "free"`
+	pro := `hf.ops_per_second must be 1 to 8 while hf.token_plan is "pro"`
+	runGPUChecks(t, map[string]gpuCheck{
+		"11 free":         {pace("free", 3), pace("free", 4), free},
+		"11 free slow":    {pace("free", 1), pace("free", 8), free},
+		"11 pro":          {pace("pro", 8), pace("pro", 9), pro},
+		"11 pro slow":     {pace("pro", 4), pace("pro", 50), pro},
+		"11 free unpaced": {pace("free", 2), pace("free", 0), free},
+		"11 pro unpaced":  {pace("pro", 1), pace("pro", 0), pro},
+	})
+}

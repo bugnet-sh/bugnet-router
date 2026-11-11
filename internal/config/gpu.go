@@ -191,6 +191,9 @@ func (f hfFile) read(d hfFile) (HF, error) {
 	return h, nil
 }
 
+// hfPlanOps are the most Jobs calls a second each Hub plan's 5 minute window allows
+var hfPlanOps = map[string]int{"free": 3, "pro": 8}
+
 // checkGPU refuses the settings under which a GPU provider would serve unsafely or never serve
 func (c *Config) checkGPU() error {
 	if slices.Contains(c.Providers, "hf") && c.HF.Namespace == "" {
@@ -202,6 +205,11 @@ func (c *Config) checkGPU() error {
 	}
 	if err := c.checkLiumKeyBudget(); err != nil {
 		return err
+	}
+	// 0 means no bucket, which would let HF's calls run past the token user's rate limit
+	if most := hfPlanOps[c.HF.TokenPlan]; c.ProviderOps["hf"] < 1 || c.ProviderOps["hf"] > most {
+		return fmt.Errorf("hf.ops_per_second must be 1 to %d while hf.token_plan is %q, the "+
+			"token user's Hub calls in each 5 minute window allow no more", most, c.HF.TokenPlan)
 	}
 	if slices.Contains(c.Previews.Providers, "lium") {
 		return errors.New("previews.providers may not list lium, whose pods run no gate")
