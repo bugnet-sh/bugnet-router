@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -93,7 +94,7 @@ func (p *Provider) exec(
 	r, w := io.Pipe()
 	s := &execStream{
 		p: p, pl: pl, c: c, sess: sess, pod: id, call: call, r: r, w: w,
-		done: make(chan struct{}), aborted: make(chan struct{}),
+		eof: make(chan struct{}), done: make(chan struct{}), aborted: make(chan struct{}),
 	}
 	go s.pump(stdout)
 	go s.watch(ctx)
@@ -181,8 +182,8 @@ type execStream struct {
 	// r is what Read reads, w what pump copies stdout to
 	r *io.PipeReader
 	w *io.PipeWriter
-	// done closes once the session ended and code and err hold its exit
-	done chan struct{}
+	// eof closes once stdout ended, done once the session ended and code and err hold its exit
+	eof, done chan struct{}
 	// aborted closes once a cancel or Close ended the stream before its exit
 	aborted chan struct{}
 	mu      sync.Mutex
@@ -196,7 +197,9 @@ func (s *execStream) Read(b []byte) (int, error) { return s.r.Read(b) }
 
 // pump copies stdout until it ends, then reads the exit and frees the session's slot
 func (s *execStream) pump(stdout io.Reader) {
-	_, _ = io.Copy(s.w, stdout)
+	if _, err := io.Copy(s.w, stdout); err == nil {
+		close(s.eof)
+	}
 	_ = s.w.Close()
 	werr := s.sess.Wait()
 	_ = s.sess.Close()
@@ -245,6 +248,9 @@ func (s *execStream) stop(why error) {
 
 // killGroup signals and closes the session, kills the call's group and drops a stuck connection
 func (s *execStream) killGroup() {
+	if s.exiting() {
+		return
+	}
 	// Both writes may wait on a stalled connection, so they run here and not in Close
 	_ = s.sess.Signal(ssh.SIGKILL)
 	_ = s.sess.Close()
@@ -258,6 +264,23 @@ func (s *execStream) killGroup() {
 	case <-s.done:
 	case <-ctx.Done():
 		s.pl.drop(s.c)
+	}
+}
+
+// exiting reports a command whose stdout ended and whose exit came within the stall period
+func (s *execStream) exiting() bool {
+	select {
+	case <-s.eof:
+	default:
+		return false
+	}
+	t := time.NewTimer(s.p.ssh.stall)
+	defer t.Stop()
+	select {
+	case <-s.done:
+		return true
+	case <-t.C:
+		return false
 	}
 }
 

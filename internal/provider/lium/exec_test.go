@@ -267,6 +267,24 @@ func TestExecCancelKillsGroup(t *testing.T) {
 		eq(t, len(left), 0)
 	})
 
+	t.Run("a Close right after stdout ends kills nothing", func(t *testing.T) {
+		before := len(f.execLines())
+		for range 3 {
+			s, err := p.Exec(context.Background(), ref, sh("echo done"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out, _ := io.ReadAll(s); string(out) != "done\n" {
+				t.Fatalf("read %q", out)
+			}
+			_ = s.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+		eq(t, len(f.execLines()), before+3)
+		left, _ := filepath.Glob(filepath.Join(f.sh.execDir, "*"))
+		eq(t, len(left), 0)
+	})
+
 	t.Run("a finished command is never killed", func(t *testing.T) {
 		before := len(f.execLines())
 		ctx, cancel := context.WithCancel(context.Background())
