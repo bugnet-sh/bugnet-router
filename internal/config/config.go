@@ -3,9 +3,8 @@
 // The settings file holds everything that is not a secret, and config/example.toml shows every
 // key, each at its default but e2b.templates and lium.sizes. It is decoded strictly, so an unknown
 // key, a key in the wrong case, or a secret pasted into the file, is an error naming the key and
-// its line.
-// Relative paths in it resolve against the working directory. Secrets come only from the
-// environment, and no error message ever carries one.
+// its line. Relative paths in it resolve against the working directory. Secrets come only from
+// the environment, and no error message ever carries one.
 package config
 
 import (
