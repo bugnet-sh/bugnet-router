@@ -24,7 +24,7 @@ func TestWalletsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, c.Wallets, walletDefaults)
-	eq(t, c.ProviderOps, map[string]int{"boat": 50})
+	eq(t, c.ProviderOps, map[string]int{"boat": 50, "lium": 5, "hf": 3})
 	// The switches stay as given, since a zero switch is a choice
 	limits := walletDefaults
 	limits.StopLiveOnAbuse = false
@@ -77,7 +77,7 @@ ops_per_second = 0
 		RefundStoppedLive: true, FailedRefundsPerDay: 9, AnonymousFailedRefundsPerDay: 10,
 		BytesPerDay: 3 << 30,
 	})
-	eq(t, c.ProviderOps, map[string]int{"e2b": 7})
+	eq(t, c.ProviderOps, map[string]int{"e2b": 7, "lium": 5, "hf": 3})
 }
 
 func TestWalletsBounds(t *testing.T) {
@@ -121,7 +121,7 @@ func TestWalletsBounds(t *testing.T) {
 func TestExampleTomlHoldsWalletsDefaults(t *testing.T) {
 	example := loadExample(t)
 	eq(t, example.Wallets, walletDefaults)
-	eq(t, example.ProviderOps, map[string]int{"boat": 50})
+	eq(t, example.ProviderOps, map[string]int{"boat": 50, "lium": 5, "hf": 3})
 	doc, err := outline([]byte(committed(t, "example.toml")))
 	if err != nil {
 		t.Fatal(err)

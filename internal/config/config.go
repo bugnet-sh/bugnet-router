@@ -53,6 +53,8 @@ type Config struct {
 	RunnerLinuxAMD64    string
 	RunnerLinuxARM64    string
 	ProviderKeys        map[string]string
+	// ProviderSeeds are the 32-byte seeds each provider derives its sandboxes' credentials from
+	ProviderSeeds map[string][]byte
 	// GPUOrder puts a GPU package's candidates in this order ahead of speed and cost
 	GPUOrder []string
 	// GPUPlacingBudget is how long a GPU package's placing starts candidates, in place of 30 s
@@ -81,6 +83,8 @@ type Config struct {
 	E2B             E2B
 	Koyeb           Koyeb
 	Boat            Boat
+	Lium            Lium
+	HF              HF
 	// DataplaneWorkers is how many River workers run the dataplane queue
 	DataplaneWorkers int
 	// DefaultWorkers is how many River workers run the default queue
@@ -203,6 +207,74 @@ type Boat struct {
 	EgressFamilies []string `toml:"egress_families"`
 	// EgressIPv6Bits is the prefix width of an IPv6 egress source, 64 to 128
 	EgressIPv6Bits int `toml:"egress_ipv6_bits"`
+}
+
+// Lium holds the Lium adapter's settings beside those every provider table holds
+type Lium struct {
+	// Countries are the node countries tried first
+	Countries []string
+	// OtherCountries takes a node outside Countries and BlockedCountries when Countries has none
+	OtherCountries bool
+	// BlockedCountries are the countries whose nodes are never used
+	BlockedCountries []string
+	// MinDownloadMbps is the node download floor, 0 for none
+	MinDownloadMbps int
+	// MaxLifetime is the longest a placement may run with its extensions
+	MaxLifetime time.Duration
+	// StartBilled is the time Lium bills before the paid clock, priced at the size's cap
+	StartBilled time.Duration
+	// SSHPath is native for Lium's own sshd, or gate
+	SSHPath string
+	// KeyDailyBudgetMicros is the daily budget set on the key at Lium, 0 for none
+	KeyDailyBudgetMicros int64
+	// TemplateVolume is the volume path of the private template pods start from
+	TemplateVolume string
+	// Termination is max_lifetime or lifetime, what a rent's termination_hours is counted from
+	Termination string
+	// Sizes are the sizes sold, none until the file names them
+	Sizes []LiumSize
+}
+
+// LiumSize is one size sold on Lium, one GPU type on a whole node with a floor and a price cap
+type LiumSize struct {
+	Size string `toml:"size"`
+	// Model is the canonical name of the size's GPU model
+	Model string `toml:"model"`
+	// Match holds the gpu_class names of the nodes the size rents
+	Match []string `toml:"match"`
+	GPUs  int      `toml:"gpus"`
+	// GPUMemoryGiB is the memory of all the size's GPUs together
+	GPUMemoryGiB int `toml:"gpu_memory_gib"`
+	VCPU         int `toml:"vcpu"`
+	MemoryMiB    int `toml:"memory_mib"`
+	DiskGiB      int `toml:"disk_gib"`
+	// MaxHourlyMicros is the cap, the most a node of the size may cost an hour
+	MaxHourlyMicros int64 `toml:"max_hourly_micros"`
+}
+
+// HF holds the Hugging Face adapter's settings beside those every provider table holds
+type HF struct {
+	// Namespace is the organization the Jobs run and bill under
+	Namespace string
+	// Flavors are the flavors sold, every GPU flavor when empty
+	Flavors []string
+	// MaxLifetime is the longest a placement may run with its extensions
+	MaxLifetime time.Duration
+	// ExtendRoom is the room for extensions in each Job's timeout
+	ExtendRoom time.Duration
+	// TimeoutMargin is each Job's timeout beyond its lifetime and room
+	TimeoutMargin time.Duration
+	// StartBilled is the time HF bills before the paid clock
+	StartBilled time.Duration
+	// PollEvery spaces the Job reads while waiting for RUNNING
+	PollEvery time.Duration
+	// SBXServer is fetch to download sbx-server at boot, or baked for the image's own
+	SBXServer        string
+	SBXServerVersion string
+	// SBXServerSHA256 is the hex digest of the sbx-server build that runs
+	SBXServerSHA256 string
+	// TokenPlan is the Hub plan of the token's user, free or pro
+	TokenPlan string
 }
 
 // Names holds the public names the edges serve, each empty until a deployment sets it
@@ -399,6 +471,8 @@ type file struct {
 	E2B                 e2bFile        `toml:"e2b"`
 	Koyeb               koyebFile      `toml:"koyeb"`
 	Boat                boatFile       `toml:"boat"`
+	Lium                liumFile       `toml:"lium"`
+	HF                  hfFile         `toml:"hf"`
 	Names               Names          `toml:"names"`
 	EdgeBudget          budgetFile     `toml:"edge_budget"`
 	Previews            Previews       `toml:"previews"`
@@ -520,6 +594,47 @@ type boatFile struct {
 	ReadyTimeout   string            `toml:"ready_timeout"`
 }
 
+type liumFile struct {
+	Countries            []string   `toml:"countries"`
+	OtherCountries       bool       `toml:"other_countries"`
+	BlockedCountries     []string   `toml:"blocked_countries"`
+	MinDownloadMbps      int64      `toml:"min_download_mbps"`
+	MaxLifetime          string     `toml:"max_lifetime"`
+	ReadyTimeout         string     `toml:"ready_timeout"`
+	StartBilled          string     `toml:"start_billed"`
+	SSHPath              string     `toml:"ssh_path"`
+	HardenRequired       bool       `toml:"harden_required"`
+	HardenAllow          []string   `toml:"harden_allow"`
+	HardenNoGateway      bool       `toml:"harden_no_gateway"`
+	OpsPerSecond         int64      `toml:"ops_per_second"`
+	MaxConcurrent        int64      `toml:"max_concurrent"`
+	KeyDailyBudgetMicros int64      `toml:"key_daily_budget_micros"`
+	CreatesPerSec        int64      `toml:"creates_per_second"`
+	TemplateVolume       string     `toml:"template_volume"`
+	Termination          string     `toml:"termination"`
+	Sizes                []LiumSize `toml:"sizes"`
+}
+
+type hfFile struct {
+	Namespace        string   `toml:"namespace"`
+	Flavors          []string `toml:"flavors"`
+	MaxLifetime      string   `toml:"max_lifetime"`
+	ExtendRoom       string   `toml:"extend_room"`
+	TimeoutMargin    string   `toml:"timeout_margin"`
+	ReadyTimeout     string   `toml:"ready_timeout"`
+	StartBilled      string   `toml:"start_billed"`
+	PollEvery        string   `toml:"poll_every"`
+	SBXServer        string   `toml:"sbx_server"`
+	SBXServerVersion string   `toml:"sbx_server_version"`
+	SBXServerSHA256  string   `toml:"sbx_server_sha256"`
+	HardenRequired   bool     `toml:"harden_required"`
+	HardenAllow      []string `toml:"harden_allow"`
+	TokenPlan        string   `toml:"token_plan"`
+	OpsPerSecond     int64    `toml:"ops_per_second"`
+	MaxConcurrent    int64    `toml:"max_concurrent"`
+	CreatesPerSec    int64    `toml:"creates_per_second"`
+}
+
 type budgetFile struct {
 	BytesPer10Minutes       string `toml:"bytes_per_10_minutes"`
 	BytesPerSecond          string `toml:"bytes_per_second"`
@@ -629,6 +744,8 @@ func defaults() file {
 			SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50,
 			EgressFamilies: []string{"ipv6", "ipv4"}, EgressIPv6Bits: 128, ReadyTimeout: "60s",
 		},
+		Lium:  defaultLium(),
+		HF:    defaultHF(),
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
 			BytesPer10Minutes: "2GiB", BytesPerSecond: "5MiB", RequestsPerSecond: 100,
@@ -687,7 +804,7 @@ func defaults() file {
 var defaultProviders = []string{"koyeb", "boat", "e2b", "boxd"}
 
 var knownProviders = map[string]bool{
-	"koyeb": true, "boat": true, "e2b": true, "boxd": true, "local": true,
+	"koyeb": true, "boat": true, "e2b": true, "boxd": true, "local": true, "lium": true, "hf": true,
 }
 
 var deploymentID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
@@ -872,6 +989,12 @@ func (f file) config() (Config, error) {
 	if err := f.hardening(&c); err != nil {
 		return Config{}, err
 	}
+	if c.Lium, err = f.Lium.read(d.Lium); err != nil {
+		return Config{}, err
+	}
+	if c.HF, err = f.HF.read(d.HF); err != nil {
+		return Config{}, err
+	}
 	if c.X402, err = f.X402.read(d.X402); err != nil {
 		return Config{}, err
 	}
@@ -910,7 +1033,8 @@ func (f file) config() (Config, error) {
 		name string
 		rate int64
 	}{{"e2b", f.E2B.OpsPerSecond}, {"boxd", f.Boxd.OpsPerSecond},
-		{"koyeb", f.Koyeb.OpsPerSecond}, {"boat", f.Boat.OpsPerSecond}} {
+		{"koyeb", f.Koyeb.OpsPerSecond}, {"boat", f.Boat.OpsPerSecond},
+		{"lium", f.Lium.OpsPerSecond}, {"hf", f.HF.OpsPerSecond}} {
 		if o.rate < 0 || o.rate > maxWalletLimit {
 			return Config{}, fmt.Errorf("%s.ops_per_second must be 0 to %d", o.name,
 				maxWalletLimit)
@@ -1003,7 +1127,18 @@ var providerKeyVars = []struct{ name, env string }{
 	{"e2b", "E2B_API_KEY"},
 	{"koyeb", "KOYEB_API_TOKEN"},
 	{"boat", "BOAT_API_KEY"},
+	{"lium", "LIUM_API_KEY"},
+	{"hf", "HF_JOBS_TOKEN"},
 }
+
+// providerSeedVars name the environment variable of each provider's 32-byte seed
+var providerSeedVars = []struct{ name, env string }{
+	{"lium", "LIUM_SSH_SEED"},
+	{"hf", "HF_SANDBOX_SEED"},
+}
+
+// providerSeedBytes is the length of every provider seed
+const providerSeedBytes = 32
 
 // ProviderKeyEnv names the environment variable holding a provider's API key, false for none
 func ProviderKeyEnv(name string) (string, bool) {
@@ -1077,6 +1212,9 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 			c.ProviderKeys[pk.name] = v
 		}
 	}
+	if err := c.readSeeds(get); err != nil {
+		return err
+	}
 	c.HookSecrets = map[string]HookSecret{}
 	for _, hk := range hookSecretVars {
 		if v := get(hk.env); v != "" {
@@ -1092,6 +1230,27 @@ func (c *Config) readSecrets(getenv func(string) (string, bool)) error {
 var hookSecretVars = []struct{ name, env string }{
 	{"e2b", "E2B_WEBHOOK_SECRET"},
 	{"boat", "BOAT_WEBHOOK_SECRET"},
+	{"lium", "LIUM_WEBHOOK_SECRET"},
+}
+
+// readSeeds reads each provider seed, refused when malformed and required while listed
+func (c *Config) readSeeds(get func(string) string) error {
+	c.ProviderSeeds = map[string][]byte{}
+	for _, s := range providerSeedVars {
+		raw := get(s.env)
+		if raw == "" {
+			if slices.Contains(c.Providers, s.name) {
+				return fmt.Errorf("%s is required while providers lists %s", s.env, s.name)
+			}
+			continue
+		}
+		seed, err := decodeKey(s.env, raw, providerSeedBytes)
+		if err != nil {
+			return err
+		}
+		c.ProviderSeeds[s.name] = seed
+	}
+	return nil
 }
 
 // callerTokens are the environment variables of the callers' bearer tokens, in order
@@ -1182,6 +1341,8 @@ func (f file) providerCounts(c *Config) error {
 		{"boxd", f.Boxd.MaxConcurrent, f.Boxd.CreatesPerSec},
 		{"koyeb", f.Koyeb.MaxConcurrent, f.Koyeb.CreatesPerSec},
 		{"boat", f.Boat.MaxConcurrent, f.Boat.CreatesPerSec},
+		{"lium", f.Lium.MaxConcurrent, f.Lium.CreatesPerSec},
+		{"hf", f.HF.MaxConcurrent, f.HF.CreatesPerSec},
 	} {
 		for _, n := range []struct {
 			key  string

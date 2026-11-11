@@ -21,8 +21,8 @@ func TestLimitsPollDefaults(t *testing.T) {
 	eq(t, c.LimitsPoll, limitsPollDefaults)
 	eq(t, DefaultLimitsPoll(), limitsPollDefaults)
 	// E2B's cap and create rate are settings, since no key can read them
-	eq(t, c.MaxConcurrent, map[string]int{"e2b": 20})
-	eq(t, c.CreatesPerSecond, map[string]int{"e2b": 1})
+	eq(t, c.MaxConcurrent, map[string]int{"e2b": 20, "lium": 10, "hf": 10})
+	eq(t, c.CreatesPerSecond, map[string]int{"e2b": 1, "lium": 1, "hf": 1})
 	eq(t, c.E2B.TeamID, "")
 	eq(t, c.Koyeb.OrganizationID, "")
 }
@@ -60,8 +60,10 @@ creates_per_second = 3
 		Every: 2 * time.Minute, BoatEvery: 20 * time.Second, AccountEvery: 10 * time.Minute,
 		AccountEveryBlocked: 30 * time.Second, ReserveSlots: 0, StaleAfter: 3,
 	})
-	eq(t, c.MaxConcurrent, map[string]int{"e2b": 100, "boxd": 12, "koyeb": 7, "boat": 9})
-	eq(t, c.CreatesPerSecond, map[string]int{"e2b": 5, "boxd": 2, "boat": 3})
+	eq(t, c.MaxConcurrent, map[string]int{
+		"e2b": 100, "boxd": 12, "koyeb": 7, "boat": 9, "lium": 10, "hf": 10,
+	})
+	eq(t, c.CreatesPerSecond, map[string]int{"e2b": 5, "boxd": 2, "boat": 3, "lium": 1, "hf": 1})
 	eq(t, c.E2B.TeamID, "team-1")
 	eq(t, c.Koyeb.OrganizationID, "org-1")
 }
@@ -91,8 +93,8 @@ func TestLimitsPollRefusals(t *testing.T) {
 func TestExampleTomlHoldsLimitsPollDefaults(t *testing.T) {
 	example := loadExample(t)
 	eq(t, example.LimitsPoll, limitsPollDefaults)
-	eq(t, example.MaxConcurrent, map[string]int{"e2b": 20})
-	eq(t, example.CreatesPerSecond, map[string]int{"e2b": 1})
+	eq(t, example.MaxConcurrent, map[string]int{"e2b": 20, "lium": 10, "hf": 10})
+	eq(t, example.CreatesPerSecond, map[string]int{"e2b": 1, "lium": 1, "hf": 1})
 	doc, err := outline([]byte(committed(t, "example.toml")))
 	if err != nil {
 		t.Fatal(err)

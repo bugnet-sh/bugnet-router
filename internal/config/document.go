@@ -460,6 +460,8 @@ var secretNames = slices.Concat([]string{
 	"BUGNET_ORDER_PRIVATE_KEY", "BOXD_API_KEY", "E2B_API_KEY", "KOYEB_API_TOKEN", "BOAT_API_KEY",
 	"BUGNET_HOOK_PATH_SECRET", "E2B_WEBHOOK_SECRET", "E2B_WEBHOOK_SECRET_PREVIOUS",
 	"BOAT_WEBHOOK_SECRET", "BOAT_WEBHOOK_SECRET_PREVIOUS", dataPlaneKeysEnv,
+	"LIUM_API_KEY", "LIUM_SSH_SEED", "LIUM_WEBHOOK_SECRET", "LIUM_WEBHOOK_SECRET_PREVIOUS",
+	"LIUM_BUDGET_TEST_KEY", "HF_JOBS_TOKEN", "HF_SANDBOX_SEED",
 }, callerTokens)
 
 // describe names the line and key go-toml puts a decode error at, quoting no go-toml text or value

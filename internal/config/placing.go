@@ -4,9 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -30,9 +28,6 @@ const (
 	maxGPUPlacingBudget = time.Hour
 )
 
-// gpuProviders are the GPU providers placing settings may name, with their starting ready timeouts
-var gpuProviders = map[string]time.Duration{"lium": 6 * time.Minute, "hf": 5 * time.Minute}
-
 // MinGPUPlacingBudget is Lium's slowest failing boot plus the next GPU provider's create
 func MinGPUPlacingBudget(liumReady time.Duration) time.Duration {
 	return GPUCreateBudget + liumReady + 2*UploadTimeout + SetupTimeout + HardenTimeout +
@@ -42,13 +37,15 @@ func MinGPUPlacingBudget(liumReady time.Duration) time.Duration {
 // placing reads each provider's ready timeout, the GPU order and the GPU placing budget
 func (f file) placing(c *Config) error {
 	d := defaults()
-	c.ReadyTimeouts = maps.Clone(gpuProviders)
+	c.ReadyTimeouts = map[string]time.Duration{}
 	for _, r := range []struct{ name, raw, def string }{
 		{"local", f.Local.ReadyTimeout, d.Local.ReadyTimeout},
 		{"boxd", f.Boxd.ReadyTimeout, d.Boxd.ReadyTimeout},
 		{"e2b", f.E2B.ReadyTimeout, d.E2B.ReadyTimeout},
 		{"koyeb", f.Koyeb.ReadyTimeout, d.Koyeb.ReadyTimeout},
 		{"boat", f.Boat.ReadyTimeout, d.Boat.ReadyTimeout},
+		{"lium", f.Lium.ReadyTimeout, d.Lium.ReadyTimeout},
+		{"hf", f.HF.ReadyTimeout, d.HF.ReadyTimeout},
 	} {
 		got, err := time.ParseDuration(cmp.Or(r.raw, r.def))
 		if err != nil || got < minReadyTimeout || got > maxReadyTimeout {
@@ -79,25 +76,16 @@ func (f file) placing(c *Config) error {
 func gpuOrder(names []string) ([]string, error) {
 	seen := map[string]bool{}
 	for i, name := range names {
-		_, gpu := gpuProviders[name]
 		switch {
 		case name == "":
 			return nil, errors.New("gpu_order has an empty entry")
-		case !knownProviders[name] && !gpu:
+		case !knownProviders[name]:
 			// An unknown entry is never quoted, since a secret could have been pasted there
-			return nil, fmt.Errorf("gpu_order entry %d is not one of %s", i+1, gpuOrderList())
+			return nil, fmt.Errorf("gpu_order entry %d is not one of %s", i+1, knownList())
 		case seen[name]:
 			return nil, fmt.Errorf("gpu_order lists %q more than once", name)
 		}
 		seen[name] = true
 	}
 	return slices.Clone(names), nil
-}
-
-// gpuOrderList names every provider gpu_order may name, in a fixed order
-func gpuOrderList() string {
-	names := slices.Concat(slices.Collect(maps.Keys(knownProviders)),
-		slices.Collect(maps.Keys(gpuProviders)))
-	slices.Sort(names)
-	return strings.Join(names, ", ")
 }

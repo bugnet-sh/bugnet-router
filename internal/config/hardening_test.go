@@ -26,6 +26,8 @@ func TestHardeningDefaults(t *testing.T) {
 				"boxd":  {Required: true, Allow: []string{}},
 				"koyeb": {Required: true, Allow: []string{}},
 				"boat":  {Required: true, Allow: []string{}},
+				"lium":  {Required: true, Allow: []string{}, NoGateway: true},
+				"hf":    {Allow: []string{}},
 			})
 		})
 	}

@@ -39,6 +39,8 @@ type HardenRule struct {
 	Required bool
 	// Allow holds the provider's own control addresses, reachable before any block
 	Allow []string
+	// NoGateway puts the default gateway under the blocks, for a gateway that is the host
+	NoGateway bool
 }
 
 type hardeningFile struct {
@@ -83,20 +85,24 @@ func (f file) hardening(c *Config) error {
 	c.Hardening.PoolList = cmp.Or(h.PoolList, defaultHardening().PoolList)
 	c.Hardening.Rules = map[string]HardenRule{}
 	for _, r := range []struct {
-		name     string
-		required bool
-		allow    []string
+		name                string
+		required, noGateway bool
+		allow               []string
 	}{
-		{"e2b", f.E2B.HardenRequired, f.E2B.HardenAllow},
-		{"boxd", f.Boxd.HardenRequired, f.Boxd.HardenAllow},
-		{"koyeb", f.Koyeb.HardenRequired, f.Koyeb.HardenAllow},
-		{"boat", f.Boat.HardenRequired, f.Boat.HardenAllow},
+		{"e2b", f.E2B.HardenRequired, false, f.E2B.HardenAllow},
+		{"boxd", f.Boxd.HardenRequired, false, f.Boxd.HardenAllow},
+		{"koyeb", f.Koyeb.HardenRequired, false, f.Koyeb.HardenAllow},
+		{"boat", f.Boat.HardenRequired, false, f.Boat.HardenAllow},
+		{"lium", f.Lium.HardenRequired, f.Lium.HardenNoGateway, f.Lium.HardenAllow},
+		{"hf", f.HF.HardenRequired, false, f.HF.HardenAllow},
 	} {
 		allow, err := prefixes(r.name+".harden_allow", r.allow)
 		if err != nil {
 			return err
 		}
-		c.Hardening.Rules[r.name] = HardenRule{Required: r.required, Allow: allow}
+		c.Hardening.Rules[r.name] = HardenRule{
+			Required: r.required, Allow: allow, NoGateway: r.noGateway,
+		}
 	}
 	return nil
 }

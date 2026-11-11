@@ -213,6 +213,9 @@ func (c Config) NativeSSH() []string {
 	if c.Boat.SSHPath == "native" {
 		out = append(out, "boat")
 	}
+	if c.Lium.SSHPath == "native" {
+		out = append(out, "lium")
+	}
 	return out
 }
 
