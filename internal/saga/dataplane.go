@@ -79,8 +79,6 @@ type profile struct {
 	rangesOutside bool
 	// noGate says the sandbox never has a gate, so it gets no gate key and setup's nogate phase
 	noGate bool
-	// noGateway puts the default gateway under harden's blocks, for a gateway that is the host
-	noGateway bool
 }
 
 // profiles holds DP 6.3's deny list, CP 6.9's table and the GPU providers, others are local
@@ -89,7 +87,7 @@ var profiles = map[string]profile{
 	"boxd":  {ca: true},
 	"koyeb": {denyPorts: []int{3030, 3031}, ca: true},
 	"boat":  {denyPorts: boatPorts(), ca: true},
-	"lium":  {ca: true, noGate: true, noGateway: true},
+	"lium":  {ca: true, noGate: true},
 	"hf":    {denyPorts: []int{49983}, ca: true},
 }
 
@@ -233,7 +231,7 @@ func (b BootSettings) hardenSpecFor(name string) (hardenSpec, config.HardenRule,
 	spec := hardenSpec{
 		V: 1, MailPorts: slices.Clone(b.MailPorts), DenyRanges: slices.Clone(b.DenyRanges),
 		Pools: slices.Clone(b.Pools), Allow: slices.Clone(rule.Allow),
-		NoGateway: profiles[name].noGateway,
+		NoGateway: rule.NoGateway,
 	}
 	if profiles[name].rangesOutside {
 		spec.DenyRanges = insideRanges(spec.DenyRanges)

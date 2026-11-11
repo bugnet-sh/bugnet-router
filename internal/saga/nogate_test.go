@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +73,7 @@ func TestHardenSpecNoGatewayOnLium(t *testing.T) {
 	b := saga.BootSettings{
 		MailPorts: []int{25}, DenyRanges: []string{"10.0.0.0/8"},
 		Harden: map[string]config.HardenRule{
-			"lium": {Required: true}, "hf": {}, "boat": {Required: true},
+			"lium": {Required: true, NoGateway: true}, "hf": {}, "boat": {Required: true},
 		},
 	}
 	lium, ok := saga.HardenSpecFor(b, "lium")
@@ -80,14 +82,43 @@ func TestHardenSpecNoGatewayOnLium(t *testing.T) {
 	raw, _ := json.Marshal(lium)
 	eq(t, string(raw), `{"v":1,"mail_ports":[25],"deny_ranges":["10.0.0.0/8"],"pools":[],`+
 		`"allow":[],"no_gateway":true}`)
-	// Every other provider's spec has no no_gateway field
-	for _, name := range []string{"hf", "boat"} {
+	// Every other provider's spec has no no_gateway field, nor lium's while its rule has none
+	b.Harden["lium"] = config.HardenRule{Required: true}
+	for _, name := range []string{"hf", "boat", "lium"} {
 		spec, ok := saga.HardenSpecFor(b, name)
 		eq(t, ok, true)
 		eq(t, spec.NoGateway, false)
 		raw, _ := json.Marshal(spec)
 		eq(t, string(raw), `{"v":1,"mail_ports":[25],"deny_ranges":["10.0.0.0/8"],"pools":[],`+
 			`"allow":[]}`)
+	}
+}
+
+// TestHardenSpecReadsLiumHardenNoGateway follows lium.harden_no_gateway from the settings file
+func TestHardenSpecReadsLiumHardenNoGateway(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for doc, want := range map[string]bool{
+		"": true, "[lium]\nharden_no_gateway = false\n": false,
+		"[lium]\nharden_no_gateway = true\n": true,
+	} {
+		path := filepath.Join(t.TempDir(), "settings.toml")
+		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := saga.LoadBootSettings(discard, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, ok := saga.HardenSpecFor(b, "lium")
+		eq(t, ok, true)
+		eq(t, spec.NoGateway, want)
+		hf, ok := saga.HardenSpecFor(b, "hf")
+		eq(t, ok, true)
+		eq(t, hf.NoGateway, false)
 	}
 }
 
@@ -214,7 +245,7 @@ func TestBootNoGateWritesNoGateKey(t *testing.T) {
 	lium := newGateSpy(t, local.Options{Name: "lium", Root: root},
 		map[string]answer{"harden": {`{"firewall":"nft"}`, 0}})
 	e := newEnvWith(t, func(d *saga.Deps) {
-		d.Boot.Harden = map[string]config.HardenRule{"lium": {Required: true}}
+		d.Boot.Harden = map[string]config.HardenRule{"lium": {Required: true, NoGateway: true}}
 	}, lium)
 	id := uuid.New()
 	keyID := e.keys.Current().ID
