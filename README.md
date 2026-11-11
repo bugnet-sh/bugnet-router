@@ -832,18 +832,19 @@ keys that start with `_` are the router's own, and `Exec` refuses them with
 the package's minutes, once per order, for the placement's own package or one whose `extension_of`
 names it. It refuses a placement that is not ready with `FailedPrecondition` and the
 `google.rpc.ErrorInfo` reason `NOT_READY`, as every call does that needs a ready placement, and an
-extension that would outlast the provider's maximum lifetime with `FailedPrecondition` and reason
-`EXCEEDS_LIFETIME`. The router keeps ended placements, so extending a handle past its deadline
-answers `NOT_READY`, and only a handle it never issued answers `NotFound`. `CheckExtendPlacement`
-takes a handle and a package ID and answers as `ExtendPlacement` would for a fresh order of that
-package now, with the same `NotFound`, `InvalidArgument` or `FailedPrecondition`, or else the
-placement as it is, the deadline it would have and the package with its price, changing nothing.
-The gateway asks it before it takes payment. `ListExtensions` takes a handle and lists the
-placement's own package and every package whose `extension_of` names it, by minutes, then price,
-then ID, each with its price and `available` where `CheckExtendPlacement` would accept it, else
-`unavailable_reason` `not_ready` or `exceeds_lifetime`, the `ErrorInfo` reasons in lowercase. A
-placement that is not ready lists every package as `not_ready`, a handle the router never issued
-answers `NotFound`, and the listing changes nothing.
+extension that would outlast the provider's maximum lifetime, or the sandbox's own end where the
+provider gives each sandbox one, with `FailedPrecondition` and reason `EXCEEDS_LIFETIME`. A new
+lifetime the provider itself refuses as invalid answers the same. The router keeps ended placements,
+so extending a handle past its deadline answers `NOT_READY`, and only a handle it never issued
+answers `NotFound`. `CheckExtendPlacement` takes a handle and a package ID and answers as
+`ExtendPlacement` would for a fresh order of that package now, with the same `NotFound`,
+`InvalidArgument` or `FailedPrecondition`, or else the placement as it is, the deadline it would
+have and the package with its price, changing nothing. The gateway asks it before it takes payment.
+`ListExtensions` takes a handle and lists the placement's own package and every package whose
+`extension_of` names it, by minutes, then price, then ID, each with its price and `available` where
+`CheckExtendPlacement` would accept it, else `unavailable_reason` `not_ready` or `exceeds_lifetime`,
+the `ErrorInfo` reasons in lowercase. A placement that is not ready lists every package as
+`not_ready`, a handle the router never issued answers `NotFound`, and the listing changes nothing.
 
 `PermissionDenied`, `InvalidArgument`, `NotFound` and `FailedPrecondition` from `ExtendPlacement`
 mean that call recorded nothing. Any other error, or a reply that never arrives, may follow a
@@ -1034,7 +1035,7 @@ holds a handle or a job ID.
 | `InvalidArgument` | `PACKAGE_UNKNOWN` | `PricePackage` names a package the catalog lacks |
 | `InvalidArgument` | `NOT_START_PACKAGE` | `PricePackage` names a package with `extension_of` set |
 | `FailedPrecondition` | `NOT_READY` | The placement is placing, ending or ended |
-| `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit |
+| `FailedPrecondition` | `EXCEEDS_LIFETIME` | The extension would outlast the provider's limit or the sandbox's own end |
 | `ResourceExhausted` | `RATE_LIMITED` | The placement's operation bucket is empty, or its link or put bucket, or one of `Estimate`'s three buckets |
 | `InvalidArgument` | `NAME_RESERVED` | A secret name that is malformed or that the sandbox's tools read, such as `PATH` or `LD_*` |
 | `InvalidArgument` | `HOST_REFUSED` | A secret host that is not one exact lowercase name, or is a public suffix, a shared-hosting name, a provider's or Bugnet's own, or repeats |
