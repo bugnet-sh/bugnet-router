@@ -31,11 +31,15 @@ var EnvNames = []string{
 	"BUGNET_SECRETS_TOKEN", "BUGNET_SSH_TOKEN", "BUGNET_EGRESS_TOKEN", "BUGNET_SESSIONS_TOKEN",
 	"BUGNET_EGRESS_FETCH_TOKEN", "BUGNET_HOOK_PATH_SECRET", "BUGNET_OPERATOR_TOKEN",
 	"BUGNET_PAYMENTS_ROUTER_TOKEN", "BUGNET_GITHUB_TOKEN", "BUGNET_HF_TOKEN",
-	"E2B_API_KEY", "BOAT_API_KEY", "BOXD_API_KEY", "KOYEB_API_TOKEN",
+	"E2B_API_KEY", "BOAT_API_KEY", "BOXD_API_KEY", "KOYEB_API_TOKEN", "LIUM_API_KEY",
+	"LIUM_SSH_SEED", "LIUM_BUDGET_TEST_KEY", "HF_JOBS_TOKEN", "HF_SANDBOX_SEED",
 }
 
 // webhookSuffix marks the webhook secrets, one for each provider that signs deliveries
 const webhookSuffix = "_WEBHOOK_SECRET"
+
+// previousSuffix marks the webhook secret a rotation replaced, which still verifies for a day
+const previousSuffix = webhookSuffix + "_PREVIOUS"
 
 // FromEnv makes the needles of env, a list of NAME=value lines, and never quotes a value
 //
@@ -51,7 +55,7 @@ func FromEnv(env []string) (Needles, error) {
 	var n Needles
 	names := slices.Clone(EnvNames)
 	for name := range vars {
-		if strings.HasSuffix(name, webhookSuffix) {
+		if strings.HasSuffix(name, webhookSuffix) || strings.HasSuffix(name, previousSuffix) {
 			names = append(names, name)
 		}
 	}

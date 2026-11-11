@@ -130,6 +130,28 @@ func TestFromEnvListsEveryPurposeOfEveryRoot(t *testing.T) {
 	}
 }
 
+func TestFromEnvListsTheGPUSecrets(t *testing.T) {
+	gpuSecrets := []string{
+		"LIUM_API_KEY", "LIUM_SSH_SEED", "LIUM_WEBHOOK_SECRET", "LIUM_WEBHOOK_SECRET_PREVIOUS",
+		"LIUM_BUDGET_TEST_KEY", "HF_JOBS_TOKEN", "HF_SANDBOX_SEED", "BOAT_WEBHOOK_SECRET_PREVIOUS",
+	}
+	var env []string
+	for _, name := range gpuSecrets {
+		env = append(env, name+"="+strings.ToLower(name)+"-value")
+	}
+	n, err := FromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range gpuSecrets {
+		if !slices.ContainsFunc(n, func(x Needle) bool {
+			return x.Name == name && string(x.Value) == strings.ToLower(name)+"-value"
+		}) {
+			t.Errorf("no needle %s holding its value", name)
+		}
+	}
+}
+
 func TestNoPathAllowsANeedle(t *testing.T) {
 	v := "internal-token-value-abc"
 	n := Needles{{"BUGNET_INTERNAL_TOKEN", []byte(v)}}
