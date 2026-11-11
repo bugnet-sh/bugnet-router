@@ -14,7 +14,13 @@ import (
 const DefaultGatePort = 29417
 
 // Resources is the hardware a package needs or a size offers
-type Resources struct{ VCPU, MemoryMiB, DiskGiB, GPUCount, GPUMemoryGiB int }
+type Resources struct {
+	VCPU, MemoryMiB, DiskGiB, GPUCount int
+	// GPUMemoryGiB is the memory of all the GPUs together
+	GPUMemoryGiB int
+	// GPUModel is each GPU's canonical name from package gpu, empty for a floor that takes any
+	GPUModel string
+}
 
 // Size is one machine shape a provider sells
 type Size struct {
