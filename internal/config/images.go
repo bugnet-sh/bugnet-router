@@ -19,13 +19,15 @@ type Images struct {
 	Boxd    ProviderImage
 	Koyeb   ProviderImage
 	Boat    ProviderImage
+	Lium    ProviderImage
+	HF      ProviderImage
 }
 
 // ProviderImage is one [images.<provider>] table, what that provider's creates start from
 type ProviderImage struct {
 	// Version is empty for the provider's own image
 	Version string
-	// Ref is one artifact for every size, Koyeb and Boat
+	// Ref is one artifact for every size, Koyeb, Boat, Lium and HF
 	Ref string
 	// Refs maps a size to its artifact, boxd
 	Refs  map[string]string
@@ -44,6 +46,10 @@ func (i Images) Of(name string) (ProviderImage, bool) {
 		return i.Koyeb, true
 	case "boat":
 		return i.Boat, true
+	case "lium":
+		return i.Lium, true
+	case "hf":
+		return i.HF, true
 	}
 	return ProviderImage{}, false
 }
@@ -68,6 +74,8 @@ type imagesFile struct {
 	Boat    imageFile `toml:"boat"`
 	Boxd    imageFile `toml:"boxd"`
 	Koyeb   imageFile `toml:"koyeb"`
+	Lium    imageFile `toml:"lium"`
+	HF      imageFile `toml:"hf"`
 }
 
 type imageFile struct {
@@ -77,6 +85,9 @@ type imageFile struct {
 	OS      string            `toml:"os"`
 	Tools   map[string]string `toml:"tools"`
 }
+
+// byDigest are the providers that pull an OCI image, which must be named by its digest
+var byDigest = []string{"koyeb", "lium", "hf"}
 
 func defaultImages() imagesFile {
 	return imagesFile{Accept: []string{}, Exempt: []string{"local"}, Channel: "prod"}
@@ -111,7 +122,7 @@ func (f imagesFile) read(
 		file imageFile
 		dst  *ProviderImage
 	}{{"boat", f.Boat, &out.Boat}, {"boxd", f.Boxd, &out.Boxd}, {"e2b", f.E2B, &out.E2B},
-		{"koyeb", f.Koyeb, &out.Koyeb}} {
+		{"koyeb", f.Koyeb, &out.Koyeb}, {"lium", f.Lium, &out.Lium}, {"hf", f.HF, &out.HF}} {
 		pi, err := p.file.read("images."+p.name, p.name, templates)
 		if err != nil {
 			return out, nil, err
@@ -183,7 +194,7 @@ func (f imageFile) read(key, name string, templates int) (ProviderImage, error) 
 			return p, fmt.Errorf("%s has a version and no artifact to start from", key)
 		}
 	}
-	if name == "koyeb" && p.Ref != "" && !strings.Contains(p.Ref, "@sha256:") {
+	if slices.Contains(byDigest, name) && p.Ref != "" && !strings.Contains(p.Ref, "@sha256:") {
 		return p, fmt.Errorf("%s.ref must name an image by digest, such as name@sha256:hex", key)
 	}
 	// A tool left empty is one nobody measured, which a missing key says too

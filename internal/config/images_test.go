@@ -83,6 +83,12 @@ func TestImagesSettingsStrict(t *testing.T) {
 		{"koyeb ref without digest",
 			"[images.koyeb]\nversion = \"2026.11.1\"\nref = \"ghcr.io/x/b:1\"",
 			"images.koyeb.ref"},
+		{"lium ref without digest", "[images.lium]\nref = \"ghcr.io/x/b:1\"",
+			"images.lium.ref must name an image by digest"},
+		{"hf ref without digest", "[images.hf]\nversion = \"2026.11.1\"\nref = \"ghcr.io/x/b\"",
+			"images.hf.ref must name an image by digest"},
+		{"lium no ref", "[images.lium]\nversion = \"2026.11.1\"", "images.lium"},
+		{"hf refs", "[images.hf]\nrefs = { a = \"" + digest + "\" }", "images.hf.refs"},
 		{"unknown tool", "[images.e2b]\ntools = { rust = \"1\" }", "images.e2b.tools"},
 		{"channel", "[images]\nchannel = \"stage\"", "images.channel"},
 		{"accept with no provider",
@@ -100,4 +106,38 @@ func TestImagesSettingsStrict(t *testing.T) {
 	_, err := LoadFile(writeFile(t,
 		"providers = [\"koyeb\"]\n[images]\naccept = [\"2026.11.1\"]\nexempt = [\"koyeb\"]"))
 	eq(t, err, nil)
+}
+
+func TestImagesGPUTables(t *testing.T) {
+	digest := "ghcr.io/bugnet-sh/bugnet-base@sha256:" + strings.Repeat("b", 64)
+	c, err := LoadFile(writeFile(t, `providers = ["lium", "hf", "e2b"]
+
+[images.lium]
+version = "2026.11.3"
+ref = "`+digest+`"
+tools = { git = "2.43" }
+
+[images.hf]
+version = "2026.11.3"
+ref = "`+digest+`"
+os = "ubuntu-24.04"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Images.Lium, ProviderImage{
+		Version: "2026.11.3", Ref: digest, Tools: map[string]string{"git": "2.43"},
+	})
+	eq(t, c.Images.HF, ProviderImage{Version: "2026.11.3", Ref: digest, OS: "ubuntu-24.04"})
+	for _, name := range []string{"lium", "hf"} {
+		got, ok := c.Images.Of(name)
+		eq(t, ok, true)
+		eq(t, got.Ref, digest)
+	}
+	eq(t, c.Images.Versions(c.Providers), map[string]string{"lium": "2026.11.3", "hf": "2026.11.3"})
+	eq(t, c.ImageTools["lium"], ImageTools{Git: "2.43"})
+	eq(t, c.ImageTools["hf"], ImageTools{})
+	empty := loadEmpty(t)
+	eq(t, empty.Images.Lium, ProviderImage{})
+	eq(t, empty.Images.HF, ProviderImage{})
 }
