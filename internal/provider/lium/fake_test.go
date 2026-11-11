@@ -29,6 +29,8 @@ type fault struct {
 	times int
 	// skip lets this many matching calls through before the fault applies
 	skip int
+	// then takes this fault's place once its times are spent
+	then *fault
 }
 
 // fakeNode is one node of the listing, its fields as GET /executors writes them
@@ -246,6 +248,9 @@ func (f *fakeLium) take(pattern string, r *http.Request, body []byte) *fault {
 		ft.times--
 		if ft.times == 0 {
 			delete(f.faults, pattern)
+			if ft.then != nil {
+				f.faults[pattern] = ft.then
+			}
 		}
 	}
 	return ft

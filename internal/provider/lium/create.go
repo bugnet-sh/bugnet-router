@@ -263,6 +263,7 @@ func (p *Provider) settle(ctx context.Context, o order, r rental) (provider.Ref,
 		if err == nil {
 			return p.rented(o, r, id), false, nil
 		}
+		r = p.noted(o, r, err)
 		code := codeOf(err)
 		switch {
 		case code == codeInProgress:
@@ -270,6 +271,14 @@ func (p *Provider) settle(ctx context.Context, o order, r rental) (provider.Ref,
 				return provider.Ref{}, false, unknownOutcome(err)
 			}
 			continue
+		case code == codeOutcomeUnknown:
+			return p.afterUnknown(ctx, o, r, err)
+		case mayHaveRented(err) && !retried:
+			retried = true
+			continue
+		case r.uncertain && code != codeKeyInvalid && code != codeKeyReused:
+			// Once a send may have rented, only an idempotency answer or a listing says what it did
+			return p.afterUnknown(ctx, o, r, err)
 		case nodeCodes[code] || code == codeConflict:
 			p.forget(o.key, r)
 			return provider.Ref{}, true, err
@@ -297,22 +306,19 @@ func (p *Provider) settle(ctx context.Context, o order, r rental) (provider.Ref,
 			p.forget(o.key, r)
 		case invalidCodes[code]:
 			p.forget(o.key, r)
-		case code == codeOutcomeUnknown:
-			return p.afterUnknown(ctx, o, err)
-		case mayHaveRented(err) && !retried:
-			retried = true
-			r = p.uncertain(o, r)
-			continue
-		case mayHaveRented(err), r.uncertain && !errors.As(err, new(*apiError)):
-			// A send that never left proves nothing once an earlier one may have rented
-			return p.afterUnknown(ctx, o, err)
 		}
 		return provider.Ref{}, false, err
 	}
 }
 
-// uncertain marks r as one that may have rented, for the key's retries too
-func (p *Provider) uncertain(o order, r rental) rental {
+// noted marks what a failed send of r shows, keeping r for the key's retries when that changed
+func (p *Provider) noted(o order, r rental, err error) rental {
+	code := codeOf(err)
+	uncertain := r.uncertain || mayHaveRented(err) || code == codeInProgress ||
+		code == codeOutcomeUnknown
+	if uncertain == r.uncertain {
+		return r
+	}
 	r.uncertain = true
 	if !o.fresh {
 		p.remember(o.key, r)
@@ -347,27 +353,33 @@ func (p *Provider) sendRent(ctx context.Context, r rental) (string, error) {
 
 // mayHaveRented reports a rent that got no usable answer once sent, or a server error
 func mayHaveRented(err error) bool {
-	var ae *apiError
-	if errors.As(err, &ae) {
-		return ae.Status >= 500
-	}
-	e, ok := provider.AsError(err)
-	return ok && e.Code == provider.CodeOutcomeUnknown
+	return serverError(err) || lostAnswer(err)
 }
 
-// afterUnknown lists by name for a rent that may have rented, adopting the pod when listed
+// serverError reports a 5xx answer
+func serverError(err error) bool {
+	var ae *apiError
+	return errors.As(err, &ae) && ae.Status >= 500
+}
+
+// lostAnswer reports a rent that was sent and got no usable answer
+func lostAnswer(err error) bool {
+	e, ok := provider.AsError(err)
+	return ok && e.Code == provider.CodeOutcomeUnknown && !errors.As(err, new(*apiError))
+}
+
+// afterUnknown lists by name for a rental that may have rented, adopting the pod when listed
 func (p *Provider) afterUnknown(
-	ctx context.Context, o order, cause error,
+	ctx context.Context, o order, r rental, cause error,
 ) (provider.Ref, bool, error) {
 	ref, found, err := p.findOwn(ctx, o)
-	var ae *apiError
 	switch {
 	case found:
 		return ref, false, err
 	case err != nil:
 		return provider.Ref{}, false, unknownOutcome(fmt.Errorf(
 			"%w, then the listing failed, %w", cause, err))
-	case errors.As(cause, &ae) && ae.Status >= 500:
+	case serverError(cause):
 		// Two server errors and no pod listed, so Lium shows no rent of ours
 		return provider.Ref{}, false, cause
 	}

@@ -80,6 +80,13 @@ func (f *fakeLium) rents() []recorded {
 	return out
 }
 
+// podCount is how many pods the fake holds, of every name
+func (f *fakeLium) podCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pods)
+}
+
 func rentNode(r recorded) string {
 	return strings.TrimSuffix(strings.TrimPrefix(r.path, "/executors/"), "/rent")
 }
@@ -290,6 +297,33 @@ func TestEmptyKeyIsFresh(t *testing.T) {
 	}
 	// Adoption is skipped, so no listing ran
 	eq(t, len(f.requestsTo("GET", "/pods")), 0)
+
+	t.Run("a lost answer rents no second node", func(t *testing.T) {
+		f, p := liveFake(t)
+		// The first rent takes node-a and loses its answer, so the resend finds node-a taken
+		f.inject(rentRoute, fault{drop: true, after: true, times: 1})
+		ref := mustCreate(t, p, req)
+		eq(t, f.podCount(), 1)
+		pods := f.podsNamed(ref.Meta["pod_name"])
+		if len(pods) != 1 || pods[0].id != ref.ID || pods[0].node != "node-a" {
+			t.Fatalf("pods %+v, ref %+v", pods, ref)
+		}
+		eq(t, len(f.rents()), 2)
+		for _, r := range f.rents() {
+			eq(t, rentNode(r), "node-a")
+		}
+	})
+	t.Run("a lost answer and a listing that lags", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{drop: true, after: true, times: 1})
+		f.inject(podsRoute, fault{status: 200, raw: "[]", times: 1})
+		_, err := p.Create(context.Background(), req)
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, f.podCount(), 1)
+		for _, r := range f.rents() {
+			eq(t, rentNode(r), "node-a")
+		}
+	})
 }
 
 func TestLiumAdoptsLivePod(t *testing.T) {
@@ -428,6 +462,26 @@ func TestLiumTransportErrorRetriesOnce(t *testing.T) {
 		ref := mustCreate(t, p, createReq(testKey))
 		eq(t, ref.ID, pod.id)
 	})
+	for name, resend := range map[string]fault{
+		"the resend is rate limited": {status: 429, code: "rate_limited", times: 1,
+			header: map[string]string{"Retry-After": "0"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p := liveFake(t)
+			// The first rent takes node-a and loses its answer, and both listings miss the pod
+			f.inject(rentRoute, fault{drop: true, after: true, times: 1, then: &resend})
+			f.inject(podsRoute, fault{status: 200, raw: "[]", times: 2})
+			_, err := p.Create(context.Background(), createReq(testKey))
+			wantCode(t, err, provider.CodeOutcomeUnknown, false)
+			eq(t, len(f.rents()), 2)
+			eq(t, f.podCount(), 1)
+			// The key's retry adopts the pod once Lium lists it
+			ref := mustCreate(t, p, createReq(testKey))
+			eq(t, ref.Meta["node"], "node-a")
+			eq(t, f.podCount(), 1)
+			eq(t, len(f.rents()), 2)
+		})
+	}
 }
 
 func TestLiumServerErrorRetriesOnce(t *testing.T) {
@@ -448,6 +502,14 @@ func TestLiumServerErrorRetriesOnce(t *testing.T) {
 		for _, r := range f.rents() {
 			eq(t, rentNode(r), "node-a")
 		}
+	})
+	t.Run("a rate limit after a server error", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", times: 1,
+			then: &fault{status: 429, code: "rate_limited", times: 1}})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, len(f.rents()), 2)
 	})
 }
 
