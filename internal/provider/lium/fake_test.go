@@ -176,6 +176,12 @@ func (f *fakeLium) inject(pattern string, ft fault) {
 	f.faults[pattern] = &ft
 }
 
+func (f *fakeLium) clearFaults() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	clear(f.faults)
+}
+
 func (f *fakeLium) requestsTo(method, path string) []recorded {
 	f.mu.Lock()
 	defer f.mu.Unlock()

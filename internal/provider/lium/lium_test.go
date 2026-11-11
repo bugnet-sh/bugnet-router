@@ -1,6 +1,7 @@
 package lium
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -146,5 +147,142 @@ func TestLiumCosts(t *testing.T) {
 		if cost, ok := p.StartCostMicros(rtx3090); cost != want || !ok {
 			t.Errorf("start billed %s costs %d, %v, want %d", start, cost, ok, want)
 		}
+	}
+}
+
+// listed builds a provider on the fake and reads its listing once at clk's time
+func listed(t *testing.T, f *fakeLium, clk *clock, nodes ...fakeNode) *Provider {
+	t.Helper()
+	f.setNodes(nodes...)
+	p := f.provider(t, testOptions(), clk.now)
+	if err := p.nodes.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLiumSizeFor(t *testing.T) {
+	rtx4090 := euNode("n4090")
+	rtx4090.gpuClass, rtx4090.machine, rtx4090.price = "NVIDIA GeForce RTX 4090",
+		"NVIDIA GeForce RTX 4090", 0.5
+	pro := euNode("npro")
+	pro.gpuClass = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+	pro.machine = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+	pro.price, pro.ramGiB = 1.75, 94
+	f := newFake(t)
+	p := listed(t, f, newClock(), euNode("n3090"), rtx4090, pro)
+
+	want := func(name string) provider.Size {
+		s, _ := p.size(name)
+		return provider.Size{Name: name, Resources: s.resources}
+	}
+	rows := []struct {
+		name  string
+		floor provider.Resources
+		size  string
+	}{
+		{"any model takes the lowest cap", provider.Resources{GPUCount: 1}, "lium-rtx3090"},
+		{"the model asked", provider.Resources{GPUCount: 1, GPUModel: gpu.RTX4090},
+			"lium-rtx4090"},
+		{"the model alone asks for a GPU", provider.Resources{GPUModel: gpu.RTX4090},
+			"lium-rtx4090"},
+		{"GPU memory past the 24 GiB cards", provider.Resources{GPUCount: 1,
+			GPUMemoryGiB: 32}, "lium-rtxpro6000"},
+		{"a floor every size covers", provider.Resources{
+			VCPU: 6, MemoryMiB: 28672, DiskGiB: 180, GPUCount: 1, GPUMemoryGiB: 24,
+		}, "lium-rtx3090"},
+		{"a model with no eligible node", provider.Resources{GPUCount: 1,
+			GPUModel: gpu.H200}, ""},
+		{"a model not sold", provider.Resources{GPUCount: 1, GPUModel: gpu.B200}, ""},
+		{"more vCPUs than a size with a node", provider.Resources{GPUCount: 1, VCPU: 9}, ""},
+		{"more GPUs than any size", provider.Resources{GPUCount: 2}, ""},
+		{"more disk than any size", provider.Resources{GPUCount: 1, DiskGiB: 901}, ""},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := p.SizeFor(tc.floor)
+			if tc.size == "" {
+				if ok {
+					t.Fatalf("SizeFor(%+v) = %+v, want none", tc.floor, got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("SizeFor(%+v) found none, want %s", tc.floor, tc.size)
+			}
+			eq(t, got, want(tc.size))
+		})
+	}
+
+	// With no 3090 node left the next size by cap serves
+	p = listed(t, f, newClock(), rtx4090)
+	got, ok := p.SizeFor(provider.Resources{GPUCount: 1})
+	eq(t, ok, true)
+	eq(t, got.Name, "lium-rtx4090")
+}
+
+// TestLiumSizeForRefusesFloorsWithoutGPU keeps Lium canary-free, as the worker's canary floor
+// names only vCPUs and memory and its skip needs every size to have a GPU
+func TestLiumSizeForRefusesFloorsWithoutGPU(t *testing.T) {
+	f := newFake(t)
+	p := listed(t, f, newClock(), euNode("n3090"))
+	for _, floor := range []provider.Resources{
+		{}, {VCPU: 1, MemoryMiB: 512}, {VCPU: 8, MemoryMiB: 28672, DiskGiB: 200},
+	} {
+		if got, ok := p.SizeFor(floor); ok {
+			t.Errorf("SizeFor(%+v) = %+v, want none for a floor without a GPU", floor, got)
+		}
+	}
+	if _, ok := p.SizeFor(provider.Resources{GPUCount: 1}); !ok {
+		t.Fatal("the listing holds no node, so the refusal above proves nothing")
+	}
+	for _, s := range p.Sizes() {
+		if s.Resources.GPUCount == 0 {
+			t.Errorf("size %s has no GPU, so canaries would not skip Lium", s.Name)
+		}
+	}
+}
+
+func TestLiumSizeForNeedsAFreshListing(t *testing.T) {
+	f := newFake(t)
+	f.setNodes(euNode("n3090"))
+	clk := newClock()
+	p := f.provider(t, testOptions(), clk.now)
+	floor := provider.Resources{GPUCount: 1}
+	if _, ok := p.SizeFor(floor); ok {
+		t.Fatal("SizeFor answered before any listing was read")
+	}
+	if err := p.nodes.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.SizeFor(floor); !ok {
+		t.Fatal("SizeFor refused with a fresh listing")
+	}
+	clk.add(2 * time.Minute)
+	if _, ok := p.SizeFor(floor); !ok {
+		t.Fatal("a listing 2 minutes old is still fresh")
+	}
+	clk.add(time.Second)
+	if _, ok := p.SizeFor(floor); ok {
+		t.Fatal("SizeFor answered from a listing over 2 minutes old")
+	}
+	// Sizes and prices answer from memory whatever the listing's age
+	eq(t, len(p.Sizes()), 4)
+	eq(t, p.HourlyCostMicros(provider.Size{Name: "lium-rtx3090"}), int64(350_000))
+
+	// A failed refresh keeps the old listing, so its age still counts
+	f.inject("GET /executors", fault{status: 502, code: "upstream_unavailable", message: "x"})
+	if err := p.nodes.refresh(context.Background()); err == nil {
+		t.Fatal("a refused listing refreshed")
+	}
+	if _, ok := p.SizeFor(floor); ok {
+		t.Fatal("a failed refresh made the old listing fresh")
+	}
+	f.clearFaults()
+	if err := p.nodes.refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.SizeFor(floor); !ok {
+		t.Fatal("a fresh listing after an outage did not restore the size")
 	}
 }

@@ -198,6 +198,28 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	}
 }
 
+// SizeFor picks the lowest capped size of the floor's model covering the floor that has a node to
+// rent in a listing under 2 minutes old, and nothing for a floor without a GPU
+func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
+	if floor.GPUCount == 0 && floor.GPUMemoryGiB == 0 && floor.GPUModel == "" {
+		return provider.Size{}, false
+	}
+	nodes, fresh := p.nodes.fresh()
+	if !fresh {
+		return provider.Size{}, false
+	}
+	for _, s := range p.sizes {
+		r := s.resources
+		if (floor.GPUModel == "" || floor.GPUModel == r.GPUModel) && r.VCPU >= floor.VCPU &&
+			r.MemoryMiB >= floor.MemoryMiB && r.DiskGiB >= floor.DiskGiB &&
+			r.GPUCount >= floor.GPUCount && r.GPUMemoryGiB >= floor.GPUMemoryGiB &&
+			len(p.candidates(s, nodes)) > 0 {
+			return provider.Size{Name: s.Name, Resources: r}, true
+		}
+	}
+	return provider.Size{}, false
+}
+
 // Sizes lists the sizes sold, lowest cap first
 func (p *Provider) Sizes() []provider.Size {
 	out := make([]provider.Size, 0, len(p.sizes))
