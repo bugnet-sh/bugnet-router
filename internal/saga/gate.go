@@ -16,6 +16,9 @@ import (
 // ErrGateUnavailable means a placement's gate could not be reached, prepared or repaired
 var ErrGateUnavailable = errors.New("saga: the sandbox's gate is unavailable")
 
+// errGateless answers every gate step for a placement whose provider's sandboxes have no gate
+var errGateless = fmt.Errorf("%w: %w", ErrGateUnavailable, errNoGate)
+
 const (
 	// openTimeout bounds start saga steps 2 and 3 run again for a ready placement
 	openTimeout = 2 * time.Minute
@@ -37,6 +40,9 @@ func (s *Saga) PortRefused(p store.Placement, port int) bool {
 
 // Gate returns the provider's route to a placement's gate and the key the gate admits
 func (s *Saga) Gate(p store.Placement) (provider.GateRoute, string, error) {
+	if profiles[p.Provider].noGate {
+		return provider.GateRoute{}, "", errGateless
+	}
 	prov, ref, err := s.home(p)
 	if err != nil {
 		return provider.GateRoute{}, "", err
@@ -58,6 +64,9 @@ func (s *Saga) Gate(p store.Placement) (provider.GateRoute, string, error) {
 
 // OpenGate runs start saga steps 2 and 3 once for a ready placement whose gate never answered
 func (s *Saga) OpenGate(ctx context.Context, p store.Placement) (store.Placement, error) {
+	if profiles[p.Provider].noGate {
+		return p, errGateless
+	}
 	if p.GateReadyAt != nil {
 		return p, nil
 	}
@@ -120,6 +129,10 @@ func (s *Saga) openOnce(ctx context.Context, id uuid.UUID) (store.Placement, err
 
 // RepairGate runs setup --repair and PrepareGate again for a ready placement, keeping the meta
 func (s *Saga) RepairGate(ctx context.Context, p store.Placement) (store.Placement, error) {
+	// A nogate sandbox has no gate to repair, and its setup refuses --repair
+	if profiles[p.Provider].noGate {
+		return store.Placement{}, errGateless
+	}
 	ctx, cancel := context.WithTimeout(ctx, repairTimeout)
 	defer cancel()
 	var out store.Placement

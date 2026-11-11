@@ -28,7 +28,9 @@
 // OpenGate runs the gate steps again for a ready placement whose gate never answered, and
 // RepairGate runs setup --repair and PrepareGate, both one replica at a time under a Postgres
 // advisory lock per placement. Both store the route's meta. OpenGate records when the gate
-// answered, and RepairGate leaves the gate time to its caller.
+// answered, and RepairGate leaves the gate time to its caller. A provider whose sandboxes have no
+// gate, Lium, gets setup's nogate phase and no gate key, skips the gate steps, takes SSH only on
+// its native path and no previews, and Gate, OpenGate and RepairGate refuse its placements.
 //
 // The ready transaction records the sshd ssh-up made ready and mints the placement's SSH alias
 // when the registry gives its provider SSH. PrepareSSH, run by the prepare_ssh job, makes the sshd

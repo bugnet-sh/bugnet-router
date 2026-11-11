@@ -119,7 +119,7 @@ func (s *Saga) bootSteps(ctx context.Context, prov provider.Provider, ref provid
 	if b.Pool {
 		ans, err = s.setupPool(ctx, prov, ref, rep.Image)
 	} else {
-		if key, err = s.d.Keys.GateKey(b.KeyID, b.Placement); err != nil {
+		if key, err = s.gateKey(prov, b.KeyID, b.Placement); err != nil {
 			return ref, rep, fmt.Errorf("gate key: %w", err)
 		}
 		ans, err = s.setup(ctx, prov, ref, key, false, rep.Image)
@@ -152,11 +152,12 @@ func (s *Saga) bootSteps(ctx context.Context, prov provider.Provider, ref provid
 	return prep.Ref, rep, err
 }
 
-// Prepare runs the start steps that need the placement id, setup's full phase first when pooled
+// Prepare runs the start steps that need the placement id, a cold start's setup first when pooled
 //
-// Pooled, setup runs again in its full phase with a fresh seed, the gate key and the CA fields
-// of a cold start. Otherwise Boot ran that setup already and Prepare starts at the gate's route.
-// Either way its CA answer fills Prepared.CAVersion.
+// Pooled, setup runs again in its full or nogate phase with a fresh seed, the gate key where the
+// sandbox has a gate and the CA fields of a cold start. Otherwise Boot ran that setup already and
+// Prepare starts at the gate's route, which a sandbox without a gate skips. Either way its CA
+// answer fills Prepared.CAVersion.
 func (s *Saga) Prepare(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, id uuid.UUID,
 	req placement.Requirements, pooled bool,
@@ -176,7 +177,7 @@ func (s *Saga) prepare(
 	prep := Prepared{
 		Ref: ref, KeyID: keyID, CAVersion: caVersion, GateMS: store.NoStep, Image: img,
 	}
-	key, err := s.d.Keys.GateKey(keyID, id)
+	key, err := s.gateKey(prov, keyID, id)
 	if err != nil {
 		return prep, fmt.Errorf("gate key: %w", err)
 	}
@@ -192,18 +193,26 @@ func (s *Saga) prepare(
 		s.d.Log.Info("pooled sandbox set up", "placement", id, "provider", prov.Name(),
 			"ca", ans.CA, "init", ans.Init, "reseed", ans.Reseed)
 	}
-	gateStart := s.now()
-	ref, at, err := s.openGate(ctx, prov, ref, key)
-	prep.GateMS = int(s.now().Sub(gateStart).Milliseconds())
-	prep.Ref = ref
-	switch {
-	case err == nil:
-		prep.GateReadyAt = at
-	case req.Preview || req.SSH:
-		return prep, fmt.Errorf("gate: %w", err)
-	default:
-		s.d.Log.Warn("gate not ready, the order needs neither previews nor SSH",
-			"placement", id, "provider", prov.Name(), "err", err)
+	if profiles[prov.Name()].noGate {
+		// Without a gate the sandbox serves no previews, and SSH only through its own server
+		if req.Preview || (req.SSH && !s.d.Registry.NativeSSH(prov)) {
+			return prep, fmt.Errorf("gate: %w", errNoGate)
+		}
+	} else {
+		gateStart := s.now()
+		var at time.Time
+		ref, at, err = s.openGate(ctx, prov, ref, key)
+		prep.GateMS = int(s.now().Sub(gateStart).Milliseconds())
+		prep.Ref = ref
+		switch {
+		case err == nil:
+			prep.GateReadyAt = at
+		case req.Preview || req.SSH:
+			return prep, fmt.Errorf("gate: %w", err)
+		default:
+			s.d.Log.Warn("gate not ready, the order needs neither previews nor SSH",
+				"placement", id, "provider", prov.Name(), "err", err)
+		}
 	}
 	if req.SSH && !s.d.Registry.NativeSSH(prov) {
 		host, err := s.sshUp(ctx, prov, ref, id, nil, pooled)
@@ -218,6 +227,14 @@ func (s *Saga) prepare(
 			"provider", prov.Name(), "err", err)
 	}
 	return prep, nil
+}
+
+// gateKey derives a placement's gate key, none for a provider whose sandboxes have no gate
+func (s *Saga) gateKey(prov provider.Provider, keyID string, id uuid.UUID) (string, error) {
+	if profiles[prov.Name()].noGate {
+		return "", nil
+	}
+	return s.d.Keys.GateKey(keyID, id)
 }
 
 // boot waits for a created sandbox, reads its image manifest and puts the runner in place
