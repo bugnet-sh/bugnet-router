@@ -17,8 +17,7 @@ var rtx3090 = provider.Size{Name: "rtx3090", Resources: provider.Resources{
 	VCPU: 2, MemoryMiB: 2048, DiskGiB: 10, GPUCount: 1, GPUMemoryGiB: 24, GPUModel: gpu.RTX3090,
 }}
 
-// timed is a local provider that records each SizeFor floor and the time each WaitReady was
-// given, and whose sandboxes are ready only after need
+// timed is a local provider recording SizeFor floors and WaitReady allowances, ready after need
 type timed struct {
 	*local.Provider
 	need   time.Duration
