@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -113,15 +114,17 @@ type fakeSSHD struct {
 
 	mu      sync.Mutex
 	hostKey ssh.Signer
-	// conns counts the sessions open on each connection
-	conns map[*ssh.ServerConn]int
+	// conns counts the sessions open on each connection, running the commands not exited yet
+	conns, running map[*ssh.ServerConn]int
 	// shells are the login shells running commands, each the leader of its own session
 	shells map[*os.Process]bool
-	// accepted counts the connections that logged in, peak the most sessions one held at once
+	// accepted counts the connections that logged in, peak the most commands one ran at once
 	accepted, peak int
 	// silent leaves global requests such as keepalives unanswered
 	silent bool
-	closed bool
+	// maxSessions is the sessions one connection takes, MaxSessions in sshd_config
+	maxSessions int
+	closed      bool
 }
 
 func newHostKey(t *testing.T) ssh.Signer {
@@ -148,7 +151,8 @@ func (f *fakeLium) sshdLocked(pod string) *fakeSSHD {
 	}
 	s := &fakeSSHD{
 		f: f, pod: pod, ln: ln, hostKey: newHostKey(f.t), conns: map[*ssh.ServerConn]int{},
-		shells: map[*os.Process]bool{},
+		running: map[*ssh.ServerConn]int{}, shells: map[*os.Process]bool{},
+		maxSessions: fakeMaxSessions,
 	}
 	f.sshds[pod] = s
 	go s.serve()
@@ -281,6 +285,12 @@ func (s *fakeSSHD) dropConns() {
 	}
 }
 
+func (s *fakeSSHD) setMaxSessions(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxSessions = n
+}
+
 func (s *fakeSSHD) setSilent(silent bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -361,11 +371,12 @@ func (s *fakeSSHD) handle(c net.Conn) {
 		}
 		go func() {
 			defer s.endSession(sc)
-			s.session(ch, creqs)
+			s.session(sc, ch, creqs)
 		}()
 	}
 	s.mu.Lock()
 	delete(s.conns, sc)
+	delete(s.running, sc)
 	s.mu.Unlock()
 }
 
@@ -381,15 +392,29 @@ func (s *fakeSSHD) global(reqs <-chan *ssh.Request) {
 	}
 }
 
+// openSession counts a new session, first waiting a moment for closes the client already sent,
+// which OpenSSH handles before a later open but this server reads on another goroutine
 func (s *fakeSSHD) openSession(sc *ssh.ServerConn) bool {
+	for range 40 {
+		s.mu.Lock()
+		if s.conns[sc] < s.maxSessions {
+			s.conns[sc]++
+			s.mu.Unlock()
+			return true
+		}
+		s.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// started counts a running command, keeping the most one connection ran at once
+func (s *fakeSSHD) started(sc *ssh.ServerConn, shell *os.Process) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conns[sc] >= fakeMaxSessions {
-		return false
-	}
-	s.conns[sc]++
-	s.peak = max(s.peak, s.conns[sc])
-	return true
+	s.shells[shell] = true
+	s.running[sc]++
+	s.peak = max(s.peak, s.running[sc])
 }
 
 func (s *fakeSSHD) endSession(sc *ssh.ServerConn) {
@@ -401,7 +426,7 @@ func (s *fakeSSHD) endSession(sc *ssh.ServerConn) {
 }
 
 // session runs one exec request through the login shell and signals its group as OpenSSH does
-func (s *fakeSSHD) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
+func (s *fakeSSHD) session(sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	var shell *os.Process
 	for r := range reqs {
 		switch r.Type {
@@ -421,11 +446,9 @@ func (s *fakeSSHD) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				continue
 			}
 			shell = cmd.Process
-			s.mu.Lock()
-			s.shells[shell] = true
-			s.mu.Unlock()
+			s.started(sc, shell)
 			_ = r.Reply(true, nil)
-			go s.exit(ch, cmd)
+			go s.exit(sc, ch, cmd)
 		case "signal":
 			var req struct{ Signal string }
 			if ssh.Unmarshal(r.Payload, &req) != nil {
@@ -444,10 +467,13 @@ func (s *fakeSSHD) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 }
 
 // exit sends the shell's exit status, or the signal that ended it, then closes the channel
-func (s *fakeSSHD) exit(ch ssh.Channel, cmd *exec.Cmd) {
+func (s *fakeSSHD) exit(sc *ssh.ServerConn, ch ssh.Channel, cmd *exec.Cmd) {
 	_ = cmd.Wait()
 	s.mu.Lock()
 	delete(s.shells, cmd.Process)
+	if _, ok := s.running[sc]; ok {
+		s.running[sc]--
+	}
 	s.mu.Unlock()
 	_ = ch.CloseWrite()
 	ws, _ := cmd.ProcessState.Sys().(syscall.WaitStatus)
