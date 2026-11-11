@@ -1887,9 +1887,9 @@ may name a provider that `providers` does not list, which then has no candidate.
 table sets `ready_timeout`, how long a new sandbox may take to become ready, 60 s to 15 minutes
 (60 s by default, 6 minutes in `[lium]` and 5 in `[hf]`). A package without a GPU starts candidates
 for 30 s, a GPU package for `gpu_placing_budget` (13 minutes). The router refuses to start with a
-budget under Lium's slowest boot that fails plus the next provider's create, every boot step at
-its timeout and `harden` failing last (12 minutes 10 seconds with the default timeouts), so HF
-still gets its turn.
+budget under Lium's slowest boot that fails, its 30 s destroy and the next provider's create, every
+boot step at its timeout and `harden` failing last (12 minutes 40 seconds with the default
+timeouts), so HF still gets its turn.
 
 ### Limits and account standing
 

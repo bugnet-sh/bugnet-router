@@ -150,7 +150,7 @@ const LifetimeSlack = lifetimeSlack
 const EndTimeout = terminateTimeout
 
 // cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
-var cleanupTimeout = 30 * time.Second
+var cleanupTimeout = config.CleanupTimeout
 
 // placingBudget is how long a package without a GPU starts candidates, a variable for tests
 var placingBudget = 30 * time.Second

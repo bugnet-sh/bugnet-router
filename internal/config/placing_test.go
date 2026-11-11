@@ -71,18 +71,29 @@ onto_gpu = true
 
 // TestConfigPlacingBudget is check 9 of the GPU design's 5.3
 func TestConfigPlacingBudget(t *testing.T) {
-	// Lium's create, ready wait, two runner pings, setup and harden, then the next create
-	eq(t, MinGPUPlacingBudget(6*time.Minute), 12*time.Minute+10*time.Second)
-	eq(t, MinGPUPlacingBudget(7*time.Minute), 13*time.Minute+10*time.Second)
-	c, err := LoadFile(writeFile(t, `gpu_placing_budget = "12m10s"`))
+	// Lium's create, ready wait, two runner pings, setup, harden and destroy, then the next create
+	eq(t, MinGPUPlacingBudget(6*time.Minute), 12*time.Minute+40*time.Second)
+	eq(t, MinGPUPlacingBudget(7*time.Minute), 13*time.Minute+40*time.Second)
+	c, err := LoadFile(writeFile(t, `gpu_placing_budget = "12m40s"`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, c.GPUPlacingBudget, 12*time.Minute+10*time.Second)
-	_, err = LoadFile(writeFile(t, `gpu_placing_budget = "12m9s"`))
-	if err == nil || !strings.Contains(err.Error(), "gpu_placing_budget must be at least 12m10s") {
+	eq(t, c.GPUPlacingBudget, 12*time.Minute+40*time.Second)
+	_, err = LoadFile(writeFile(t, `gpu_placing_budget = "12m39s"`))
+	if err == nil || !strings.Contains(err.Error(), "gpu_placing_budget must be at least 12m40s") {
 		t.Fatalf("a budget a second short of lium's slowest failing boot gave %v", err)
 	}
+	// A slower lium ready_timeout raises the floor with it
+	slow := "\n[lium]\nready_timeout = \"7m\"\n"
+	_, err = LoadFile(writeFile(t, `gpu_placing_budget = "13m"`+slow))
+	if err == nil || !strings.Contains(err.Error(), "gpu_placing_budget must be at least 13m40s") {
+		t.Fatalf("a 7m lium ready_timeout under a 13m budget gave %v", err)
+	}
+	c, err = LoadFile(writeFile(t, `gpu_placing_budget = "14m"`+slow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.GPUPlacingBudget, 14*time.Minute)
 }
 
 func TestPlacingRefusals(t *testing.T) {

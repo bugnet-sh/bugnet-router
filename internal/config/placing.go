@@ -20,6 +20,8 @@ const (
 	HardenTimeout = 2 * time.Minute
 	// GPUCreateBudget is the longest a GPU provider's Create runs
 	GPUCreateBudget = 20 * time.Second
+	// CleanupTimeout bounds each store or provider call of placing, a failed attempt's destroy too
+	CleanupTimeout = 30 * time.Second
 )
 
 const (
@@ -28,10 +30,10 @@ const (
 	maxGPUPlacingBudget = time.Hour
 )
 
-// MinGPUPlacingBudget is Lium's slowest failing boot plus the next GPU provider's create
+// MinGPUPlacingBudget is Lium's slowest failing boot and its destroy, then the next GPU create
 func MinGPUPlacingBudget(liumReady time.Duration) time.Duration {
 	return GPUCreateBudget + liumReady + 2*UploadTimeout + SetupTimeout + HardenTimeout +
-		GPUCreateBudget
+		CleanupTimeout + GPUCreateBudget
 }
 
 // placing reads each provider's ready timeout, the GPU order and the GPU placing budget
@@ -66,7 +68,8 @@ func (f file) placing(c *Config) error {
 	}
 	if least := MinGPUPlacingBudget(c.ReadyTimeouts["lium"]); budget < least {
 		return fmt.Errorf("gpu_placing_budget must be at least %s, lium's slowest boot that "+
-			"fails and the next GPU provider's create, or that provider never gets its turn", least)
+			"fails, its destroy and the next GPU provider's create, or that provider never gets "+
+			"its turn", least)
 	}
 	c.GPUPlacingBudget = budget
 	return nil
