@@ -108,8 +108,7 @@ func (p *Provider) opContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(ctx, p.ssh.op)
 }
 
-// groupCommand wraps argv so it runs as the child of a new session's leader, which writes its
-// pid where a cancel's kill finds it and removes it once argv ends
+// groupCommand runs argv under a new session's leader, which keeps its pid file while argv runs
 func (p *Provider) groupCommand(spec provider.ExecSpec, call string) (string, error) {
 	if len(spec.Argv) == 0 {
 		return "", invalid(errors.New("exec needs a command"), false)
@@ -124,12 +123,12 @@ func (p *Provider) groupCommand(spec provider.ExecSpec, call string) (string, er
 	return shell.Command(provider.ExecSpec{Argv: argv, Cwd: spec.Cwd, Env: spec.Env})
 }
 
-// killCommand kills a call's group by its pid file, or marks the call so it never starts argv,
-// with no -- since dash's kill reads it as a pid
+// killCommand kills a call's group by its pid file, or marks the call so argv never starts
 func (p *Provider) killCommand(call string) (string, error) {
 	pid, mark := p.callFiles(call)
 	script := fmt.Sprintf(`/bin/mkdir -p %[1]s 2>/dev/null; : >%[3]s; `+
 		`p=$(/bin/cat %[2]s 2>/dev/null); case $p in ''|*[!0-9]*) exit 0;; esac; `+
+		// dash's kill reads a double dash as a pid, so the group goes as a bare negative number
 		`[ "$p" -gt 1 ] && kill -KILL "-$p" 2>/dev/null; /bin/rm -f %[2]s %[3]s`,
 		shell.Quote(p.execDir), shell.Quote(pid), shell.Quote(mark))
 	return shell.Command(provider.ExecSpec{Argv: []string{"/bin/sh", "-c", script}})
@@ -225,7 +224,7 @@ func (s *execStream) watch(ctx context.Context) {
 	}
 }
 
-// stop ends Read at once, asks the sshd to kill the command and kills its group on a fresh session
+// stop ends Read at once and kills the command's group out of the caller's way
 func (s *execStream) stop(why error) {
 	s.once.Do(func() {
 		select {
@@ -240,14 +239,15 @@ func (s *execStream) stop(why error) {
 		s.mu.Unlock()
 		close(s.aborted)
 		_ = s.w.CloseWithError(err)
-		_ = s.sess.Signal(ssh.SIGKILL)
-		_ = s.sess.Close()
 		go s.killGroup()
 	})
 }
 
-// killGroup kills the call's group, dropping the connection when its session never closes
+// killGroup signals and closes the session, kills the call's group and drops a stuck connection
 func (s *execStream) killGroup() {
+	// Both writes may wait on a stalled connection, so they run here and not in Close
+	_ = s.sess.Signal(ssh.SIGKILL)
+	_ = s.sess.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), s.p.ssh.kill)
 	defer cancel()
 	if err := s.p.killGroup(ctx, s.pl, s.call); err != nil {

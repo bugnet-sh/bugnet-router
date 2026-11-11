@@ -392,8 +392,7 @@ func (s *fakeSSHD) global(reqs <-chan *ssh.Request) {
 	}
 }
 
-// openSession counts a new session, first waiting a moment for closes the client already sent,
-// which OpenSSH handles before a later open but this server reads on another goroutine
+// openSession counts a session, waiting a moment for closes OpenSSH would have read before it
 func (s *fakeSSHD) openSession(sc *ssh.ServerConn) bool {
 	for range 40 {
 		s.mu.Lock()

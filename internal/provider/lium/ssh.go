@@ -51,8 +51,7 @@ type sshLimits struct {
 	op time.Duration
 	// kill bounds the kill of a cancelled command's group
 	kill time.Duration
-	// stall drops a connection whose session open or exec request still waits this long after
-	// the caller gave up
+	// stall drops a connection whose open or exec still waits this long after the caller left
 	stall time.Duration
 	// perConn is the sessions one connection takes before another opens, conns the connections
 	perConn, conns int
@@ -184,8 +183,7 @@ func (p *Provider) dialPod(
 	return ssh.NewClient(conn, chans, reqs), nil
 }
 
-// pinHostKey logs in to the pod's sshd until it takes the pod's key, pinning the host key it
-// shows unless the ref or this process pinned one already
+// pinHostKey logs in until the pod's sshd takes our key, pinning its host key if none is yet
 func (p *Provider) pinHostKey(ctx context.Context, ref provider.Ref, addr string) (string, error) {
 	id := ref.ID
 	name, err := p.podNameOf(ctx, ref)
@@ -333,7 +331,7 @@ func (p *Provider) sshAddr(host, port string) (string, error) {
 	if err != nil || n < 1 || n >= 1<<16 {
 		return "", fmt.Errorf("the SSH port %q is no port", port)
 	}
-	return net.JoinHostPort(ip.Unmap().String(), port), nil
+	return net.JoinHostPort(ip.Unmap().String(), strconv.Itoa(n)), nil
 }
 
 // readTarget reads what the ref lacks of the pod name and the sshd's address from Lium
@@ -500,8 +498,7 @@ func (pl *sshPool) guard(ctx context.Context, c *sshConn) (stop func() bool) {
 	}
 }
 
-// take holds a session slot on an open connection, dialling one when every connection is full
-// and no dial runs, so a burst waits for the new connection instead of opening several
+// take holds a session slot, a burst waiting on one dial at a time once every connection is full
 func (pl *sshPool) take(ctx context.Context) (*sshConn, error) {
 	for {
 		pl.mu.Lock()
