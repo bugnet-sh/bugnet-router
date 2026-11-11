@@ -720,6 +720,26 @@ func TestLiumServerErrorRetriesOnce(t *testing.T) {
 			eq(t, len(f.requestsTo("POST", "/templates")), 1)
 		})
 	}
+	t.Run("one that rented, then rate limited", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", after: true, times: 1,
+			then: &fault{status: 429, code: "rate_limited", times: 1,
+				header: map[string]string{"Retry-After": "0"}}})
+		ref := mustCreate(t, p, createReq(testKey))
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		eq(t, len(f.requestsTo("GET", "/pods")), 2)
+		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 2)
+	})
+	t.Run("without a key, both fail", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", times: 2})
+		_, err := p.Create(context.Background(), checkReq())
+		wantCode(t, err, provider.CodeInternal, true)
+		eq(t, len(f.requestsTo("GET", "/pods")), 1+keylessRelists)
+		eq(t, f.podCount(), 0)
+		eq(t, len(f.rents()), 2)
+	})
 	t.Run("then a resend that never leaves", func(t *testing.T) {
 		f, p := liveFake(t)
 		p.api.client.Transport = &refuseCalls{next: p.api.client.Transport, match: isRent,
