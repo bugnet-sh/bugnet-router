@@ -1,6 +1,7 @@
 package lium
 
 import (
+	"log/slog"
 	"reflect"
 	"slices"
 	"sync"
@@ -66,9 +67,14 @@ func testSizes() []SizeSpec {
 // testOptions are design 3.12's settings with the test sizes, BaseURL left for the caller
 func testOptions() Options {
 	return Options{
-		APIKey: fakeKey, Sizes: testSizes(), Countries: slices.Clone(euCountries),
-		OtherCountries: true, BlockedCountries: slices.Clone(sanctioned),
-		MaxLifetime: 2 * time.Hour, StartBilled: 7 * time.Minute,
+		APIKey:           fakeKey,
+		Log:              slog.New(slog.DiscardHandler),
+		Sizes:            testSizes(),
+		Countries:        slices.Clone(euCountries),
+		OtherCountries:   true,
+		BlockedCountries: slices.Clone(sanctioned),
+		MaxLifetime:      2 * time.Hour,
+		StartBilled:      7 * time.Minute,
 	}
 }
 

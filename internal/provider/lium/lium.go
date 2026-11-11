@@ -82,6 +82,10 @@ type Provider struct {
 	sizes       []size // lowest cap first
 	maxLifetime time.Duration
 	startBilled time.Duration
+	nodes       *nodeCache
+	// countries are tried first, blocked never, others only while otherCountries is set
+	countries, blocked map[string]bool
+	otherCountries     bool
 }
 
 // New checks the options
@@ -105,20 +109,34 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		return nil, err
 	}
 	log := cmp.Or(opts.Log, slog.Default())
+	a := &api{
+		base:    strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
+		key:     opts.APIKey,
+		client:  &http.Client{CheckRedirect: provider.NoRedirect},
+		log:     log,
+		ops:     limiter(opts.OpsPerSecond),
+		creates: limiter(opts.CreatesPerSecond),
+	}
 	return &Provider{
-		api: &api{
-			base:    strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
-			key:     opts.APIKey,
-			client:  &http.Client{CheckRedirect: provider.NoRedirect},
-			log:     log,
-			ops:     limiter(opts.OpsPerSecond),
-			creates: limiter(opts.CreatesPerSecond),
-		},
-		log:         log,
-		sizes:       sizes,
-		maxLifetime: cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
-		startBilled: opts.StartBilled,
+		api:            a,
+		log:            log,
+		sizes:          sizes,
+		maxLifetime:    cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
+		startBilled:    opts.StartBilled,
+		nodes:          newNodeCache(a, log, now, opts.MinDownloadMbps),
+		countries:      countrySet(opts.Countries),
+		blocked:        countrySet(opts.BlockedCountries),
+		otherCountries: opts.OtherCountries,
 	}, nil
+}
+
+// countrySet holds country codes in capitals, as the node cache writes them
+func countrySet(codes []string) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range codes {
+		out[strings.ToUpper(strings.TrimSpace(c))] = true
+	}
+	return out
 }
 
 // sizesFor checks the sizes and orders them lowest cap first

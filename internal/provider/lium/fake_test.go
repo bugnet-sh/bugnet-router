@@ -39,12 +39,13 @@ type fakeNode struct {
 	price    float64
 	unpriced bool
 	// pending is pending_price_per_hour, null when nil
-	pending        *float64
-	notice         bool
-	removal        bool
-	unreliable     bool
-	downloadMbps   float64
-	machineIsEmpty bool
+	pending      *float64
+	notice       bool
+	removal      bool
+	unreliable   bool
+	downloadMbps float64
+	// noMachine writes machine_name as null
+	noMachine bool
 }
 
 // euNode is a node every rule of design 3.5 lets lium-rtx3090 rent, in Germany
@@ -78,7 +79,7 @@ func (n fakeNode) json() map[string]any {
 		removal = "2026-11-13T00:00:00Z"
 	}
 	var machine any = n.machine
-	if n.machineIsEmpty {
+	if n.noMachine {
 		machine = nil
 	}
 	return map[string]any{
@@ -127,8 +128,8 @@ type fakeLium struct {
 	nodes    []fakeNode
 	faults   map[string]*fault
 	requests []recorded
-	// pageCap is the most nodes one listing page holds, the size asked when 0
-	pageCap int
+	// unpaged answers every node to every listing call, whatever page and size ask
+	unpaged bool
 	nextID  int
 }
 
@@ -274,9 +275,6 @@ func (f *fakeLium) listNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	floor, _ := strconv.ParseFloat(q.Get("min_download_mbps"), 64)
 	f.mu.Lock()
-	if f.pageCap > 0 {
-		size = min(size, f.pageCap)
-	}
 	var shown []map[string]any
 	for _, n := range f.nodes {
 		if q.Get("reliable_only") == "true" && n.unreliable || n.downloadMbps < floor {
@@ -284,9 +282,13 @@ func (f *fakeLium) listNodes(w http.ResponseWriter, r *http.Request) {
 		}
 		shown = append(shown, n.json())
 	}
+	unpaged := f.unpaged
 	f.mu.Unlock()
 	from, to := min((page-1)*size, len(shown)), min(page*size, len(shown))
 	out := shown[from:to]
+	if unpaged {
+		out = shown
+	}
 	if out == nil {
 		out = []map[string]any{}
 	}
