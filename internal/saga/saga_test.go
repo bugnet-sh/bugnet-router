@@ -240,6 +240,39 @@ func (c capped) SetLifetime(ctx context.Context, ref provider.Ref, until time.Ti
 	return c.Provider.SetLifetime(ctx, ref, until)
 }
 
+// ending gives each sandbox a last moment of its own and refuses a later lifetime as invalid
+type ending struct {
+	*local.Provider
+	known *atomic.Pointer[time.Time] // what MaxUntil answers, none when nil
+	end   *atomic.Pointer[time.Time] // SetLifetime past it is invalid, no end when nil
+	calls *atomic.Int64
+}
+
+func newEnding(t *testing.T) ending {
+	t.Helper()
+	return ending{
+		Provider: newLocal(t, local.Options{Name: "a"}), known: &atomic.Pointer[time.Time]{},
+		end: &atomic.Pointer[time.Time]{}, calls: &atomic.Int64{},
+	}
+}
+
+func (f ending) MaxUntil(provider.Ref) (time.Time, bool) {
+	if at := f.known.Load(); at != nil {
+		return *at, true
+	}
+	return time.Time{}, false
+}
+
+func (f ending) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
+	f.calls.Add(1)
+	if end := f.end.Load(); end != nil && until.After(*end) {
+		return &provider.Error{
+			Code: provider.CodeInvalid, Err: errors.New("job sbx-1 ends at its timeout"),
+		}
+	}
+	return f.Provider.SetLifetime(ctx, ref, until)
+}
+
 // failingDestroy refuses every destroy while fail is set
 type failingDestroy struct {
 	*local.Provider
@@ -2095,6 +2128,70 @@ func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
 	if n := e.extendOrders(t); n != 0 {
 		t.Fatalf("%d extend orders recorded by a listing", n)
 	}
+}
+
+func TestExtendRefusedBeforePayment(t *testing.T) {
+	a := newEnding(t)
+	e, _, _ := newListEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	// A sandbox without a last moment of its own takes every extension, as before MaxUntiler
+	want := []string{
+		"small-5m-a ok", "small-5m-b ok", "small-10m-more ok", "small-10m ok",
+		"small-30m-cheap ok",
+	}
+	if got := e.listed(t, h); !slices.Equal(got, want) {
+		t.Fatalf("listed %q without an end, want %q", got, want)
+	}
+
+	// The sandbox ends ten minutes and the slack after the deadline
+	end := p.Deadline.Add(15 * time.Minute)
+	a.known.Store(&end)
+	a.end.Store(&end)
+	want[len(want)-1] = "small-30m-cheap exceeds lifetime"
+	if got := e.listed(t, h); !slices.Equal(got, want) {
+		t.Fatalf("listed %q, want %q", got, want)
+	}
+	_, deadline, err := e.saga.CheckExtend(t.Context(), h, morePkg)
+	if err != nil || !deadline.Equal(p.Deadline.Add(10*time.Minute)) {
+		t.Fatalf("check inside the end %v, %v", deadline, err)
+	}
+	before := a.calls.Load()
+	_, err = e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", "small-30m-cheap", 20000, h))
+	if !errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Fatalf("extend past the end gave %v, want ErrExceedsLifetime", err)
+	}
+	if n := a.calls.Load() - before; n != 0 {
+		t.Fatalf("%d lifetime calls for an extension refused by its check", n)
+	}
+
+	// A provider whose end comes sooner than the router knows refuses the lifetime itself
+	later := end.Add(time.Hour)
+	a.known.Store(&later)
+	_, err = e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-2", "small-30m-cheap", 20000, h))
+	if !errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Fatalf("extend refused by the provider gave %v, want ErrExceedsLifetime", err)
+	}
+	if strings.Contains(err.Error(), "sbx-1") {
+		t.Fatalf("refusal %q carries the provider's words", err)
+	}
+	if n := a.calls.Load() - before; n != 1 {
+		t.Fatalf("%d lifetime calls, want the one the provider refused", n)
+	}
+	if got := e.reload(t, p.ID); !got.Deadline.Equal(*p.Deadline) {
+		t.Fatalf("deadline moved from %v to %v", p.Deadline, got.Deadline)
+	}
+	if n := e.extendOrders(t); n != 0 {
+		t.Fatalf("%d extend orders recorded for refused extensions", n)
+	}
+	if evs := e.events(t, saga.EventExtended); len(evs) != 0 {
+		t.Fatalf("extended events %+v", evs)
+	}
+
+	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-3", morePkg, morePrice, h))
+	if err != nil || !got.Deadline.Equal(p.Deadline.Add(10*time.Minute)) {
+		t.Fatalf("extend inside the end %v, %v", got.Deadline, err)
+	}
+	e.oneEvent(t, saga.EventExtended)
 }
 
 func TestListExtensionsOrdersByMinutesThenPriceThenID(t *testing.T) {

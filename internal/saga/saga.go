@@ -1360,12 +1360,18 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		p.EdgeBudgetBytes += edge
 		p.EgressBudgetBytes += egress
 		// A concurrent extension may have moved the deadline since the check above
-		if err := withinLifetime(prov, p, *p.Deadline); err != nil {
+		if err := withinLifetime(prov, ref, p, *p.Deadline); err != nil {
 			return err
 		}
 		lctx, cancel := step(ctx)
 		defer cancel()
 		if err := prov.SetLifetime(lctx, ref, p.Deadline.Add(lifetimeSlack)); err != nil {
+			if e, ok := provider.AsError(err); ok && e.Code == provider.CodeInvalid {
+				// The provider's words can name it or its sandbox, which the caller never sees
+				s.d.Log.Warn("provider refused an extension's lifetime", "placement", id,
+					"provider", prov.Name(), "err", err)
+				return fmt.Errorf("%w: past the sandbox's own end", ErrExceedsLifetime)
+			}
 			return fmt.Errorf("set lifetime: %w", err)
 		}
 		if err := s.insertDeadline(ctx, tx, id, *p.Deadline); err != nil {
@@ -1549,14 +1555,16 @@ func (s *Saga) checkExtend(
 	if x.prov, x.ref, err = s.home(p); err != nil {
 		return extension{}, err
 	}
-	if err := withinLifetime(x.prov, p, p.Deadline.Add(x.by)); err != nil {
+	if err := withinLifetime(x.prov, x.ref, p, p.Deadline.Add(x.by)); err != nil {
 		return extension{}, err
 	}
 	return x, nil
 }
 
-// withinLifetime refuses a deadline whose sandbox would outlast the provider's maximum lifetime
-func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
+// withinLifetime refuses a deadline past the provider's maximum lifetime or the sandbox's own end
+func withinLifetime(
+	prov provider.Provider, ref provider.Ref, p store.Placement, deadline time.Time,
+) error {
 	limit := prov.Capabilities().MaxLifetime
 	// A pooled sandbox is older than its placement, and the provider counts from its creation
 	born := p.CreatedAt
@@ -1566,6 +1574,12 @@ func withinLifetime(prov provider.Provider, p store.Placement, deadline time.Tim
 	if life := deadline.Add(lifetimeSlack).Sub(born); limit > 0 && life > limit {
 		// The limit can come from the settings file, so the refusal the caller sees leaves it out
 		return fmt.Errorf("%w: %v from creation", ErrExceedsLifetime, life.Round(time.Second))
+	}
+	if m, ok := provider.As[provider.MaxUntiler](prov); ok {
+		if until, ok := m.MaxUntil(ref); ok && deadline.Add(lifetimeSlack).After(until) {
+			// The end can come from a settings margin, so the refusal leaves it out too
+			return fmt.Errorf("%w: past the sandbox's own end", ErrExceedsLifetime)
+		}
 	}
 	return nil
 }

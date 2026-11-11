@@ -54,9 +54,11 @@ func PoolSetupSpecFor(b BootSettings, name string, ref provider.Ref) SetupSpecFi
 	return b.poolSetupSpecFor(name, ref, nil)
 }
 
-// WithinLifetime is the check an extension of a placement runs against the provider's limit
-func WithinLifetime(prov provider.Provider, p store.Placement, deadline time.Time) error {
-	return withinLifetime(prov, p, deadline)
+// WithinLifetime is the check an extension of a placement runs against the provider's limits
+func WithinLifetime(
+	prov provider.Provider, ref provider.Ref, p store.Placement, deadline time.Time,
+) error {
+	return withinLifetime(prov, ref, p, deadline)
 }
 
 // HardenSpecFor is the harden spec Boot writes for provider name, false when it runs none

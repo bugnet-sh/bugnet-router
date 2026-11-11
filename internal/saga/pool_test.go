@@ -404,11 +404,11 @@ func TestWithinLifetimeCountsFromSandboxCreatedAt(t *testing.T) {
 	now := time.Now()
 	p := store.Placement{CreatedAt: now}
 	deadline := now.Add(50 * time.Minute)
-	eq(t, saga.WithinLifetime(c, p, deadline), nil)
+	eq(t, saga.WithinLifetime(c, provider.Ref{}, p, deadline), nil)
 	// The same placement on a sandbox the provider made 30 minutes earlier has 85 minutes of life
 	old := now.Add(-30 * time.Minute)
 	p.SandboxCreatedAt = &old
-	if err := saga.WithinLifetime(c, p, deadline); err == nil {
+	if err := saga.WithinLifetime(c, provider.Ref{}, p, deadline); err == nil {
 		t.Fatal("a sandbox 30 minutes old was allowed 85 minutes")
 	}
 }
