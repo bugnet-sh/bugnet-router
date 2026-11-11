@@ -89,3 +89,35 @@ func TestMappedModelsAreKnown(t *testing.T) {
 		}
 	}
 }
+
+func TestHFFlavors(t *testing.T) {
+	// The GPU flavors of GET https://huggingface.co/api/jobs/hardware on 2026-11-11, design 4.5
+	want := []string{
+		"t4-small", "t4-medium", "l4x1", "l4x4", "a10g-small", "a10g-large", "a10g-largex2",
+		"a10g-largex4", "l40sx1", "l40sx4", "l40sx8", "a100-large", "a100x4", "a100x8", "h200",
+		"h200x2", "h200x4", "h200x8", "rtx-pro-6000", "rtx-pro-6000x2", "rtx-pro-6000x4",
+		"rtx-pro-6000x8",
+	}
+	got := HFFlavors()
+	if !slices.Equal(got, want) {
+		t.Fatalf("HFFlavors() = %q, want %q", got, want)
+	}
+	got[0] = "changed"
+	if HFFlavors()[0] == "changed" {
+		t.Fatal("HFFlavors shares its list with the caller")
+	}
+	for _, f := range want {
+		if !HFFlavor(f) {
+			t.Errorf("%q is not an HF GPU flavor", f)
+		}
+	}
+	// CPU flavors, and those the create schema holds but the hardware list does not offer
+	for _, f := range []string{
+		"", "cpu-basic", "cpu-upgrade", "cpu-xl", "sprx8", "zero-a10g", "inf2x6", "T4-small",
+		"t4-small ", "a100",
+	} {
+		if HFFlavor(f) {
+			t.Errorf("%q is an HF GPU flavor, want it refused", f)
+		}
+	}
+}

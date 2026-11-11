@@ -33,6 +33,14 @@ var hfModels = map[string]string{
 	"RTX PRO 6000": RTXPro6000,
 }
 
+// hfFlavors are the GPU flavors of HF's hardware list, its CPU flavors left out
+var hfFlavors = []string{
+	"t4-small", "t4-medium", "l4x1", "l4x4", "a10g-small", "a10g-large", "a10g-largex2",
+	"a10g-largex4", "l40sx1", "l40sx4", "l40sx8", "a100-large", "a100x4", "a100x8", "h200",
+	"h200x2", "h200x4", "h200x8", "rtx-pro-6000", "rtx-pro-6000x2", "rtx-pro-6000x4",
+	"rtx-pro-6000x8",
+}
+
 // liumModels maps the GPU type names of Lium's public node feed
 var liumModels = map[string]string{
 	"T4 Tensor Core GPU": T4, "RTX 3090": RTX3090, "RTX A6000": RTXA6000, "RTX 4090": RTX4090,
@@ -47,6 +55,12 @@ func Models() []string { return slices.Clone(models) }
 
 // Known reports whether name is a canonical model name, matched exactly
 func Known(name string) bool { return slices.Contains(models, name) }
+
+// HFFlavors lists every HF GPU flavor the router may sell
+func HFFlavors() []string { return slices.Clone(hfFlavors) }
+
+// HFFlavor reports whether name is an HF GPU flavor, matched exactly
+func HFFlavor(name string) bool { return slices.Contains(hfFlavors, name) }
 
 // FromHF returns the canonical model for an HF accelerator.model, false for a name it lacks
 func FromHF(name string) (string, bool) { return lookup(hfModels, name) }
