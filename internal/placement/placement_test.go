@@ -356,6 +356,51 @@ func TestCandidatesGPUModel(t *testing.T) {
 	}
 }
 
+// TestCandidatesGPUOrder puts a GPU package's candidates in gpu_order ahead of speed and cost
+func TestCandidatesGPUOrder(t *testing.T) {
+	gpuProvider := func(name string, cost int64) provider.Provider {
+		size := provider.Size{Name: "t4", Resources: provider.Resources{
+			VCPU: 4, MemoryMiB: 16384, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 16,
+			GPUModel: gpu.T4,
+		}}
+		return capsProvider{
+			Provider: newLocal(t, name, cost, time.Second, size),
+			caps:     provider.Capabilities{GPU: true, MaxLifetime: time.Hour},
+		}
+	}
+	// lium is dear and slow, koyeb is the cheapest and is not in the order
+	h := fakeHealth{p95: map[string]time.Duration{"lium": 5 * time.Minute}}
+	plain := engine(h,
+		gpuProvider("koyeb", 1000), gpuProvider("hf", 2000), gpuProvider("lium", 3000))
+	ordered := plain.WithGPUOrder([]string{"lium", "hf"})
+	gpuPkg := pkg(10, 1000000)
+	gpuPkg.Resources = provider.Resources{
+		VCPU: 4, MemoryMiB: 12288, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 16, GPUModel: gpu.T4,
+	}
+	gpuPkg.GPUModel = gpu.T4
+	for _, c := range []struct {
+		name string
+		e    *Engine
+		in   Inputs
+		want []string
+	}{
+		{"gpu package", ordered, Inputs{Package: gpuPkg}, []string{"lium", "hf", "koyeb"}},
+		{"warm first", warmEngine(h, fakeWarm{"koyeb/t4": true}, ordered.reg.Ordered()...).
+			WithGPUOrder([]string{"lium", "hf"}),
+			Inputs{Package: gpuPkg, WarmFirst: true}, []string{"lium", "hf", "koyeb"}},
+		{"excluded", ordered, Inputs{Package: gpuPkg, Exclude: map[string]bool{"lium": true}},
+			[]string{"hf", "koyeb"}},
+		{"cpu package", ordered, Inputs{Package: pkg(10, 1000000)},
+			[]string{"koyeb", "hf", "lium"}},
+		{"no order", plain, Inputs{Package: gpuPkg}, []string{"koyeb", "hf", "lium"}},
+	} {
+		got, err := c.e.Candidates(c.in)
+		if err != nil || !slices.Equal(names(got), c.want) {
+			t.Errorf("%s: got %v, %v, want %v", c.name, names(got), err, c.want)
+		}
+	}
+}
+
 func TestCandidatesCapabilitiesAndLifetime(t *testing.T) {
 	ssh := capsProvider{
 		Provider: newLocal(t, "ssh", 1000, time.Second),

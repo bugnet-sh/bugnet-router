@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"slices"
 	"time"
@@ -71,6 +72,8 @@ type Engine struct {
 	reg    *provider.Registry
 	health Health
 	warm   Warm
+	// gpuRank is each gpu_order provider's place in it, nil without an order
+	gpuRank map[string]int
 }
 
 // New builds an engine over a registry, a health source and a warm source, which may be nil
@@ -78,14 +81,29 @@ func New(reg *provider.Registry, health Health, warm Warm) *Engine {
 	return &Engine{reg: reg, health: health, warm: warm}
 }
 
+// WithGPUOrder is the engine with a GPU package's candidates in the order names lists them, ahead
+// of speed and cost, and the providers it leaves out after them
+func (e *Engine) WithGPUOrder(names []string) *Engine {
+	c := *e
+	c.gpuRank = make(map[string]int, len(names))
+	for i, name := range names {
+		if _, ok := c.gpuRank[name]; !ok {
+			c.gpuRank[name] = i
+		}
+	}
+	return &c
+}
+
 // Healthy reports whether the engine's health source lets the provider be tried now
 func (e *Engine) Healthy(name string) bool { return e.health.Healthy(name) }
 
-// Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
+// Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate,
+// a GPU package's in the GPU order first
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	req := in.Requirements
-	req.GPU = req.GPU || pk.Resources.GPUCount > 0
+	gpuPkg := pk.Resources.GPUCount > 0
+	req.GPU = req.GPU || gpuPkg
 	need := time.Duration(pk.Minutes)*time.Minute + max(in.HoldMax, 0) + lifetimeSlack
 	billed := time.Duration(pk.Minutes)*time.Minute + max(in.Hold, 0)
 	var rs []ranked
@@ -140,7 +158,9 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 			Warm: e.warm != nil && len(pk.EgressAllow) == 0 &&
 				e.warm.WarmAvailable(name, size.Name),
 		}
-		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
+		rs = append(rs, ranked{
+			Candidate: c, slow: e.slowRank(name), gpu: e.gpuRankOf(name, gpuPkg),
+		})
 	}
 	if len(rs) == 0 {
 		return nil, e.noCandidate(req)
@@ -148,12 +168,14 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	/* Ordering */
 	// A stable sort leaves equal costs in the order the providers setting lists them
 	// With WarmFirst a warm member is quick to claim even where creates are slow, so it comes first
+	// The GPU order outranks even that, since a GPU provider's ready p95 is far over the threshold
 	slices.SortStableFunc(rs, func(a, b ranked) int {
 		warm := 0
 		if in.WarmFirst {
 			warm = cmp.Compare(b2i(b.Warm), b2i(a.Warm))
 		}
-		return cmp.Or(warm, cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
+		return cmp.Or(cmp.Compare(a.gpu, b.gpu), warm, cmp.Compare(a.slow, b.slow),
+			cmp.Compare(a.CostMicros, b.CostMicros))
 	})
 	out := make([]Candidate, len(rs))
 	for i, r := range rs {
@@ -187,6 +209,8 @@ func (e *Engine) noCandidate(req Requirements) error {
 type ranked struct {
 	Candidate
 	slow int
+	// gpu is the provider's place in the GPU order, 0 for every provider of a package without one
+	gpu int
 }
 
 // slowRank puts a provider whose ready p95 is over the threshold behind the fast ones
@@ -195,6 +219,17 @@ func (e *Engine) slowRank(name string) int {
 		return 1
 	}
 	return 0
+}
+
+// gpuRankOf is name's place in the GPU order for a GPU package, the providers it leaves out after
+func (e *Engine) gpuRankOf(name string, gpuPkg bool) int {
+	if !gpuPkg {
+		return 0
+	}
+	if i, ok := e.gpuRank[name]; ok {
+		return i
+	}
+	return math.MaxInt
 }
 
 func b2i(b bool) int {
