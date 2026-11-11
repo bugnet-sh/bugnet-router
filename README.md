@@ -276,7 +276,9 @@ and it says which. The live stack needs the Linux build of `bugnet-run` from
 `https://<names.hooks_host>/hooks/<provider>/<path secret>` and prints the signing secret once,
 with `team_id` for E2B. `hooks list` hides the path secret, `hooks rotate` prints a new secret
 (move the old one to `..._PREVIOUS` for a day) and `hooks delete PROVIDER ID` removes an endpoint.
-A verified webhook queues a `hook_hint` job per provider and sandbox.
+A verified webhook queues a `hook_hint` job per provider and sandbox. An account event, one with
+type `account` that names no sandbox, asks for the provider's `account_check` at once instead, and
+one that says when the account's running sandboxes stop logs that time at error level.
 
 `bugnet-dev owned PROVIDER` prints the count and ids on its own, reading the provider's key from
 the environment, so `set -a; . ./.env; set +a` first.
@@ -1330,6 +1332,8 @@ going into (`UPLOAD`) or out of (`DOWNLOAD`) a ready placement. The edge serves 
   otherwise, and the local provider's own `/root`. Any other relative path, an empty one, or one
   with NUL or a newline answers `PATH_REFUSED`. `realpath -m` then resolves the path in the
   sandbox, under `sudo -n` where the exec user is not root, so links behave the same everywhere.
+  Where Exec output reaches the router as lossy UTF-8 (`Capabilities.LossyExecText`), the answer
+  comes back in base64 with `realpath`'s own exit code, so a name that is not UTF-8 resolves right.
 - **Staging.** Where the exec user is not root (boxd, Boat), a path outside its home and `/tmp`,
   or one inside them that it cannot read (download) or write in place (upload), goes through
   `<home>/.bugnet/xfer/<transfer id>/`. A download is copied there with
@@ -2495,6 +2499,7 @@ scripts/image.sh retire boxd --version 2026.11.1
 destroys it, and a finding deletes what it already saved. `image check` starts two fresh sandboxes
 from each artifact, scans them before any start step, compares the tools a job sees with the
 manifest, compares the random bytes and host keys of the two, deletes an artifact that fails and
-prints the `[images.PROVIDER]` block to paste. `image retire` refuses a version that is on
-`images.accept`, that a placement runs on, or that became ready in the last hour. The runbook is
-in `deploy/image/README.md`.
+prints the `[images.PROVIDER]` block to paste. On a provider whose `ssh_path` is `native`, the host
+key is the one its `ReadyMeta` pinned in Meta `host_key`, and `ssh-up` never runs there.
+`image retire` refuses a version that is on `images.accept`, that a placement runs on, or that
+became ready in the last hour. The runbook is in `deploy/image/README.md`.
