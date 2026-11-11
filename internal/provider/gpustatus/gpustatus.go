@@ -18,8 +18,10 @@ const (
 
 // Lium pod flags the Lium adapter writes into Reason as words while they are set
 const (
-	LiumFlagNodeOffline = "node_offline"
-	LiumFlagNodeOutage  = "node_outage"
+	LiumFlagNodeOffline   = "node_offline"
+	LiumFlagNodeOutage    = "node_outage"
+	LiumFlagBillingPaused = "billing_paused"
+	LiumFlagDiskPaused    = "disk_paused"
 )
 
 // Reasons of the Lium adapter's own for a pod that changed under a ready placement

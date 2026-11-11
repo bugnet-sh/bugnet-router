@@ -112,6 +112,15 @@ type Provider struct {
 	tmu       sync.Mutex
 	templates map[string]string
 	account   *string
+
+	now          func() time.Time
+	termination  string
+	createBudget time.Duration
+	// rmu guards rentals, the node and body each key last rented with
+	rmu     sync.Mutex
+	rentals map[string]keptRental
+	// pollEvery spaces the pod reads of ReadyMeta
+	pollEvery time.Duration
 }
 
 // New checks the options and starts the listing loop, which Close stops
@@ -152,6 +161,9 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		return nil, errors.New("lium: start billed must not be negative")
 	case opts.TemplateVolume != "" && !path.IsAbs(opts.TemplateVolume):
 		return nil, errors.New("lium: the template volume must be an absolute path")
+	case opts.Termination != "" && opts.Termination != terminationMaxLifetime &&
+		opts.Termination != terminationLifetime:
+		return nil, errors.New("lium: termination must be max_lifetime or lifetime")
 	}
 	if opts.Image != "" {
 		if _, err := parseImageRef(opts.Image); err != nil {
@@ -191,6 +203,11 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		imageVersion:   opts.ImageVersion,
 		volume:         cmp.Or(opts.TemplateVolume, defaultVolume),
 		templates:      map[string]string{},
+		now:            now,
+		termination:    cmp.Or(opts.Termination, terminationMaxLifetime),
+		createBudget:   defaultCreateBudget,
+		rentals:        map[string]keptRental{},
+		pollEvery:      podPollEvery,
 	}, nil
 }
 

@@ -27,6 +27,8 @@ type fault struct {
 	drop  bool
 	after bool
 	times int
+	// skip lets this many matching calls through before the fault applies
+	skip int
 }
 
 // fakeNode is one node of the listing, its fields as GET /executors writes them
@@ -189,6 +191,8 @@ func (f *fakeLium) provider(t *testing.T, opts Options, now func() time.Time) *P
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Go resends a request with an Idempotency-Key when a reused connection drops, unseen
+	p.api.client.Transport = &http.Transport{DisableKeepAlives: true}
 	return p
 }
 
@@ -232,6 +236,10 @@ func (f *fakeLium) take(pattern string, r *http.Request, body []byte) *fault {
 	})
 	ft := f.faults[pattern]
 	if ft == nil {
+		return nil
+	}
+	if ft.skip > 0 {
+		ft.skip--
 		return nil
 	}
 	if ft.times > 0 {
