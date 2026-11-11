@@ -205,6 +205,8 @@ func TestClassifyLium(t *testing.T) {
 	}
 	terminating := ready()
 	terminating.State = store.PlacementTerminating
+	stopSpell := spell(2 * grace)
+	stopSpell.State = store.PlacementTerminating
 	late := Live{State: store.PlacementReady, Deadline: now.Add(-time.Minute)}
 	lateTerminating := late
 	lateTerminating.State = store.PlacementTerminating
@@ -282,12 +284,19 @@ func TestClassifyLium(t *testing.T) {
 			gs.LiumFlagNodeOffline, gs.LiumFlagNodeOutage), spell(grace / 3), def, failed},
 		{"executor_offline beats a reboot", liumStatus("failed", gs.LiumEventExecutorOffline,
 			gs.LiumRebooted), ready(), def, failed},
+		{"a BROKEN word on a gone pod", liumStatus("gone", "", gs.LiumStatusBroken), ready(),
+			def, exited},
 
 		{"moved to another node", liumStatus("failed", "", gs.LiumMoved), ready(), def,
 			failed},
 		{"moved while terminating", liumStatus("failed", "", gs.LiumMoved), terminating, def,
 			failed},
 		{"moved past the deadline", liumStatus("failed", "", gs.LiumMoved), late, def, failed},
+		{"a lium_moved word on a gone pod", liumStatus("gone", "", gs.LiumMoved), ready(), def,
+			exited},
+		{"a lium_moved word on a degraded pod inside the grace", liumStatus("degraded", "",
+			"RUNNING", gs.LiumFlagNodeOffline, gs.LiumMoved), spell(grace / 3), def,
+			Verdict{Recheck: grace - grace/3}},
 
 		{"node_offline, no spell yet", liumStatus("degraded", "", "RUNNING",
 			gs.LiumFlagNodeOffline), ready(), def, Verdict{Recheck: grace}},
@@ -295,6 +304,8 @@ func TestClassifyLium(t *testing.T) {
 			gs.LiumFlagNodeOffline), spell(grace / 3), def, Verdict{Recheck: grace - grace/3}},
 		{"node_offline past the grace", liumStatus("degraded", "", "RUNNING",
 			gs.LiumFlagNodeOffline), spell(2 * grace), def, failed},
+		{"node_offline past the grace while terminating", liumStatus("degraded", "", "RUNNING",
+			gs.LiumFlagNodeOffline), stopSpell, def, failed},
 
 		{"user_initiated on a ready placement", liumStatus("gone", gs.LiumEventUserInitiated),
 			ready(), def, Verdict{Class: ClassProviderFailed, Alert: store.AlertUnaskedKill}},
