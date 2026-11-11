@@ -97,10 +97,7 @@ func TestHardenSpecNoGatewayOnLium(t *testing.T) {
 // TestHardenSpecReadsLiumHardenNoGateway follows lium.harden_no_gateway from the settings file
 func TestHardenSpecReadsLiumHardenNoGateway(t *testing.T) {
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for doc, want := range map[string]bool{
-		"": true, "[lium]\nharden_no_gateway = false\n": false,
-		"[lium]\nharden_no_gateway = true\n": true,
-	} {
+	for _, doc := range []string{"", "[lium]\nharden_no_gateway = true\n"} {
 		path := filepath.Join(t.TempDir(), "settings.toml")
 		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
 			t.Fatal(err)
@@ -109,16 +106,23 @@ func TestHardenSpecReadsLiumHardenNoGateway(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := saga.LoadBootSettings(discard, cfg)
-		if err != nil {
-			t.Fatal(err)
+		// The settings file cannot turn it off, so a rule without it stands in for one that could
+		for _, r := range []struct {
+			rule config.HardenRule
+			want bool
+		}{{cfg.Hardening.Rules["lium"], true}, {config.HardenRule{Required: true}, false}} {
+			cfg.Hardening.Rules["lium"] = r.rule
+			b, err := saga.LoadBootSettings(discard, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, ok := saga.HardenSpecFor(b, "lium")
+			eq(t, ok, true)
+			eq(t, spec.NoGateway, r.want)
+			hf, ok := saga.HardenSpecFor(b, "hf")
+			eq(t, ok, true)
+			eq(t, hf.NoGateway, false)
 		}
-		spec, ok := saga.HardenSpecFor(b, "lium")
-		eq(t, ok, true)
-		eq(t, spec.NoGateway, want)
-		hf, ok := saga.HardenSpecFor(b, "hf")
-		eq(t, ok, true)
-		eq(t, hf.NoGateway, false)
 	}
 }
 

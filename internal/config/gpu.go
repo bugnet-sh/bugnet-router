@@ -53,6 +53,14 @@ func (f liumFile) read(d liumFile) (Lium, error) {
 		OtherCountries: f.OtherCountries, KeyDailyBudgetMicros: f.KeyDailyBudgetMicros,
 		TemplateVolume: cmp.Or(f.TemplateVolume, d.TemplateVolume),
 	}
+	if !f.HardenRequired {
+		return Lium{}, errors.New("lium.harden_required must stay true, so a pod whose " +
+			"harden fails never serves and the order goes to the next provider")
+	}
+	if !f.HardenNoGateway {
+		return Lium{}, errors.New("lium.harden_no_gateway must stay true, a pod's default " +
+			"gateway is the Lium host, whose services a renter must not reach")
+	}
 	for _, list := range []struct {
 		key  string
 		raw  []string

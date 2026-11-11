@@ -50,3 +50,19 @@ func TestConfigGPUDataPlane(t *testing.T) {
 		},
 	})
 }
+
+// TestConfigLiumHarden is checks 2 and 12 of 5.3, harden on every Lium pod with its gateway
+func TestConfigLiumHarden(t *testing.T) {
+	runGPUChecks(t, map[string]gpuCheck{
+		"2 required": {
+			pass:   "[lium]\nharden_required = true\n",
+			refuse: "[lium]\nharden_required = false\n",
+			want:   "lium.harden_required must stay true",
+		},
+		"12 no gateway": {
+			pass:   "[lium]\nharden_no_gateway = true\n",
+			refuse: "[lium]\nharden_no_gateway = false\n",
+			want:   "lium.harden_no_gateway must stay true",
+		},
+	})
+}

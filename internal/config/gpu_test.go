@@ -75,9 +75,9 @@ max_lifetime = "3h"
 ready_timeout = "7m"
 start_billed = "8m"
 ssh_path = "gate"
-harden_required = false
+harden_required = true
 harden_allow = ["10.0.0.0/24"]
-harden_no_gateway = false
+harden_no_gateway = true
 ops_per_second = 4
 max_concurrent = 2
 key_daily_budget_micros = 20000000
@@ -138,7 +138,8 @@ creates_per_second = 2
 	eq(t, c.MaxConcurrent["hf"], 3)
 	eq(t, c.CreatesPerSecond["lium"], 2)
 	eq(t, c.CreatesPerSecond["hf"], 2)
-	eq(t, c.Hardening.Rules["lium"], HardenRule{Allow: []string{"10.0.0.0/24"}})
+	eq(t, c.Hardening.Rules["lium"],
+		HardenRule{Required: true, Allow: []string{"10.0.0.0/24"}, NoGateway: true})
 	eq(t, c.Hardening.Rules["hf"], HardenRule{Required: true, Allow: []string{"192.168.1.1/32"}})
 	eq(t, len(c.NativeSSH()), 0)
 }
