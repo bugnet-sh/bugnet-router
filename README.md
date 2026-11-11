@@ -2127,7 +2127,8 @@ evidence, and its wallet actions are recorded in `provider_signals` as `held`. `
 a placement's sandbox, classifies the reading and ends the placement through `Saga.End`, or flags
 an ended one through `Saga.FlagEnded`. Only an `abuse` verdict acts on a placement that is
 terminating or ended. Another verdict there that carries an alert still logs it and writes its
-evidence to `provider_signals` with action `alerted`, so `/monitor` counts it.
+evidence to `provider_signals` with action `alerted`, so `/monitor` counts it. The correlation guard
+and the outage count leave an `alerted` signal out, since it ended nothing.
 
 - A degraded sandbox sets `placements.degraded_since`. Past `degraded_grace` the setting's class
   applies, and before it a scheduled `reconcile` job looks again. A healthy reading clears it.
