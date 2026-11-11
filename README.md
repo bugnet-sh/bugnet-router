@@ -1866,6 +1866,16 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   starts every replica counts in Valkey under `valkey.prefix`, kept for the day-long window, and
   from each process's own count while Valkey does not answer.
 
+A GPU package tries the providers `gpu_order` names first, in that order (`["lium", "hf"]` by
+default), ahead of warm members, speed and cost, and every other provider after them. `gpu_order`
+may name a provider that `providers` does not list, which then has no candidate. Each provider's
+table sets `ready_timeout`, how long a new sandbox may take to become ready, 60 s to 15 minutes
+(60 s by default, 6 minutes for `lium` and 5 for `hf`). A package without a GPU starts candidates
+for 30 s, a GPU package for `gpu_placing_budget` (13 minutes). The router refuses to start with a
+budget under Lium's slowest boot that fails plus the next provider's create, every boot step at
+its timeout and `harden` failing last (12 minutes 10 seconds with the default timeouts), so HF
+still gets its turn.
+
 ### Limits and account standing
 
 `limits_poll{provider}` reads each account's cap and use into `provider_capacity` every 60 s, and
@@ -2326,8 +2336,9 @@ records each provider's `cold` figure after `bugnet-dev pools drain`.
 A start that runs longer than its provider's p95 gets a second attempt beside it, and the first
 sandbox ready wins. The settings are `[hedge]` in `config/example.toml`: `enabled`,
 `default_after` (5 s), `min_after` (1500 ms), `min_samples` (5), `loser_life` (90 s), `min_left`
-(10 s), `min_bucket_share` (0.5), `per_minute` (30) with `burst` (5), and `onto_boat`, which stays
-`false` until the founder answers CP question 21.
+(10 s), `min_bucket_share` (0.5), `per_minute` (30) with `burst` (5), `onto_boat`, which stays
+`false` until the founder answers CP question 21, and `onto_gpu`, which stays `false`, so a GPU
+package never pays for two GPU sandboxes.
 
 `place` arms a timer for the running attempt at `Hedger.After(provider, path)`. It is the p95 of
 whole attempts on that provider and path (`cold_total_p95_ms` or `pooled_total_p95_ms` of
@@ -2341,10 +2352,11 @@ otherwise nothing is written and the timer does not arm again:
 - the next candidate is on another provider, has a free slot, no create pause and a create bucket
   at least `min_bucket_share` full (a level peek, so nothing is spent)
 - it is not Boat while `onto_boat` is `false`
+- the package has no GPU while `onto_gpu` is `false`
 - `placement.HedgeFits` holds for the two, which prices the worst case of the dearer one winning,
   both start fees and the loser living `loser_life`, with the awaited reservation's time so far
   (at most 55 s) counted on both sides
-- at least `min_left` of the 30 s placing budget is left
+- at least `min_left` of the placing budget is left
 - one token comes from `rl:hedge:all`
 
 The hedge is attempt `n+1` with its own key, its own slot on its attempt row (`slot_provider`) and
