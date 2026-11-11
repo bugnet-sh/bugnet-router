@@ -154,6 +154,7 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 	}
 	var live *podItem
 	var dead []string
+	var kept error
 	for _, pod := range pods {
 		switch {
 		case pod.Name != o.name:
@@ -168,16 +169,22 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 			dead = append(dead, pod.Status)
 			// A failed pod comes back and bills again unless it is deleted
 			if pod.Status != statusDeleting {
-				if err := p.destroyPod(ctx, pod.ID, pod.Name); err != nil {
-					p.log.Warn("lium: a dead pod of the key was not deleted", "pod", pod.ID,
-						"err", err)
+				if err := p.destroyPod(ctx, pod.ID, pod.Name); err != nil && kept == nil {
+					kept = fmt.Errorf("lium pod %s ended as %s and was not deleted, %w", pod.ID,
+						pod.Status, err)
 				}
 			}
 		}
 	}
 	switch {
 	case live != nil:
+		if kept != nil {
+			p.log.Warn("lium: a dead pod of the key was not deleted", "err", kept)
+		}
 		return p.adopted(o, *live), true, nil
+	case kept != nil:
+		// The key's pod is still there and may bill again, so the order never moves on beside it
+		return provider.Ref{}, true, &provider.Error{Code: provider.CodeInternal, Err: kept}
 	case len(dead) > 0:
 		// The key's sandbox already died, and a rent under the key would replay it
 		return provider.Ref{}, true, &provider.Error{

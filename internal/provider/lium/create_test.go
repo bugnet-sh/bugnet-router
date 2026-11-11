@@ -414,6 +414,28 @@ func TestLiumAdoptSkipsTerminal(t *testing.T) {
 			t.Fatal("the failed pod was kept, it would bill again after a reboot")
 		}
 	})
+	for _, status := range []string{"FAILED", "BROKEN", "STOPPED"} {
+		t.Run(status+" whose delete fails", func(t *testing.T) {
+			f, p := liveFake(t)
+			pod := f.addPod(fakePod{name: podName(testKey, placementLabels()), status: status})
+			f.inject("DELETE /pods/{id}", fault{status: 502, code: "upstream_unavailable"})
+			_, err := p.Create(context.Background(), createReq(testKey))
+			wantCode(t, err, provider.CodeInternal, false)
+			eq(t, len(f.requestsTo("DELETE", "/pods/"+pod.id)), 1)
+			if _, ok := f.pod(pod.id); !ok {
+				t.Fatal("the fake lost the pod its delete refused")
+			}
+			eq(t, len(f.rents()), 0)
+		})
+	}
+	t.Run("a live pod beside a dead one whose delete fails", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.addPod(fakePod{name: podName(testKey, placementLabels()), status: "FAILED"})
+		live := f.addPod(fakePod{name: podName(testKey, placementLabels()), status: "RUNNING"})
+		f.inject("DELETE /pods/{id}", fault{status: 502, code: "upstream_unavailable"})
+		ref := mustCreate(t, p, createReq(testKey))
+		eq(t, ref.ID, live.id)
+	})
 	t.Run("an unknown status", func(t *testing.T) {
 		f, p := liveFake(t)
 		f.addPod(fakePod{name: podName(testKey, placementLabels()), status: "HIBERNATED"})
