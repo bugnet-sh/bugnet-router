@@ -184,3 +184,38 @@ func TestConfigGPUTables(t *testing.T) {
 		t.Fatalf("an unknown flavor gave %v", err)
 	}
 }
+
+// TestConfigGPUOrder is check 5 of 5.3, which may name a provider that providers leaves out
+func TestConfigGPUOrder(t *testing.T) {
+	runGPUChecks(t, map[string]gpuCheck{
+		"5 unknown": {
+			pass:   "providers = [\"e2b\"]\ngpu_order = [\"hf\", \"lium\"]\n",
+			refuse: "gpu_order = [\"hf\", \"runpod\"]\n",
+			want:   "gpu_order entry 2 is not one of",
+		},
+		"5 twice": {
+			pass:   "gpu_order = [\"hf\"]\n",
+			refuse: "gpu_order = [\"hf\", \"lium\", \"hf\"]\n",
+			want:   `gpu_order lists "hf" more than once`,
+		},
+		"5 empty entry": {
+			pass:   "gpu_order = []\n",
+			refuse: "gpu_order = [\"lium\", \"\"]\n",
+			want:   "gpu_order has an empty entry",
+		},
+	})
+}
+
+// TestConfigReadyTimeouts is check 7 of 5.3, every provider's ready_timeout from 60 s to 15 min
+func TestConfigReadyTimeouts(t *testing.T) {
+	// A budget over lium's slowest failing boot at a 15 minute ready_timeout
+	budget := "gpu_placing_budget = \"22m\"\n"
+	checks := map[string]gpuCheck{}
+	for _, p := range []string{"local", "boxd", "e2b", "koyeb", "boat", "lium", "hf"} {
+		table := budget + "[" + p + "]\nready_timeout = "
+		want := p + ".ready_timeout must be a Go duration from 1m0s to 15m0s"
+		checks["7 "+p+" short"] = gpuCheck{table + `"60s"`, table + `"59s"`, want}
+		checks["7 "+p+" long"] = gpuCheck{table + `"15m"`, table + `"15m1s"`, want}
+	}
+	runGPUChecks(t, checks)
+}
