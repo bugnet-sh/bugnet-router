@@ -214,6 +214,12 @@ type FileWriter interface {
 	Abort() error
 }
 
+// ReadyReporter is a provider that learns Ref.Meta entries while a sandbox becomes ready
+type ReadyReporter interface {
+	// ReadyMeta waits as WaitReady does and returns Ref.Meta entries the router stores
+	ReadyMeta(ctx context.Context, ref Ref) (map[string]string, error)
+}
+
 // Pather is a provider that resolves sandbox paths itself and whose file API reaches every path
 type Pather interface {
 	// Home is the exec user's home directory as a sandbox path

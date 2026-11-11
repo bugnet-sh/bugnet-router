@@ -78,6 +78,28 @@ func TestProviderAsThroughWrapper(t *testing.T) {
 	eq(t, ok, true)
 }
 
+// ready is a provider that learns Ref.Meta entries while it waits, as Lium is
+type ready struct{ *base }
+
+func (ready) ReadyMeta(context.Context, provider.Ref) (map[string]string, error) {
+	return map[string]string{"ssh_host": "203.0.113.7"}, nil
+}
+
+func TestReadyReporterThroughWrapper(t *testing.T) {
+	tel := telemetrytest.New(t, "router-api", 1, nil)
+	tr := tel.Tracer("test")
+	lium := traced.Wrap(ready{&base{name: "lium"}}, tr, nil)
+	rr, ok := provider.As[provider.ReadyReporter](lium)
+	eq(t, ok, true)
+	meta, err := rr.ReadyMeta(t.Context(), provider.Ref{Provider: "lium", ID: "sbx-1"})
+	eq(t, err, nil)
+	eq(t, meta, map[string]string{"ssh_host": "203.0.113.7"})
+	_, direct := lium.(provider.ReadyReporter)
+	eq(t, direct, false)
+	_, ok = provider.As[provider.ReadyReporter](traced.Wrap(&base{name: "e2b"}, tr, nil))
+	eq(t, ok, false)
+}
+
 func TestExecSpanEndsAtWait(t *testing.T) {
 	tel := telemetrytest.New(t, "router-api", 1, testKey)
 	p := traced.Wrap(&base{name: "local"}, tel.Tracer("test"), tel.SandboxHash)
