@@ -91,6 +91,8 @@ func (h *Hedger) Allow(
 	}
 	name := next.Provider.Name()
 	switch {
+	case pkg.Resources.GPUCount > 0 && !h.d.Settings.OntoGPU:
+		return false
 	case name == "boat" && !h.d.Settings.OntoBoat:
 		return false
 	case left < h.d.Settings.MinLeft:

@@ -8,7 +8,9 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -102,6 +104,27 @@ func TestHedgerAllowOntoBoatWhenAllowed(t *testing.T) {
 	h, _ := newHedger(t, s, nil, nil)
 	eq(t, h.Allow(t.Context(), hedgePkg, hedgeCand(t, "running", 1000),
 		hedgeCand(t, "boat", 1000), 0, 20*time.Second), true)
+}
+
+func TestHedgerAllowRefusesAGPUPackage(t *testing.T) {
+	gpuPkg := hedgePkg
+	gpuPkg.Resources = provider.Resources{
+		VCPU: 2, MemoryMiB: 2048, DiskGiB: 10, GPUCount: 1, GPUMemoryGiB: 16, GPUModel: gpu.T4,
+	}
+	gpuPkg.GPUModel = gpu.T4
+	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
+	h, _ := newHedger(t, hedgeSettings(), nil, nil)
+	eq(t, h.Allow(t.Context(), gpuPkg, running, next, 0, 20*time.Second), false)
+	// The refusal took no token, so the burst of 5 still holds 5
+	for i := range 5 {
+		if !h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second) {
+			t.Fatalf("hedge %d was refused, the GPU refusal took a token", i+1)
+		}
+	}
+	s := hedgeSettings()
+	s.OntoGPU = true
+	h, _ = newHedger(t, s, nil, nil)
+	eq(t, h.Allow(t.Context(), gpuPkg, running, next, 0, 20*time.Second), true)
 }
 
 func TestHedgerAllowRefusesAPausedProvider(t *testing.T) {
