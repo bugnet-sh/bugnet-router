@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -62,6 +63,10 @@ type Options struct {
 	MaxLifetime time.Duration
 	// StartBilled is the time Lium bills before the paid clock, priced at the size's cap
 	StartBilled time.Duration
+	// OpsPerSecond paces every API call, none when 0
+	OpsPerSecond int
+	// CreatesPerSecond paces every rent beside OpsPerSecond, none when 0
+	CreatesPerSecond int
 }
 
 // size is one size sold and the resources it guarantees
@@ -72,6 +77,7 @@ type size struct {
 
 // Provider sells Lium pods, answering sizes and prices from memory
 type Provider struct {
+	api         *api
 	log         *slog.Logger
 	sizes       []size // lowest cap first
 	maxLifetime time.Duration
@@ -98,8 +104,17 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	log := cmp.Or(opts.Log, slog.Default())
 	return &Provider{
-		log:         cmp.Or(opts.Log, slog.Default()),
+		api: &api{
+			base:    strings.TrimRight(cmp.Or(opts.BaseURL, defaultBaseURL), "/"),
+			key:     opts.APIKey,
+			client:  &http.Client{CheckRedirect: provider.NoRedirect},
+			log:     log,
+			ops:     limiter(opts.OpsPerSecond),
+			creates: limiter(opts.CreatesPerSecond),
+		},
+		log:         log,
 		sizes:       sizes,
 		maxLifetime: cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled: opts.StartBilled,
