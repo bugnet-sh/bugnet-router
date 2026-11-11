@@ -26,6 +26,8 @@ type Hedge struct {
 	PerMinute, Burst int
 	// OntoBoat lets a hedge start on Boat, whose every create counts as a start
 	OntoBoat bool
+	// OntoGPU lets a GPU package hedge, which pays for a second GPU sandbox beside a slow one
+	OntoGPU bool
 }
 
 type hedgeFile struct {
@@ -39,6 +41,7 @@ type hedgeFile struct {
 	PerMinute      int64   `toml:"per_minute"`
 	Burst          int64   `toml:"burst"`
 	OntoBoat       bool    `toml:"onto_boat"`
+	OntoGPU        bool    `toml:"onto_gpu"`
 }
 
 func defaultHedge() hedgeFile {
@@ -56,7 +59,7 @@ func DefaultHedge() Hedge {
 
 // read checks the hedge table against its bounds, d holding the defaults
 func (f hedgeFile) read(d hedgeFile) (Hedge, error) {
-	h := Hedge{Enabled: f.Enabled, OntoBoat: f.OntoBoat}
+	h := Hedge{Enabled: f.Enabled, OntoBoat: f.OntoBoat, OntoGPU: f.OntoGPU}
 	for _, v := range []struct {
 		key, raw, def string
 		min, max      time.Duration

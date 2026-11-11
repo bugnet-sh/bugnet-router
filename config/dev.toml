@@ -5,6 +5,8 @@
 
 packages_file = "config/dev-packages.json"
 providers = ["local"]         # cheapest first, so a real provider replaces local, its key in .env
+gpu_order = ["lium", "hf"]    # a GPU package tries these first, once providers lists them
+gpu_placing_budget = "13m"    # at least lium's slowest failing boot, so hf still gets its turn
 deployment_id = "dev"         # its sweep never destroys main's sandboxes on a shared account
 
 [api]

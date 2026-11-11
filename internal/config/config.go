@@ -53,6 +53,12 @@ type Config struct {
 	RunnerLinuxAMD64    string
 	RunnerLinuxARM64    string
 	ProviderKeys        map[string]string
+	// GPUOrder puts a GPU package's candidates in this order ahead of speed and cost
+	GPUOrder []string
+	// GPUPlacingBudget is how long a GPU package's placing starts candidates, in place of 30 s
+	GPUPlacingBudget time.Duration
+	// ReadyTimeouts is how long each provider's new sandbox may take to become ready, by name
+	ReadyTimeouts map[string]time.Duration
 	// HookSecrets are the webhook signing secrets by provider, from the environment
 	HookSecrets       map[string]HookSecret
 	LocalEnabled      bool
@@ -378,6 +384,8 @@ type file struct {
 	PackagesFile        string         `toml:"packages_file"`
 	Providers           *[]string      `toml:"providers"`
 	MarginFloor         float64        `toml:"margin_floor"`
+	GPUOrder            []string       `toml:"gpu_order"`
+	GPUPlacingBudget    string         `toml:"gpu_placing_budget"`
 	DeploymentID        string         `toml:"deployment_id"`
 	ReplicaID           string         `toml:"replica_id"`
 	EventsURL           string         `toml:"events_url"`
@@ -456,6 +464,7 @@ type localFile struct {
 	Runner       string `toml:"runner"`
 	HourlyMicros int64  `toml:"hourly_micros"`
 	SSHDPath     string `toml:"sshd_path"`
+	ReadyTimeout string `toml:"ready_timeout"`
 }
 
 type e2bFile struct {
@@ -468,6 +477,7 @@ type e2bFile struct {
 	TeamID         string        `toml:"team_id"`
 	MaxConcurrent  int64         `toml:"max_concurrent"`
 	CreatesPerSec  int64         `toml:"creates_per_second"`
+	ReadyTimeout   string        `toml:"ready_timeout"`
 }
 
 type boxdFile struct {
@@ -480,6 +490,7 @@ type boxdFile struct {
 	OpsPerSecond   int64    `toml:"ops_per_second"`
 	MaxConcurrent  int64    `toml:"max_concurrent"`
 	CreatesPerSec  int64    `toml:"creates_per_second"`
+	ReadyTimeout   string   `toml:"ready_timeout"`
 }
 
 type koyebFile struct {
@@ -492,7 +503,8 @@ type koyebFile struct {
 	MaxConcurrent  int64             `toml:"max_concurrent"`
 	CreatesPerSec  int64             `toml:"creates_per_second"`
 	// PoolIdleHourlyMicros is one unclaimed Light Sleep member's cost an hour
-	PoolIdleHourlyMicros int64 `toml:"pool_idle_hourly_micros"`
+	PoolIdleHourlyMicros int64  `toml:"pool_idle_hourly_micros"`
+	ReadyTimeout         string `toml:"ready_timeout"`
 }
 
 type boatFile struct {
@@ -505,6 +517,7 @@ type boatFile struct {
 	OpsPerSecond   int64             `toml:"ops_per_second"`
 	MaxConcurrent  int64             `toml:"max_concurrent"`
 	CreatesPerSec  int64             `toml:"creates_per_second"`
+	ReadyTimeout   string            `toml:"ready_timeout"`
 }
 
 type budgetFile struct {
@@ -587,11 +600,14 @@ type bootstrapFile struct {
 // defaults are the settings of an empty file, an empty string in the file also means its default
 func defaults() file {
 	return file{
-		MarginFloor:  0.5,
-		DeploymentID: "main",
-		API:          apiFile{ListenAddr: ":8080"},
-		Worker:       workerFile{ListenAddr: ":8081", DataplaneWorkers: 8, DefaultWorkers: 20},
-		Valkey:       valkeyFile{Addr: "127.0.0.1:6379", Prefix: "bn:"},
+		MarginFloor: 0.5,
+		// A fresh list each call, since go-toml decodes a list into the slice it finds
+		GPUOrder:         []string{"lium", "hf"},
+		GPUPlacingBudget: "13m",
+		DeploymentID:     "main",
+		API:              apiFile{ListenAddr: ":8080"},
+		Worker:           workerFile{ListenAddr: ":8081", DataplaneWorkers: 8, DefaultWorkers: 20},
+		Valkey:           valkeyFile{Addr: "127.0.0.1:6379", Prefix: "bn:"},
 		Limits: limitsFile{
 			JobOutputBudget: "8MiB", PlacementOutputBudget: "32MiB",
 			PlacementTailReserve: "8MiB", MaxRunningJobs: 16,
@@ -599,15 +615,19 @@ func defaults() file {
 		},
 		Local: localFile{
 			Root: filepath.Join(os.TempDir(), "bugnet-local"), SSHDPath: "/usr/sbin/sshd",
+			ReadyTimeout: "60s",
 		},
 		Boxd: boxdFile{
 			Region: "fra", GateRoute: "default", ParkedGiB: 5, HardenRequired: true,
+			ReadyTimeout: "60s",
 		},
-		E2B:   e2bFile{HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1},
-		Koyeb: koyebFile{Region: "fra", HardenRequired: true},
+		E2B: e2bFile{
+			HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1, ReadyTimeout: "60s",
+		},
+		Koyeb: koyebFile{Region: "fra", HardenRequired: true, ReadyTimeout: "60s"},
 		Boat: boatFile{
 			SSHPath: "gate", HardenRequired: true, OpsPerSecond: 50,
-			EgressFamilies: []string{"ipv6", "ipv4"}, EgressIPv6Bits: 128,
+			EgressFamilies: []string{"ipv6", "ipv4"}, EgressIPv6Bits: 128, ReadyTimeout: "60s",
 		},
 		Names: Names{SSHPort: 22},
 		EdgeBudget: budgetFile{
@@ -843,6 +863,9 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	c.Providers = providers
+	if err := f.placing(&c); err != nil {
+		return Config{}, err
+	}
 	if err := f.dataPlane(&c); err != nil {
 		return Config{}, err
 	}

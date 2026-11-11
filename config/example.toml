@@ -7,6 +7,8 @@ order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, requi
 packages_file = ""            # package catalog JSON, required
 providers = ["koyeb", "boat", "e2b", "boxd"]   # order only breaks cost ties, absent = this default
 margin_floor = 0.5            # 0 to 10, finite
+gpu_order = ["lium", "hf"]    # a GPU package tries these first, in this order, then the others
+gpu_placing_budget = "13m"    # a GPU package's placing budget, at least lium's slowest failing boot
 deployment_id = "main"        # ^[a-z0-9-]{1,32}$
 replica_id = ""               # host-pid when empty
 events_url = ""               # signed events stay pending in the outbox when empty
@@ -278,6 +280,7 @@ root = ""                     # $TMPDIR/bugnet-local when empty
 runner = ""                   # required when providers has "local"
 hourly_micros = 0             # >= 0
 sshd_path = "/usr/sbin/sshd"  # the host's sshd, which ssh-up never installs
+ready_timeout = "60s"         # how long a new sandbox may take to become ready, 60s to 15m
 
 [limits_poll]
 every = "60s"                 # E2B, boxd and Koyeb limits
@@ -382,11 +385,12 @@ default_after = "5s"          # when a hedge starts for a provider without min_s
 min_after = "1500ms"          # the earliest a hedge ever starts
 min_samples = 5               # whole attempts whose p95 sets the time
 loser_life = "90s"            # the loser's longest life, charged in the margin check
-min_left = "10s"              # of the 30 s placing budget a hedge needs left
+min_left = "10s"              # of the placing budget a hedge needs left
 min_bucket_share = 0.5        # the next candidate's create bucket must be this full
 per_minute = 30               # hedges router-wide, with the burst below
 burst = 5
 onto_boat = false             # a hedge never starts on Boat until the founder allows it
+onto_gpu = false              # a GPU package never hedges, so a slow GPU start never pays for two
 
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra
@@ -398,6 +402,7 @@ harden_allow = []             # the provider's own control addresses, open befor
 ops_per_second = 0            # user operations on the account a second, 0 for no bucket
 max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
 creates_per_second = 0        # creates a second on the account, 0 for no bucket
+ready_timeout = "60s"
 
 [e2b]
 domain = ""                   # e2b.app when empty
@@ -408,6 +413,7 @@ ops_per_second = 0
 team_id = ""                  # printed by bugnet-dev hooks register e2b, the account check reads it
 max_concurrent = 20           # not readable with an API key, 20 on Hobby and 100 on Pro
 creates_per_second = 1        # 1 on Hobby and 5 on Pro
+ready_timeout = "60s"
 
 # No templates by default, and E2B is never chosen without one. These two tables are the builds
 # deploy/e2b makes, one per size, keep them once they are built on the E2B account.
@@ -434,6 +440,7 @@ organization_id = ""          # read from the account when empty
 max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
 creates_per_second = 0        # creates a second on the account, 0 for no bucket
 pool_idle_hourly_micros = 0   # one unclaimed Light Sleep member an hour, free while it is a preview
+ready_timeout = "60s"
 
 [koyeb.instance_types]        # size = instance type, every fra type when empty
 
@@ -446,5 +453,6 @@ harden_allow = []
 ops_per_second = 50           # 3,000 a minute, inside Boat's 10,000 per 60 s per IP with previews
 max_concurrent = 0            # the most sandboxes to place, 0 takes the account's cap
 creates_per_second = 0        # creates a second on the account, 0 for no bucket
+ready_timeout = "60s"
 
 [boat.types]                  # size = machine type, every type when empty

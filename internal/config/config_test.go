@@ -137,6 +137,7 @@ func TestLoadFileDefaults(t *testing.T) {
 func TestLoadFileEmptyStringsMeanDefaults(t *testing.T) {
 	c, err := LoadFile(writeFile(t, `deployment_id = ""
 replica_id = ""
+gpu_placing_budget = ""
 [api]
 listen_addr = ""
 [worker]
@@ -149,13 +150,19 @@ job_output_budget = ""
 [local]
 root = ""
 sshd_path = ""
+ready_timeout = ""
 [boxd]
 region = ""
 gate_route = ""
+ready_timeout = ""
+[e2b]
+ready_timeout = ""
 [koyeb]
 region = ""
+ready_timeout = ""
 [boat]
 ssh_path = ""
+ready_timeout = ""
 [edge_budget]
 bytes_per_10_minutes = ""
 bytes_per_second = ""
