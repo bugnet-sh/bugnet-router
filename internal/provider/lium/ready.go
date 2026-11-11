@@ -17,8 +17,7 @@ import (
 // refuseTimeout bounds the delete of a pod whose boot the checks refused
 const refuseTimeout = 30 * time.Second
 
-// ReadyMeta waits for RUNNING, checks a node Lium moved the pod to and the pod's address, and
-// returns where SSH reaches the pod with the node and price it runs at
+// ReadyMeta waits for RUNNING, checks the pod's node and address, and returns its SSH and node
 func (p *Provider) ReadyMeta(ctx context.Context, ref provider.Ref) (map[string]string, error) {
 	id, ok := podID(ref)
 	if !ok {
@@ -114,8 +113,7 @@ func startOf(d podDetail) (wait, end error) {
 		Err: fmt.Errorf("lium pod %s has status %q", d.ID, d.Status)}
 }
 
-// moveRefused says why a node Lium moved the pod to is not one its size may run on, empty when
-// the node passes design 3.5's rules for a pod's own executor
+// moveRefused says why the pod's node breaks design 3.5's rules, empty when it passes
 func (p *Provider) moveRefused(ref provider.Ref, d podDetail) string {
 	s, ok := p.size(ref.Meta[metaSize])
 	if !ok {
@@ -142,14 +140,12 @@ func (p *Provider) moveRefused(ref provider.Ref, d podDetail) string {
 	return ""
 }
 
-// allowedCountry is the country rule for a pod's own node, any country not blocked serving
-// while other countries are allowed
+// allowedCountry is design 3.5's country rule for a pod's own node
 func (p *Provider) allowedCountry(c string) bool {
 	return c != "" && !p.blocked[c] && (p.countries[c] || p.otherCountries)
 }
 
-// matches reports a machine name the size rents, by its match list or by the gpu_class the
-// listing showed that machine name under
+// matches reports a machine name the size rents, by match list or the listing's gpu_class
 func (p *Provider) matches(s size, machine string) bool {
 	if machine == "" {
 		return false

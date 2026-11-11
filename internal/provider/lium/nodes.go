@@ -123,8 +123,7 @@ func (s size) fits(n node) bool {
 		n.pendingMicros <= s.MaxHourlyMicros && !n.notice && !n.removal && !n.grace()
 }
 
-// candidates are the nodes s may rent, cheapest first, from the first countries alone unless
-// none there fits, then from any country that is not blocked when other countries are allowed
+// candidates are the nodes s may rent, cheapest first, under design 3.5's country rule
 func (p *Provider) candidates(s size, nodes []node) []node {
 	first, other := []node{}, []node{}
 	for _, n := range nodes {
@@ -161,7 +160,8 @@ type nodeCache struct {
 }
 
 func newNodeCache(a *api, log *slog.Logger, now func() time.Time, minDownload int) *nodeCache {
-	q := url.Values{"reliable_only": {"true"}}
+	// Only the full view carries scheduled_notice, removal_at and pending_price_per_hour
+	q := url.Values{"reliable_only": {"true"}, "view": {"full"}}
 	if minDownload > 0 {
 		q.Set("min_download_mbps", strconv.Itoa(minDownload))
 	}

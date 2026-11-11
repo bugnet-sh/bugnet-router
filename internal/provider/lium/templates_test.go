@@ -13,7 +13,7 @@ import (
 const (
 	testDigest = "sha256:2a471ceb0c0ca15563b40dd4421f27f81815765e5d5c4e44619da96ad176fb19"
 	testImage  = "ghcr.io/bugnet-sh/bugnet-base@" + testDigest
-	// testTemplateBody is design 3.10's template for the test image, byte for byte
+	// testTemplateBody is design 3.10's template plus one_time_template and is_temporary off
 	testTemplateBody = `{"name":"bugnet-base-2026-11-3-2a471ceb0c0c",` +
 		`"docker_image":"ghcr.io/bugnet-sh/bugnet-base","docker_image_tag":"2026.11.3",` +
 		`"docker_image_digest":"` + testDigest + `","category":"UBUNTU","is_private":true,` +

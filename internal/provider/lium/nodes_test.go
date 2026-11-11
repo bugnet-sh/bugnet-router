@@ -55,6 +55,7 @@ func TestLiumNodeListingRequest(t *testing.T) {
 	// The listing is keyless, so the key never travels where it is not needed
 	eq(t, reqs[0].header.Values("X-API-Key"), []string(nil))
 	eq(t, reqs[0].query.Get("reliable_only"), "true")
+	eq(t, reqs[0].query.Get("view"), "full")
 	eq(t, reqs[0].query.Get("size"), "1000")
 	eq(t, reqs[0].query.Get("page"), "1")
 	eq(t, reqs[0].query.Has("min_download_mbps"), false)

@@ -287,8 +287,7 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	}
 }
 
-// SizeFor picks the lowest capped size of the floor's model covering the floor that has a node to
-// rent in a listing under 2 minutes old, and nothing for a floor without a GPU
+// SizeFor picks the cheapest capped size covering a GPU floor with a node in a fresh listing
 func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	if floor.GPUCount == 0 && floor.GPUMemoryGiB == 0 && floor.GPUModel == "" {
 		return provider.Size{}, false

@@ -12,8 +12,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
-// liveFake is a fake listing three EU RTX 3090 nodes, cheapest first by name, and the adapter
-// on it with a fresh listing
+// liveFake serves three EU RTX 3090 nodes and an adapter holding a fresh listing of them
 func liveFake(t *testing.T, opts ...func(*Options)) (*fakeLium, *Provider) {
 	t.Helper()
 	f := newFake(t)

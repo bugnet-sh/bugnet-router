@@ -185,7 +185,7 @@ func (p *Provider) killReason(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 	best, at := "", time.Time{}
-	// Events come oldest first, so a later one wins a tie or a time that does not parse
+	// Events come oldest first, so a later one wins a tie
 	for _, e := range events {
 		if e.Reason == nil || *e.Reason == "" {
 			continue

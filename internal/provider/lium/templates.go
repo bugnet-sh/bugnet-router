@@ -66,8 +66,7 @@ type templateSpec struct {
 	SupportsVolumeEncryption bool              `json:"supports_volume_encryption"`
 }
 
-// templateSpecFor builds the private template for one image ref, the configured image taking
-// the configured version as its tag
+// templateSpecFor builds our private template for one image ref, tagged with the set version
 func (p *Provider) templateSpecFor(ref string) (templateSpec, error) {
 	r, err := parseImageRef(ref)
 	if err != nil {
@@ -108,8 +107,7 @@ type listedTemplate struct {
 	IsTemporary     *bool                      `json:"is_temporary"`
 }
 
-// takes reports whether t is our own private template of spec, owner the account id or empty
-// when the account names none
+// takes reports whether t is our own private template of spec, owner empty for no account id
 func (t listedTemplate) takes(spec templateSpec, owner string) bool {
 	ports := make([]int, 0, len(t.InternalPorts))
 	for _, raw := range t.InternalPorts {

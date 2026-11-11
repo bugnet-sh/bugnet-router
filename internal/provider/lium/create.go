@@ -130,8 +130,7 @@ func (p *Provider) orderFor(req provider.CreateRequest) (order, error) {
 	return o, nil
 }
 
-// terminationHours is the deploy-time removal, the longest a placement may run unless the
-// setting asks for the lifetime of this create
+// terminationHours is the pod's deploy-time removal in whole hours
 func (p *Provider) terminationHours(lifetime time.Duration) int {
 	d := p.maxLifetime + removalSlack
 	if p.termination == terminationLifetime {
@@ -141,8 +140,7 @@ func (p *Provider) terminationHours(lifetime time.Duration) int {
 	return min(max(h, 1), maxTerminationHours)
 }
 
-// findOwn adopts a live pod of the order's name, deleting any of its dead ones, and answers
-// capacity with fail over when only dead ones are left
+// findOwn adopts a live pod of the order's name and deletes its dead ones
 func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, error) {
 	pods, err := p.listPods(ctx)
 	if err != nil {

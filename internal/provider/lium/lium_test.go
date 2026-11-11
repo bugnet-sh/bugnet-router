@@ -227,8 +227,7 @@ func TestLiumSizeFor(t *testing.T) {
 	eq(t, got.Name, "lium-rtx4090")
 }
 
-// TestLiumSizeForRefusesFloorsWithoutGPU keeps Lium canary-free, as the worker's canary floor
-// names only vCPUs and memory and its skip needs every size to have a GPU
+// TestLiumSizeForRefusesFloorsWithoutGPU keeps Lium out of the worker's CPU-only canary
 func TestLiumSizeForRefusesFloorsWithoutGPU(t *testing.T) {
 	f := newFake(t)
 	p := listed(t, f, newClock(), euNode("n3090"))
