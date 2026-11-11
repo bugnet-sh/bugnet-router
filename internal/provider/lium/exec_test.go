@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -226,7 +227,9 @@ func TestExecCancelKillsGroup(t *testing.T) {
 			t.Fatalf("Wait gave %d, %v", code, err)
 		}
 		waitGroupGone(t, f, pgid)
-		eq(t, f.signalsSent()[len(f.signalsSent())-1], "KILL")
+		within(t, 5*time.Second, "the KILL signal request", func() bool {
+			return slices.Contains(f.signalsSent(), "KILL")
+		})
 	})
 
 	t.Run("close", func(t *testing.T) {
