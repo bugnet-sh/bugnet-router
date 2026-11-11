@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"maps"
 	"math/big"
 	"net/netip"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/image"
@@ -30,6 +32,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/traced"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
@@ -346,6 +349,101 @@ func TestBootKeepsThePreparedGateMeta(t *testing.T) {
 	eq(t, m["gate_host"], "x")
 	if m["gate_port"] == "" || m["sshd_port"] == "" {
 		t.Fatalf("the stored ref lost the create's ports: %v", m)
+	}
+}
+
+// readyMeta learns ready_host while its sandboxes become ready, and its Exec needs that entry
+type readyMeta struct {
+	*local.Provider
+	// err is what ReadyMeta returns once the wait is over, nil for the entry
+	err error
+}
+
+func (readyMeta) WaitReady(context.Context, provider.Ref) error {
+	return errors.New("WaitReady called on a ReadyReporter")
+}
+
+func (r readyMeta) ReadyMeta(ctx context.Context, ref provider.Ref) (map[string]string, error) {
+	if err := r.Provider.WaitReady(ctx, ref); err != nil {
+		return nil, err
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	return map[string]string{"ready_host": "h1"}, nil
+}
+
+func (r readyMeta) Exec(
+	ctx context.Context, ref provider.Ref, spec provider.ExecSpec,
+) (provider.ExecStream, error) {
+	if ref.Meta["ready_host"] != "h1" {
+		return nil, errors.New("exec without the ready entry")
+	}
+	return r.Provider.Exec(ctx, ref, spec)
+}
+
+func TestBootStoresTheReadyMeta(t *testing.T) {
+	for name, wrap := range map[string]func(provider.Provider) provider.Provider{
+		"adapter": func(p provider.Provider) provider.Provider { return p },
+		"traced": func(p provider.Provider) provider.Provider {
+			return traced.Wrap(p, noop.NewTracerProvider().Tracer("test"), nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := wrap(readyMeta{Provider: newLocal(t, local.Options{Name: "a"})})
+			e := newEnv(t, a)
+			ref := created(t, a)
+			got, rep, err := e.saga.Boot(t.Context(), a, ref,
+				saga.BootPlan{Placement: uuid.New(), KeyID: e.keys.Current().ID})
+			eq(t, err, nil)
+			eq(t, rep.GateReady, true)
+			eq(t, got.Meta["ready_host"], "h1")
+			eq(t, got.Meta["gate_port"], ref.Meta["gate_port"])
+			_, ok := ref.Meta["ready_host"]
+			eq(t, ok, false)
+
+			// The ready transaction stores the ref with the create's and the ready entries
+			p, _ := e.placeReady(t, "order-1")
+			m := p.ProviderRef.Meta
+			eq(t, m["ready_host"], "h1")
+			if m["gate_port"] == "" || m["sshd_port"] == "" {
+				t.Fatalf("the stored ref lost the create's ports: %v", m)
+			}
+		})
+	}
+}
+
+func TestBootReadyMetaErrorFailsLikeWaitReady(t *testing.T) {
+	cause := &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
+	a := readyMeta{Provider: newLocal(t, local.Options{Name: "a"}), err: cause}
+	b := notReady{newLocal(t, local.Options{Name: "b"})}
+	e := newEnv(t, a, b)
+	plan := saga.BootPlan{Placement: uuid.New(), KeyID: e.keys.Current().ID}
+	got, repA, errA := e.saga.Boot(t.Context(), a, created(t, a), plan)
+	_, repB, errB := e.saga.Boot(t.Context(), b, created(t, b), plan)
+	if errA == nil || errB == nil {
+		t.Fatalf("boots ended with %v and %v, want both to fail", errA, errB)
+	}
+	eq(t, errA.Error(), errB.Error())
+	eq(t, errors.Is(errA, cause), true)
+	eq(t, repA.ReadyMS != store.NoStep, true)
+	eq(t, repA.RunnerMS, repB.RunnerMS)
+	eq(t, repA.GateMS, repB.GateMS)
+	_, ok := got.Meta["ready_host"]
+	eq(t, ok, false)
+
+	// A placement on a fails over to c as a WaitReady failure does
+	c := newLocal(t, local.Options{Name: "c"})
+	e = newEnv(t, a, c)
+	p, _ := e.placeReady(t, "order-1")
+	eq(t, p.Provider, "c")
+	attempts, err := e.store.Attempts(t.Context(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].Provider != "a" || attempts[0].State != "failed" ||
+		!strings.Contains(attempts[0].Error, "wait ready") {
+		t.Fatalf("attempts %+v, want a's to fail on wait ready", attempts)
 	}
 }
 

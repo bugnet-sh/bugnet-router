@@ -228,7 +228,7 @@ func (s *Saga) boot(
 	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	start := s.now()
-	err := prov.WaitReady(readyCtx, ref)
+	ref, err := waitReady(readyCtx, prov, ref)
 	rep.ReadyMS = int(s.now().Sub(start).Milliseconds())
 	if err != nil {
 		return ref, fmt.Errorf("wait ready: %w", err)
@@ -252,6 +252,21 @@ func (s *Saga) boot(
 	err = s.uploadRunner(uctx, prov, ref)
 	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
 	return ref, err
+}
+
+// waitReady waits for the sandbox and adds the Meta entries a ReadyReporter learned meanwhile
+func waitReady(
+	ctx context.Context, prov provider.Provider, ref provider.Ref,
+) (provider.Ref, error) {
+	r, ok := provider.As[provider.ReadyReporter](prov)
+	if !ok {
+		return ref, prov.WaitReady(ctx, ref)
+	}
+	meta, err := r.ReadyMeta(ctx, ref)
+	if err != nil {
+		return ref, err
+	}
+	return withMeta(ref, meta), nil
 }
 
 // readImage reads the sandbox's manifest and refuses one the settings do not accept
