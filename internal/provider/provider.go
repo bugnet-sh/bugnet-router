@@ -291,6 +291,9 @@ type NativeSSHer interface {
 	AuthorizeNativeSSH(ctx context.Context, ref Ref, gatewayKey string) (NativeSSH, error)
 }
 
+// HookAccount is the Type of a webhook event about the provider account, which names no sandbox
+const HookAccount = "account"
+
 // HookEvent is a verified provider webhook reduced to what the router acts on
 type HookEvent struct {
 	ID        string
@@ -299,6 +302,8 @@ type HookEvent struct {
 	// Labels are the sandbox's labels when the event carries them, else nil
 	Labels map[string]string
 	At     time.Time
+	// StopAt is when the account's running sandboxes stop unless it is topped up, else zero
+	StopAt time.Time
 }
 
 // HookVerifier is a provider whose lifecycle webhooks the router accepts

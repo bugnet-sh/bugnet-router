@@ -14,6 +14,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/health"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
@@ -145,11 +146,30 @@ func (s *Server) forget(key string) {
 	_ = s.d.Valkey.Do(ctx, s.d.Valkey.B().Del().Key(key).Build()).Error()
 }
 
-// queueHint inserts the hint unless one for the same sandbox ran or waits within hint_unique
+// queueHint asks for the account check of an account event, else inserts the sandbox's hint
 func (s *Server) queueHint(ctx context.Context, name string, ev provider.HookEvent) error {
 	if s.d.River == nil {
 		return errors.New("no job client")
 	}
+	if ev.SandboxID == "" && ev.Type == provider.HookAccount {
+		s.accountEvent(ctx, name, ev)
+		return nil
+	}
+	return s.insertHint(ctx, name, ev)
+}
+
+// accountEvent asks for the provider's account check at once, and logs a coming stop as an error
+func (s *Server) accountEvent(ctx context.Context, name string, ev provider.HookEvent) {
+	if !ev.StopAt.IsZero() {
+		// Only a top-up before StopAt saves the sandboxes running on the account
+		s.d.Log.Error("api: the provider account is out of funds, its sandboxes stop unless "+
+			"topped up", "provider", name, "event", ev.ID, "stop_at", ev.StopAt)
+	}
+	health.RequestAccountCheck(ctx, s.d.River, name)
+}
+
+// insertHint inserts the hint unless one for the same sandbox ran or waits within hint_unique
+func (s *Server) insertHint(ctx context.Context, name string, ev provider.HookEvent) error {
 	unique := s.d.Hooks.HintUnique
 	if unique <= 0 {
 		unique = 10 * time.Second

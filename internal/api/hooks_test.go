@@ -3,6 +3,8 @@ package api_test
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -185,4 +187,108 @@ func TestStartRefusesHookProviderWithoutSecret(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "verifies no webhooks") {
 		t.Fatalf("no verifier: %v", err)
 	}
+}
+
+// accountHooked verifies a test webhook whose events are about the provider account alone
+type accountHooked struct{ faulty }
+
+func (accountHooked) VerifyHook(
+	h http.Header, body, secret []byte,
+) (provider.HookEvent, error) {
+	if h.Get("X-Test-Signature") != string(secret) {
+		return provider.HookEvent{}, provider.ErrBadSignature
+	}
+	var ev struct {
+		ID     string    `json:"id"`
+		Kind   string    `json:"kind"`
+		StopAt time.Time `json:"pods_stop_at"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return provider.HookEvent{}, err
+	}
+	out := provider.HookEvent{ID: ev.ID, Type: provider.HookAccount}
+	if ev.Kind == "balance_grace_started" {
+		out.StopAt = ev.StopAt
+	}
+	return out, nil
+}
+
+func accountRequest(event, kind, stopAt string) *routerv1.DeliverHookRequest {
+	body := `{"id":"` + event + `","kind":"` + kind + `"`
+	if stopAt != "" {
+		body += `,"pods_stop_at":"` + stopAt + `"`
+	}
+	return &routerv1.DeliverHookRequest{
+		Provider: "lium", Body: []byte(body + "}"), ClientIp: "203.0.113.9",
+		Headers: []*routerv1.HeaderValue{{Name: "X-Test-Signature", Value: hookSecret}},
+	}
+}
+
+func (e *env) accountChecks(t *testing.T) []string {
+	t.Helper()
+	rows, err := e.pool.Query(t.Context(),
+		`select args::text from river_job where kind = 'account_check' order by id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for rows.Next() {
+		var args string
+		if err := rows.Scan(&args); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, args)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestDeliverHookAccountEvent(t *testing.T) {
+	logs := &syncBuffer{}
+	e := newEnv(t, options{
+		providerName: "lium", log: slog.New(slog.NewJSONHandler(logs, nil)),
+		wrap: func(l *local.Provider, _ string) provider.Provider {
+			return accountHooked{faulty{Provider: l}}
+		},
+		hooks:       config.Hooks{Providers: []string{"lium"}, HintUnique: 10 * time.Second},
+		hookSecrets: map[string]config.HookSecret{"lium": {Current: []byte(hookSecret)}},
+	})
+
+	resp, err := e.deliver(t, accountRequest("evt-low", "low_balance", ""))
+	eq(t, err, nil)
+	eq(t, resp.Status, uint32(204))
+	eq(t, e.hookJobs(t), 0)
+	eq(t, e.accountChecks(t), []string{`{"now": true, "provider": "lium"}`})
+
+	// The same event id again is a duplicate, even once the check it asked for is gone
+	if _, err := e.pool.Exec(t.Context(), `delete from river_job`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.deliver(t, accountRequest("evt-low", "low_balance", ""))
+	eq(t, err, nil)
+	eq(t, len(e.accountChecks(t)), 0)
+	if strings.Contains(logs.String(), `"level":"ERROR"`) {
+		t.Fatalf("a low balance event logged an error: %s", logs)
+	}
+
+	// The grace event asks for a check too and names when the pods stop
+	_, err = e.deliver(t, accountRequest("evt-grace", "balance_grace_started",
+		"2026-11-11T10:02:00Z"))
+	eq(t, err, nil)
+	eq(t, e.hookJobs(t), 0)
+	eq(t, len(e.accountChecks(t)), 1)
+	var line struct {
+		Level, Provider, Event string
+		StopAt                 time.Time `json:"stop_at"`
+	}
+	for raw := range strings.Lines(logs.String()) {
+		if strings.Contains(raw, `"level":"ERROR"`) {
+			eq(t, json.Unmarshal([]byte(raw), &line), nil)
+		}
+	}
+	eq(t, line.Provider, "lium")
+	eq(t, line.Event, "evt-grace")
+	eq(t, line.StopAt.Equal(time.Date(2026, 11, 11, 10, 2, 0, 0, time.UTC)), true)
 }
