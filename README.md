@@ -2126,7 +2126,8 @@ window failed. A held end becomes a refundable `provider_failed` with `correlate
 evidence, and its wallet actions are recorded in `provider_signals` as `held`. `Reconcile` inspects
 a placement's sandbox, classifies the reading and ends the placement through `Saga.End`, or flags
 an ended one through `Saga.FlagEnded`. Only an `abuse` verdict acts on a placement that is
-terminating or ended.
+terminating or ended. Another verdict there that carries an alert still logs it and writes its
+evidence to `provider_signals` with action `alerted`, so `/monitor` counts it.
 
 - A degraded sandbox sets `placements.degraded_since`. Past `degraded_grace` the setting's class
   applies, and before it a scheduled `reconcile` job looks again. A healthy reading clears it.
@@ -2137,17 +2138,17 @@ terminating or ended.
 - E2B's `request` kill on a placement still `ready` is `provider_failed` and raises the alert
   `/monitor` shows. No sandbox holds an API key, so no guest can cause it.
 - Lium's `Reason` holds the pod status, its set flags and the adapter's own `lium_moved` or
-  `lium_rebooted` as whole words. A stop or an `insufficient_balance` event is `provider_failed`.
-  A `dispute_block` event takes `abuse.lium_dispute_block` (default `provider_failed`) and raises
-  the same alert. `BROKEN`, a `node_outage` flag, a move to another node, the events
-  `executor_offline`, `executor_reclaimed` and `broken_by_provider`, `node_offline` past
-  `degraded_grace`, a `user_initiated` delete of a `ready` placement (with the alert) and a
-  `scheduled_termination` before the deadline are `provider_failed`. Any other failure or end is
-  `sandbox_exited`, since root can fail Lium's SSH check or stop the container.
-- An HF Job canceled for `no_credits`, `no_subscription`, `spend_limit` or
-  `resource_group_limit`, a `timeout` before the deadline, a reasonless `canceled`, `deleted` or
-  `not_found` of a `ready` placement (with the alert), and an `ERROR` whose message holds a word
-  of `abuse.hf_platform_words` (empty by default) are `provider_failed`. Any other `ERROR` or end,
+  `lium_rebooted` as whole words. A `dispute_block` event in any state, a stop included, takes
+  `abuse.lium_dispute_block` (default `provider_failed`) and raises the same alert. Any other stop
+  or an `insufficient_balance` event is `provider_failed`. `BROKEN`, a `node_outage` flag, a move to
+  another node, the events `executor_offline`, `executor_reclaimed` and `broken_by_provider`,
+  `node_offline` past `degraded_grace`, a `user_initiated` delete of a `ready` placement (with the
+  alert) and a `scheduled_termination` before the deadline are `provider_failed`. Any other failure
+  or end is `sandbox_exited`, since root can fail Lium's SSH check or stop the container.
+- An HF Job canceled for `no_credits`, `no_subscription`, `spend_limit` or `resource_group_limit`, a
+  `timeout` before the deadline in any stage, a reasonless `canceled`, `deleted` or `not_found` of a
+  `ready` placement (with the alert), and an `ERROR` whose message holds a word of
+  `abuse.hf_platform_words` (empty by default) are `provider_failed`. Any other `ERROR` or end,
   `completed` among them, is `sandbox_exited`, since PID 1 exits at root's hand.
 - A verdict with `CheckAccount` (a Lium stop, `insufficient_balance` or `dispute_block`, HF's four
   account cancel reasons), like any `abuse` verdict, inserts `account_check{provider}` at once,
