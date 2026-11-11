@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -30,9 +31,10 @@ var errImageMismatch = errors.New("saga: sandbox image is not the accepted base 
 // reasonImageMismatch is the attempt and failure reason of errImageMismatch
 const reasonImageMismatch = "image_mismatch"
 
+// Boot step timeouts, kept in config so its gpu_placing_budget check reads the same values
 const (
-	readyTimeout  = 60 * time.Second
-	uploadTimeout = 60 * time.Second
+	readyTimeout  = config.DefaultReadyTimeout
+	uploadTimeout = config.UploadTimeout
 )
 
 // errNoRunnerBuild means the router has no bugnet-run build for the sandbox's architecture
@@ -225,7 +227,7 @@ func (s *Saga) prepare(
 func (s *Saga) boot(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, rep *BootReport,
 ) (provider.Ref, error) {
-	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+	readyCtx, cancel := context.WithTimeout(ctx, s.readyTimeoutFor(prov))
 	defer cancel()
 	start := s.now()
 	ref, err := waitReady(readyCtx, prov, ref)
@@ -252,6 +254,14 @@ func (s *Saga) boot(
 	err = s.uploadRunner(uctx, prov, ref)
 	rep.RunnerMS = int(s.now().Sub(start).Milliseconds())
 	return ref, err
+}
+
+// readyTimeoutFor is how long a new sandbox of prov may take to become ready
+func (s *Saga) readyTimeoutFor(prov provider.Provider) time.Duration {
+	if d, ok := s.d.ReadyTimeouts[prov.Name()]; ok {
+		return d
+	}
+	return readyTimeout
 }
 
 // waitReady waits for the sandbox and adds the Meta entries a ReadyReporter learned meanwhile

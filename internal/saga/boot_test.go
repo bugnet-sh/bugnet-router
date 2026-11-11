@@ -447,6 +447,42 @@ func TestBootReadyMetaErrorFailsLikeWaitReady(t *testing.T) {
 	}
 }
 
+// readyDeadline records how long each of its sandboxes was given to become ready
+type readyDeadline struct {
+	*local.Provider
+	given *time.Duration
+}
+
+func (r readyDeadline) WaitReady(ctx context.Context, ref provider.Ref) error {
+	if dl, ok := ctx.Deadline(); ok {
+		*r.given = time.Until(dl)
+	}
+	return r.Provider.WaitReady(ctx, ref)
+}
+
+func TestBootWaitsTheProvidersReadyTimeout(t *testing.T) {
+	var liumGiven, aGiven time.Duration
+	lium := readyDeadline{newLocal(t, local.Options{Name: "lium"}), &liumGiven}
+	a := readyDeadline{newLocal(t, local.Options{Name: "a"}), &aGiven}
+	e := newEnvWith(t, func(d *saga.Deps) {
+		d.ReadyTimeouts = map[string]time.Duration{"lium": 6 * time.Minute}
+	}, lium, a)
+	plan := saga.BootPlan{Placement: uuid.New(), KeyID: e.keys.Current().ID}
+	for _, p := range []provider.Provider{lium, a} {
+		if _, _, err := e.saga.Boot(t.Context(), p, created(t, p), plan); err != nil {
+			t.Fatalf("boot on %s: %v", p.Name(), err)
+		}
+	}
+	// A provider the map leaves out keeps 60 s
+	for name, c := range map[string]struct{ given, want time.Duration }{
+		"lium": {liumGiven, 6 * time.Minute}, "a": {aGiven, time.Minute},
+	} {
+		if c.given > c.want || c.given < c.want-10*time.Second {
+			t.Errorf("%s was given %s to become ready, want %s", name, c.given, c.want)
+		}
+	}
+}
+
 func TestBootGateFailureWithoutNeedsIsLogged(t *testing.T) {
 	a := closedGate{newLocal(t, local.Options{Name: "a"})}
 	e := newEnv(t, a)

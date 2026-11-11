@@ -134,7 +134,6 @@ const defaultDeployment = "main"
 
 const (
 	maxAttempts      = 3
-	placingBudget    = 30 * time.Second
 	lifetimeSlack    = 5 * time.Minute
 	terminateTimeout = 60 * time.Second
 	heartbeatEvery   = 10 * time.Second
@@ -150,6 +149,9 @@ const EndTimeout = terminateTimeout
 
 // cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
 var cleanupTimeout = 30 * time.Second
+
+// placingBudget is how long a package without a GPU starts candidates, a variable for tests
+var placingBudget = 30 * time.Second
 
 // Delays before each retry of a create whose outcome is unknown
 var unknownBackoff = []time.Duration{
@@ -225,6 +227,11 @@ type Deps struct {
 	ReserveShare float64
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
+	// ReadyTimeouts is how long each provider's new sandbox may take to become ready, 60 s for
+	// one it leaves out
+	ReadyTimeouts map[string]time.Duration
+	// GPUPlacingBudget is how long a GPU package starts candidates, the CPU budget when zero
+	GPUPlacingBudget time.Duration
 	// Telemetry makes the saga's spans, telemetry.Off when nil
 	Telemetry *telemetry.Telemetry
 }

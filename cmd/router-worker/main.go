@@ -194,7 +194,7 @@ func serve(
 	w, err := worker.New(pool, saga.Deps{
 		Telemetry:     tel,
 		Store:         st,
-		Engine:        placement.New(reg, shared, warm),
+		Engine:        placement.New(reg, shared, warm).WithGPUOrder(cfg.GPUOrder),
 		Registry:      reg,
 		Catalog:       cat,
 		Valkey:        vk,
@@ -230,6 +230,8 @@ func serve(
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
 			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
 		}),
+		ReadyTimeouts:    cfg.ReadyTimeouts,
+		GPUPlacingBudget: cfg.GPUPlacingBudget,
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,
 		DataplaneWorkers: cfg.DataplaneWorkers, DefaultWorkers: cfg.DefaultWorkers,

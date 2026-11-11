@@ -204,7 +204,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	tracker := placement.NewTracker(time.Now)
 	warmth, warm := poolWarmth(cfg, reg, st)
 	shared := health.NewShared(st, tracker, log)
-	engine := placement.New(reg, shared, warm)
+	engine := placement.New(reg, shared, warm).WithGPUOrder(cfg.GPUOrder)
 	// Insert only, so it serves ListPools and DrainPool from Postgres alone
 	pools, err := poolpkg.New(poolpkg.Deps{
 		Store: st, Registry: reg, River: rc, Settings: cfg.Pools, Replica: cfg.ReplicaID, Log: log,
@@ -252,6 +252,8 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
 			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
 		}),
+		ReadyTimeouts:    cfg.ReadyTimeouts,
+		GPUPlacingBudget: cfg.GPUPlacingBudget,
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
 	if err != nil {

@@ -75,7 +75,7 @@ func (s *Saga) place(
 ) {
 	stopHeartbeat := s.heartbeat(ctx, p.ID)
 	defer stopHeartbeat()
-	budget, cancel := context.WithTimeout(ctx, placingBudget)
+	budget, cancel := context.WithTimeout(ctx, s.placingBudgetFor(pkg))
 	defer cancel()
 	pl := &placing{
 		s: s, ctx: ctx, budget: budget, p: p, pkg: pkg, req: req, arrived: arrived,
@@ -83,6 +83,15 @@ func (s *Saga) place(
 		tried: map[string]bool{}, reason: reasonExhausted, waiting: awaiting,
 	}
 	pl.run()
+}
+
+// placingBudgetFor is how long a placement of pkg starts candidates, a GPU package's long enough
+// that the next GPU provider still starts after the first one's slowest boot that fails
+func (s *Saga) placingBudgetFor(pkg catalog.Package) time.Duration {
+	if pkg.Resources.GPUCount > 0 && s.d.GPUPlacingBudget > 0 {
+		return s.d.GPUPlacingBudget
+	}
+	return placingBudget
 }
 
 func (pl *placing) run() {

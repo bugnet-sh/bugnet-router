@@ -9,6 +9,13 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
+// SetPlacingBudget changes how long a package without a GPU starts candidates for one test
+func SetPlacingBudget(t testing.TB, d time.Duration) {
+	old := placingBudget
+	placingBudget = d
+	t.Cleanup(func() { placingBudget = old })
+}
+
 // SetCleanupTimeout shortens the bound on each cleanup call for one test
 func SetCleanupTimeout(t testing.TB, d time.Duration) {
 	old := cleanupTimeout

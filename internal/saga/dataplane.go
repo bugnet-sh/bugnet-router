@@ -33,10 +33,9 @@ const (
 )
 
 const (
-	// setupTimeout covers update-ca-certificates and the gate's own 10 s health wait
-	setupTimeout = 90 * time.Second
-	// hardenTimeout covers an nftables install of up to 60 s and the load
-	hardenTimeout = 2 * time.Minute
+	// setupTimeout and hardenTimeout are kept in config, which checks gpu_placing_budget with them
+	setupTimeout  = config.SetupTimeout
+	hardenTimeout = config.HardenTimeout
 	gateTimeout   = 30 * time.Second
 	// egressTimeout covers the forwarder's 5 s listen wait and sshd's 10 s reload
 	egressTimeout = 60 * time.Second

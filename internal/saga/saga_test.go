@@ -1,6 +1,7 @@
 package saga_test
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -71,7 +72,8 @@ var small = provider.Size{
 	Name: "small", Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
 }
 
-// newLocal runs the built bugnet-run unless opts names another, and destroys its sandboxes last
+// newLocal runs the built bugnet-run unless opts names another, sells the small size at 1,000 an
+// hour unless opts names others, and destroys its sandboxes last
 func newLocal(t *testing.T, opts local.Options) *local.Provider {
 	t.Helper()
 	if opts.Root == "" {
@@ -80,8 +82,10 @@ func newLocal(t *testing.T, opts local.Options) *local.Provider {
 	if opts.RunnerPath == "" {
 		opts.RunnerPath = runnerBin
 	}
-	opts.Sizes = []provider.Size{small}
-	opts.HourlyCostMicros = 1000
+	if opts.Sizes == nil {
+		opts.Sizes = []provider.Size{small}
+	}
+	opts.HourlyCostMicros = cmp.Or(opts.HourlyCostMicros, 1000)
 	opts.Increment = time.Second
 	p := local.New(opts)
 	// Each boot starts a gate and a sampler on the host, which only a destroy stops
