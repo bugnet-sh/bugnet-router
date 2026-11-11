@@ -19,7 +19,14 @@ const (
 	SSHTransportGate = "gate"
 	// SSHTransportBoatNative is Boat's own sshd
 	SSHTransportBoatNative = "boat_native"
+	// SSHTransportLiumNative is Lium's own sshd on the pod's published port
+	SSHTransportLiumNative = "lium_native"
 )
+
+// SSHTransportNative names a provider's own sshd, as SSHTransportBoatNative names Boat's
+func SSHTransportNative(provider string) string {
+	return provider + "_native"
+}
 
 // SSHKey is one user key of a placement
 type SSHKey struct {
@@ -42,7 +49,7 @@ type SSHHost struct {
 	PlacementID uuid.UUID
 	Transport   string
 	SSHDPort    int
-	// SSHUser is Capabilities.ExecUser or Boat's own user, never what the sandbox printed
+	// SSHUser is Capabilities.ExecUser or the native sshd's user, never what the sandbox printed
 	SSHUser string
 	// HostKey is the server's public key in authorized_keys format
 	HostKey    string

@@ -33,9 +33,9 @@
 // The ready transaction records the sshd ssh-up made ready and mints the placement's SSH alias
 // when the registry gives its provider SSH. PrepareSSH, run by the prepare_ssh job, makes the sshd
 // of a placement whose order did not ask for SSH ready later. AuthorizeGateway puts the gateway's
-// key for a placement in its sshd once per key, through ssh-up or, for Boat's own sshd, through
-// the provider, both one replica at a time under an advisory lock per placement. The end of a
-// placement forgets its gateway keys.
+// key for a placement in its sshd once per key, through ssh-up or, for a provider's own sshd,
+// through the provider, both one replica at a time under an advisory lock per placement. The end
+// of a placement forgets its gateway keys.
 //
 // Create and Extend first decide the payer an order counts under, then check it under that
 // payer's transaction lock in the transaction that records the order. A blocked payer is refused

@@ -1,6 +1,7 @@
 package saga_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -412,4 +413,64 @@ func TestAuthorizeGatewayAddsNoKeyOnceThePlacementEnds(t *testing.T) {
 	has, err := e.store.HasGatewayKey(ctx, p.ID, "SHA256:gw")
 	eq(t, err, nil)
 	eq(t, has, false)
+}
+
+// nativeServer is a scripted provider with an SSH server of its own
+type nativeServer struct {
+	scripted
+	authorized *[]string
+}
+
+func (n nativeServer) AuthorizeNativeSSH(
+	_ context.Context, _ provider.Ref, gatewayKey string,
+) (provider.NativeSSH, error) {
+	n.mu.Lock()
+	*n.authorized = append(*n.authorized, gatewayKey)
+	n.mu.Unlock()
+	return provider.NativeSSH{Address: "203.0.113.10:2201", User: "root", HostKey: testHostKey},
+		nil
+}
+
+func TestAuthorizeGatewayOnAnyProvidersOwnServer(t *testing.T) {
+	for name, transport := range map[string]string{
+		"pod": "pod_native", "boat": store.SSHTransportBoatNative,
+		"lium": store.SSHTransportLiumNative,
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := nativeServer{
+				scripted:   newScripted(newLocal(t, local.Options{Name: name}), nil),
+				authorized: &[]string{},
+			}
+			e := newEnvFeatures(t, nil, provider.Features{
+				SSH: []string{name}, NativeSSH: []string{name},
+			}, n)
+			p, _ := e.placeWith(t, "order-1", placement.Requirements{SSH: true})
+			eq(t, countOf(n.calls(), "ssh-up"), 0)
+			eq(t, aliasShape.MatchString(p.SSHAlias), true)
+			if err := e.saga.PrepareSSH(t.Context(), p.ID); err != nil {
+				t.Fatal(err)
+			}
+			_, err := e.store.SSHHost(t.Context(), p.ID)
+			eq(t, errors.Is(err, store.ErrNotFound), true)
+			for range 2 {
+				up, err := e.saga.AuthorizeGateway(t.Context(), p.ID, "k bn-gw", "SHA256:gw")
+				if err != nil {
+					t.Fatal(err)
+				}
+				eq(t, up.Address, "203.0.113.10:2201")
+				eq(t, up.Host, store.SSHHost{
+					PlacementID: p.ID, Transport: transport, SSHDPort: 2201, SSHUser: "root",
+					HostKey: testHostKey, PreparedAt: up.Host.PreparedAt,
+				})
+			}
+			eq(t, *n.authorized, []string{"k bn-gw"})
+			host, err := e.store.SSHHost(t.Context(), p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eq(t, host.Transport, transport)
+			eq(t, e.reload(t, p.ID).ProviderRef.Meta["ssh_address"], "203.0.113.10:2201")
+			eq(t, countOf(n.calls(), "ssh-up"), 0)
+		})
+	}
 }

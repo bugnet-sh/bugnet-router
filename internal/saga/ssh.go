@@ -33,7 +33,7 @@ const (
 	sshUpSlack = time.Minute
 	// aliasTries bounds the fresh aliases tried at ready
 	aliasTries = 5
-	// metaSSHAddress holds the address of Boat's own sshd in the placement's ref
+	// metaSSHAddress holds the address of the provider's own sshd in the placement's ref
 	metaSSHAddress = "ssh_address"
 )
 
@@ -207,7 +207,7 @@ func (s *Saga) PrepareSSH(ctx context.Context, id uuid.UUID) error {
 // SSHUpstream is how the gateway reaches one placement's SSH server
 type SSHUpstream struct {
 	Host store.SSHHost
-	// Address is Boat's own sshd for the native transport, empty for the gate
+	// Address is the provider's own sshd for a native transport, empty for the gate
 	Address string
 }
 
@@ -290,7 +290,7 @@ func (s *Saga) authorizeNative(
 			ErrSSHPreparing)
 	}
 	host = store.SSHHost{
-		PlacementID: p.ID, Transport: store.SSHTransportBoatNative, SSHDPort: port,
+		PlacementID: p.ID, Transport: store.SSHTransportNative(prov.Name()), SSHDPort: port,
 		SSHUser: ns.User, HostKey: key,
 	}
 	if err := ts.PutSSHHost(ctx, host); err != nil {
