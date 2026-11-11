@@ -16,6 +16,8 @@ func TestLiumNewRefusesBadOptions(t *testing.T) {
 		want   string
 	}{
 		"no key":       {func(o *Options) { o.APIKey = "" }, "an API key is required"},
+		"no seed":      {func(o *Options) { o.SSHSeed = nil }, "an SSH seed of 32 bytes"},
+		"short seed":   {func(o *Options) { o.SSHSeed = o.SSHSeed[:31] }, "an SSH seed of 32"},
 		"no sizes":     {func(o *Options) { o.Sizes = nil }, "at least one size"},
 		"no countries": {func(o *Options) { o.Countries = nil }, "at least one country"},
 		"unnamed size": {func(o *Options) { o.Sizes[0].Name = "" }, "needs a name"},

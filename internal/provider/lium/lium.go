@@ -47,7 +47,9 @@ type SizeSpec struct {
 
 // Options configures the adapter, BaseURL replaces Lium's API in tests
 type Options struct {
-	APIKey  string
+	APIKey string
+	// SSHSeed is LIUM_SSH_SEED decoded, the 32 bytes every pod's SSH key derives from
+	SSHSeed []byte
 	BaseURL string
 	Log     *slog.Logger // slog.Default when nil
 	// Sizes are the sizes sold, at least one
@@ -82,6 +84,7 @@ type size struct {
 type Provider struct {
 	api         *api
 	log         *slog.Logger
+	sshSeed     []byte
 	sizes       []size // lowest cap first
 	maxLifetime time.Duration
 	startBilled time.Duration
@@ -124,6 +127,8 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 	switch {
 	case opts.APIKey == "":
 		return nil, errors.New("lium: an API key is required")
+	case len(opts.SSHSeed) != seedBytes:
+		return nil, errors.New("lium: an SSH seed of 32 bytes is required")
 	case len(opts.Countries) == 0:
 		return nil, errors.New("lium: at least one country is required, the node countries " +
 			"tried first")
@@ -150,6 +155,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 	return &Provider{
 		api:            a,
 		log:            log,
+		sshSeed:        slices.Clone(opts.SSHSeed),
 		sizes:          sizes,
 		maxLifetime:    cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled:    opts.StartBilled,

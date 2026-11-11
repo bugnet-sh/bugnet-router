@@ -1,6 +1,7 @@
 package lium
 
 import (
+	"bytes"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -64,10 +65,14 @@ func testSizes() []SizeSpec {
 	return out
 }
 
+// testSeed stands in for LIUM_SSH_SEED
+var testSeed = bytes.Repeat([]byte{0x5e}, 32)
+
 // testOptions are design 3.12's settings with the test sizes, BaseURL left for the caller
 func testOptions() Options {
 	return Options{
 		APIKey:           fakeKey,
+		SSHSeed:          bytes.Clone(testSeed),
 		Log:              slog.New(slog.DiscardHandler),
 		Sizes:            testSizes(),
 		Countries:        slices.Clone(euCountries),
