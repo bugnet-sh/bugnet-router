@@ -70,14 +70,33 @@ base_url = "https://sessions.bugnet.sh"
 
 [[e2b.templates]]
 size = "2x2"
-template = "bugnet-2x2"
+template = "ulsiqpcmd2ri5js47px9"      # bugnet-2026-11-3-2x2
 vcpu = 2
 memory_mib = 2048
 disk_gib = 10
 
 [[e2b.templates]]
 size = "4x8"
-template = "bugnet-4x8"
+template = "d0wb9uyn9rd7jgjs84lh"      # bugnet-2026-11-3-4x8
 vcpu = 4
 memory_mib = 8192
 disk_gib = 10
+
+# Copied from deploy/image/builds/prod-2026.11.3.json
+[images.e2b]
+version = "2026.11.3"
+os = "ubuntu-24.04"
+[images.e2b.tools]
+git = "2.43"
+tar = "1.35"
+python3 = "3.12"
+node = "24.22"
+docker = "none"
+pnpm = "12.18"
+uv = "0.13"
+hf = "2.4"
+gcc = "13.3"
+make = "4.3"
+sshd = "9.6"
+nft = "1.0"
+curl = "8.5"
