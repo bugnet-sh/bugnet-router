@@ -66,8 +66,9 @@ func TestFromLium(t *testing.T) {
 		"NVIDIA RTX A6000": RTXA6000, "NVIDIA GeForce RTX 4090": RTX4090,
 		"NVIDIA GeForce RTX 5090": RTX5090, "NVIDIA RTX 6000 Ada Generation": RTX6000Ada,
 		"NVIDIA A100-SXM4-80GB": A100, "NVIDIA A100 80GB PCIe": A100,
-		"NVIDIA H100 80GB HBM3": H100, "NVIDIA H200": H200, "NVIDIA H200 NVL": H200,
-		"NVIDIA B200": B200, "NVIDIA RTX PRO 6000 Blackwell Server Edition": RTXPro6000,
+		"NVIDIA H100 80GB HBM3": H100, "NVIDIA H100 PCIe": H100, "NVIDIA H200": H200,
+		"NVIDIA H200 NVL": H200, "NVIDIA B200": B200,
+		"NVIDIA RTX PRO 6000 Blackwell Server Edition":            RTXPro6000,
 		"NVIDIA RTX PRO 6000 Blackwell Workstation Edition":       RTXPro6000,
 		"NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": RTXPro6000,
 	} {
@@ -76,7 +77,7 @@ func TestFromLium(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"", "NVIDIA GB200", "NVIDIA GB300", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 PCIe",
+		"", "NVIDIA GB200", "NVIDIA GB300", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 NVL",
 		"nvidia geforce rtx 4090", "NVIDIA RTX 4090", "RTX 4090", "T4 Tensor Core GPU",
 		"NVIDIA GeForce RTX 3090 Ti", "NVIDIA B300 SXM6 AC",
 	} {
