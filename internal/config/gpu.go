@@ -2,6 +2,7 @@ package config
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -132,6 +133,18 @@ func (f hfFile) read(d hfFile) (HF, error) {
 			"sha256sum prints them")
 	}
 	return h, nil
+}
+
+// checkGPU refuses the settings under which a GPU provider would serve unsafely or never serve
+func (c *Config) checkGPU() error {
+	if slices.Contains(c.Previews.Providers, "lium") {
+		return errors.New("previews.providers may not list lium, whose pods run no gate")
+	}
+	if slices.Contains(c.SSH.Providers, "lium") && c.Lium.SSHPath != "native" {
+		return errors.New(`ssh.providers may list lium only while lium.ssh_path is "native", ` +
+			"since lium pods run no gate to carry SSH")
+	}
+	return nil
 }
 
 // durationKey is one duration setting of a table, refused below min

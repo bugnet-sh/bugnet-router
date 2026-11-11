@@ -1068,6 +1068,9 @@ func (f file) config() (Config, error) {
 		return Config{}, err
 	}
 	c.Localrun = f.Localrun.read()
+	if err := c.checkGPU(); err != nil {
+		return Config{}, err
+	}
 	for _, p := range []*string{
 		&c.PackagesFile, &c.RunnerLinuxAMD64, &c.RunnerLinuxARM64, &c.LocalRoot,
 		&c.LocalRunnerPath, &c.LocalSSHDPath, &c.Secrets.CACertFile, &c.Hardening.PoolList,

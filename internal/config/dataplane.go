@@ -172,6 +172,10 @@ func (f file) dataPlane(c *Config) error {
 		return errors.New("secrets.providers may not list local, " +
 			"whose sandboxes cannot run the egress forwarder")
 	}
+	if slices.Contains(c.Secrets.Providers, "lium") {
+		return errors.New("secrets.providers may not list lium, lium pods can be read by " +
+			"their host operator, so secrets never go there")
+	}
 	if err := checkNames(c.Names); err != nil {
 		return err
 	}

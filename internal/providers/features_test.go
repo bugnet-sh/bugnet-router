@@ -44,9 +44,11 @@ func TestBuildFeaturesServeLiumNative(t *testing.T) {
 		{"[ssh]\nproviders = [\"lium\"]\n", []string{"lium"}},
 		{"[ssh]\nproviders = [\"lium\"]\n[boat]\nssh_path = \"native\"\n",
 			[]string{"boat", "lium"}},
-		{"[ssh]\nproviders = [\"lium\"]\n[lium]\nssh_path = \"gate\"\n", nil},
+		// Lium runs no gate, so ssh.providers lists it only while its ssh_path is native
+		{"[lium]\nssh_path = \"gate\"\n", nil},
 	} {
-		f := features(settings(t, c.doc))
+		cfg := settings(t, c.doc)
+		f := features(cfg)
 		if !slices.Equal(f.NativeSSH, c.native) {
 			t.Errorf("%q: native ssh %v, want %v", c.doc, f.NativeSSH, c.native)
 		}
@@ -54,9 +56,10 @@ func TestBuildFeaturesServeLiumNative(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := c.native != nil; !reg.Capabilities(lium).SSH || reg.NativeSSH(lium) != want {
-			t.Errorf("%q: lium ssh %v and native %v, want ssh and native %v", c.doc,
-				reg.Capabilities(lium).SSH, reg.NativeSSH(lium), want)
+		ssh, native := slices.Contains(cfg.SSH.Providers, "lium"), c.native != nil
+		if reg.Capabilities(lium).SSH != ssh || reg.NativeSSH(lium) != native {
+			t.Errorf("%q: lium ssh %v and native %v, want ssh %v and native %v", c.doc,
+				reg.Capabilities(lium).SSH, reg.NativeSSH(lium), ssh, native)
 		}
 	}
 }
