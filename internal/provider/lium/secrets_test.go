@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"maps"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -33,14 +37,29 @@ func TestLiumSendsNoSecret(t *testing.T) {
 	check := createReq("")
 	check.Labels = map[string]string{"bugnet_image_check": "1"}
 	refs = append(refs, mustCreate(t, p, check))
-	for _, ref := range refs {
+	for i, ref := range refs {
 		f.setPod(ref.ID, func(fp *fakePod) { fp.status = "RUNNING" })
-		if _, err := p.ReadyMeta(ctx, ref); err != nil {
+		meta, err := p.ReadyMeta(ctx, ref)
+		if err != nil {
 			t.Fatal(err)
 		}
+		ref.Meta = maps.Clone(ref.Meta)
+		maps.Copy(ref.Meta, meta)
+		refs[i] = ref
 		if _, err := p.Inspect(ctx, ref); err != nil {
 			t.Fatal(err)
 		}
+		// A command and a cancelled one, whose group the adapter kills on a second session
+		if out, _, err := run(t, p, ref, provider.ExecSpec{
+			Argv: []string{"sh", "-c", "echo hi"}, Cwd: "/", Env: map[string]string{"A": "1"},
+		}); err != nil || out != "hi\n" {
+			t.Fatalf("gave %q, %v", out, err)
+		}
+		cctx, cancel := context.WithCancel(ctx)
+		s, pgid := startedGroup(t, f, p, cctx, ref)
+		cancel()
+		_, _ = s.Wait()
+		waitGroupGone(t, f, pgid)
 		if err := p.SetLifetime(ctx, ref, time.Now().Add(20*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
@@ -61,6 +80,18 @@ func TestLiumSendsNoSecret(t *testing.T) {
 		needles = append(needles, secretWords(priv)...)
 	}
 	needles = append(needles, "PRIVATE KEY", "bnsec_", "BUGNET_", "LIUM_")
+	// A gate key of the placement under a data plane root, which no Lium pod ever gets
+	env := dpkeys.NewEnv()
+	keys, err := dpkeys.Parse(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := keys.GateKey(keys.Current().ID,
+		uuid.MustParse(placementLabels()["placement"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	needles = append(needles, gate, env)
 
 	f.mu.Lock()
 	requests := append([]recorded(nil), f.requests...)
@@ -91,5 +122,22 @@ func TestLiumSendsNoSecret(t *testing.T) {
 		if r.path == "/executors" && r.header.Get("X-Api-Key") != "" {
 			t.Errorf("the keyless listing sent the key")
 		}
+	}
+
+	// Every command line a pod ran, the kills among them
+	lines := f.execLines()
+	kills := 0
+	for _, line := range lines {
+		if strings.Contains(line, "kill -KILL") {
+			kills++
+		}
+		for _, n := range needles {
+			if n != "" && strings.Contains(line, n) {
+				t.Errorf("exec line %q carries a secret: %q", line, n)
+			}
+		}
+	}
+	if len(lines) < 6 || kills < 2 {
+		t.Fatalf("only %d exec lines, %d kills", len(lines), kills)
 	}
 }
