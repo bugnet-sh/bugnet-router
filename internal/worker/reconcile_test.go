@@ -12,6 +12,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/gpustatus"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/reconcile"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -307,6 +308,88 @@ func TestHintFindsThePlacementBySandbox(t *testing.T) {
 	eq(t, got.TerminationReason, saga.ReasonProviderFailed)
 	sg := e.signals(t, p.ID)
 	eq(t, []string{sg[0].Source}, []string{"hook"})
+}
+
+// accountChecks counts the account_check jobs inserted for a provider so far
+func (e *env) accountChecks(t *testing.T, prov string) int {
+	t.Helper()
+	var n int
+	err := e.pool.QueryRow(t.Context(), `select count(*) from river_job
+		where kind = 'account_check' and args->>'provider' = $1`, prov).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A verdict with CheckAccount asks for the provider's account check at once, also on a placement
+// a stop is already ending, and any other verdict asks for none
+func TestCheckAccountVerdictRequestsAnAccountCheck(t *testing.T) {
+	lium, hf := newInspecting(t, "lium"), newInspecting(t, "hf")
+	e := newEnv(t, options{providers: []provider.Provider{lium, hf}})
+	ctx, now := t.Context(), time.Now()
+	rc := e.worker.Reconciler()
+
+	// A pod failed from inside ends the run and leaves the account alone
+	p, ref := e.readyPlacement(t, lium, now, now.Add(time.Hour))
+	lium.set(ref.ID, provider.Status{
+		State: provider.StateFailed, Reason: gpustatus.LiumReason(gpustatus.LiumStatusFailed),
+	})
+	if err := rc.Reconcile(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, e.reload(t, p.ID).TerminationReason, saga.ReasonSandboxExited)
+	eq(t, e.accountChecks(t, "lium"), 0)
+
+	// A zero-balance stop ends the run as the provider's failure and reads the account
+	p, ref = e.readyPlacement(t, lium, now, now.Add(time.Hour))
+	lium.set(ref.ID, provider.Status{
+		State:      provider.StateStopped,
+		Reason:     gpustatus.LiumReason(gpustatus.LiumStatusStopped),
+		KillReason: gpustatus.LiumEventInsufficientBalance,
+	})
+	if err := rc.Reconcile(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, e.reload(t, p.ID).TerminationReason, saga.ReasonProviderFailed)
+	eq(t, e.accountChecks(t, "lium"), 1)
+
+	// A Job HF canceled for credits reads the account though our own stop owns the placement
+	q, qref := e.readyPlacement(t, hf, now, now.Add(time.Hour))
+	if _, err := e.store.MarkPlacementTerminating(ctx, q.ID, "stop", now); err != nil {
+		t.Fatal(err)
+	}
+	hf.set(qref.ID, provider.Status{State: provider.StateGone, KillReason: gpustatus.HFNoCredits})
+	if err := rc.Reconcile(ctx, e.reload(t, q.ID), nil); err != nil {
+		t.Fatal(err)
+	}
+	got := e.reload(t, q.ID)
+	eq(t, []string{got.State, got.TerminationReason},
+		[]string{store.PlacementTerminating, "stop"})
+	eq(t, e.accountChecks(t, "hf"), 1)
+}
+
+// A Lium dispute_block ends the run as the setting says, raises the alert /monitor reads and
+// reads the account (Q19)
+func TestLiumDisputeBlockAlertsAndReadsTheAccount(t *testing.T) {
+	lium := newInspecting(t, "lium")
+	e := newEnv(t, options{providers: []provider.Provider{lium}})
+	now := time.Now()
+	p, ref := e.readyPlacement(t, lium, now, now.Add(time.Hour))
+	lium.set(ref.ID, provider.Status{
+		State: provider.StateGone, KillReason: gpustatus.LiumEventDisputeBlock,
+	})
+	if err := e.worker.Reconciler().Reconcile(t.Context(), p, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := e.reload(t, p.ID)
+	eq(t, got.TerminationReason, saga.ReasonProviderFailed)
+	kills, err := e.store.UnaskedKills(t.Context(), got.CreatedAt.Add(-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, kills, map[string]int{"lium": 1})
+	eq(t, e.accountChecks(t, "lium"), 1)
 }
 
 func TestLateAbuseHintBlocksThePayer(t *testing.T) {

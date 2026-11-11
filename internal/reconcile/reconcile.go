@@ -126,6 +126,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, p store.Placement, o *Observ
 	if v.Recheck > 0 {
 		return r.recheck(ctx, p, v.Recheck)
 	}
+	// An account-wide action shows within seconds, and trips the guard for the rest (CP 6.4)
+	if v.Class == ClassAbuse || v.CheckAccount {
+		health.RequestAccountCheck(ctx, r.d.River, p.Provider)
+	}
 	if v.Class == ClassNone {
 		return nil
 	}
@@ -174,10 +178,6 @@ func (r *Reconciler) act(
 			return nil
 		}
 		return err
-	}
-	// An account-wide action shows within seconds, and trips the guard for the rest (CP 6.4)
-	if v.Class == ClassAbuse {
-		health.RequestAccountCheck(ctx, r.d.River, p.Provider)
 	}
 	if guards(v.Class) {
 		// The guard runs in the end's own transaction, so its lock never waits on the destroy
