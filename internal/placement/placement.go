@@ -129,7 +129,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 			continue
 		}
 		hourly := p.HourlyCostMicros(size)
-		cost := costMicros(hourly, billed, p.BillingIncrement())
+		cost := CostMicros(hourly, billed, p.BillingIncrement())
 		var fee int64
 		if sc, ok := provider.As[provider.StartCoster](p); ok {
 			var ok bool
@@ -237,8 +237,8 @@ func b2i(b bool) int {
 	return 0
 }
 
-// costMicros bills whole increments and rounds the result up to a whole micro
-func costMicros(hourly int64, used, increment time.Duration) int64 {
+// CostMicros is hourly over used, billed in whole increments and rounded up to a whole micro
+func CostMicros(hourly int64, used, increment time.Duration) int64 {
 	billed := used
 	if increment > 0 {
 		billed = (used + increment - 1) / increment * increment
@@ -260,9 +260,9 @@ func HedgeFits(
 ) bool {
 	run := time.Duration(pkg.Minutes) * time.Minute
 	incA, incB := a.Provider.BillingIncrement(), b.Provider.BillingIncrement()
-	winner := max(costMicros(a.HourlyMicros, pre+run, incA), costMicros(b.HourlyMicros, run, incB))
-	loser := max(costMicros(a.HourlyMicros, pre+loserLife, incA),
-		costMicros(b.HourlyMicros, pre+loserLife, incB))
+	winner := max(CostMicros(a.HourlyMicros, pre+run, incA), CostMicros(b.HourlyMicros, run, incB))
+	loser := max(CostMicros(a.HourlyMicros, pre+loserLife, incA),
+		CostMicros(b.HourlyMicros, pre+loserLife, incB))
 	worst := winner + a.StartFeeMicros + b.StartFeeMicros + loser
 	return float64(worst) <= float64(pkg.PriceMicros)*(1-floor)
 }
