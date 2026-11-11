@@ -45,6 +45,8 @@ type SSHSettings struct {
 	InstallTimeout time.Duration
 	// LocalSSHDPath is the sshd a local sandbox runs, /usr/sbin/sshd when empty
 	LocalSSHDPath string
+	// NativeSSH lists the providers whose own sshd serves SSH, where a check boot runs no ssh-up
+	NativeSSH []string
 }
 
 // SSHSettingsOf takes the ssh-up settings from the router's settings
@@ -52,6 +54,7 @@ func SSHSettingsOf(c config.Config) SSHSettings {
 	return SSHSettings{
 		Ports:          []int{c.SSH.SSHDPort, c.SSH.SSHDFallbackPort},
 		InstallTimeout: c.SSH.InstallTimeout, LocalSSHDPath: c.LocalSSHDPath,
+		NativeSSH: c.NativeSSH(),
 	}
 }
 

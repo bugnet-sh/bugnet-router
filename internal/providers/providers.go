@@ -91,22 +91,13 @@ func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry) (
 	}
 	reg, err := provider.NewRegistry(ps, provider.Features{
 		Preview: cfg.Previews.Providers, SSH: cfg.SSH.Providers, Secrets: cfg.Secrets.Providers,
-		NativeSSH: nativeSSH(cfg),
+		NativeSSH: cfg.NativeSSH(),
 		Images:    cfg.Images.Versions(cfg.Providers), ImageExempt: cfg.Images.Exempt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("providers: %w", err)
 	}
 	return reg, nil
-}
-
-// nativeSSH lists the providers whose ssh_path is native
-func nativeSSH(cfg config.Config) []string {
-	var out []string
-	if cfg.Boat.SSHPath == "native" {
-		out = append(out, "boat")
-	}
-	return out
 }
 
 // runnerKey names the setting that points at each architecture's bugnet-run build

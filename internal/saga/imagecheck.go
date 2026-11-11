@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -14,7 +15,7 @@ import (
 
 // Ref.Meta keys a check boot leaves for the base image check to compare
 const (
-	// MetaSSHHostKey is the host key ssh-up made, an authorized_keys line without comment
+	// MetaSSHHostKey is the sandbox sshd's host key, an authorized_keys line without comment
 	MetaSSHHostKey = "check_ssh_host_key"
 	// MetaReseed is how setup says it mixed in the seed, ioctl, write or failed
 	MetaReseed = "check_reseed"
@@ -52,21 +53,50 @@ func CheckBoot(
 		if err != nil {
 			return ref, err
 		}
-		line, err := sshkeys.Throwaway()
+		var host string
+		if slices.Contains(ssh.NativeSSH, prov.Name()) {
+			host, err = pinnedHostKey(ref)
+		} else {
+			host, err = checkSSHUp(ctx, ssh, prov, ref)
+		}
 		if err != nil {
 			return ref, err
-		}
-		spec := ssh.specFor(prov, ref, []string{line})
-		uctx, cancel := context.WithTimeout(ctx, ssh.installTimeout()+sshUpSlack)
-		up, err := rootCommand(uctx, prov, ref, "ssh-up", sshSpecPath, spec)
-		cancel()
-		if err != nil {
-			return ref, err
-		}
-		host, err := sshkeys.HostKey(up.HostKey)
-		if err != nil {
-			return ref, errors.New("ssh-up reported no usable host key")
 		}
 		return withMeta(ref, map[string]string{MetaSSHHostKey: host, MetaReseed: ans.Reseed}), nil
 	}
+}
+
+// pinnedHostKey is the host key of the provider's own sshd, which its ReadyMeta pinned in Meta
+func pinnedHostKey(ref provider.Ref) (string, error) {
+	line, ok := ref.Meta[provider.MetaHostKey]
+	if !ok {
+		return "", errors.New("the provider's own sshd has no host_key in the sandbox's Meta")
+	}
+	host, err := sshkeys.HostKey(line)
+	if err != nil {
+		return "", errors.New("the host_key in the sandbox's Meta is not a usable host key")
+	}
+	return host, nil
+}
+
+// checkSSHUp starts our sshd with a throwaway key and answers the host key it made
+func checkSSHUp(
+	ctx context.Context, ssh SSHSettings, prov provider.Provider, ref provider.Ref,
+) (string, error) {
+	line, err := sshkeys.Throwaway()
+	if err != nil {
+		return "", err
+	}
+	spec := ssh.specFor(prov, ref, []string{line})
+	uctx, cancel := context.WithTimeout(ctx, ssh.installTimeout()+sshUpSlack)
+	up, err := rootCommand(uctx, prov, ref, "ssh-up", sshSpecPath, spec)
+	cancel()
+	if err != nil {
+		return "", err
+	}
+	host, err := sshkeys.HostKey(up.HostKey)
+	if err != nil {
+		return "", errors.New("ssh-up reported no usable host key")
+	}
+	return host, nil
 }

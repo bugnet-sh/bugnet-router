@@ -222,6 +222,9 @@ type ReadyReporter interface {
 	ReadyMeta(ctx context.Context, ref Ref) (map[string]string, error)
 }
 
+// MetaHostKey is the Ref.Meta entry where ReadyMeta pins the host key of the provider's own sshd
+const MetaHostKey = "host_key"
+
 // MaxUntiler is a provider whose sandboxes each have a last moment of their own
 type MaxUntiler interface {
 	// MaxUntil is the latest SetLifetime accepts for ref, false when it has none

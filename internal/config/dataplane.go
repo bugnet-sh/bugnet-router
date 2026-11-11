@@ -207,6 +207,15 @@ func (f file) dataPlane(c *Config) error {
 	return nil
 }
 
+// NativeSSH lists the providers whose ssh_path is native
+func (c Config) NativeSSH() []string {
+	var out []string
+	if c.Boat.SSHPath == "native" {
+		out = append(out, "boat")
+	}
+	return out
+}
+
 // checkValkeyAddr accepts a host and port, or the unix scheme and an absolute socket path
 func checkValkeyAddr(addr string) error {
 	if socket, ok := strings.CutPrefix(addr, "unix://"); ok {
