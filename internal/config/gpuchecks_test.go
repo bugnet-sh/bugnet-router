@@ -255,7 +255,8 @@ func TestConfigLiumKeyBudget(t *testing.T) {
 	// A cap near the int64 limit is compared without overflow
 	_, err = LoadFile(writeFile(t, "[lium]\nkey_daily_budget_micros = 9223372036854775807\n"+
 		liumSize("lium-b200", gpu.B200, 9_000_000_000_000_000_000)))
-	if err == nil || !strings.Contains(err.Error(), "must be 0 or at least 2160000000000000000000") {
+	over := "must be 0 or at least 2160000000000000000000"
+	if err == nil || !strings.Contains(err.Error(), over) {
 		t.Fatalf("a budget under an overflowing bound gave %v", err)
 	}
 }
