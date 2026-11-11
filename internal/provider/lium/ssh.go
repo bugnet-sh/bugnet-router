@@ -207,7 +207,9 @@ func (p *Provider) pinHostKey(ctx context.Context, ref provider.Ref, addr string
 		if errors.Is(err, errHostKeyChanged) {
 			return "", p.sshError(ctx, id, err)
 		}
-		last = err
+		if ctx.Err() == nil {
+			last = err
+		}
 		d, gerr := p.getPod(ctx, id)
 		if e, ok := provider.AsError(gerr); ok && e.Code == provider.CodeNotFound {
 			return "", gerr
@@ -443,10 +445,12 @@ func (pl *sshPool) serves(name, addr string, pin ssh.PublicKey) bool {
 	return pl.name == name && pl.addr == addr && bytes.Equal(pl.pin.Marshal(), pin.Marshal())
 }
 
-// session opens a session on a pooled connection, trying once more when the connection broke
+// session opens a session on a pooled connection, redialling once when the connection broke
 func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) {
 	var last error
-	for range 2 {
+	redialled := false
+	// Each refusal lowers one connection's room, so the tries end
+	for range pl.p.ssh.conns*pl.p.ssh.perConn + 1 {
 		c, err := pl.take(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -470,6 +474,10 @@ func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) 
 		}
 		pl.release(c)
 		pl.drop(c)
+		if redialled {
+			break
+		}
+		redialled = true
 	}
 	return nil, nil, last
 }
@@ -493,6 +501,7 @@ func (pl *sshPool) guard(ctx context.Context, c *sshConn) (stop func() bool) {
 }
 
 // take holds a session slot on an open connection, dialling one when every connection is full
+// and no dial runs, so a burst waits for the new connection instead of opening several
 func (pl *sshPool) take(ctx context.Context) (*sshConn, error) {
 	for {
 		pl.mu.Lock()
@@ -510,7 +519,7 @@ func (pl *sshPool) take(ctx context.Context) (*sshConn, error) {
 				return c, nil
 			}
 		}
-		if len(pl.conns)+pl.dialing < pl.p.ssh.conns {
+		if pl.dialing == 0 && len(pl.conns) < pl.p.ssh.conns {
 			pl.dialing++
 			pl.mu.Unlock()
 			return pl.dialOne(ctx)
