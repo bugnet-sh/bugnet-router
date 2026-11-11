@@ -465,6 +465,7 @@ func TestLiumTransportErrorRetriesOnce(t *testing.T) {
 	for name, resend := range map[string]fault{
 		"the resend is rate limited": {status: 429, code: "rate_limited", times: 1,
 			header: map[string]string{"Retry-After": "0"}},
+		"the resend gets a server error": {status: 502, code: "upstream_unavailable", times: 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, p := liveFake(t)
@@ -510,6 +511,17 @@ func TestLiumServerErrorRetriesOnce(t *testing.T) {
 		_, err := p.Create(context.Background(), createReq(testKey))
 		wantCode(t, err, provider.CodeOutcomeUnknown, false)
 		eq(t, len(f.rents()), 2)
+	})
+	t.Run("after lost answers", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{drop: true, times: 2})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		// The key's retry gets two server errors, which say nothing of the lost sends
+		f.inject(rentRoute, fault{status: 502, code: "upstream_unavailable", times: 2})
+		_, err = p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, len(f.rents()), 4)
 	})
 }
 

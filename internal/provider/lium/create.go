@@ -59,6 +59,8 @@ type rental struct {
 	image, template string
 	// uncertain marks a rental one of whose sends may have rented
 	uncertain bool
+	// mixed marks a rental one of whose sends got no answer or one other than a server error
+	mixed bool
 }
 
 // order is one Create's request as its rents read it
@@ -316,10 +318,12 @@ func (p *Provider) noted(o order, r rental, err error) rental {
 	code := codeOf(err)
 	uncertain := r.uncertain || mayHaveRented(err) || code == codeInProgress ||
 		code == codeOutcomeUnknown
-	if uncertain == r.uncertain {
+	answered := errors.As(err, new(*apiError))
+	mixed := r.mixed || lostAnswer(err) || answered && !serverError(err)
+	if uncertain == r.uncertain && mixed == r.mixed {
 		return r
 	}
-	r.uncertain = true
+	r.uncertain, r.mixed = uncertain, mixed
 	if !o.fresh {
 		p.remember(o.key, r)
 	}
@@ -379,8 +383,8 @@ func (p *Provider) afterUnknown(
 	case err != nil:
 		return provider.Ref{}, false, unknownOutcome(fmt.Errorf(
 			"%w, then the listing failed, %w", cause, err))
-	case serverError(cause):
-		// Two server errors and no pod listed, so Lium shows no rent of ours
+	case serverError(cause) && !r.mixed:
+		// Every send got a server error and no pod is listed, so Lium shows no rent of ours
 		return provider.Ref{}, false, cause
 	}
 	return provider.Ref{}, false, unknownOutcome(cause)
