@@ -2,6 +2,7 @@ package lium
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -143,4 +144,60 @@ func TestLiumKeyAnswersAfterUncertain(t *testing.T) {
 			eq(t, len(f.requestsTo("GET", "/pods")), 1)
 		})
 	}
+}
+
+// keepAlive gives the adapter the transport production uses, which keeps connections alive
+func keepAlive(t *testing.T, p *Provider) {
+	t.Helper()
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(tr.CloseIdleConnections)
+	p.api.client.Transport = tr
+}
+
+func TestLiumTransportResendsUnseen(t *testing.T) {
+	for name, then := range map[string]fault{
+		"rate limited": {status: 429, code: "rate_limited", times: 1,
+			header: map[string]string{"Retry-After": "0"}},
+		"insufficient_balance": {status: 403, code: "insufficient_balance", times: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p := liveFake(t)
+			keepAlive(t, p)
+			// The rent takes node-a and its connection drops, so Go sends it again by itself
+			f.inject(rentRoute, fault{drop: true, after: true, times: 1, then: &then})
+			ref := mustCreate(t, p, createReq(testKey))
+			eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+			wantOnePodOnNodeA(t, f, 3)
+			// The adapter sent 2 rents, and Lium saw a third
+			eq(t, len(f.rents()), 3)
+		})
+	}
+	t.Run("two server errors", func(t *testing.T) {
+		f, p := liveFake(t)
+		keepAlive(t, p)
+		f.inject(rentRoute, fault{drop: true, after: true, times: 1,
+			then: &fault{status: 502, code: "upstream_unavailable", times: 2}})
+		f.inject(podsRoute, fault{status: 200, raw: "[]", skip: 1})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		wantOnePodOnNodeA(t, f, 3)
+		eq(t, len(f.rents()), 3)
+		r, ok := p.remembered(testKey)
+		eq(t, ok && r.uncertain && r.mixed, true)
+		f.clearFaults()
+		ref := mustCreate(t, p, createReq(testKey))
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		wantOnePodOnNodeA(t, f, 3)
+	})
+	t.Run("a rent without a key", func(t *testing.T) {
+		f, p := liveFake(t)
+		keepAlive(t, p)
+		// Go never resends a POST without a key, so the adapter's own resend meets the 429
+		f.inject(rentRoute, fault{drop: true, after: true, times: 1,
+			then: &fault{status: 429, code: "rate_limited", times: 1}})
+		ref := mustCreate(t, p, checkReq())
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		wantOnePodOnNodeA(t, f, 2)
+		eq(t, len(f.rents()), 2)
+	})
 }

@@ -145,8 +145,9 @@ func (a *api) do(ctx context.Context, c call, out any) (http.Header, error) {
 	if c.body != nil {
 		body = bytes.NewReader(c.body)
 	}
-	var sent atomic.Bool
-	trace := &httptrace.ClientTrace{WroteHeaders: func() { sent.Store(true) }}
+	// writes counts each time the transport wrote the request, as it resends a keyed POST itself
+	var writes atomic.Int32
+	trace := &httptrace.ClientTrace{WroteHeaders: func() { writes.Add(1) }}
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), c.method, u,
 		body)
 	if err != nil {
@@ -166,12 +167,16 @@ func (a *api) do(ctx context.Context, c call, out any) (http.Header, error) {
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, transportError(fmt.Errorf("lium %s %s: %w", c.method, c.route, err),
-			sent.Load(), c.rent)
+			writes.Load() > 0, c.rent)
 	}
 	defer drainClose(resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
-		return resp.Header, a.classify(resp.StatusCode, resp.Header, raw, c.rent)
+		err := a.classify(resp.StatusCode, resp.Header, raw, c.rent)
+		if c.rent && writes.Load() > 1 {
+			return resp.Header, resentUnseen(c, err)
+		}
+		return resp.Header, err
 	}
 	if out == nil {
 		return resp.Header, nil
@@ -251,6 +256,14 @@ func transportError(err error, sent, rent bool) error {
 		return &provider.Error{Code: provider.CodeInternal, Err: err}
 	}
 	return &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: err}
+}
+
+// resentUnseen is a rent whose first write lost its answer before the transport sent it again
+func resentUnseen(c call, err error) error {
+	// The answer is written out, not wrapped, so the rent counts as one with no answer
+	return &provider.Error{Code: provider.CodeOutcomeUnknown, Err: fmt.Errorf(
+		"lium %s %s lost its answer and the transport sent it again, which got %v", c.method,
+		c.route, err)}
 }
 
 // unreadable is a 2xx answer whose reply could not be read, a rent may have rented regardless

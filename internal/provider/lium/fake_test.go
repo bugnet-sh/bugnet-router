@@ -204,7 +204,7 @@ func (f *fakeLium) provider(t *testing.T, opts Options, now func() time.Time) *P
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Go resends a request with an Idempotency-Key when a reused connection drops, unseen
+	// Go resends a keyed rent itself when a reused connection drops, which would spend a fault
 	p.api.client.Transport = &http.Transport{DisableKeepAlives: true}
 	p.relistEvery = time.Millisecond
 	p.dial, p.execDir, p.setsid = f.dialSSH, f.sh.execDir, f.sh.setsid
