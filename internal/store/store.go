@@ -11,10 +11,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/bugnet-sh/bugnet-router/internal/config"
 )
 
 // DefaultMaxConcurrent is the capacity given to a provider with no row yet
-const DefaultMaxConcurrent = 50
+const DefaultMaxConcurrent = config.DefaultMaxConcurrent
 
 // Placement states
 const (

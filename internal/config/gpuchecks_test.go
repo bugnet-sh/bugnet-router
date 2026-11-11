@@ -219,3 +219,43 @@ func TestConfigReadyTimeouts(t *testing.T) {
 	}
 	runGPUChecks(t, checks)
 }
+
+// TestConfigLiumKeyBudget is check 10 of 5.3, a key budget above what the router spends in a day
+func TestConfigLiumKeyBudget(t *testing.T) {
+	sizes := liumSize("lium-rtx3090", gpu.RTX3090, 350_000) +
+		liumSize("lium-b200", gpu.B200, 9_500_000)
+	budget := func(slots, micros int64) string {
+		return fmt.Sprintf("[lium]\nmax_concurrent = %d\nkey_daily_budget_micros = %d\n",
+			slots, micros) + sizes
+	}
+	// 10 pods at B200's $9.50 cap for 24 hours is $2,280
+	want := "lium.key_daily_budget_micros must be 0 or at least 2280000000"
+	runGPUChecks(t, map[string]gpuCheck{
+		"10 at the bound": {budget(10, 2_280_000_000), budget(10, 2_279_999_999), want},
+		"10 default":      {budget(10, 2_300_000_000), budget(10, 1_000_000), want},
+		"10 none":         {budget(10, 0), budget(10, 1), want},
+		// Without its own cap Lium gets the 50 slots of a provider with no cap at all
+		"10 no cap": {budget(0, 11_400_000_000), budget(0, 11_399_999_999),
+			"lium.key_daily_budget_micros must be 0 or at least 11400000000"},
+		// The dev key, 2 pods at the $0.35 cap for a day is $16.80
+		"10 dev": {
+			"[lium]\nmax_concurrent = 2\nkey_daily_budget_micros = 16800000\n" +
+				liumSize("lium-rtx3090", gpu.RTX3090, 350_000),
+			"[lium]\nmax_concurrent = 2\nkey_daily_budget_micros = 16799999\n" +
+				liumSize("lium-rtx3090", gpu.RTX3090, 350_000),
+			"lium.key_daily_budget_micros must be 0 or at least 16800000",
+		},
+	})
+	// With no size the router rents nothing on Lium, so any budget stands
+	c, err := LoadFile(writeFile(t, "[lium]\nkey_daily_budget_micros = 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.Lium.KeyDailyBudgetMicros, int64(1))
+	// A cap near the int64 limit is compared without overflow
+	_, err = LoadFile(writeFile(t, "[lium]\nkey_daily_budget_micros = 9223372036854775807\n"+
+		liumSize("lium-b200", gpu.B200, 9_000_000_000_000_000_000)))
+	if err == nil || !strings.Contains(err.Error(), "must be 0 or at least 2160000000000000000000") {
+		t.Fatalf("a budget under an overflowing bound gave %v", err)
+	}
+}

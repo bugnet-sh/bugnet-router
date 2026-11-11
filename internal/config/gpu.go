@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math/big"
 	"path"
 	"regexp"
 	"slices"
@@ -199,12 +200,35 @@ func (c *Config) checkGPU() error {
 	if slices.Contains(c.Providers, "lium") && len(c.Lium.Sizes) == 0 {
 		return errors.New("lium.sizes must name at least one size while providers lists lium")
 	}
+	if err := c.checkLiumKeyBudget(); err != nil {
+		return err
+	}
 	if slices.Contains(c.Previews.Providers, "lium") {
 		return errors.New("previews.providers may not list lium, whose pods run no gate")
 	}
 	if slices.Contains(c.SSH.Providers, "lium") && c.Lium.SSHPath != "native" {
 		return errors.New(`ssh.providers may list lium only while lium.ssh_path is "native", ` +
 			"since lium pods run no gate to carry SSH")
+	}
+	return nil
+}
+
+// checkLiumKeyBudget refuses a key budget the router could reach, since Lium then deletes its pods
+func (c *Config) checkLiumKeyBudget() error {
+	budget := c.Lium.KeyDailyBudgetMicros
+	if budget == 0 {
+		return nil
+	}
+	var dearest int64
+	for _, s := range c.Lium.Sizes {
+		dearest = max(dearest, s.MaxHourlyMicros)
+	}
+	slots := cmp.Or(c.MaxConcurrent["lium"], DefaultMaxConcurrent)
+	day := new(big.Int).Mul(big.NewInt(dearest), big.NewInt(int64(slots)*24))
+	if big.NewInt(budget).Cmp(day) < 0 {
+		return fmt.Errorf("lium.key_daily_budget_micros must be 0 or at least %s, %d pods at "+
+			"the dearest lium.sizes cap for 24 hours, since Lium deletes a key's pods once its "+
+			"spend reaches the budget", day, slots)
 	}
 	return nil
 }

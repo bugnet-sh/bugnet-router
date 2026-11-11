@@ -47,6 +47,9 @@ func DefaultLimitsPoll() LimitsPoll {
 // maxProviderCount keeps a provider's cap and create rate far inside what Postgres holds
 const maxProviderCount = 1_000_000
 
+// DefaultMaxConcurrent is the slots of a provider with neither a cap nor a max_concurrent
+const DefaultMaxConcurrent = 50
+
 // read checks the limits_poll table against its bounds, d holding the defaults
 func (f limitsPollFile) read(d limitsPollFile) (LimitsPoll, error) {
 	var l LimitsPoll
