@@ -21,6 +21,10 @@ type Abuse struct {
 	BoatAbuseWords, BoatProviderWords []string
 	// KoyebPlatformWords and KoyebExitWords are matched in Koyeb's instance events
 	KoyebPlatformWords, KoyebExitWords []string
+	// LiumDisputeBlock is the class of a Lium pod whose newest event is dispute_block (Q19)
+	LiumDisputeBlock string
+	// HFPlatformWords are matched in an HF Job's status message, naming HF's own failure
+	HFPlatformWords []string
 	// LostAlertPerHour is the provider_failed ends on one provider before /monitor alerts
 	LostAlertPerHour int
 	// CorrelatedMax is how many ends of one provider inside CorrelatedWindow count as one incident
@@ -38,6 +42,8 @@ type abuseFile struct {
 	BoatProviderWords  []string `toml:"boat_provider_words"`
 	KoyebPlatformWords []string `toml:"koyeb_platform_words"`
 	KoyebExitWords     []string `toml:"koyeb_exit_words"`
+	LiumDisputeBlock   string   `toml:"lium_dispute_block"`
+	HFPlatformWords    []string `toml:"hf_platform_words"`
 	LostAlertPerHour   int64    `toml:"lost_alert_per_hour"`
 	CorrelatedMax      int64    `toml:"correlated_max"`
 	CorrelatedWindow   string   `toml:"correlated_window"`
@@ -53,6 +59,7 @@ func defaultAbuse() abuseFile {
 			"platform", "host", "maintenance", "capacity", "node", "evict",
 		},
 		KoyebExitWords:   []string{"exit", "exited", "code", "oom", "killed", "crash"},
+		LiumDisputeBlock: "provider_failed",
 		LostAlertPerHour: 3, CorrelatedMax: 3, CorrelatedWindow: "10m", LateWindow: "24h",
 	}
 }
@@ -81,6 +88,10 @@ func (a Abuse) OrDefaults() Abuse {
 	if a.KoyebExitWords == nil {
 		a.KoyebExitWords = d.KoyebExitWords
 	}
+	a.LiumDisputeBlock = cmp.Or(a.LiumDisputeBlock, d.LiumDisputeBlock)
+	if a.HFPlatformWords == nil {
+		a.HFPlatformWords = d.HFPlatformWords
+	}
 	a.LostAlertPerHour = cmp.Or(a.LostAlertPerHour, d.LostAlertPerHour)
 	a.CorrelatedMax = cmp.Or(a.CorrelatedMax, d.CorrelatedMax)
 	a.CorrelatedWindow = cmp.Or(a.CorrelatedWindow, d.CorrelatedWindow)
@@ -100,6 +111,8 @@ func (f abuseFile) read(d abuseFile) (Abuse, error) {
 			&a.E2BAdminKill},
 		{"boat_degraded", f.BoatDegraded, d.BoatDegraded,
 			[]string{"abuse", "control_lost", "provider_failed"}, &a.BoatDegraded},
+		{"lium_dispute_block", f.LiumDisputeBlock, d.LiumDisputeBlock,
+			[]string{"abuse", "control_lost", "provider_failed"}, &a.LiumDisputeBlock},
 	} {
 		v := cmp.Or(c.raw, c.def)
 		if !slices.Contains(c.allowed, v) {
@@ -145,6 +158,7 @@ func (f abuseFile) read(d abuseFile) (Abuse, error) {
 		{"boat_provider_words", f.BoatProviderWords, &a.BoatProviderWords},
 		{"koyeb_platform_words", f.KoyebPlatformWords, &a.KoyebPlatformWords},
 		{"koyeb_exit_words", f.KoyebExitWords, &a.KoyebExitWords},
+		{"hf_platform_words", f.HFPlatformWords, &a.HFPlatformWords},
 	} {
 		words := make([]string, 0, len(w.raw))
 		for _, word := range w.raw {
