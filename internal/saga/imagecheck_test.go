@@ -88,6 +88,13 @@ func printed(out string) provider.ExecStream { return printedStream{strings.NewR
 func (printedStream) Wait() (int, error) { return 0, nil }
 func (printedStream) Close() error       { return nil }
 
+// readyBox is a check sandbox whose provider has ReadyMeta, which pins its own sshd's host key
+type readyBox struct{ checkBox }
+
+func (readyBox) ReadyMeta(context.Context, provider.Ref) (map[string]string, error) {
+	return nil, nil
+}
+
 func pinned(key string) provider.Ref {
 	return provider.Ref{ID: "pod", Meta: map[string]string{provider.MetaHostKey: key + " root@pod"}}
 }
@@ -100,7 +107,7 @@ func TestCheckBootNativeReadsPinnedHostKey(t *testing.T) {
 	var keys []string
 	for range 2 {
 		box, key := newCheckBox(t, "lium"), sshkeystest.ED25519(t)
-		got, err := boot(ctx, box, pinned(key))
+		got, err := boot(ctx, readyBox{box}, pinned(key))
 		eq(t, err, nil)
 		eq(t, box.calls(), []string{"ping", "setup"})
 		eq(t, got.Meta[saga.MetaSSHHostKey], key)
@@ -114,7 +121,7 @@ func TestCheckBootNativeReadsPinnedHostKey(t *testing.T) {
 	// A native pod without a pinned key, or with a broken one, fails the check
 	for _, ref := range []provider.Ref{{ID: "pod"}, pinned("ssh-ed25519 not-base64!")} {
 		box := newCheckBox(t, "lium")
-		_, err := boot(ctx, box, ref)
+		_, err := boot(ctx, readyBox{box}, ref)
 		if err == nil || !strings.Contains(err.Error(), "host_key") {
 			t.Fatalf("a pod pinned %q: %v, want an error naming host_key",
 				ref.Meta[provider.MetaHostKey], err)
@@ -124,23 +131,23 @@ func TestCheckBootNativeReadsPinnedHostKey(t *testing.T) {
 
 	// A provider on the gate path still runs ssh-up, whatever its Meta holds
 	box := newCheckBox(t, "e2b")
-	got, err := boot(ctx, box, pinned(sshkeystest.ED25519(t)))
+	got, err := boot(ctx, readyBox{box}, pinned(sshkeystest.ED25519(t)))
 	eq(t, err, nil)
 	eq(t, box.calls(), []string{"ping", "setup", "ssh-up"})
 	eq(t, got.Meta[saga.MetaSSHHostKey], box.upKey)
 }
 
 func TestCheckBootNativeFromSettings(t *testing.T) {
-	for path, want := range map[string][]string{
-		"native": {"ping", "setup"}, "gate": {"ping", "setup", "ssh-up"},
-	} {
+	for path, native := range map[string][]string{"native": {"boat"}, "gate": nil} {
 		t.Run(path, func(t *testing.T) {
-			cfg := config.Config{Boat: config.Boat{SSHPath: path}}
-			boot := saga.CheckBoot(saga.BootSettings{}, saga.SSHSettingsOf(cfg))
+			ssh := saga.SSHSettingsOf(config.Config{Boat: config.Boat{SSHPath: path}})
+			eq(t, ssh.NativeSSH, native)
+			// Boat has no ReadyMeta, so its check runs ssh-up whatever its ssh_path
 			box := newCheckBox(t, "boat")
-			_, err := boot(t.Context(), box, pinned(sshkeystest.ED25519(t)))
+			got, err := saga.CheckBoot(saga.BootSettings{}, ssh)(t.Context(), box, provider.Ref{})
 			eq(t, err, nil)
-			eq(t, box.calls(), want)
+			eq(t, box.calls(), []string{"ping", "setup", "ssh-up"})
+			eq(t, got.Meta[saga.MetaSSHHostKey], box.upKey)
 		})
 	}
 }

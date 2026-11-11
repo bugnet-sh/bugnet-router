@@ -54,7 +54,7 @@ func CheckBoot(
 			return ref, err
 		}
 		var host string
-		if slices.Contains(ssh.NativeSSH, prov.Name()) {
+		if pinsHostKey(ssh, prov) {
 			host, err = pinnedHostKey(ref)
 		} else {
 			host, err = checkSSHUp(ctx, ssh, prov, ref)
@@ -64,6 +64,13 @@ func CheckBoot(
 		}
 		return withMeta(ref, map[string]string{MetaSSHHostKey: host, MetaReseed: ans.Reseed}), nil
 	}
+}
+
+// pinsHostKey reports whether prov's own sshd serves SSH and its ReadyMeta pinned that sshd's key
+func pinsHostKey(ssh SSHSettings, prov provider.Provider) bool {
+	// Boat's own sshd pins no host key, so its check starts ours beside it
+	_, ready := provider.As[provider.ReadyReporter](prov)
+	return ready && slices.Contains(ssh.NativeSSH, prov.Name())
 }
 
 // pinnedHostKey is the host key of the provider's own sshd, which its ReadyMeta pinned in Meta

@@ -45,7 +45,7 @@ type SSHSettings struct {
 	InstallTimeout time.Duration
 	// LocalSSHDPath is the sshd a local sandbox runs, /usr/sbin/sshd when empty
 	LocalSSHDPath string
-	// NativeSSH lists the providers whose own sshd serves SSH, where a check boot runs no ssh-up
+	// NativeSSH lists the providers whose own sshd serves SSH, a ReadyReporter's check skips ssh-up
 	NativeSSH []string
 }
 
