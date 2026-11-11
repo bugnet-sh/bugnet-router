@@ -22,15 +22,41 @@ const (
 	lifetime     = 15 * time.Minute
 )
 
+// Option changes one setting of Run
+type Option func(*settings)
+
+type settings struct {
+	floor        provider.Resources
+	readyTimeout time.Duration
+}
+
+// Floor is what Run asks SizeFor to cover, an empty floor when unset
+func Floor(r provider.Resources) Option {
+	return func(s *settings) { s.floor = r }
+}
+
+// ReadyTimeout is how long Run gives WaitReady, 3 minutes when unset or not positive
+func ReadyTimeout(d time.Duration) Option {
+	return func(s *settings) {
+		if d > 0 {
+			s.readyTimeout = d
+		}
+	}
+}
+
 // Run walks one sandbox through its whole lifecycle and destroys everything it created
-func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider) {
+func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider, opts ...Option) {
+	s := settings{readyTimeout: readyTimeout}
+	for _, o := range opts {
+		o(&s)
+	}
 	p := newProvider(t)
 	labels := map[string]string{labelKey: randomHex(t, 8)}
 	t.Cleanup(func() { sweep(t, p, labels) })
 
-	size, ok := p.SizeFor(provider.Resources{})
+	size, ok := p.SizeFor(s.floor)
 	if !ok {
-		t.Fatalf("%s offers no size", p.Name())
+		t.Fatalf("%s offers no size for %+v", p.Name(), s.floor)
 	}
 	req := provider.CreateRequest{
 		IdempotencyKey: randomHex(t, 16),
@@ -51,7 +77,7 @@ func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider) {
 		t.Fatalf("same idempotency key gave %+v and %+v", ref, again)
 	}
 
-	c := check{p: p, ref: ref, labels: labels}
+	c := check{p: p, ref: ref, labels: labels, readyTimeout: s.readyTimeout}
 	steps := []struct {
 		name string
 		run  func(t *testing.T)
@@ -75,13 +101,14 @@ func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider) {
 }
 
 type check struct {
-	p      provider.Provider
-	ref    provider.Ref
-	labels map[string]string
+	p            provider.Provider
+	ref          provider.Ref
+	labels       map[string]string
+	readyTimeout time.Duration
 }
 
 func (c check) ready(t *testing.T) {
-	if err := c.p.WaitReady(withTimeout(t, readyTimeout), c.ref); err != nil {
+	if err := c.p.WaitReady(withTimeout(t, c.readyTimeout), c.ref); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 }
@@ -270,7 +297,7 @@ func (c check) inspectGone(t *testing.T) {
 }
 
 func (c check) notFound(t *testing.T) {
-	ctx := withTimeout(t, readyTimeout)
+	ctx := withTimeout(t, c.readyTimeout)
 	path := "/tmp/bugnet-contract-gone.txt"
 
 	requireNotFound(t, "WaitReady", c.p.WaitReady(ctx, c.ref))
