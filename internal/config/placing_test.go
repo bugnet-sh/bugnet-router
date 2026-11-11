@@ -57,6 +57,11 @@ onto_gpu = true
 	eq(t, c.GPUPlacingBudget, 20*time.Minute)
 	eq(t, c.Hedge.OntoGPU, true)
 	// A GPU order may name a provider the providers setting leaves out, which has no candidates
+	c, err = LoadFile(writeFile(t, "providers = [\"e2b\"]\ngpu_order = [\"lium\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, c.GPUOrder, []string{"lium"})
 	c, err = LoadFile(writeFile(t, "providers = [\"e2b\"]\ngpu_order = []\n"))
 	if err != nil {
 		t.Fatal(err)

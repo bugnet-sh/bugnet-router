@@ -270,7 +270,7 @@ type Gater interface {
 	GateRoute(ref Ref, port int) (GateRoute, error)
 }
 
-// NativeSSH is a provider's own SSH server, used only when the gate path fails there
+// NativeSSH is a provider's own SSH server and how the gateway reaches it
 type NativeSSH struct {
 	Address string // host and port, built with net.JoinHostPort
 	User    string

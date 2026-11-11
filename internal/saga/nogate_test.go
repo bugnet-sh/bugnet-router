@@ -80,7 +80,7 @@ func TestHardenSpecNoGatewayOnLium(t *testing.T) {
 	raw, _ := json.Marshal(lium)
 	eq(t, string(raw), `{"v":1,"mail_ports":[25],"deny_ranges":["10.0.0.0/8"],"pools":[],`+
 		`"allow":[],"no_gateway":true}`)
-	// Every other provider's spec has no no_gateway field, as before
+	// Every other provider's spec has no no_gateway field
 	for _, name := range []string{"hf", "boat"} {
 		spec, ok := saga.HardenSpecFor(b, name)
 		eq(t, ok, true)
@@ -97,8 +97,7 @@ type writtenFile struct {
 	data []byte
 }
 
-// gateSpy is a scripted provider that keeps every file written into its sandboxes and counts
-// each call into its gate route
+// gateSpy is a scripted provider that records its file writes and gate route calls
 type gateSpy struct {
 	scripted
 	files     *[]writtenFile
@@ -234,8 +233,10 @@ func TestBootNoGateWritesNoGateKey(t *testing.T) {
 		eq(t, spec["gate_listen"], any(""))
 		eq(t, spec["sample"], any(i == 1))
 	}
+	hardenSpecs := 0
 	for _, f := range lium.written() {
 		if f.path == "/tmp/bugnet/harden-spec.json" {
+			hardenSpecs++
 			var h struct {
 				NoGateway bool `json:"no_gateway"`
 			}
@@ -245,6 +246,7 @@ func TestBootNoGateWritesNoGateKey(t *testing.T) {
 			eq(t, h.NoGateway, true)
 		}
 	}
+	eq(t, hardenSpecs, 1)
 	key, err := e.keys.GateKey(keyID, id)
 	if err != nil {
 		t.Fatal(err)
