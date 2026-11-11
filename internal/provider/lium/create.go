@@ -84,11 +84,17 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	var refused []error
 	if !o.fresh {
 		ref, found, err := p.findOwn(ctx, o)
-		if err != nil || found {
+		r, kept := p.remembered(o.key)
+		switch {
+		case found:
 			return ref, err
-		}
-		// A retry of the key goes to the node it rented first, with the same key and bytes
-		if r, ok := p.remembered(o.key); ok {
+		case err != nil && kept && r.uncertain:
+			// The key's rental may have rented, so a failed listing leaves the retry to the saga
+			return provider.Ref{}, unknownOutcome(err)
+		case err != nil:
+			return provider.Ref{}, err
+		case kept:
+			// A retry of the key goes to the node it rented first, with the same key and bytes
 			ref, next, err := p.settle(ctx, o, r)
 			if !next {
 				return ref, err

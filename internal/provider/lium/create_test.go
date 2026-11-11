@@ -3,7 +3,10 @@ package lium
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,6 +91,37 @@ func (f *fakeLium) podCount() int {
 
 func rentNode(r recorded) string {
 	return strings.TrimSuffix(strings.TrimPrefix(r.path, "/executors/"), "/rent")
+}
+
+// checkReq is the image check's create, which carries no idempotency key
+func checkReq() provider.CreateRequest {
+	req := createReq("")
+	req.Labels = map[string]string{"bugnet_image_check": "1"}
+	return req
+}
+
+// refuseCalls fails the picked matching calls before anything is written, as a refused dial does
+type refuseCalls struct {
+	next  http.RoundTripper
+	match func(*http.Request) bool
+	// picks are the indexes, among the matching calls, that are refused
+	picks map[int]bool
+	n     atomic.Int32
+}
+
+func (r *refuseCalls) RoundTrip(req *http.Request) (*http.Response, error) {
+	if r.match(req) && r.picks[int(r.n.Add(1))-1] {
+		return nil, errors.New("dial tcp 192.0.2.1:443: connect: connection refused")
+	}
+	return r.next.RoundTrip(req)
+}
+
+func isRent(req *http.Request) bool {
+	return req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/rent")
+}
+
+func isPodList(req *http.Request) bool {
+	return req.Method == http.MethodGet && req.URL.Path == "/pods"
 }
 
 func TestLiumCreate(t *testing.T) {
@@ -432,6 +466,56 @@ func TestLiumRetrySameNode(t *testing.T) {
 		p.api.creates, p.createBudget = lim, 100*time.Millisecond
 		_, err = p.Create(context.Background(), createReq(testKey))
 		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, len(f.rents()), 2)
+	})
+}
+
+// lostRental creates testKey once, its rent taking node-a while both answers and a listing miss it
+func lostRental(t *testing.T, f *fakeLium, p *Provider) {
+	t.Helper()
+	f.inject(rentRoute, fault{drop: true, after: true, times: 2})
+	f.inject(podsRoute, fault{status: 200, raw: "[]", skip: 1, times: 1})
+	_, err := p.Create(context.Background(), createReq(testKey))
+	wantCode(t, err, provider.CodeOutcomeUnknown, false)
+	eq(t, f.podCount(), 1)
+	eq(t, len(f.rents()), 2)
+}
+
+func TestLiumRetryListingFailsAfterUncertain(t *testing.T) {
+	for name, listing := range map[string]fault{
+		"503": {status: 503, code: "upstream_unavailable", times: 1},
+		"500": {status: 500, code: "internal_error", times: 1},
+		"429": {status: 429, code: "rate_limited", times: 1,
+			header: map[string]string{"Retry-After": "0"}},
+		"401":                      {status: 401, code: "unauthorized", times: 1},
+		"403 insufficient_balance": {status: 403, code: "insufficient_balance", times: 1},
+		"dropped once sent":        {drop: true, times: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p := liveFake(t)
+			lostRental(t, f, p)
+			// The saga's retry of the key opens with a listing that fails
+			f.inject(podsRoute, listing)
+			_, err := p.Create(context.Background(), createReq(testKey))
+			wantCode(t, err, provider.CodeOutcomeUnknown, false)
+			eq(t, f.podCount(), 1)
+			eq(t, len(f.rents()), 2)
+			// The next retry lists the pod and adopts it
+			ref := mustCreate(t, p, createReq(testKey))
+			eq(t, len(f.podsNamed(ref.Meta["pod_name"])), 1)
+			eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+			eq(t, len(f.rents()), 2)
+		})
+	}
+	t.Run("never sent", func(t *testing.T) {
+		f, p := liveFake(t)
+		lostRental(t, f, p)
+		refuse := &refuseCalls{next: p.api.client.Transport, match: isPodList,
+			picks: map[int]bool{0: true}}
+		p.api.client.Transport = refuse
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, f.podCount(), 1)
 		eq(t, len(f.rents()), 2)
 	})
 }
