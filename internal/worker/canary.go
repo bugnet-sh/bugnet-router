@@ -48,12 +48,8 @@ func (w *Worker) schedule() health.Schedule {
 	}
 }
 
-// CanarySize is the cheapest size of prov that covers the canary's vcpu and memory, none when
-// prov is GPU-only
+// CanarySize is the cheapest size of prov that covers the canary's vcpu and memory
 func (w *Worker) CanarySize(prov provider.Provider) (provider.Size, bool) {
-	if gpuOnly(prov) {
-		return provider.Size{}, false
-	}
 	return prov.SizeFor(provider.Resources{
 		VCPU: w.d.Health.CanaryVCPU, MemoryMiB: w.d.Health.CanaryMemoryMiB,
 	})
@@ -95,7 +91,7 @@ func (w *Worker) canaryTick(ctx context.Context) {
 		size, ok := w.CanarySize(prov)
 		switch {
 		case !ok && gpuOnly(prov):
-			// A GPU canary costs too much, so placements and the account check judge it instead
+			// Its placements and account checks judge it, since a GPU canary costs too much
 			if _, logged := w.gpuOnlyLogged.LoadOrStore(prov.Name(), true); !logged {
 				w.log.Info("no canaries on a GPU-only provider", "provider", prov.Name())
 			}

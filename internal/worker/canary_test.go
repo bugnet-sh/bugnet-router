@@ -8,6 +8,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
 )
@@ -114,26 +115,41 @@ func TestCanaryTickNeverPaysForAStart(t *testing.T) {
 	eq(t, probeJobs(t, e, "boat"), 1)
 }
 
+// gpuFloorsOnly is a local provider that offers no size for a floor without a GPU, as Lium and HF
+type gpuFloorsOnly struct{ *local.Provider }
+
+func (p gpuFloorsOnly) SizeFor(floor provider.Resources) (provider.Size, bool) {
+	if floor.GPUCount == 0 {
+		return provider.Size{}, false
+	}
+	return p.Provider.SizeFor(floor)
+}
+
 func TestCanaryTickSkipsAGPUOnlyProviderQuietly(t *testing.T) {
 	l4 := provider.Size{Name: "l4", Resources: provider.Resources{
 		VCPU: 8, MemoryMiB: 32768, DiskGiB: 100, GPUCount: 1, GPUMemoryGiB: 24, GPUModel: gpu.L4,
 	}}
 	tiny := provider.Size{Name: "tiny", Resources: provider.Resources{MemoryMiB: 256}}
+	// anything has GPUs and covers every floor, as the dev local provider's one size does
+	anything := provider.Size{Name: "anything", Resources: provider.Resources{
+		VCPU: 64, MemoryMiB: 1 << 20, DiskGiB: 1 << 10, GPUCount: 8, GPUMemoryGiB: 640,
+	}}
 	var logs syncBuffer
 	e := newEnv(t, options{canaries: true, log: &logs, providers: []provider.Provider{
-		newSized(t, "gpu", l4), newSized(t, "cpu", tiny), newSized(t, "mixed", small, l4),
+		gpuFloorsOnly{newSized(t, "gpu", l4)}, newSized(t, "cpu", tiny),
+		newSized(t, "any", anything),
 	}})
 	for range 3 {
 		e.worker.CanaryTick(t.Context())
 	}
-	// Each GPU size would cover the canary, yet a GPU-only provider gets no canary
 	eq(t, probeJobs(t, e, "gpu"), 0)
 	eq(t, e.worker.CanaryStartFree("gpu"), false)
 	eq(t, strings.Count(logs.String(), `msg="no canaries on a GPU-only provider" provider=gpu`), 1)
+	eq(t, strings.Count(logs.String(), "no size covers the canary\" provider=gpu"), 0)
 	// A CPU provider with no size for the canary is a mistake, so it warns every tick
 	eq(t, strings.Count(logs.String(), `msg="no size covers the canary" provider=cpu`), 3)
-	eq(t, strings.Count(logs.String(), "provider=mixed"), 0)
-	eq(t, probeJobs(t, e, "mixed"), 1)
+	eq(t, strings.Count(logs.String(), "provider=any"), 0)
+	eq(t, probeJobs(t, e, "any"), 1)
 }
 
 func TestProbeJobWritesACanarySample(t *testing.T) {
