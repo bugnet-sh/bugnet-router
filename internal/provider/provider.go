@@ -150,7 +150,7 @@ type Status struct {
 	Since time.Time
 	// Reason holds the provider's words, kept as evidence and never shown to users
 	Reason string
-	// KillReason is why the provider ended a gone sandbox, E2B's kill_reason, else empty
+	// KillReason is the provider's reason code, E2B's kill_reason or a gpustatus name, else empty
 	KillReason string
 	// ExpiresAt is the provider-side lifetime, zero when unknown
 	ExpiresAt time.Time
