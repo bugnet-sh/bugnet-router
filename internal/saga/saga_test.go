@@ -2134,7 +2134,7 @@ func TestExtendRefusedBeforePayment(t *testing.T) {
 	a := newEnding(t)
 	e, _, _ := newListEnv(t, a)
 	p, h := e.placeReady(t, "order-1")
-	// A sandbox without a last moment of its own takes every extension, as before MaxUntiler
+	// A sandbox without a last moment of its own takes every extension
 	want := []string{
 		"small-5m-a ok", "small-5m-b ok", "small-10m-more ok", "small-10m ok",
 		"small-30m-cheap ok",
