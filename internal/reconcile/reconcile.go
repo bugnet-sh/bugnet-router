@@ -30,6 +30,8 @@ const (
 	maxReason = 500
 	// recheckSlack lands a scheduled re-check just after the grace it waits for
 	recheckSlack = time.Second
+	// actionAlerted is the provider_signals action of an alert on a placement left as it was
+	actionAlerted = "alerted"
 )
 
 // Observation is one reading of a live placement's sandbox, read from the provider when its
@@ -133,15 +135,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, p store.Placement, o *Observ
 	if v.Class == ClassNone {
 		return nil
 	}
-	// A stop in flight yields only to abuse, and an ended placement takes only an abuse flag
-	if v.Class != ClassAbuse && p.State != store.PlacementReady {
-		return nil
-	}
 	if v.Alert != "" {
 		r.d.Log.Error("a sandbox was killed and no router asked", "placement", p.ID,
 			"provider", p.Provider, "alert", v.Alert)
 	}
+	// A stop in flight yields only to abuse, and an ended placement takes only an abuse flag
+	if v.Class != ClassAbuse && p.State != store.PlacementReady {
+		return r.keepAlert(ctx, p, o, v)
+	}
 	return r.act(ctx, p, o, v)
+}
+
+// keepAlert records the evidence of an alerted verdict that ends nothing, which /monitor counts
+func (r *Reconciler) keepAlert(
+	ctx context.Context, p store.Placement, o *Observation, v Verdict,
+) error {
+	if v.Alert == "" {
+		return nil
+	}
+	return r.d.Store.InsertSignal(ctx, store.Signal{
+		Class: string(v.Class), Provider: p.Provider, PlacementID: p.ID, Source: o.Source,
+		Observed: r.evidence(p, o, v), Action: actionAlerted, CreatedAt: r.now(),
+	})
 }
 
 // recheck schedules another look when the grace of a degraded sandbox ends
