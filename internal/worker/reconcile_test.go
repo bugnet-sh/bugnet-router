@@ -322,8 +322,7 @@ func (e *env) accountChecks(t *testing.T, prov string) int {
 	return n
 }
 
-// A verdict with CheckAccount asks for the provider's account check at once, also on a placement
-// a stop is already ending, and any other verdict asks for none
+// A CheckAccount verdict asks for the account check at once, even on a terminating placement
 func TestCheckAccountVerdictRequestsAnAccountCheck(t *testing.T) {
 	lium, hf := newInspecting(t, "lium"), newInspecting(t, "hf")
 	e := newEnv(t, options{providers: []provider.Provider{lium, hf}})
@@ -369,8 +368,7 @@ func TestCheckAccountVerdictRequestsAnAccountCheck(t *testing.T) {
 	eq(t, e.accountChecks(t, "hf"), 1)
 }
 
-// A Lium dispute_block ends the run as the setting says, raises the alert /monitor reads and
-// reads the account (Q19)
+// A Lium dispute_block ends as the setting says, raises the alert and reads the account (Q19)
 func TestLiumDisputeBlockAlertsAndReadsTheAccount(t *testing.T) {
 	lium := newInspecting(t, "lium")
 	e := newEnv(t, options{providers: []provider.Provider{lium}})
