@@ -59,19 +59,26 @@ func TestFromHF(t *testing.T) {
 }
 
 func TestFromLium(t *testing.T) {
+	// The gpu_class and machine_name values of GET /executors on 2026-11-11, and the A100
+	// machine names of the public feed's rented nodes
 	for name, want := range map[string]string{
-		"T4 Tensor Core GPU": T4, "RTX 3090": RTX3090, "RTX A6000": RTXA6000,
-		"RTX 4090": RTX4090, "RTX 5090": RTX5090, "RTX 6000 Ada Generation": RTX6000Ada,
-		"A100-SXM4-80GB": A100, "RTX PRO 6000 Blackwell Server Edition": RTXPro6000,
-		"RTX PRO 6000 Blackwell Workstation Edition": RTXPro6000, "H100 80GB HBM3": H100,
-		"H200": H200, "B200": B200,
+		"NVIDIA T4 Tensor Core GPU": T4, "NVIDIA GeForce RTX 3090": RTX3090,
+		"NVIDIA RTX A6000": RTXA6000, "NVIDIA GeForce RTX 4090": RTX4090,
+		"NVIDIA GeForce RTX 5090": RTX5090, "NVIDIA RTX 6000 Ada Generation": RTX6000Ada,
+		"NVIDIA A100-SXM4-80GB": A100, "NVIDIA A100 80GB PCIe": A100,
+		"NVIDIA H100 80GB HBM3": H100, "NVIDIA H200": H200, "NVIDIA H200 NVL": H200,
+		"NVIDIA B200": B200, "NVIDIA RTX PRO 6000 Blackwell Server Edition": RTXPro6000,
+		"NVIDIA RTX PRO 6000 Blackwell Workstation Edition":       RTXPro6000,
+		"NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": RTXPro6000,
 	} {
 		if got, ok := FromLium(name); !ok || got != want {
 			t.Errorf("FromLium(%q) = %q, %v, want %q", name, got, ok, want)
 		}
 	}
 	for _, name := range []string{
-		"", "GB200", "GB300", "A100-SXM4-40GB", "H100 PCIe", "rtx 4090", "NVIDIA RTX 4090",
+		"", "NVIDIA GB200", "NVIDIA GB300", "NVIDIA A100-SXM4-40GB", "NVIDIA H100 PCIe",
+		"nvidia geforce rtx 4090", "NVIDIA RTX 4090", "RTX 4090", "T4 Tensor Core GPU",
+		"NVIDIA GeForce RTX 3090 Ti", "NVIDIA B300 SXM6 AC",
 	} {
 		if got, ok := FromLium(name); ok || got != "" {
 			t.Errorf("FromLium(%q) = %q, %v, want it refused", name, got, ok)

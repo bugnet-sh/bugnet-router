@@ -41,13 +41,16 @@ var hfFlavors = []string{
 	"rtx-pro-6000x8",
 }
 
-// liumModels maps the GPU type names of Lium's public node feed
+// liumModels maps the gpu_class and machine_name values of Lium's GET /executors
 var liumModels = map[string]string{
-	"T4 Tensor Core GPU": T4, "RTX 3090": RTX3090, "RTX A6000": RTXA6000, "RTX 4090": RTX4090,
-	"RTX 5090": RTX5090, "RTX 6000 Ada Generation": RTX6000Ada, "A100-SXM4-80GB": A100,
-	"RTX PRO 6000 Blackwell Server Edition":      RTXPro6000,
-	"RTX PRO 6000 Blackwell Workstation Edition": RTXPro6000,
-	"H100 80GB HBM3": H100, "H200": H200, "B200": B200,
+	"NVIDIA T4 Tensor Core GPU": T4, "NVIDIA GeForce RTX 3090": RTX3090,
+	"NVIDIA RTX A6000": RTXA6000, "NVIDIA GeForce RTX 4090": RTX4090,
+	"NVIDIA GeForce RTX 5090": RTX5090, "NVIDIA RTX 6000 Ada Generation": RTX6000Ada,
+	"NVIDIA A100-SXM4-80GB": A100, "NVIDIA A100 80GB PCIe": A100,
+	"NVIDIA H100 80GB HBM3": H100, "NVIDIA H200": H200, "NVIDIA H200 NVL": H200,
+	"NVIDIA B200": B200, "NVIDIA RTX PRO 6000 Blackwell Server Edition": RTXPro6000,
+	"NVIDIA RTX PRO 6000 Blackwell Workstation Edition":       RTXPro6000,
+	"NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition": RTXPro6000,
 }
 
 // Models lists every canonical model name
@@ -65,7 +68,7 @@ func HFFlavor(name string) bool { return slices.Contains(hfFlavors, name) }
 // FromHF returns the canonical model for an HF accelerator.model, false for a name it lacks
 func FromHF(name string) (string, bool) { return lookup(hfModels, name) }
 
-// FromLium returns the canonical model for a Lium GPU type name, false for a name it lacks
+// FromLium returns the canonical model for a Lium gpu_class or machine_name, false for one it lacks
 func FromLium(name string) (string, bool) { return lookup(liumModels, name) }
 
 func lookup(m map[string]string, name string) (string, bool) {
