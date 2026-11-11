@@ -2,9 +2,13 @@ package config
 
 import (
 	"encoding/base64"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 )
 
 // euCodes are the 27 EU member states, design 3.12's lium.countries
@@ -314,6 +318,40 @@ func TestLoadFileRefusesGPUSecrets(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "lium-secret-value") {
 			t.Errorf("%s in the file: error echoes its value: %v", c.key, err)
+		}
+	}
+}
+
+// variantNames are machine_name values GET /executors showed under another gpu_class on 2026-11-11
+var variantNames = map[string][]string{
+	"lium-h200": {"NVIDIA H200 NVL"},
+	"lium-rtxpro6000": {"NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+		"NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"},
+}
+
+// TestCommittedLiumMatchNames holds each committed match name to its size's model, and lists the
+// machine names a pod's executor reports where they differ from the gpu_class
+func TestCommittedLiumMatchNames(t *testing.T) {
+	for _, name := range []string{"example.toml", "dev.toml"} {
+		c, err := LoadFile(filepath.Join("..", "..", "config", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(c.Lium.Sizes) == 0 {
+			t.Fatalf("config/%s has no lium.sizes", name)
+		}
+		for _, s := range c.Lium.Sizes {
+			for _, m := range s.Match {
+				if got, ok := gpu.FromLium(m); !ok || got != s.Model {
+					t.Errorf("config/%s %s match %q is model %q, %v, want %q", name, s.Size, m,
+						got, ok, s.Model)
+				}
+			}
+			for _, v := range variantNames[s.Size] {
+				if !slices.Contains(s.Match, v) {
+					t.Errorf("config/%s %s match lacks the machine name %q", name, s.Size, v)
+				}
+			}
 		}
 	}
 }

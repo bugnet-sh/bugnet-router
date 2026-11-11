@@ -428,12 +428,14 @@ template_volume = "/workspace"
 termination = "max_lifetime"  # "lifetime" once LIUM8 shows schedule-removal replaces it
 
 # No sizes by default. These are the starting sizes, each one GPU type on a whole Secure node with
-# a floor of CPU, memory and disk and a cap per hour. match holds the gpu_class names GET
-# /executors gave on 2026-11-11, which showed no A100.
+# a floor of CPU, memory and disk and a cap per hour. match holds the gpu_class values GET
+# /executors gave on 2026-11-11, and each machine_name a node of that class reported, since a pod's
+# executor names only its machine. GET /executors showed no A100, so lium-a100 takes the machine
+# names of the public feed's rented A100 nodes.
 [[lium.sizes]]
 size = "lium-t4"              # size name the router sells
 model = "NVIDIA T4"           # a canonical GPU model name
-match = ["NVIDIA T4 Tensor Core GPU"]   # gpu_class names of the nodes it rents
+match = ["NVIDIA T4 Tensor Core GPU"]   # gpu_class and machine_name values of its nodes
 gpus = 1
 gpu_memory_gib = 16           # all its GPUs together
 vcpu = 3                      # the floor of the node's vCPUs, memory and disk
@@ -499,7 +501,7 @@ max_hourly_micros = 1100000
 [[lium.sizes]]
 size = "lium-a100"
 model = "NVIDIA A100 80GB"
-match = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]   # unseen on 2026-11-11
+match = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
 gpus = 1
 gpu_memory_gib = 80
 vcpu = 12
@@ -510,7 +512,10 @@ max_hourly_micros = 1500000
 [[lium.sizes]]
 size = "lium-rtxpro6000"
 model = "NVIDIA RTX PRO 6000"
-match = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]   # Workstation Edition nodes report this gpu_class too
+match = [                     # the gpu_class, then the machine names of its other editions
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"]
 gpus = 1
 gpu_memory_gib = 96
 vcpu = 6
@@ -532,7 +537,7 @@ max_hourly_micros = 2900000
 [[lium.sizes]]
 size = "lium-h200"
 model = "NVIDIA H200"
-match = ["NVIDIA H200"]
+match = ["NVIDIA H200", "NVIDIA H200 NVL"]   # an NVL node reports gpu_class NVIDIA H200
 gpus = 1
 gpu_memory_gib = 141
 vcpu = 16

@@ -240,7 +240,7 @@ type LiumSize struct {
 	Size string `toml:"size"`
 	// Model is the canonical name of the size's GPU model
 	Model string `toml:"model"`
-	// Match holds the gpu_class names of the nodes the size rents
+	// Match holds the gpu_class and machine_name values of the nodes the size rents
 	Match []string `toml:"match"`
 	GPUs  int      `toml:"gpus"`
 	// GPUMemoryGiB is the memory of all the size's GPUs together
