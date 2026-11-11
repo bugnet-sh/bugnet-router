@@ -16,6 +16,10 @@ func imageAllow(provider string) Allowlist {
 	if provider == "boat" {
 		a.Allow = append(a.Allow, Allow{Shape: "private-key", Path: "etc/ssh/ssh_host_*"})
 	}
+	// E2B's MMDS answers in a fresh sandbox, and harden blocks it in every placement (DP N2)
+	a.Metadata = provider == "e2b"
+	// systemd hands its services this path to their own credentials, a directory and no secret
+	a.Names = append(a.Names, "CREDENTIALS_DIRECTORY")
 	return a
 }
 

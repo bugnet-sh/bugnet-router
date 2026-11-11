@@ -65,6 +65,8 @@ type Allowlist struct {
 	Own []OwnFile
 	// Names lists the variables expected in an environment, left out of the review list
 	Names []string
+	// Metadata lets a metadata endpoint answer, for an image check that runs before harden
+	Metadata bool
 }
 
 // Archive paths of the files a sandbox owns

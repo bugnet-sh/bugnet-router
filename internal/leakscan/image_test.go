@@ -23,6 +23,19 @@ func TestScanImageAllowsOnlyProviderRowsAndCA(t *testing.T) {
 	eq(t, strings.Join(rules(f), "|"), "shape tunnel etc/bugnet/egress.token")
 }
 
+func TestScanImageMetadataAllowedOnE2BOnly(t *testing.T) {
+	mk := func() *fixture {
+		return newFixture(t).file("metadata/imds-v4", "{}").
+			environ(1, "CREDENTIALS_DIRECTORY=/run/credentials/systemd-journald.service")
+	}
+	f, err := ScanImage(mk().archive(), nil, "e2b")
+	eq(t, err, nil)
+	eq(t, len(f), 0)
+	f, err = ScanImage(mk().archive(), nil, "boxd")
+	eq(t, err, nil)
+	eq(t, strings.Join(rules(f), "|"), "metadata answered metadata/imds-v4")
+}
+
 func TestScanImageStockHostKeyIsAFinding(t *testing.T) {
 	key := "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
 	mk := func() *fixture { return newFixture(t).file("etc/ssh/ssh_host_ed25519_key", key) }

@@ -165,7 +165,7 @@ func scanEntry(e entry, pats []pattern, a Allowlist, names, vars map[string]bool
 	add := func(rule string, off int) {
 		out = append(out, Finding{Rule: rule, Path: e.path, Pid: pid, Offset: int64(off)})
 	}
-	if strings.HasPrefix(e.path, "metadata/") {
+	if strings.HasPrefix(e.path, "metadata/") && !a.Metadata {
 		add("metadata answered", 0)
 	}
 	for _, p := range pats {
