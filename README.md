@@ -283,7 +283,9 @@ the environment, so `set -a; . ./.env; set +a` first.
 
 The adapter tests of each provider run the contract against the real service, and skip without
 the provider's key. The boxd run also starts `python3 -m http.server 8000` in a machine and checks
-that its public default proxy does not serve it.
+that its public default proxy does not serve it. `contract.Floor` sets the floor the contract asks
+`SizeFor` for, empty by default, and `contract.ReadyTimeout` how long `WaitReady` may take, 3
+minutes by default.
 
 Every provider's run streams files of 0 B to 101 MiB up and back, compares their SHA-256 with
 `sha256sum` in the sandbox, checks a device or FIFO never reads as a regular file and logs the
@@ -2011,6 +2013,8 @@ by a hash of the provider and the last canary), `canary_every_down` (1 minute) w
 `boat_canary_every` (30 minutes) for a provider that charges per start, and no placement got ready
 there within `passive_window`, its account is not blocked, and the next start of the canary's size
 is free. The canary's size is the cheapest one covering `canary_vcpu` and `canary_memory_mib`.
+A provider whose sizes all have a GPU gets no canaries, which the worker logs once, and its health
+comes from its placements and account checks.
 
 A probe (`internal/probe`) takes a slot with no margin and records it in `probe_slots`, takes a
 create token, creates the size with the labels `bugnet=1`, `bugnet_deployment`,
