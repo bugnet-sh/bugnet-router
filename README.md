@@ -1311,7 +1311,9 @@ provider's exec user, `root` when it has none, never what `ssh-up` prints (DP 9)
   `restrict,pty,port-forwarding` and loopback `permitopen` options, and records it in
   `ssh_gateway_keys`, which the transaction ending the placement empties. The answer is a
   WebSocket to the gate's `/__bugnet/ssh` with the route's headers, cookies and `Bugnet-Gate`, or,
-  with `boat.ssh_path = "native"`, a TCP address from Boat's `POST /sshkey`, sent once per key.
+  on a provider whose `ssh_path` is `native` (`boat.ssh_path` today), a TCP address to its own
+  sshd from its `AuthorizeNativeSSH` (Boat's `POST /sshkey`), sent once per key. The
+  `ssh_hosts` row then names the transport `<provider>_native`: `boat_native`, `lium_native`.
 - **Checks.** `CheckSshGrants` answers the deadline of each grant whose placement is ready and in
   its paid time and whose key is still live, and leaves the rest out.
 
@@ -1919,7 +1921,7 @@ network policy waits for live test N1.
 The registry decides which providers offer previews, SSH and secrets, and the placement engine and
 the API read capabilities only through it. A provider offers previews when it is listed in
 `previews.providers` and its adapter has a gate route, SSH when it is listed in `ssh.providers`
-and has a gate route, or with `boat.ssh_path = "native"` an SSH server of its own, and secrets
+and has a gate route, or, when its `ssh_path` is `native`, an SSH server of its own, and secrets
 when it is listed in `secrets.providers`. A listed provider whose adapter lacks what the feature
 needs stops both binaries at start, naming it. Every list is empty until a live test passes, so
 no provider offers SSH, previews or secrets yet. An order that requires any of them finds no
