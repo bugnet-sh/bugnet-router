@@ -215,7 +215,7 @@ func (r *Reconciler) evidence(p store.Placement, o *Observation, v Verdict) []by
 }
 
 // noLifetimeChange lists the providers whose lifetime the router cannot move without a redeploy
-var noLifetimeChange = map[string]bool{"koyeb": true}
+var noLifetimeChange = map[string]bool{"koyeb": true, "hf": true}
 
 // Drifted reports whether a provider-side lifetime strays from the deadline plus the slack by
 // more than the bound, false for a provider whose lifetime cannot move or a missing value
