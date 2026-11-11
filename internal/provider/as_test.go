@@ -15,7 +15,7 @@ var optional = map[string]bool{
 	"Pather": true, "StartCoster": true, "Sizer": true, "EgressSourcer": true, "Gater": true,
 	"NativeSSHer": true, "HookVerifier": true, "LimitsReader": true, "AccountChecker": true,
 	"UsageReader": true, "ForeignLister": true, "Parker": true, "PoolClaimer": true,
-	"ImageDeleter": true, "ImageSaver": true, "ReadyReporter": true,
+	"ImageDeleter": true, "ImageSaver": true, "ReadyReporter": true, "MaxUntiler": true,
 }
 
 // TestNoDirectOptionalAssertions walks the module for a type assertion or a type switch case that

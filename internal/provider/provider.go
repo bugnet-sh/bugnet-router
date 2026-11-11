@@ -220,6 +220,12 @@ type ReadyReporter interface {
 	ReadyMeta(ctx context.Context, ref Ref) (map[string]string, error)
 }
 
+// MaxUntiler is a provider whose sandboxes each have a last moment of their own
+type MaxUntiler interface {
+	// MaxUntil is the latest SetLifetime accepts for ref, false when it has none
+	MaxUntil(ref Ref) (time.Time, bool)
+}
+
 // Pather is a provider that resolves sandbox paths itself and whose file API reaches every path
 type Pather interface {
 	// Home is the exec user's home directory as a sandbox path

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/traced"
@@ -97,6 +98,31 @@ func TestReadyReporterThroughWrapper(t *testing.T) {
 	_, direct := lium.(provider.ReadyReporter)
 	eq(t, direct, false)
 	_, ok = provider.As[provider.ReadyReporter](traced.Wrap(&base{name: "e2b"}, tr, nil))
+	eq(t, ok, false)
+}
+
+// ending is a provider whose sandboxes each end at a moment of their own, as HF Jobs do
+type ending struct{ *base }
+
+// end is the last moment ending gives every sandbox
+var end = time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+
+func (ending) MaxUntil(provider.Ref) (time.Time, bool) { return end, true }
+
+func TestMaxUntilerThroughWrapper(t *testing.T) {
+	tel := telemetrytest.New(t, "router-api", 1, nil)
+	tr := tel.Tracer("test")
+	hf := traced.Wrap(ending{&base{name: "hf"}}, tr, nil)
+	mu, ok := provider.As[provider.MaxUntiler](hf)
+	eq(t, ok, true)
+	until, ok := mu.MaxUntil(provider.Ref{Provider: "hf", ID: "sbx-1"})
+	eq(t, ok, true)
+	eq(t, until, end)
+	_, direct := hf.(provider.MaxUntiler)
+	eq(t, direct, false)
+	_, ok = provider.As[provider.MaxUntiler](traced.Wrap(hf, tr, nil))
+	eq(t, ok, true)
+	_, ok = provider.As[provider.MaxUntiler](traced.Wrap(&base{name: "e2b"}, tr, nil))
 	eq(t, ok, false)
 }
 
