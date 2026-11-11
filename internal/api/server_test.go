@@ -213,7 +213,7 @@ type options struct {
 	providerName string
 	// secretSettings changes the API server's [secrets] settings from secretDefaults
 	secretSettings func(*config.Secrets)
-	// withSSH lists a gate-routed provider in ssh.providers, nativeSSH any provider on Boat's sshd
+	// withSSH lists a gate-routed provider in ssh.providers, nativeSSH any provider on its own sshd
 	withSSH, nativeSSH bool
 	// noSSHHost leaves the API server without names.ssh_host
 	noSSHHost bool
@@ -343,7 +343,10 @@ func newEnv(t *testing.T, opts options) *env {
 		features.Preview = []string{name}
 	}
 	if _, gater := listed.(provider.Gater); gater && opts.withSSH || opts.nativeSSH {
-		features.SSH, features.BoatNativeSSH = []string{name}, opts.nativeSSH
+		features.SSH = []string{name}
+	}
+	if opts.nativeSSH {
+		features.NativeSSH = []string{name}
 	}
 	reg, err := provider.NewRegistry([]provider.Provider{listed}, features)
 	if err != nil {

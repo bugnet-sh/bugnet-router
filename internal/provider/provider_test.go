@@ -202,7 +202,7 @@ func TestRegistryComputesFeatures(t *testing.T) {
 
 	boat := native{newNamed(t, "boat")}
 	reg, err = provider.NewRegistry([]provider.Provider{boat},
-		provider.Features{SSH: []string{"boat"}, BoatNativeSSH: true})
+		provider.Features{SSH: []string{"boat"}, NativeSSH: []string{"boat"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +223,27 @@ func TestRegistryComputesFeatures(t *testing.T) {
 	}
 }
 
+func TestRegistryNativeSSHForAnyListedProvider(t *testing.T) {
+	pod := native{newNamed(t, "pod")}
+	boat := native{newNamed(t, "boat")}
+	idle := native{newNamed(t, "idle")}
+	reg, err := provider.NewRegistry([]provider.Provider{pod, boat, idle}, provider.Features{
+		SSH: []string{"pod", "boat"}, NativeSSH: []string{"pod", "boat", "idle"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []provider.Provider{pod, boat} {
+		if got := reg.Capabilities(p); !got.SSH || got.Preview || !reg.NativeSSH(p) {
+			t.Errorf("%s on its native path got %+v, native %v, want ssh reached natively",
+				p.Name(), got, reg.NativeSSH(p))
+		}
+	}
+	if reg.Capabilities(idle).SSH || reg.NativeSSH(idle) {
+		t.Error("a native provider missing from ssh.providers offers SSH")
+	}
+}
+
 func TestRegistryRefusesListedProviderWithoutGater(t *testing.T) {
 	for _, c := range []struct {
 		name, want string
@@ -238,7 +259,14 @@ func TestRegistryRefusesListedProviderWithoutGater(t *testing.T) {
 		{"native path without a native server",
 			"boat is listed for ssh on its native path but has no SSH server of its own",
 			gated{reporting{newNamed(t, "boat")}},
-			provider.Features{SSH: []string{"boat"}, BoatNativeSSH: true}},
+			provider.Features{SSH: []string{"boat"}, NativeSSH: []string{"boat"}}},
+		{"another provider's native path", "pod is listed for ssh but has no gate route",
+			native{newNamed(t, "pod")},
+			provider.Features{SSH: []string{"pod"}, NativeSSH: []string{"boat"}}},
+		{"any provider's native path without a native server",
+			"pod is listed for ssh on its native path but has no SSH server of its own",
+			gated{reporting{newNamed(t, "pod")}},
+			provider.Features{SSH: []string{"pod"}, NativeSSH: []string{"pod"}}},
 	} {
 		reg, err := provider.NewRegistry([]provider.Provider{c.p}, c.f)
 		if reg != nil || err == nil || !strings.Contains(err.Error(), c.want) {

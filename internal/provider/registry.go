@@ -9,8 +9,8 @@ import (
 // Features lists the providers whose live tests passed for each data-plane feature
 type Features struct {
 	Preview, SSH, Secrets []string
-	// BoatNativeSSH reaches Boat through its own SSH server instead of the gate
-	BoatNativeSSH bool
+	// NativeSSH lists the providers reached through their own SSH server instead of the gate
+	NativeSSH []string
 	// Images is the base image version each provider's creates start from, absent for none
 	Images map[string]string
 	// ImageExempt lists providers placed on their own image while images.accept is set
@@ -68,7 +68,7 @@ func features(p Provider, f Features) (flags, error) {
 	if slices.Contains(f.SSH, name) {
 		_, native := As[NativeSSHer](p)
 		switch {
-		case f.BoatNativeSSH && name == "boat":
+		case slices.Contains(f.NativeSSH, name):
 			if !native {
 				return flags{}, fmt.Errorf("provider: %s is listed for ssh on its native path "+
 					"but has no SSH server of its own", name)

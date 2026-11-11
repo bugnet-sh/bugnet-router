@@ -277,7 +277,7 @@ type NativeSSH struct {
 	HostKey string // authorized_keys format
 }
 
-// NativeSSHer is a provider with an SSH server of its own, Boat only
+// NativeSSHer is a provider with an SSH server of its own
 type NativeSSHer interface {
 	// AuthorizeNativeSSH adds gatewayKey, an authorized_keys line, to the sandbox's SSH server
 	AuthorizeNativeSSH(ctx context.Context, ref Ref, gatewayKey string) (NativeSSH, error)
