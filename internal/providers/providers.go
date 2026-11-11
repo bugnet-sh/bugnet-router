@@ -89,15 +89,20 @@ func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry) (
 			ps[i] = traced.Wrap(p, tr, tel.SandboxHash)
 		}
 	}
-	reg, err := provider.NewRegistry(ps, provider.Features{
-		Preview: cfg.Previews.Providers, SSH: cfg.SSH.Providers, Secrets: cfg.Secrets.Providers,
-		NativeSSH: cfg.NativeSSH(),
-		Images:    cfg.Images.Versions(cfg.Providers), ImageExempt: cfg.Images.Exempt,
-	})
+	reg, err := provider.NewRegistry(ps, features(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("providers: %w", err)
 	}
 	return reg, nil
+}
+
+// features are the data-plane features and images the settings give each provider
+func features(cfg config.Config) provider.Features {
+	return provider.Features{
+		Preview: cfg.Previews.Providers, SSH: cfg.SSH.Providers, Secrets: cfg.Secrets.Providers,
+		NativeSSH: cfg.NativeSSH(),
+		Images:    cfg.Images.Versions(cfg.Providers), ImageExempt: cfg.Images.Exempt,
+	}
 }
 
 // runnerKey names the setting that points at each architecture's bugnet-run build
