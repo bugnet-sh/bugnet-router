@@ -2013,8 +2013,9 @@ by a hash of the provider and the last canary), `canary_every_down` (1 minute) w
 `boat_canary_every` (30 minutes) for a provider that charges per start, and no placement got ready
 there within `passive_window`, its account is not blocked, and the next start of the canary's size
 is free. The canary's size is the cheapest one covering `canary_vcpu` and `canary_memory_mib`.
-A provider whose sizes all have a GPU gets no canaries, which the worker logs once, and its health
-comes from its placements and account checks.
+When no size covers the canary and every size has a GPU, the worker logs once that the provider
+gets no canaries, and its health comes from its placements and account checks. Any other provider
+with no size for the canary logs a warning every minute.
 
 A probe (`internal/probe`) takes a slot with no margin and records it in `probe_slots`, takes a
 create token, creates the size with the labels `bugnet=1`, `bugnet_deployment`,
