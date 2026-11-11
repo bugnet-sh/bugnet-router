@@ -2253,10 +2253,10 @@ A pool is one provider and size that keeps prepared sandboxes waiting for an ord
 provider that can park a sandbox in a cheaper idle state (`provider.Parker`) or hands out members
 it keeps itself (`provider.PoolClaimer`) can have one, so boxd and local do and E2B and Boat do
 not. router-api and router-worker refuse to start with a pool on any other provider, on a size the
-provider does not sell, on Boat, or on Lium or HF, since no GPU sandbox starts before payment. The settings are `[pools]`, one `[[pools.pool]]` table per
-pool with `provider`, `size`, `min`, `max` and `max_age`, and `boxd.parked_gib`. `config/example.toml`
-lists boxd `1x4` with `min = 2` and `max = 5`, and `config/dev.toml` the local provider's one size
-with `min = 1` and `max = 2`.
+provider does not sell, on Boat, or on Lium or HF, since no GPU sandbox starts before payment. The
+settings are `[pools]`, one `[[pools.pool]]` table per pool with `provider`, `size`, `min`, `max`
+and `max_age`, and `boxd.parked_gib`. `config/example.toml` lists boxd `1x4` with `min = 2` and
+`max = 5`, and `config/dev.toml` the local provider's one size with `min = 1` and `max = 2`.
 
 Every member is one `pool_members` row that only moves forward: `filling`, `warm`, `held`, `bound`,
 `retiring`, `gone`. `pool_tick` runs every `pools.tick` (15 s), one at a time, in router-worker.
@@ -2321,8 +2321,9 @@ quote id or an unknown package is the only refusal (`QUOTE_INVALID`, `INVALID_AR
 
 The settings are `[reserve]` and `[targets]`, each at its default in `config/example.toml`.
 `reserve.speculative_providers` lists `e2b`, `koyeb` and `boxd`, and the decoder refuses `boat`
-there, and `lium` and `hf`, since no GPU sandbox starts before payment. `reserve.shared_ranges` lists Anthropic's `160.79.104.0/21`, and an address in it never
-counts toward `per_ip_open` and is never stored.
+there, and `lium` and `hf`, since no GPU sandbox starts before payment. `reserve.shared_ranges`
+lists Anthropic's `160.79.104.0/21`, and an address in it never counts toward `per_ip_open` and is
+never stored.
 
 One Reserve costs one Valkey call and one short transaction. The Valkey call is one script that
 reads `reserve:brake` and `reserve:spend` and takes a token from `rl:reserve:all` (1 a second, burst
