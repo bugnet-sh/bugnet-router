@@ -69,10 +69,16 @@ var small = provider.Size{
 // newLocal boots with the built bugnet-run and destroys its sandboxes when the test ends
 func newLocal(t *testing.T, name string) *local.Provider {
 	t.Helper()
+	return newSized(t, name, small)
+}
+
+// newSized is newLocal selling sizes
+func newSized(t *testing.T, name string, sizes ...provider.Size) *local.Provider {
+	t.Helper()
 	p := local.New(local.Options{
 		Name:             name,
 		Root:             t.TempDir(),
-		Sizes:            []provider.Size{small},
+		Sizes:            sizes,
 		HourlyCostMicros: 1000,
 		Increment:        time.Second,
 		RunnerPath:       runnerBin,

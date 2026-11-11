@@ -174,8 +174,10 @@ type Worker struct {
 	// probeAges is the age of each provider's oldest probe sandbox at the last sweep
 	probesMu  sync.Mutex
 	probeAges map[string]time.Duration
-	tel       *telemetry.Telemetry
-	tr        trace.Tracer
+	// gpuOnlyLogged holds each GPU-only provider whose skipped canaries were logged
+	gpuOnlyLogged sync.Map
+	tel           *telemetry.Telemetry
+	tr            trace.Tracer
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
