@@ -11,12 +11,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
-// CheckGPUMargin refuses a GPU package priced under margin_floor on a gpu_order provider that has
-// a size for it, which placement would drop from its candidates in silence
-//
-// provs are the built providers. Sizes come from Sizer.Sizes and prices from HourlyCostMicros,
-// Lium's cap, so the check never waits on a node listing. A provider without Sizes answers
-// SizeFor's one size instead.
+// CheckGPUMargin refuses a GPU package that placement would drop from a built gpu_order provider
 func (c Config) CheckGPUMargin(pkgs []catalog.Package, provs []provider.Provider) error {
 	for _, pkg := range pkgs {
 		if pkg.Resources.GPUCount == 0 {
@@ -43,6 +38,7 @@ func (c Config) CheckGPUMargin(pkgs []catalog.Package, provs []provider.Provider
 // cheapestFor is the size of p covering pkg's floor that costs least for pkg's minutes and start
 func cheapestFor(p provider.Provider, pkg catalog.Package) (provider.Size, int64, bool) {
 	var sizes []provider.Size
+	// Sizes and Lium's cap, since Lium's SizeFor reads a node listing that start has not filled
 	if s, ok := provider.As[provider.Sizer](p); ok {
 		sizes = s.Sizes()
 	} else if size, ok := p.SizeFor(pkg.Resources); ok {

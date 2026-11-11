@@ -99,8 +99,7 @@ func t4Package(id string, price int64) catalog.Package {
 	return p
 }
 
-// TestConfigGPUMargin is check 8 of 5.3, every GPU package's price over margin_floor on each
-// gpu_order provider with a size for it
+// TestConfigGPUMargin is check 8 of 5.3, each GPU package over margin_floor on gpu_order sellers
 func TestConfigGPUMargin(t *testing.T) {
 	both := []provider.Provider{liumFake, hfFake}
 	c := loadEmpty(t)

@@ -91,7 +91,7 @@ func TestMappedModelsAreKnown(t *testing.T) {
 }
 
 func TestHFFlavors(t *testing.T) {
-	// The GPU flavors of GET https://huggingface.co/api/jobs/hardware on 2026-11-11, design 4.5
+	// The GPU flavors HF's hardware list gave on 2026-11-11, design 4.5
 	want := []string{
 		"t4-small", "t4-medium", "l4x1", "l4x4", "a10g-small", "a10g-large", "a10g-largex2",
 		"a10g-largex4", "l40sx1", "l40sx4", "l40sx8", "a100-large", "a100x4", "a100x8", "h200",
