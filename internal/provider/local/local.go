@@ -131,12 +131,13 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{MaxLifetime: 24 * time.Hour, ExecUser: p.execUser}
 }
 
-// SizeFor returns the first configured size that covers floor
+// SizeFor returns the first configured size that covers floor, a size naming no model covering any
 func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	for _, s := range p.opts.Sizes {
 		r := s.Resources
 		if r.VCPU >= floor.VCPU && r.MemoryMiB >= floor.MemoryMiB && r.DiskGiB >= floor.DiskGiB &&
-			r.GPUCount >= floor.GPUCount && r.GPUMemoryGiB >= floor.GPUMemoryGiB {
+			r.GPUCount >= floor.GPUCount && r.GPUMemoryGiB >= floor.GPUMemoryGiB &&
+			(r.GPUModel == "" || floor.GPUModel == "" || r.GPUModel == floor.GPUModel) {
 			return s, true
 		}
 	}

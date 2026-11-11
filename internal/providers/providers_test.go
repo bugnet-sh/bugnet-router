@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
@@ -60,6 +61,14 @@ func TestBuildLocal(t *testing.T) {
 	size, ok := p.SizeFor(huge)
 	if !ok || size.Name != "local" {
 		t.Fatalf("size for a large package: %+v, %v", size, ok)
+	}
+	// A host has no real GPU, so local serves every model
+	for _, model := range gpu.Models() {
+		floor := huge
+		floor.GPUModel = model
+		if s, ok := p.SizeFor(floor); !ok || s.Name != "local" {
+			t.Fatalf("size for a %s package: %+v, %v", model, s, ok)
+		}
 	}
 	if p.HourlyCostMicros(size) != 2500 || p.BillingIncrement() != time.Second {
 		t.Fatalf("cost %d per hour in %v increments", p.HourlyCostMicros(size),

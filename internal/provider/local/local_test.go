@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
@@ -723,6 +724,43 @@ func TestLocalWaitReadyHonoursDelay(t *testing.T) {
 	}
 	if waited := time.Since(begin); waited < 300*time.Millisecond {
 		t.Fatalf("WaitReady returned after %v, before the ready delay", waited)
+	}
+}
+
+// TestLocalSizeForGPUModel holds a size that names a model to it, one that names none to any
+func TestLocalSizeForGPUModel(t *testing.T) {
+	gpuSize := func(name, model string) provider.Size {
+		return provider.Size{Name: name, Resources: provider.Resources{
+			VCPU: 4, MemoryMiB: 16384, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 24,
+			GPUModel: model,
+		}}
+	}
+	p := newLocal(t, local.Options{Sizes: []provider.Size{
+		small, gpuSize("l4", gpu.L4), gpuSize("a10g", gpu.A10G),
+	}})
+	floor := func(model string) provider.Resources {
+		return provider.Resources{GPUCount: 1, GPUMemoryGiB: 24, GPUModel: model}
+	}
+	cases := []struct {
+		floor provider.Resources
+		want  string
+		ok    bool
+	}{
+		{provider.Resources{VCPU: 1}, "small", true},
+		{floor(""), "l4", true},
+		{floor(gpu.L4), "l4", true},
+		{floor(gpu.A10G), "a10g", true},
+		{floor(gpu.RTX4090), "", false},
+	}
+	for _, c := range cases {
+		size, ok := p.SizeFor(c.floor)
+		if ok != c.ok || size.Name != c.want {
+			t.Errorf("SizeFor(%+v) gave %q, %v, want %q, %v", c.floor, size.Name, ok, c.want, c.ok)
+		}
+	}
+	anyGPU := newLocal(t, local.Options{Sizes: []provider.Size{gpuSize("any", "")}})
+	if size, ok := anyGPU.SizeFor(floor(gpu.H200)); !ok || size.Name != "any" {
+		t.Errorf("a size without a model gave %q, %v for an H200 floor", size.Name, ok)
 	}
 }
 

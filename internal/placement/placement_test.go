@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
@@ -316,6 +317,42 @@ func TestCandidatesNeedGPU(t *testing.T) {
 	got, err = e.Candidates(Inputs{Package: gpuPkg})
 	if err != nil || !slices.Equal(names(got), []string{"gpu"}) {
 		t.Fatalf("got %v, %v", names(got), err)
+	}
+}
+
+// TestCandidatesGPUModel places a GPU package only where a size of its model is sold
+func TestCandidatesGPUModel(t *testing.T) {
+	gpuProvider := func(name, model string, cost int64) provider.Provider {
+		size := provider.Size{Name: name, Resources: provider.Resources{
+			VCPU: 4, MemoryMiB: 16384, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 24,
+			GPUModel: model,
+		}}
+		return capsProvider{
+			Provider: newLocal(t, name, cost, time.Second, size),
+			caps:     provider.Capabilities{GPU: true, MaxLifetime: time.Hour},
+		}
+	}
+	e := engine(fakeHealth{},
+		gpuProvider("l4", gpu.L4, 1000), gpuProvider("a10g", gpu.A10G, 2000))
+	pkgFor := func(model string) catalog.Package {
+		p := pkg(10, 100000)
+		p.Resources = provider.Resources{
+			VCPU: 4, MemoryMiB: 12288, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 24, GPUModel: model,
+		}
+		p.GPUModel = model
+		return p
+	}
+	for model, want := range map[string][]string{
+		gpu.L4: {"l4"}, gpu.A10G: {"a10g"}, "": {"l4", "a10g"},
+	} {
+		got, err := e.Candidates(Inputs{Package: pkgFor(model)})
+		if err != nil || !slices.Equal(names(got), want) {
+			t.Errorf("%q package got %v, %v, want %v", model, names(got), err, want)
+		}
+	}
+	if got, err := e.Candidates(Inputs{Package: pkgFor(gpu.RTX4090)}); !errors.Is(
+		err, ErrNoCandidate) {
+		t.Errorf("an RTX 4090 package got %v, %v", names(got), err)
 	}
 }
 
