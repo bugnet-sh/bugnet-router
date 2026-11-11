@@ -297,7 +297,7 @@ func checkSize(s SizeSpec, before []size) error {
 // Name returns "lium"
 func (p *Provider) Name() string { return providerName }
 
-// Capabilities reports root exec on amd64 pods, with no egress control and no key dedup
+// Capabilities reports byte-safe root exec on amd64 pods, with no egress control and no key dedup
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
 		GPU: true, Arch: arch, NeedsRunnerUpload: true, MaxLifetime: p.maxLifetime,

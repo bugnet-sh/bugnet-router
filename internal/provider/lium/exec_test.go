@@ -84,9 +84,9 @@ func TestLiumExec(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("exit %d, %v", code, err)
 	}
-	real, _ := filepath.EvalSymlinks(dir)
+	want, _ := filepath.EvalSymlinks(dir)
 	got, _ := filepath.EvalSymlinks(strings.SplitN(out, "\n", 2)[0])
-	eq(t, got, real)
+	eq(t, got, want)
 	eq(t, strings.SplitN(out, "\n", 2)[1], "x y|a b'c $HOME|")
 
 	// A first word a shell would read as an option or an assignment still runs as a command
@@ -154,7 +154,7 @@ func groupAlive(t *testing.T, pgid int) []string {
 
 // startedGroup starts a command that leaves two sleeps in its group and returns its pgid
 func startedGroup(
-	t *testing.T, f *fakeLium, p *Provider, ctx context.Context, ref provider.Ref,
+	ctx context.Context, t *testing.T, f *fakeLium, p *Provider, ref provider.Ref,
 ) (provider.ExecStream, int) {
 	t.Helper()
 	s, err := p.Exec(ctx, ref, sh("sleep 60 & sleep 60 & echo started; wait"))
@@ -208,7 +208,7 @@ func TestExecCancelKillsGroup(t *testing.T) {
 	t.Run("cancel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		s, pgid := startedGroup(t, f, p, ctx, ref)
+		s, pgid := startedGroup(ctx, t, f, p, ref)
 		ended := make(chan error, 1)
 		go func() {
 			_, err := io.ReadAll(s)
@@ -230,7 +230,7 @@ func TestExecCancelKillsGroup(t *testing.T) {
 	})
 
 	t.Run("close", func(t *testing.T) {
-		s, pgid := startedGroup(t, f, p, context.Background(), ref)
+		s, pgid := startedGroup(context.Background(), t, f, p, ref)
 		if err := s.Close(); err != nil {
 			t.Fatal(err)
 		}

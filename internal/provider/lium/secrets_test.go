@@ -56,7 +56,7 @@ func TestLiumSendsNoSecret(t *testing.T) {
 			t.Fatalf("gave %q, %v", out, err)
 		}
 		cctx, cancel := context.WithCancel(ctx)
-		s, pgid := startedGroup(t, f, p, cctx, ref)
+		s, pgid := startedGroup(cctx, t, f, p, ref)
 		cancel()
 		_, _ = s.Wait()
 		waitGroupGone(t, f, pgid)

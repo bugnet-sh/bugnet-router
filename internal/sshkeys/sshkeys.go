@@ -5,8 +5,8 @@
 // and SHA256 fingerprint, with the comment dropped. Certificates and DSA are refused. The gateway's
 // own key for a placement is ed25519 alone, and goes into the sandbox's authorized_keys with
 // options that allow a PTY and loopback forwards only. A HandOff builds the ssh command, the
-// known_hosts lines and an ssh_config stanza for one alias. This is the only package of the router
-// that imports golang.org/x/crypto/ssh.
+// known_hosts lines and an ssh_config stanza for one alias. Beside the Lium adapter, which logs in
+// to its pods, this is the only package of the router that imports golang.org/x/crypto/ssh.
 package sshkeys
 
 import (
