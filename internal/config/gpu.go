@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// gpuProviders are the providers that sell only GPU sandboxes
+var gpuProviders = map[string]bool{"lium": true, "hf": true}
+
 // euCountries are the 27 EU member states, the node countries Lium tries first
 var euCountries = []string{
 	"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",

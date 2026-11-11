@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -65,4 +66,25 @@ func TestConfigLiumHarden(t *testing.T) {
 			want:   "lium.harden_no_gateway must stay true",
 		},
 	})
+}
+
+// TestConfigGPUNotBeforePayment is check 4 of 5.3, no GPU sandbox starts before payment
+func TestConfigGPUNotBeforePayment(t *testing.T) {
+	pool := "[[pools.pool]]\nprovider = %q\nsize = \"lium-rtx3090\"\nmax = 1\n"
+	checks := map[string]gpuCheck{}
+	for _, name := range []string{"lium", "hf"} {
+		checks["4 reserve "+name] = gpuCheck{
+			pass:   "[reserve]\nspeculative_providers = [\"e2b\", \"boxd\"]\n",
+			refuse: fmt.Sprintf("[reserve]\nspeculative_providers = [\"e2b\", %q]\n", name),
+			want: "reserve.speculative_providers cannot list " + name + ", no GPU sandbox " +
+				"starts before payment",
+		}
+		checks["4 pool "+name] = gpuCheck{
+			pass:   fmt.Sprintf(pool, "boxd"),
+			refuse: fmt.Sprintf(pool, name),
+			want: "pools.pool[0].provider " + name + " cannot keep a pool, no GPU sandbox " +
+				"starts before payment",
+		}
+	}
+	runGPUChecks(t, checks)
 }

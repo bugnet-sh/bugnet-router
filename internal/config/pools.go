@@ -182,6 +182,9 @@ func (t poolFile) read(i int) (Pool, error) {
 	case t.Provider == "boat":
 		// Every Boat create counts as a start against its windows, so it keeps no pool
 		return Pool{}, fmt.Errorf("%s.provider boat cannot keep a pool", where)
+	case gpuProviders[t.Provider]:
+		return Pool{}, fmt.Errorf("%s.provider %s cannot keep a pool, no GPU sandbox starts "+
+			"before payment", where, t.Provider)
 	case t.Size == "":
 		return Pool{}, fmt.Errorf("%s.size must name a size the provider sells", where)
 	case t.Min < 0 || t.Max < 1 || t.Max > 1000 || t.Min > t.Max:

@@ -174,6 +174,9 @@ func (f reserveFile) read(d reserveFile) (Reserve, error) {
 		case name == "boat":
 			// Every Boat create counts as a start against its windows
 			return Reserve{}, fmt.Errorf("reserve.speculative_providers cannot list boat")
+		case gpuProviders[name]:
+			return Reserve{}, fmt.Errorf("reserve.speculative_providers cannot list %s, no GPU "+
+				"sandbox starts before payment", name)
 		case !knownProviders[name]:
 			return Reserve{}, fmt.Errorf(
 				"reserve.speculative_providers lists %q, which is not a provider, use one of %s",
