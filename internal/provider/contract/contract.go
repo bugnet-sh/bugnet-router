@@ -93,8 +93,8 @@ func Run(t *testing.T, newProvider func(t *testing.T) provider.Provider, opts ..
 		{"inspect gone", c.inspectGone},
 		{"destroyed sandbox is not found", c.notFound},
 	}
-	for _, s := range steps {
-		if !t.Run(s.name, s.run) {
+	for _, step := range steps {
+		if !t.Run(step.name, step.run) {
 			return
 		}
 	}
