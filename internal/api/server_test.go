@@ -1036,6 +1036,72 @@ func TestListExtensions(t *testing.T) {
 	}
 }
 
+// ending is faulty with a last moment per sandbox, past which SetLifetime is invalid
+type ending struct {
+	faulty
+	known atomic.Pointer[time.Time] // what MaxUntil answers, none when nil
+	end   atomic.Pointer[time.Time] // SetLifetime past it is invalid, no end when nil
+}
+
+func (f *ending) MaxUntil(provider.Ref) (time.Time, bool) {
+	if at := f.known.Load(); at != nil {
+		return *at, true
+	}
+	return time.Time{}, false
+}
+
+func (f *ending) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
+	if end := f.end.Load(); end != nil && until.After(*end) {
+		return &provider.Error{
+			Code: provider.CodeInvalid, Err: errors.New("job sbx-1 ends at its timeout"),
+		}
+	}
+	return f.faulty.SetLifetime(ctx, ref, until)
+}
+
+func TestExtensionPastSandboxEnd(t *testing.T) {
+	f := &ending{}
+	e := newEnv(t, options{wrap: func(l *local.Provider, _ string) provider.Provider {
+		f.faulty = faulty{Provider: l}
+		return f
+	}})
+	h, ready := e.readyPlacement(t)
+	// An end a minute past the deadline leaves no room for any extension and its slack
+	end := ready.GetDeadline().AsTime().Add(time.Minute)
+	f.known.Store(&end)
+	f.end.Store(&end)
+	if opts, err := e.listExtensions(t, h); err != nil ||
+		!equalOptions(opts, smallExtensions("exceeds_lifetime")) {
+		t.Fatalf("listed %v, %v, want every option exceeds_lifetime", opts, err)
+	}
+	_, err := e.checkExtend(t, h, morePkg)
+	wantCode(t, err, connect.CodeFailedPrecondition)
+	wantInfo(t, err, "EXCEEDS_LIFETIME")
+	extend := func() error {
+		_, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.ExtendPlacementRequest{
+				Handle: h, OrderToken: e.extendToken(t, h, morePkg, morePrice),
+			}))
+		return err
+	}
+	err = extend()
+	wantCode(t, err, connect.CodeFailedPrecondition)
+	wantInfo(t, err, "EXCEEDS_LIFETIME")
+
+	// The provider refuses a lifetime past an end the router does not know
+	f.known.Store(nil)
+	err = extend()
+	wantCode(t, err, connect.CodeFailedPrecondition)
+	wantInfo(t, err, "EXCEEDS_LIFETIME")
+	if strings.Contains(err.Error(), "sbx-1") {
+		t.Errorf("refusal %q carries the provider's words", err.Error())
+	}
+	if p := e.get(t, h, 0, 0); !p.GetDeadline().AsTime().Equal(ready.GetDeadline().AsTime()) {
+		t.Fatalf("deadline moved from %v to %v", ready.GetDeadline().AsTime(),
+			p.GetDeadline().AsTime())
+	}
+}
+
 func TestGetPlacementLongPollWakes(t *testing.T) {
 	e := newEnv(t, options{readyDelay: time.Second})
 	h, _ := e.create(t)
