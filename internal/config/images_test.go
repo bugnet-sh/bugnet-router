@@ -121,7 +121,7 @@ tools = { git = "2.43" }
 version = "2026.11.3"
 ref = "`+digest+`"
 os = "ubuntu-24.04"
-`))
+`+gpuTables))
 	if err != nil {
 		t.Fatal(err)
 	}

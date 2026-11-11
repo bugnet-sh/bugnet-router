@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 )
 
 // gpuCheck is one start-up check of the GPU design's 5.3, a file it takes and one it refuses
@@ -87,4 +89,98 @@ func TestConfigGPUNotBeforePayment(t *testing.T) {
 		}
 	}
 	runGPUChecks(t, checks)
+}
+
+// liumSize writes one [[lium.sizes]] table, rtx3090's but for the name, model and cap given
+func liumSize(name, model string, capMicros int64) string {
+	return fmt.Sprintf(`
+[[lium.sizes]]
+size = %q
+model = %q
+match = ["NVIDIA GeForce RTX 3090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = %d
+`, name, model, capMicros)
+}
+
+// gpuTables are the [hf] and [lium] settings a file listing both providers needs, appended last
+var gpuTables = "\n[hf]\nnamespace = \"bugnet-sh\"\n" +
+	liumSize("lium-rtx3090", gpu.RTX3090, 350_000)
+
+// TestConfigGPUTables is check 6 of 5.3, the [lium] and [hf] tables a listed provider needs
+func TestConfigGPUTables(t *testing.T) {
+	size := liumSize("lium-rtx3090", gpu.RTX3090, 350_000)
+	runGPUChecks(t, map[string]gpuCheck{
+		"6 hf namespace": {
+			pass:   "providers = [\"hf\"]\n[hf]\nnamespace = \"bugnet-sh\"\n",
+			refuse: "providers = [\"hf\"]\n",
+			want:   "hf.namespace is required while providers lists hf",
+		},
+		"6 lium size": {
+			pass:   "providers = [\"lium\"]\n" + size,
+			refuse: "providers = [\"lium\"]\n",
+			want:   "lium.sizes must name at least one size while providers lists lium",
+		},
+		"6 size twice": {
+			pass:   size + liumSize("lium-rtx3090-big", gpu.RTX3090, 400_000),
+			refuse: size + liumSize("lium-rtx3090", gpu.RTX3090, 400_000),
+			want:   "lium.sizes entry 2 repeats the size of entry 1",
+		},
+		"6 size name": {
+			pass:   size,
+			refuse: size + liumSize("Lium RTX 3090", gpu.RTX3090, 350_000),
+			want: "lium.sizes entry 2 size must be 1 to 32 lowercase letters, digits or " +
+				"hyphens",
+		},
+		"6 model": {
+			pass:   liumSize("lium-a100", gpu.A100, 1_500_000),
+			refuse: liumSize("lium-a100", "NVIDIA A100", 1_500_000),
+			want:   "lium.sizes entry 1 model must be a canonical GPU model, one of NVIDIA T4,",
+		},
+		"6 cap zero": {
+			pass:   liumSize("lium-rtx3090", gpu.RTX3090, 1),
+			refuse: liumSize("lium-rtx3090", gpu.RTX3090, 0),
+			want:   "lium.sizes entry 1 max_hourly_micros must be above 0",
+		},
+		"6 cap below": {
+			pass:   size,
+			refuse: liumSize("lium-rtx3090", gpu.RTX3090, -350_000),
+			want:   "lium.sizes entry 1 max_hourly_micros must be above 0",
+		},
+		"6 gpus": {
+			pass:   size,
+			refuse: strings.Replace(size, "gpus = 1", "gpus = 0", 1),
+			want:   "lium.sizes entry 1 gpus must be 1 or more",
+		},
+		"6 match": {
+			pass: size,
+			refuse: strings.Replace(size, `match = ["NVIDIA GeForce RTX 3090"]`,
+				"match = []", 1),
+			want: "lium.sizes entry 1 match must name at least one gpu_class",
+		},
+		"6 flavor": {
+			pass:   "[hf]\nflavors = [\"t4-small\", \"h200x8\"]\n",
+			refuse: "[hf]\nflavors = [\"t4-small\", \"cpu-basic\"]\n",
+			want:   "hf.flavors entry 2 is not an HF GPU flavor, use one of t4-small,",
+		},
+		"6 countries empty": {
+			pass:   "[lium]\ncountries = [\"DE\"]\nother_countries = false\n",
+			refuse: "[lium]\ncountries = []\n",
+			want:   "lium.countries must name at least one country",
+		},
+		"6 country blocked": {
+			pass:   "[lium]\ncountries = [\"DE\"]\nblocked_countries = [\"RU\"]\n",
+			refuse: "[lium]\ncountries = [\"DE\", \"RU\"]\nblocked_countries = [\"BY\", \"RU\"]\n",
+			want:   "lium.countries entry 2 is also in lium.blocked_countries",
+		},
+	})
+	// A flavor entry is never quoted, since a secret could have been pasted there
+	_, err := LoadFile(writeFile(t, "[hf]\nflavors = [\"hf_pastedsecret\"]\n"))
+	if err == nil || strings.Contains(err.Error(), "pasted") {
+		t.Fatalf("an unknown flavor gave %v", err)
+	}
 }

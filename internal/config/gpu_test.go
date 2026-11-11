@@ -199,7 +199,7 @@ providers = ["lium"]
 providers = ["hf"]
 [hooks]
 providers = ["lium"]
-`))
+`+gpuTables))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestNativeSSHNamesBothProviders(t *testing.T) {
 func TestLoadReadsProviderSeeds(t *testing.T) {
 	liumSeed := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("l", 32)))
 	hfSeed := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("h", 32)))
-	listed := writeFile(t, serving(t)+`providers = ["lium", "hf"]`+"\n")
+	listed := writeFile(t, serving(t)+`providers = ["lium", "hf"]`+"\n"+gpuTables)
 	c, err := Load(listed, env(map[string]string{
 		"LIUM_SSH_SEED": liumSeed, "HF_SANDBOX_SEED": hfSeed,
 		"LIUM_API_KEY": "lium-key", "HF_JOBS_TOKEN": "hf_jobs",

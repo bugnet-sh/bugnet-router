@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 )
 
 // gpuProviders are the providers that sell only GPU sandboxes
@@ -81,6 +83,16 @@ func (f liumFile) read(d liumFile) (Lium, error) {
 		}
 		*list.into = listOf(list.raw)
 	}
+	if len(l.Countries) == 0 {
+		return Lium{}, errors.New("lium.countries must name at least one country, the node " +
+			"countries tried first")
+	}
+	for i, code := range l.Countries {
+		if slices.Contains(l.BlockedCountries, code) {
+			return Lium{}, fmt.Errorf("lium.countries entry %d is also in "+
+				"lium.blocked_countries", i+1)
+		}
+	}
 	err := readDurations("lium", []durationKey{
 		{"max_lifetime", f.MaxLifetime, d.MaxLifetime, time.Second, &l.MaxLifetime},
 		{"start_billed", f.StartBilled, d.StartBilled, 0, &l.StartBilled},
@@ -107,11 +119,36 @@ func (f liumFile) read(d liumFile) (Lium, error) {
 		return Lium{}, fmt.Errorf("lium.template_volume must be an absolute path such as %s",
 			d.TemplateVolume)
 	}
-	for _, s := range f.Sizes {
+	for i, s := range f.Sizes {
+		if err := checkSize(i, s, l.Sizes); err != nil {
+			return Lium{}, err
+		}
 		s.Match = slices.Clone(s.Match)
 		l.Sizes = append(l.Sizes, s)
 	}
 	return l, nil
+}
+
+// checkSize checks lium.sizes entry i against the entries before it
+func checkSize(i int, s LiumSize, before []LiumSize) error {
+	entry := fmt.Sprintf("lium.sizes entry %d", i+1)
+	switch {
+	case !sizeName.MatchString(s.Size):
+		return fmt.Errorf("%s size must be 1 to 32 lowercase letters, digits or hyphens", entry)
+	case !gpu.Known(s.Model):
+		return fmt.Errorf("%s model must be a canonical GPU model, one of %s", entry,
+			strings.Join(gpu.Models(), ", "))
+	case s.MaxHourlyMicros <= 0:
+		return fmt.Errorf("%s max_hourly_micros must be above 0, the cap per node and hour", entry)
+	case s.GPUs < 1:
+		return fmt.Errorf("%s gpus must be 1 or more", entry)
+	case len(s.Match) == 0:
+		return fmt.Errorf("%s match must name at least one gpu_class", entry)
+	}
+	if j := slices.IndexFunc(before, func(b LiumSize) bool { return b.Size == s.Size }); j >= 0 {
+		return fmt.Errorf("%s repeats the size of entry %d", entry, j+1)
+	}
+	return nil
 }
 
 // read checks the [hf] keys only HF has, d holding the defaults
@@ -120,6 +157,13 @@ func (f hfFile) read(d hfFile) (HF, error) {
 		Namespace: f.Namespace, Flavors: listOf(f.Flavors),
 		SBXServerVersion: cmp.Or(f.SBXServerVersion, d.SBXServerVersion),
 		SBXServerSHA256:  cmp.Or(f.SBXServerSHA256, d.SBXServerSHA256),
+	}
+	for i, flavor := range h.Flavors {
+		if !gpu.HFFlavor(flavor) {
+			// An entry is never quoted, since a secret could have been pasted there
+			return HF{}, fmt.Errorf("hf.flavors entry %d is not an HF GPU flavor, use one of %s",
+				i+1, strings.Join(gpu.HFFlavors(), ", "))
+		}
 	}
 	err := readDurations("hf", []durationKey{
 		{"max_lifetime", f.MaxLifetime, d.MaxLifetime, time.Second, &h.MaxLifetime},
@@ -148,6 +192,13 @@ func (f hfFile) read(d hfFile) (HF, error) {
 
 // checkGPU refuses the settings under which a GPU provider would serve unsafely or never serve
 func (c *Config) checkGPU() error {
+	if slices.Contains(c.Providers, "hf") && c.HF.Namespace == "" {
+		return errors.New("hf.namespace is required while providers lists hf, the " +
+			"organization the Jobs run and bill under")
+	}
+	if slices.Contains(c.Providers, "lium") && len(c.Lium.Sizes) == 0 {
+		return errors.New("lium.sizes must name at least one size while providers lists lium")
+	}
 	if slices.Contains(c.Previews.Providers, "lium") {
 		return errors.New("previews.providers may not list lium, whose pods run no gate")
 	}
