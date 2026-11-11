@@ -9,6 +9,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/gpustatus"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -34,6 +35,8 @@ type Verdict struct {
 	Recheck time.Duration
 	// Alert names a reading the operator must see, such as a kill no router asked for
 	Alert string
+	// CheckAccount asks for the provider's account check at once, the reading being account-wide
+	CheckAccount bool
 }
 
 // Live is what Classify needs to know about the placement behind an observation
@@ -79,6 +82,10 @@ func Classify(prov string, st provider.Status, p Live, now time.Time, r Rules) V
 		return boxd(st, p)
 	case "koyeb":
 		return koyeb(st, p, now, r)
+	case "lium":
+		return lium(st, p, now, r)
+	case "hf":
+		return hf(st, p, now, r)
 	}
 	// local and any adapter without rows of its own
 	if st.State == provider.StateGone {
@@ -104,7 +111,7 @@ func e2b(st provider.Status, p Live, now time.Time, r Rules) Verdict {
 		return Verdict{Class: ClassProviderFailed, Alert: store.AlertUnaskedKill}
 	case slices.Contains(e2bProviderKills, k):
 		return Verdict{Class: ClassProviderFailed}
-	case k == "timeout" && !p.Deadline.IsZero() && now.Before(p.Deadline):
+	case k == "timeout" && beforeDeadline(p, now):
 		return Verdict{Class: ClassProviderFailed}
 	}
 	return Verdict{Class: ClassSandboxExited}
@@ -160,6 +167,74 @@ func koyeb(st provider.Status, p Live, now time.Time, r Rules) Verdict {
 		return Verdict{Class: ClassSandboxExited}
 	}
 	return Verdict{}
+}
+
+// liumProviderEvents are the newest pod events by which Lium names its own side as the cause
+var liumProviderEvents = []string{
+	gpustatus.LiumEventExecutorOffline, gpustatus.LiumEventExecutorReclaimed,
+	gpustatus.LiumEventBrokenByProvider,
+}
+
+func lium(st provider.Status, p Live, now time.Time, r Rules) Verdict {
+	failed, gone, k := st.State == provider.StateFailed, st.State == provider.StateGone,
+		st.KillReason
+	switch {
+	case st.State == provider.StateStopped || k == gpustatus.LiumEventInsufficientBalance:
+		// Lium stops every pod of the account at zero balance
+		return Verdict{Class: ClassProviderFailed, CheckAccount: true}
+	case k == gpustatus.LiumEventDisputeBlock:
+		// Whether the dispute is ours or a host's complaint about the pod is unknown (Q19)
+		return Verdict{
+			Class: Class(r.LiumDisputeBlock), Alert: store.AlertUnaskedKill, CheckAccount: true,
+		}
+	case failed && gpustatus.HasWord(st.Reason, gpustatus.LiumStatusBroken),
+		slices.Contains(liumProviderEvents, k),
+		gpustatus.HasWord(st.Reason, gpustatus.LiumFlagNodeOutage):
+		return Verdict{Class: ClassProviderFailed}
+	case failed && gpustatus.HasWord(st.Reason, gpustatus.LiumMoved):
+		// The container on the other node is new, so our setup and firewall are gone
+		return Verdict{Class: ClassProviderFailed}
+	case st.State == provider.StateDegraded:
+		return degraded(p, now, r, ClassProviderFailed)
+	case gone && k == gpustatus.LiumEventUserInitiated && p.State == store.PlacementReady:
+		// No router asked, and no guest holds a Lium key to ask
+		return Verdict{Class: ClassProviderFailed, Alert: store.AlertUnaskedKill}
+	case gone && k == gpustatus.LiumEventScheduledTermination && beforeDeadline(p, now):
+		return Verdict{Class: ClassProviderFailed}
+	}
+	// Root can fail the SSH check, kill PID 1 or break a reboot from inside
+	return Verdict{Class: ClassSandboxExited}
+}
+
+// hfAccountKills are the cancel reasons that name the account's credit, plan or spend cap
+var hfAccountKills = []string{
+	gpustatus.HFNoCredits, gpustatus.HFNoSubscription, gpustatus.HFSpendLimit,
+	gpustatus.HFResourceGroupLimit,
+}
+
+// hfUnaskedKills are the ends of a Job no guest can cause, with no reason HF gives
+var hfUnaskedKills = []string{gpustatus.HFCanceled, gpustatus.HFDeleted, gpustatus.HFNotFound}
+
+func hf(st provider.Status, p Live, now time.Time, r Rules) Verdict {
+	gone, k := st.State == provider.StateGone, st.KillReason
+	switch {
+	case gone && slices.Contains(hfAccountKills, k):
+		return Verdict{Class: ClassProviderFailed, CheckAccount: true}
+	case gone && k == gpustatus.HFTimeout && beforeDeadline(p, now):
+		return Verdict{Class: ClassProviderFailed}
+	case gone && slices.Contains(hfUnaskedKills, k) && p.State == store.PlacementReady:
+		// No router asked, and no guest holds an HF token to ask
+		return Verdict{Class: ClassProviderFailed, Alert: store.AlertUnaskedKill}
+	case st.State == provider.StateFailed && hasWord(st.Reason, r.HFPlatformWords):
+		return Verdict{Class: ClassProviderFailed}
+	}
+	// PID 1 exiting, zero or not, is in root's hands
+	return Verdict{Class: ClassSandboxExited}
+}
+
+// beforeDeadline reports whether the paid time had not ended at now, false with no deadline
+func beforeDeadline(p Live, now time.Time) bool {
+	return !p.Deadline.IsZero() && now.Before(p.Deadline)
 }
 
 // degraded waits out the grace, then gives the provider's class
