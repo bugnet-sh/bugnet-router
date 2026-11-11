@@ -68,6 +68,11 @@ payments_url = "http://127.0.0.1:8447"
 [sessions]
 base_url = "https://sessions.bugnet.sh"
 
+[boat.types]                  # never xlarge, Boat sells it only on its $100 a month plan
+small = "small"
+default = "default"
+large = "large"
+
 [[e2b.templates]]
 size = "2x2"
 template = "ulsiqpcmd2ri5js47px9"      # bugnet-2026-11-3-2x2
