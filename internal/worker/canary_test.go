@@ -125,6 +125,9 @@ func (p gpuFloorsOnly) SizeFor(floor provider.Resources) (provider.Size, bool) {
 	return p.Provider.SizeFor(floor)
 }
 
+// notSizer hides every method of its provider beyond the Provider interface, Sizes among them
+type notSizer struct{ provider.Provider }
+
 func TestCanaryTickSkipsAGPUOnlyProviderQuietly(t *testing.T) {
 	l4 := provider.Size{Name: "l4", Resources: provider.Resources{
 		VCPU: 8, MemoryMiB: 32768, DiskGiB: 100, GPUCount: 1, GPUMemoryGiB: 24, GPUModel: gpu.L4,
@@ -137,7 +140,8 @@ func TestCanaryTickSkipsAGPUOnlyProviderQuietly(t *testing.T) {
 	var logs syncBuffer
 	e := newEnv(t, options{canaries: true, log: &logs, providers: []provider.Provider{
 		gpuFloorsOnly{newSized(t, "gpu", l4)}, newSized(t, "cpu", tiny),
-		newSized(t, "any", anything),
+		newSized(t, "any", anything), newSized(t, "empty"),
+		notSizer{gpuFloorsOnly{newSized(t, "unsized", l4)}},
 	}})
 	for range 3 {
 		e.worker.CanaryTick(t.Context())
@@ -148,6 +152,11 @@ func TestCanaryTickSkipsAGPUOnlyProviderQuietly(t *testing.T) {
 	eq(t, strings.Count(logs.String(), "no size covers the canary\" provider=gpu"), 0)
 	// A CPU provider with no size for the canary is a mistake, so it warns every tick
 	eq(t, strings.Count(logs.String(), `msg="no size covers the canary" provider=cpu`), 3)
+	// Neither an empty size list nor a provider without Sizes shows it is GPU-only
+	eq(t, strings.Count(logs.String(), `msg="no size covers the canary" provider=empty`), 3)
+	eq(t, strings.Count(logs.String(), `msg="no size covers the canary" provider=unsized`), 3)
+	eq(t, strings.Count(logs.String(), "GPU-only provider\" provider=empty"), 0)
+	eq(t, strings.Count(logs.String(), "GPU-only provider\" provider=unsized"), 0)
 	eq(t, strings.Count(logs.String(), "provider=any"), 0)
 	eq(t, probeJobs(t, e, "any"), 1)
 }
