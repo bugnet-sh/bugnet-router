@@ -324,6 +324,7 @@ func TestLoadFileRefusesGPUSecrets(t *testing.T) {
 
 // variantNames are machine_name values GET /executors showed under another gpu_class on 2026-11-11
 var variantNames = map[string][]string{
+	"lium-h100": {"NVIDIA H100 PCIe"},
 	"lium-h200": {"NVIDIA H200 NVL"},
 	"lium-rtxpro6000": {"NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
 		"NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"},

@@ -526,7 +526,7 @@ max_hourly_micros = 1800000
 [[lium.sizes]]
 size = "lium-h100"
 model = "NVIDIA H100 80GB"
-match = ["NVIDIA H100 80GB HBM3"]
+match = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 PCIe"]   # a PCIe node reports the HBM3 gpu_class
 gpus = 1
 gpu_memory_gib = 80
 vcpu = 12
