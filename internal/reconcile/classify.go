@@ -179,14 +179,14 @@ func lium(st provider.Status, p Live, now time.Time, r Rules) Verdict {
 	failed, gone, k := st.State == provider.StateFailed, st.State == provider.StateGone,
 		st.KillReason
 	switch {
-	case st.State == provider.StateStopped || k == gpustatus.LiumEventInsufficientBalance:
-		// Lium stops every pod of the account at zero balance
-		return Verdict{Class: ClassProviderFailed, CheckAccount: true}
 	case k == gpustatus.LiumEventDisputeBlock:
 		// Whether the dispute is ours or a host's complaint about the pod is unknown (Q19)
 		return Verdict{
 			Class: Class(r.LiumDisputeBlock), Alert: store.AlertUnaskedKill, CheckAccount: true,
 		}
+	case st.State == provider.StateStopped || k == gpustatus.LiumEventInsufficientBalance:
+		// Lium stops every pod of the account at zero balance
+		return Verdict{Class: ClassProviderFailed, CheckAccount: true}
 	case failed && gpustatus.HasWord(st.Reason, gpustatus.LiumStatusBroken),
 		slices.Contains(liumProviderEvents, k),
 		gpustatus.HasWord(st.Reason, gpustatus.LiumFlagNodeOutage):
