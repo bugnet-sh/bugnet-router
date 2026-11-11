@@ -2499,7 +2499,8 @@ scripts/image.sh retire boxd --version 2026.11.1
 destroys it, and a finding deletes what it already saved. `image check` starts two fresh sandboxes
 from each artifact, scans them before any start step, compares the tools a job sees with the
 manifest, compares the random bytes and host keys of the two, deletes an artifact that fails and
-prints the `[images.PROVIDER]` block to paste. On a provider whose `ssh_path` is `native`, the host
-key is the one its `ReadyMeta` pinned in Meta `host_key`, and `ssh-up` never runs there.
-`image retire` refuses a version that is on `images.accept`, that a placement runs on, or that
-became ready in the last hour. The runbook is in `deploy/image/README.md`.
+prints the `[images.PROVIDER]` block to paste. On a provider whose `ssh_path` is `native` and whose
+adapter has `ReadyMeta`, the host key is the one `ReadyMeta` pinned in Meta `host_key`, and
+`ssh-up` never runs there. Boat has no `ReadyMeta`, so its check runs `ssh-up` whatever its
+`ssh_path`. `image retire` refuses a version that is on `images.accept`, that a placement runs on,
+or that became ready in the last hour. The runbook is in `deploy/image/README.md`.
