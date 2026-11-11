@@ -1,0 +1,41 @@
+{
+    "channel": "prod",
+    "e2b": {
+        "os": "ubuntu-24.04",
+        "templates": [
+            {
+                "id": "ulsiqpcmd2ri5js47px9",
+                "name": "bugnet-2026-11-3-2x2",
+                "size": "2x2"
+            },
+            {
+                "id": "d0wb9uyn9rd7jgjs84lh",
+                "name": "bugnet-2026-11-3-4x8",
+                "size": "4x8"
+            }
+        ],
+        "tools": {
+            "curl": "8.5",
+            "docker": "none",
+            "gcc": "13.3",
+            "git": "2.43",
+            "hf": "2.4",
+            "make": "4.3",
+            "nft": "1.0",
+            "node": "24.22",
+            "pnpm": "12.18",
+            "python3": "3.12",
+            "sshd": "9.6",
+            "tar": "1.35",
+            "uv": "0.13"
+        }
+    },
+    "inputs_sha256": "0e85d85c1234841bb4a2f3d9fd8bb783d8fc133175bd46fe35d18677dc4bf4d9",
+    "oci": {
+        "ref": "ghcr.io/bugnet-sh/bugnet-base@sha256:2a471ceb0c0ca15563b40dd4421f27f81815765e5d5c4e44619da96ad176fb19"
+    },
+    "runner_sha256": {
+        "amd64": "d89964c5cca7c9a8240f52ee2ae9bc7fc0de240af7b8231eff5e981d48fb3419"
+    },
+    "version": "2026.11.3"
+}
