@@ -436,8 +436,9 @@ providers = ["e2b", "boat"]
 	}
 	for _, name := range []string{"e2b", "boat"} {
 		p, _ := reg.Get(name)
-		if c := reg.Capabilities(p); !c.Preview || !c.SSH {
-			t.Errorf("%s got preview %v and ssh %v, want both", name, c.Preview, c.SSH)
+		if c := reg.Capabilities(p); !c.Preview || !c.SSH || reg.NativeSSH(p) {
+			t.Errorf("%s got preview %v, ssh %v and native %v, want both through the gate",
+				name, c.Preview, c.SSH, reg.NativeSSH(p))
 		}
 	}
 	cfg = load(t, "providers = [\"e2b\", \"boat\"]\n[ssh]\nproviders = [\"boat\"]\n"+

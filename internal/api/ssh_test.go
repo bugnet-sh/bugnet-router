@@ -677,15 +677,15 @@ func TestCheckSshGrantsDropsEndedPlacements(t *testing.T) {
 	mustCode(t, err, connect.CodeNotFound, "GRANT_UNKNOWN")
 }
 
-/* Boat's own sshd */
+/* A provider's own sshd */
 
-// nativeBoat is a local provider named boat with an SSH server of its own
-type nativeBoat struct {
+// nativeServer is a local provider with an SSH server of its own
+type nativeServer struct {
 	*local.Provider
 	calls *atomic.Int32
 }
 
-func (n nativeBoat) AuthorizeNativeSSH(
+func (n nativeServer) AuthorizeNativeSSH(
 	_ context.Context, _ provider.Ref, gatewayKey string,
 ) (provider.NativeSSH, error) {
 	n.calls.Add(1)
@@ -696,29 +696,38 @@ func (n nativeBoat) AuthorizeNativeSSH(
 		nil
 }
 
-func TestBoatNativeSSHCachedPerKey(t *testing.T) {
-	calls := &atomic.Int32{}
-	e := newEnv(t, options{providerName: "boat", nativeSSH: true,
-		wrap: func(l *local.Provider, _ string) provider.Provider {
-			return nativeBoat{Provider: l, calls: calls}
-		}})
-	h, _ := e.readyWithSSH(t)
-	grant := e.grantFor(t, h, sshkeystest.ED25519(t))
-	gk := gatewayKey(t)
-	for range 2 {
-		up, err := e.openUpstream(t, grant, gk)
-		if err != nil {
-			t.Fatal(err)
-		}
-		eq(t, up.GetTcp().GetAddress(), "203.0.113.10:22")
-		eq(t, up.GetUser(), "user")
-		eq(t, up.GetHostKeys(), []string{sshdHostKey})
+func TestNativeSSHCachedPerKey(t *testing.T) {
+	for _, name := range []string{"boat", "pod"} {
+		t.Run(name, func(t *testing.T) {
+			calls := &atomic.Int32{}
+			e := newEnv(t, options{providerName: name, nativeSSH: true,
+				wrap: func(l *local.Provider, _ string) provider.Provider {
+					return nativeServer{Provider: l, calls: calls}
+				}})
+			h, msg := e.readyWithSSH(t)
+			grant := e.grantFor(t, h, sshkeystest.ED25519(t))
+			gk := gatewayKey(t)
+			for range 2 {
+				up, err := e.openUpstream(t, grant, gk)
+				if err != nil {
+					t.Fatal(err)
+				}
+				eq(t, up.GetTcp().GetAddress(), "203.0.113.10:22")
+				eq(t, up.GetUser(), "user")
+				eq(t, up.GetHostKeys(), []string{sshdHostKey})
+			}
+			eq(t, calls.Load(), int32(1))
+			if _, err := e.openUpstream(t, grant, gatewayKey(t)); err != nil {
+				t.Fatal(err)
+			}
+			eq(t, calls.Load(), int32(2))
+			var transport string
+			err := e.pool.QueryRow(t.Context(), `select transport from ssh_hosts
+				where placement_id = $1`, msg.GetPlacementId()).Scan(&transport)
+			eq(t, err, nil)
+			eq(t, transport, name+"_native")
+		})
 	}
-	eq(t, calls.Load(), int32(1))
-	if _, err := e.openUpstream(t, grant, gatewayKey(t)); err != nil {
-		t.Fatal(err)
-	}
-	eq(t, calls.Load(), int32(2))
 }
 
 // A router without a gateway host, host keys or root keys refuses before it spends a token
