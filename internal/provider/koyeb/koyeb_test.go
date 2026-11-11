@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
@@ -1219,6 +1220,43 @@ func TestKoyebForeignRefIsNotFound(t *testing.T) {
 	}
 }
 
+// TestKoyebSizeForGPUModel holds the GPU size to its own model
+func TestKoyebSizeForGPUModel(t *testing.T) {
+	p, err := New(Options{APIToken: fakeToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "gpu-nvidia-rtx-4000-sff-ada"
+	ada := provider.Resources{
+		VCPU: 4, MemoryMiB: 16384, DiskGiB: 50, GPUCount: 1, GPUMemoryGiB: 20,
+		GPUModel: gpu.RTX4000SFFAda,
+	}
+	for _, floor := range []provider.Resources{
+		ada, {GPUModel: gpu.RTX4000SFFAda}, {GPUCount: 1, GPUMemoryGiB: 20},
+	} {
+		s, ok := p.SizeFor(floor)
+		if !ok || s.Name != name || s.Resources.GPUModel != gpu.RTX4000SFFAda {
+			t.Errorf("floor %+v gave %+v %v, want %s", floor, s, ok, name)
+		}
+	}
+	for _, model := range []string{gpu.L4, gpu.A10G, gpu.RTX4090, "NVIDIA RTX 4000"} {
+		floor := ada
+		floor.GPUModel = model
+		if s, ok := p.SizeFor(floor); ok {
+			t.Errorf("a %s floor gave %+v, want none", model, s)
+		}
+	}
+	for _, s := range p.Sizes() {
+		want := ""
+		if s.Name == name {
+			want = gpu.RTX4000SFFAda
+		}
+		if s.Resources.GPUModel != want {
+			t.Errorf("size %s has model %q, want %q", s.Name, s.Resources.GPUModel, want)
+		}
+	}
+}
+
 func TestKoyebSizesAndPrices(t *testing.T) {
 	p, err := New(Options{APIToken: fakeToken})
 	if err != nil {
@@ -1259,6 +1297,7 @@ func TestKoyebSizesAndPrices(t *testing.T) {
 	s, _ := p.SizeFor(gpu)
 	if s.Resources != (provider.Resources{
 		VCPU: 6, MemoryMiB: 45056, DiskGiB: 240, GPUCount: 1, GPUMemoryGiB: 20,
+		GPUModel: "NVIDIA RTX 4000 SFF Ada",
 	}) {
 		t.Errorf("GPU size %+v", s)
 	}

@@ -38,6 +38,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -106,6 +107,7 @@ var instanceTypes = []instanceType{
 	{"5xlarge", provider.Resources{VCPU: 40, MemoryMiB: 131072, DiskGiB: 400}, 512},
 	{"gpu-nvidia-rtx-4000-sff-ada", provider.Resources{
 		VCPU: 6, MemoryMiB: 45056, DiskGiB: 240, GPUCount: 1, GPUMemoryGiB: 20,
+		GPUModel: gpu.RTX4000SFFAda,
 	}, 140},
 }
 
@@ -265,14 +267,15 @@ func (p *Provider) Capabilities() provider.Capabilities {
 	}
 }
 
-// SizeFor picks the cheapest size covering floor, with a GPU only when the floor asks for one
+// SizeFor picks the cheapest size covering floor, with a GPU of its model only when it asks for one
 func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
-	wantGPU := floor.GPUCount > 0 || floor.GPUMemoryGiB > 0
+	wantGPU := floor.GPUCount > 0 || floor.GPUMemoryGiB > 0 || floor.GPUModel != ""
 	for _, s := range p.sizes {
 		r := s.typ.resources
 		if s.gpu() == wantGPU && r.VCPU >= floor.VCPU && r.MemoryMiB >= floor.MemoryMiB &&
 			r.DiskGiB >= floor.DiskGiB && r.GPUCount >= floor.GPUCount &&
-			r.GPUMemoryGiB >= floor.GPUMemoryGiB {
+			r.GPUMemoryGiB >= floor.GPUMemoryGiB &&
+			(floor.GPUModel == "" || r.GPUModel == floor.GPUModel) {
 			return provider.Size{Name: s.name, Resources: r}, true
 		}
 	}
