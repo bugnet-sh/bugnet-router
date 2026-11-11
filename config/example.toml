@@ -362,7 +362,7 @@ fail_pause = "10m"            # three failed fills in a row pause a pool this lo
 max_daily_micros = 2000000    # a day's waste and idle cost, then every target drops to its min
 
 [[pools.pool]]
-provider = "boxd"             # never "boat", and "koyeb" only after KOYEBP1 passes
+provider = "boxd"             # never boat, lium or hf, and koyeb only after KOYEBP1 passes
 size = "1x4"                  # a size the provider sells
 min = 2
 max = 5
@@ -382,7 +382,7 @@ per_second = 1                # new reservations router-wide, with the burst bel
 burst = 10
 per_ip_open = 2               # open reservations per client address outside shared_ranges
 shared_ranges = ["160.79.104.0/21"]   # Anthropic's connectors share these addresses
-speculative_providers = ["e2b", "koyeb", "boxd"]   # may start a sandbox before payment, never "boat"
+speculative_providers = ["e2b", "koyeb", "boxd"]   # may start before payment, never boat, lium, hf
 speculative_max_open = 5      # open reservations that started their own sandbox
 speculative_max_hourly_micros = 200000   # the dearest size started before payment, $0.20 an hour
 brake_unused = 20             # unused reservations in an hour before the brake can set
@@ -421,7 +421,8 @@ harden_allow = []
 harden_no_gateway = true      # the bridge gateway is the host, must stay true
 ops_per_second = 5
 max_concurrent = 10           # Lium documents no cap, this also sets the balance headroom
-key_daily_budget_micros = 2300000000   # the key's daily budget as set at Lium, 0 for none
+key_daily_budget_micros = 2300000000   # the key's daily budget at Lium, 0 for none, else at least
+                                       # max_concurrent x the dearest cap x 24 h
 creates_per_second = 1
 template_volume = "/workspace"
 termination = "max_lifetime"  # "lifetime" once LIUM8 shows schedule-removal replaces it

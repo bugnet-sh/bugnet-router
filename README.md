@@ -1891,6 +1891,28 @@ budget under Lium's slowest boot that fails, its 30 s destroy and the next provi
 boot step at its timeout and `harden` failing last (12 minutes 40 seconds with the default
 timeouts), so HF still gets its turn.
 
+Both routers also refuse to start when:
+
+- `secrets.providers` lists `lium`, since a Lium host operator can read its pods, or
+  `previews.providers` lists `lium`, or `ssh.providers` lists it while `lium.ssh_path` is not
+  `native`, since a Lium pod runs no gate.
+- `lium.harden_required` or `lium.harden_no_gateway` is `false`.
+- `providers` lists `hf` without `hf.namespace`, or `lium` without a `[[lium.sizes]]` table.
+- A Lium size has a name that is not lowercase letters, digits and hyphens or that an earlier size
+  has, a `model` that is not a canonical GPU model, a `max_hourly_micros` cap under 1, `gpus`
+  under 1 or an empty `match`; an `hf.flavors` entry is not an HF GPU flavor; `lium.countries`
+  is empty or shares a code with `lium.blocked_countries`.
+- `lium.key_daily_budget_micros` is above 0 and under `lium.max_concurrent` (50 when 0) times the
+  dearest size's cap times 24 hours, since Lium deletes a key's pods once its spend reaches the
+  key's budget.
+- `hf.ops_per_second` is 0, or over 3 with `hf.token_plan = "free"` or over 8 with `"pro"`, the
+  token user's Hub rate limit.
+
+`router-api` refuses to start when a GPU package's price misses `margin_floor` on a `gpu_order`
+provider with a size for it, estimated from `Sizes`, the size's hourly cost (Lium's cap) over the
+package's minutes in the provider's billing increments, and its start fee. Placement would leave
+that provider out of the package in silence. The error names the lowest price that clears it.
+
 ### Limits and account standing
 
 `limits_poll{provider}` reads each account's cap and use into `provider_capacity` every 60 s, and
@@ -2231,7 +2253,7 @@ A pool is one provider and size that keeps prepared sandboxes waiting for an ord
 provider that can park a sandbox in a cheaper idle state (`provider.Parker`) or hands out members
 it keeps itself (`provider.PoolClaimer`) can have one, so boxd and local do and E2B and Boat do
 not. router-api and router-worker refuse to start with a pool on any other provider, on a size the
-provider does not sell, or on Boat. The settings are `[pools]`, one `[[pools.pool]]` table per
+provider does not sell, on Boat, or on Lium or HF, since no GPU sandbox starts before payment. The settings are `[pools]`, one `[[pools.pool]]` table per
 pool with `provider`, `size`, `min`, `max` and `max_age`, and `boxd.parked_gib`. `config/example.toml`
 lists boxd `1x4` with `min = 2` and `max = 5`, and `config/dev.toml` the local provider's one size
 with `min = 1` and `max = 2`.
@@ -2299,7 +2321,7 @@ quote id or an unknown package is the only refusal (`QUOTE_INVALID`, `INVALID_AR
 
 The settings are `[reserve]` and `[targets]`, each at its default in `config/example.toml`.
 `reserve.speculative_providers` lists `e2b`, `koyeb` and `boxd`, and the decoder refuses `boat`
-there. `reserve.shared_ranges` lists Anthropic's `160.79.104.0/21`, and an address in it never
+there, and `lium` and `hf`, since no GPU sandbox starts before payment. `reserve.shared_ranges` lists Anthropic's `160.79.104.0/21`, and an address in it never
 counts toward `per_ip_open` and is never stored.
 
 One Reserve costs one Valkey call and one short transaction. The Valkey call is one script that
