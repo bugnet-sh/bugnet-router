@@ -606,9 +606,14 @@ carry the same `egress.allow` as the package it extends, since a sandbox keeps t
 it was created with.
 
 A package with `gpu_count` above 0 names its GPU in `resources.gpu_model`, as the public stats
-feed and the landing's pricing show it, such as `"NVIDIA L4"`, and `gpu_memory_gib` is each GPU's
-own memory. The name is 1 to 64 printable characters with no space at either end. A package
-without a GPU has no `gpu_model`, and an extension carries the same one as the package it extends.
+feed and the landing's pricing show it, such as `"NVIDIA L4"`, and `gpu_memory_gib` is the memory
+of all its GPUs together. The name is one the router knows (`internal/gpu`): `NVIDIA T4`,
+`NVIDIA L4`, `NVIDIA A10G`, `NVIDIA L40S`, `NVIDIA A100 80GB`, `NVIDIA H100 80GB`, `NVIDIA H200`,
+`NVIDIA B200`, `NVIDIA RTX 3090`, `NVIDIA RTX 4090`, `NVIDIA RTX 5090`, `NVIDIA RTX A6000`,
+`NVIDIA RTX 6000 Ada`, `NVIDIA RTX PRO 6000` or `NVIDIA RTX 4000 SFF Ada`. A provider serves the
+package only from a size of that model, except `local`, whose one size covers any package. A
+package without a GPU has no `gpu_model`, and an extension carries the same one as the package it
+extends.
 
 A host name here and in `[names]` is never an IP address, and never ends in a label that is all
 digits or `0x` and hex digits, such as `127.1` or `a.0x1f`. `inet_aton`, curl and browsers read
