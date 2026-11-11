@@ -77,14 +77,20 @@ type profile struct {
 	ca bool
 	// rangesOutside says the IPv4 deny ranges are blocked at create, outside the VM
 	rangesOutside bool
+	// noGate says the sandbox never has a gate, so it gets no gate key and setup's nogate phase
+	noGate bool
+	// noGateway puts the default gateway under harden's blocks, for a gateway that is the host
+	noGateway bool
 }
 
-// profiles holds the four providers of DP 6.3's deny list and CP 6.9's table, others are local
+// profiles holds DP 6.3's deny list, CP 6.9's table and the GPU providers, others are local
 var profiles = map[string]profile{
 	"e2b":   {denyPorts: []int{49983}, ca: true, rangesOutside: true},
 	"boxd":  {ca: true},
 	"koyeb": {denyPorts: []int{3030, 3031}, ca: true},
 	"boat":  {denyPorts: boatPorts(), ca: true},
+	"lium":  {ca: true, noGate: true, noGateway: true},
+	"hf":    {denyPorts: []int{49983}, ca: true},
 }
 
 // boatPorts are Boat's sshd, VNC, agent and streaming ports
@@ -109,12 +115,17 @@ type setupSpec struct {
 	Sample        bool   `json:"sample"`
 	// Seed is fresh router randomness the runner mixes into the kernel before any other step
 	Seed string `json:"seed"`
-	// Phase is "pool" for a member that only gets the CA and the env lines
+	// Phase is "pool" for a member's CA and env lines, "nogate" for every step but the gate
 	Phase string `json:"phase,omitempty"`
 }
 
-// phasePool is setupSpec.Phase for a pool member, which gets no gate key and no gate
-const phasePool = "pool"
+// Values of setupSpec.Phase besides the empty full phase
+const (
+	// phasePool is a pool member, which gets no gate key and no gate yet
+	phasePool = "pool"
+	// phaseNoGate is every step of the full phase but the gate, with no gate key
+	phaseNoGate = "nogate"
+)
 
 // seedBytes is the randomness each setup spec carries
 const seedBytes = 32
@@ -134,6 +145,8 @@ type hardenSpec struct {
 	DenyRanges []string `json:"deny_ranges"`
 	Pools      []string `json:"pools"`
 	Allow      []string `json:"allow"`
+	// NoGateway puts the default gateway under the blocks, left out of the JSON where false
+	NoGateway bool `json:"no_gateway,omitempty"`
 }
 
 // runnerAnswer is the one JSON line setup and harden print
@@ -172,6 +185,10 @@ func (b BootSettings) setupSpecFor(
 	// A local sandbox shares the host, so its gate listens on its own loopback port
 	if port := metaPort(ref, "gate_port"); port > 0 {
 		spec.GateListen = "127.0.0.1:" + strconv.Itoa(port)
+	}
+	// A sandbox without a gate never gets a gate key, whatever the caller passed
+	if pr.noGate {
+		spec.Phase, spec.GateKey, spec.GateListen = phaseNoGate, "", ""
 	}
 	if pr.ca && len(b.CAPEM) > 0 {
 		spec.CAVersion = b.CAVersion
@@ -216,6 +233,7 @@ func (b BootSettings) hardenSpecFor(name string) (hardenSpec, config.HardenRule,
 	spec := hardenSpec{
 		V: 1, MailPorts: slices.Clone(b.MailPorts), DenyRanges: slices.Clone(b.DenyRanges),
 		Pools: slices.Clone(b.Pools), Allow: slices.Clone(rule.Allow),
+		NoGateway: profiles[name].noGateway,
 	}
 	if profiles[name].rangesOutside {
 		spec.DenyRanges = insideRanges(spec.DenyRanges)
