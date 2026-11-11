@@ -24,6 +24,12 @@ const (
 	rentMemory = time.Hour
 	// minInProgressWait spaces the resends of a rent Lium is still running
 	minInProgressWait = 100 * time.Millisecond
+	// defaultRelistEvery spaces the listings that look again for a pod a rent may have made
+	defaultRelistEvery = 2 * time.Second
+	// relistBudget bounds those listings, which run after the create budget too
+	relistBudget = 10 * time.Second
+	// keylessRelists is how many listings a create without a key adds
+	keylessRelists = 3
 	// removalSlack is the saga's lifetime slack, which a deploy-time termination covers too
 	removalSlack           = 5 * time.Minute
 	terminationMaxLifetime = "max_lifetime"
@@ -59,7 +65,7 @@ type rental struct {
 	image, template string
 	// uncertain marks a rental one of whose sends may have rented
 	uncertain bool
-	// mixed marks a rental one of whose sends got no answer or one other than a server error
+	// mixed marks a rental one of whose sends may have rented without a server error
 	mixed bool
 }
 
@@ -327,10 +333,12 @@ func (p *Provider) settle(ctx context.Context, o order, r rental) (provider.Ref,
 // noted marks what a failed send of r shows, keeping r for the key's retries when that changed
 func (p *Provider) noted(o order, r rental, err error) rental {
 	code := codeOf(err)
-	uncertain := r.uncertain || mayHaveRented(err) || code == codeInProgress ||
-		code == codeOutcomeUnknown
-	answered := errors.As(err, new(*apiError))
-	mixed := r.mixed || lostAnswer(err) || answered && !serverError(err)
+	renting := code == codeInProgress || code == codeOutcomeUnknown
+	uncertain := r.uncertain || mayHaveRented(err) || renting
+	// A keyless resend refused for its node after a send that may have rented may meet our pod
+	ownNode := o.fresh && r.uncertain &&
+		(nodeCodes[code] || code == codeConflict || code == codeOwnRentInProgress)
+	mixed := r.mixed || lostAnswer(err) || renting || ownNode
 	if uncertain == r.uncertain && mixed == r.mixed {
 		return r
 	}
@@ -390,15 +398,53 @@ func (p *Provider) afterUnknown(
 	ref, found, err := p.findOwn(ctx, o)
 	switch {
 	case found:
+	case o.fresh:
+		// No retry of the saga finds a pod without a key, so its listing gets more tries
+		ref, found, err = p.relist(ctx, o, keylessRelists)
+	case err == nil && !r.mixed:
+		// The listing may lag behind a rent a server error hid
+		ref, found, err = p.relist(ctx, o, 1)
+	}
+	cause = unlisted(o, cause)
+	switch {
+	case found:
 		return ref, false, err
 	case err != nil:
 		return provider.Ref{}, false, unknownOutcome(fmt.Errorf(
 			"%w, then the listing failed, %w", cause, err))
-	case serverError(cause) && !r.mixed:
-		// Every send got a server error and no pod is listed, so Lium shows no rent of ours
-		return provider.Ref{}, false, cause
+	case !r.mixed:
+		// Only server errors may have rented and no pod is listed, so Lium shows no rent of ours
+		return provider.Ref{}, false, &provider.Error{
+			Code: provider.CodeInternal, CanFailOver: true, Err: cause,
+		}
 	}
 	return provider.Ref{}, false, unknownOutcome(cause)
+}
+
+// relist lists by name up to n more times relistEvery apart, past the create budget
+func (p *Provider) relist(ctx context.Context, o order, n int) (provider.Ref, bool, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relistBudget)
+	defer cancel()
+	var err error
+	for range n {
+		if !pause(ctx, p.relistEvery) {
+			return provider.Ref{}, false, ctx.Err()
+		}
+		var ref provider.Ref
+		var found bool
+		if ref, found, err = p.findOwn(ctx, o); found {
+			return ref, true, err
+		}
+	}
+	return provider.Ref{}, false, err
+}
+
+// unlisted names the pod of a keyless rental, which only an operator finds again
+func unlisted(o order, cause error) error {
+	if !o.fresh {
+		return cause
+	}
+	return fmt.Errorf("%w, and lium pod %s may be renting while it is not listed", cause, o.name)
 }
 
 // unknownOutcome is a create that may have rented, which the saga retries here with the key

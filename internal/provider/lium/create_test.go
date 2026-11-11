@@ -346,17 +346,82 @@ func TestEmptyKeyIsFresh(t *testing.T) {
 			eq(t, rentNode(r), "node-a")
 		}
 	})
-	t.Run("a lost answer and a listing that lags", func(t *testing.T) {
+}
+
+func TestLiumKeylessListsAgain(t *testing.T) {
+	for name, listing := range map[string]fault{
+		"the listing lags": {status: 200, raw: "[]", times: 1},
+		"the listing is rate limited": {status: 429, code: "rate_limited", times: 1,
+			header: map[string]string{"Retry-After": "0"}},
+		"the listing gets a server error": {status: 500, code: "internal_error", times: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, p := liveFake(t)
+			f.inject(rentRoute, fault{drop: true, after: true, times: 1})
+			f.inject(podsRoute, listing)
+			ref := mustCreate(t, p, checkReq())
+			// The second listing shows the pod the first rent made
+			eq(t, len(f.requestsTo("GET", "/pods")), 2)
+			pods := f.podsNamed(ref.Meta["pod_name"])
+			if len(pods) != 1 || pods[0].id != ref.ID || pods[0].node != "node-a" {
+				t.Fatalf("pods %+v, ref %+v", pods, ref)
+			}
+			eq(t, f.podCount(), 1)
+			eq(t, len(f.rents()), 2)
+		})
+	}
+	t.Run("the pod never shows", func(t *testing.T) {
 		f, p := liveFake(t)
+		p.relistEvery = 20 * time.Millisecond
 		f.inject(rentRoute, fault{drop: true, after: true, times: 1})
-		f.inject(podsRoute, fault{status: 200, raw: "[]", times: 1})
-		_, err := p.Create(context.Background(), req)
+		f.inject(podsRoute, fault{status: 200, raw: "[]"})
+		_, err := p.Create(context.Background(), checkReq())
 		wantCode(t, err, provider.CodeOutcomeUnknown, false)
 		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 2)
 		for _, r := range f.rents() {
 			eq(t, rentNode(r), "node-a")
 		}
+		// The answer names the pod, which no retry of the saga finds without a key
+		name := rentedName(t, f)
+		eq(t, len(f.podsNamed(name)), 1)
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("the answer %q does not name pod %s", err, name)
+		}
+		lists := f.requestsTo("GET", "/pods")
+		eq(t, len(lists), 1+3)
+		for i := 1; i < len(lists); i++ {
+			if gap := lists[i].at.Sub(lists[i-1].at); gap < p.relistEvery {
+				t.Fatalf("listing %d came %v after the one before", i, gap)
+			}
+		}
 	})
+	t.Run("past the create budget", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{drop: true, after: true, times: 1})
+		// The resend waits on the create pace past the budget, so the listings run after it
+		lim := rate.NewLimiter(rate.Every(time.Hour), 1)
+		p.api.creates, p.createBudget = lim, 100*time.Millisecond
+		ref, err := p.Create(context.Background(), checkReq())
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 1)
+	})
+}
+
+// rentedName is the pod name the first rent the fake saw asked for
+func rentedName(t *testing.T, f *fakeLium) string {
+	t.Helper()
+	var body struct {
+		Name string `json:"pod_name"`
+	}
+	if err := json.Unmarshal(f.rents()[0].body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Name
 }
 
 func TestLiumAdoptsLivePod(t *testing.T) {
@@ -609,13 +674,88 @@ func TestLiumServerErrorRetriesOnce(t *testing.T) {
 			eq(t, rentNode(r), "node-a")
 		}
 	})
-	t.Run("a rate limit after a server error", func(t *testing.T) {
+	t.Run("both fail and the listing fails", func(t *testing.T) {
 		f, p := liveFake(t)
-		f.inject(rentRoute, fault{status: 500, code: "internal_error", times: 1,
-			then: &fault{status: 429, code: "rate_limited", times: 1}})
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", after: true, times: 1,
+			then: &fault{status: 502, code: "upstream_unavailable", times: 1}})
+		f.inject(podsRoute, fault{status: 503, code: "upstream_unavailable", skip: 1, times: 1})
 		_, err := p.Create(context.Background(), createReq(testKey))
 		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, f.podCount(), 1)
 		eq(t, len(f.rents()), 2)
+	})
+	t.Run("the listing lags behind both", func(t *testing.T) {
+		f, p := liveFake(t)
+		// The first send rented node-a, and the listing after the sends misses it once
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", after: true, times: 1,
+			then: &fault{status: 502, code: "upstream_unavailable", times: 1}})
+		f.inject(podsRoute, fault{status: 200, raw: "[]", skip: 1, times: 1})
+		ref := mustCreate(t, p, createReq(testKey))
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		eq(t, len(f.requestsTo("GET", "/pods")), 3)
+		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 2)
+	})
+	// Each answer after the server error rents nothing, so nothing listed means Lium rented none
+	for name, then := range map[string]fault{
+		"rate limited": {status: 429, code: "rate_limited", times: 1,
+			header: map[string]string{"Retry-After": "0"}},
+		"unauthorized":         {status: 401, code: "unauthorized", times: 1},
+		"insufficient_balance": {status: 403, code: "insufficient_balance", times: 1},
+		"image_not_found":      {status: 400, code: "image_not_found", times: 1},
+		"an unknown 4xx":       {status: 400, code: "brand_new_code", times: 1},
+		"template_not_found":   {status: 404, code: "template_not_found", times: 1},
+		"node_unavailable":     {status: 400, code: "node_unavailable", times: 1},
+	} {
+		t.Run("then "+name, func(t *testing.T) {
+			f, p := liveFake(t)
+			f.inject(rentRoute, fault{status: 500, code: "internal_error", times: 1, then: &then})
+			_, err := p.Create(context.Background(), createReq(testKey))
+			wantCode(t, err, provider.CodeInternal, true)
+			eq(t, codeOf(err), then.code)
+			eq(t, len(f.rents()), 2)
+			eq(t, f.podCount(), 0)
+			// The opening listing, the one after the sends and one more
+			eq(t, len(f.requestsTo("GET", "/pods")), 3)
+			eq(t, len(f.requestsTo("POST", "/templates")), 1)
+		})
+	}
+	t.Run("then a resend that never leaves", func(t *testing.T) {
+		f, p := liveFake(t)
+		p.api.client.Transport = &refuseCalls{next: p.api.client.Transport, match: isRent,
+			picks: map[int]bool{1: true}}
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", times: 1})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeInternal, true)
+		eq(t, len(f.rents()), 1)
+		eq(t, f.podCount(), 0)
+	})
+	t.Run("one that rented, then a resend that never leaves", func(t *testing.T) {
+		f, p := liveFake(t)
+		p.api.client.Transport = &refuseCalls{next: p.api.client.Transport, match: isRent,
+			picks: map[int]bool{1: true}}
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", after: true, times: 1})
+		f.inject(podsRoute, fault{status: 200, raw: "[]", skip: 1, times: 1})
+		ref := mustCreate(t, p, createReq(testKey))
+		eq(t, f.podsNamed(ref.Meta["pod_name"])[0].id, ref.ID)
+		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 1)
+	})
+	t.Run("without a key, then the node is taken", func(t *testing.T) {
+		f, p := liveFake(t)
+		// The first send rented node-a, so the resend finds the node our pod holds
+		f.inject(rentRoute, fault{status: 500, code: "internal_error", after: true, times: 1})
+		f.inject(podsRoute, fault{status: 200, raw: "[]"})
+		_, err := p.Create(context.Background(), checkReq())
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		if !strings.Contains(err.Error(), rentedName(t, f)) {
+			t.Fatalf("the answer %q names no pod", err)
+		}
+		eq(t, f.podCount(), 1)
+		eq(t, len(f.rents()), 2)
+		for _, r := range f.rents() {
+			eq(t, rentNode(r), "node-a")
+		}
 	})
 	t.Run("after lost answers", func(t *testing.T) {
 		f, p := liveFake(t)

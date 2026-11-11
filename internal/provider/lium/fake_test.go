@@ -206,6 +206,7 @@ func (f *fakeLium) provider(t *testing.T, opts Options, now func() time.Time) *P
 	}
 	// Go resends a request with an Idempotency-Key when a reused connection drops, unseen
 	p.api.client.Transport = &http.Transport{DisableKeepAlives: true}
+	p.relistEvery = time.Millisecond
 	p.dial, p.execDir, p.setsid = f.dialSSH, f.sh.execDir, f.sh.setsid
 	t.Cleanup(func() { _ = p.Close() })
 	return p

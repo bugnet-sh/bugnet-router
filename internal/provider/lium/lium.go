@@ -124,6 +124,8 @@ type Provider struct {
 	rentals map[string]keptRental
 	// pollEvery spaces the pod reads of ReadyMeta
 	pollEvery time.Duration
+	// relistEvery spaces the listings after a rent that may have rented
+	relistEvery time.Duration
 	// refuses names the addresses a pod may never be reached at
 	refuses func(netip.Addr) bool
 	// hostKey dials the pod's sshd at addr and returns the host key it pinned
@@ -225,6 +227,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		createBudget:   defaultCreateBudget,
 		rentals:        map[string]keptRental{},
 		pollEvery:      podPollEvery,
+		relistEvery:    defaultRelistEvery,
 		refuses:        netguard.Refused,
 		dial:           netguard.Dialer{Timeout: defaultSSHLimits.dial}.DialContext,
 		ssh:            defaultSSHLimits,
