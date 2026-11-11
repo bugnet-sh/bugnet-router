@@ -144,7 +144,9 @@ func TestExampleTomlHoldsWalletsDefaults(t *testing.T) {
 	slices.Sort(written)
 	slices.Sort(keys)
 	eq(t, written, keys)
-	eq(t, ops, map[string]bool{"e2b": true, "boxd": true, "koyeb": true, "boat": true})
+	eq(t, ops, map[string]bool{
+		"e2b": true, "boxd": true, "koyeb": true, "boat": true, "lium": true, "hf": true,
+	})
 }
 
 func TestDevTomlTurnsThePayerOn(t *testing.T) {

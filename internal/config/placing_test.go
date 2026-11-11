@@ -116,7 +116,7 @@ func TestPlacingRefusals(t *testing.T) {
 
 func TestCommittedFilesWritePlacingSettings(t *testing.T) {
 	want := [][]string{{"gpu_order"}, {"gpu_placing_budget"}, {"hedge", "onto_gpu"}}
-	for _, p := range []string{"local", "boxd", "e2b", "koyeb", "boat"} {
+	for _, p := range []string{"local", "boxd", "e2b", "koyeb", "boat", "lium", "hf"} {
 		want = append(want, []string{p, "ready_timeout"})
 	}
 	doc, err := outline([]byte(committed(t, "example.toml")))

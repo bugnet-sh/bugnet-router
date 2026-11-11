@@ -71,6 +71,40 @@ speculative_providers = ["local"]
 hold = "60s"
 max_hold = "120s"
 
+[lium]                        # the dev key's bounds, 2 pods at the $0.35 cap for a day is $16.80
+max_concurrent = 2
+key_daily_budget_micros = 20000000   # the bugnet-dev key's daily budget at Lium, $20
+
+[[lium.sizes]]                # the dev packages' size alone
+size = "lium-rtx3090"
+model = "NVIDIA RTX 3090"
+match = ["NVIDIA GeForce RTX 3090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 350000
+
+[hf]
+namespace = ""                # the founder's dev organization, set once it exists
+flavors = []                  # flavors sold, every GPU flavor when empty
+max_lifetime = "2h"
+extend_room = "60m"           # extension room in each Job's timeout
+timeout_margin = "10m"
+ready_timeout = "5m"          # create to RUNNING and sbx-server health
+start_billed = "3m"           # Starting, boot steps and minute rounding
+poll_every = "3s"             # Job reads while waiting for RUNNING
+sbx_server = "fetch"          # "baked" once the image holds it
+sbx_server_version = "0.7.0"
+sbx_server_sha256 = "eb2b04f79fbe765195300aaf1582be2a2a9ea698ff067d0cab428171d5584932"
+harden_required = false       # true means hf never serves, since harden cannot run there
+harden_allow = []
+token_plan = "free"           # the token user's Hub plan, "free" or "pro"
+ops_per_second = 3            # at most 3 on "free", 8 on "pro"
+max_concurrent = 10
+creates_per_second = 1
+
 [[e2b.templates]]
 size = "2x2"
 template = "bugnet-2x2"

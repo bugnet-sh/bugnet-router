@@ -45,7 +45,7 @@ func TestExampleTomlHoldsEstimatorDefaults(t *testing.T) {
 		if len(s.path) == 2 && s.path[0] == "estimator" {
 			written = append(written, s.path[1])
 		}
-		if len(s.path) == 3 && s.path[0] == "images" && len(s.path[1]) > 2 && s.path[2] == "tools" {
+		if len(s.path) == 3 && s.path[0] == "images" && s.path[2] == "tools" {
 			images = append(images, s.path[1])
 		}
 	}
@@ -58,7 +58,7 @@ func TestExampleTomlHoldsEstimatorDefaults(t *testing.T) {
 	slices.Sort(keys)
 	slices.Sort(images)
 	eq(t, written, keys)
-	eq(t, images, []string{"boat", "boxd", "e2b", "koyeb"})
+	eq(t, images, []string{"boat", "boxd", "e2b", "hf", "koyeb", "lium"})
 }
 
 func TestEstimatorSettings(t *testing.T) {

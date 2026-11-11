@@ -1,7 +1,7 @@
-# Every setting of router-api and router-worker, each at its default except [names] and
-# e2b.templates, which are empty by default. [names] shows the production names. Secrets never go
-# in a settings file, they come only from the environment. Relative paths resolve against the
-# working directory.
+# Every setting of router-api and router-worker, each at its default except [names],
+# e2b.templates and lium.sizes, which are empty by default. [names] shows the production names.
+# Secrets never go in a settings file, they come only from the environment. Relative paths resolve
+# against the working directory.
 
 order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, required to serve
 packages_file = ""            # package catalog JSON, required
@@ -235,6 +235,18 @@ ref = ""                               # saved snapshot name, Boat's own image w
 os = ""
 tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
 
+[images.lium]
+version = ""
+ref = ""                               # OCI reference by digest, Lium has no image of its own
+os = ""
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
+[images.hf]
+version = ""
+ref = ""                               # OCI reference by digest, HF has no image of its own
+os = ""
+tools = { git = "", tar = "", python3 = "", node = "", docker = "" }
+
 [sessions]                             # the session page, SP 6 and 7
 base_url = ""                          # https://sessions.<domain>, no session link while empty
 keep = "48h"                           # how long a page lives after its sandbox ends
@@ -393,6 +405,169 @@ per_minute = 30               # hedges router-wide, with the burst below
 burst = 5
 onto_boat = false             # a hedge never starts on Boat until the founder allows it
 onto_gpu = false              # a GPU package never hedges, so a slow GPU start never pays for two
+
+[lium]                        # Lium GPU pods, placed only while providers lists lium
+countries = ["AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
+    "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"]   # tried first
+other_countries = true        # with no eligible node above, any country not blocked below
+blocked_countries = ["BY", "CU", "IR", "KP", "RU", "SY"]   # never used, sanctioned countries
+min_download_mbps = 0         # node download floor, 0 for none
+max_lifetime = "2h"           # longest a placement may run with its extensions
+ready_timeout = "6m"          # rent to RUNNING and SSH, a cold image pull included
+start_billed = "7m"           # pull, start and boot Lium bills before the paid clock
+ssh_path = "native"           # users reach pods through Lium's own sshd
+harden_required = true        # must stay true
+harden_allow = []
+harden_no_gateway = true      # the bridge gateway is the host, must stay true
+ops_per_second = 5
+max_concurrent = 10           # Lium documents no cap, this also sets the balance headroom
+key_daily_budget_micros = 2300000000   # the key's daily budget as set at Lium, 0 for none
+creates_per_second = 1
+template_volume = "/workspace"
+termination = "max_lifetime"  # "lifetime" once LIUM8 shows schedule-removal replaces it
+
+# No sizes by default. These are the starting sizes, each one GPU type on a whole Secure node with
+# a floor of CPU, memory and disk and a cap per hour. match holds the gpu_class names GET
+# /executors gave on 2026-11-11, which showed no A100.
+[[lium.sizes]]
+size = "lium-t4"              # size name the router sells
+model = "NVIDIA T4"           # a canonical GPU model name
+match = ["NVIDIA T4 Tensor Core GPU"]   # gpu_class names of the nodes it rents
+gpus = 1
+gpu_memory_gib = 16           # all its GPUs together
+vcpu = 3                      # the floor of the node's vCPUs, memory and disk
+memory_mib = 14336
+disk_gib = 200
+max_hourly_micros = 300000    # the cap, per node and hour
+
+[[lium.sizes]]
+size = "lium-rtx3090"
+model = "NVIDIA RTX 3090"
+match = ["NVIDIA GeForce RTX 3090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 350000
+
+[[lium.sizes]]
+size = "lium-rtxa6000"
+model = "NVIDIA RTX A6000"
+match = ["NVIDIA RTX A6000"]
+gpus = 1
+gpu_memory_gib = 48
+vcpu = 4
+memory_mib = 22528
+disk_gib = 200
+max_hourly_micros = 600000
+
+[[lium.sizes]]
+size = "lium-rtx4090"
+model = "NVIDIA RTX 4090"
+match = ["NVIDIA GeForce RTX 4090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 700000
+
+[[lium.sizes]]
+size = "lium-rtx5090"
+model = "NVIDIA RTX 5090"
+match = ["NVIDIA GeForce RTX 5090"]
+gpus = 1
+gpu_memory_gib = 32
+vcpu = 8
+memory_mib = 20480
+disk_gib = 400
+max_hourly_micros = 950000
+
+[[lium.sizes]]
+size = "lium-rtx6000ada"
+model = "NVIDIA RTX 6000 Ada"
+match = ["NVIDIA RTX 6000 Ada Generation"]
+gpus = 1
+gpu_memory_gib = 48
+vcpu = 8
+memory_mib = 57344
+disk_gib = 250
+max_hourly_micros = 1100000
+
+[[lium.sizes]]
+size = "lium-a100"
+model = "NVIDIA A100 80GB"
+match = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]   # unseen on 2026-11-11
+gpus = 1
+gpu_memory_gib = 80
+vcpu = 12
+memory_mib = 112640
+disk_gib = 900
+max_hourly_micros = 1500000
+
+[[lium.sizes]]
+size = "lium-rtxpro6000"
+model = "NVIDIA RTX PRO 6000"
+match = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]   # Workstation Edition nodes too
+gpus = 1
+gpu_memory_gib = 96
+vcpu = 6
+memory_mib = 57344
+disk_gib = 180
+max_hourly_micros = 1800000
+
+[[lium.sizes]]
+size = "lium-h100"
+model = "NVIDIA H100 80GB"
+match = ["NVIDIA H100 80GB HBM3"]
+gpus = 1
+gpu_memory_gib = 80
+vcpu = 12
+memory_mib = 184320
+disk_gib = 180
+max_hourly_micros = 2900000
+
+[[lium.sizes]]
+size = "lium-h200"
+model = "NVIDIA H200"
+match = ["NVIDIA H200"]
+gpus = 1
+gpu_memory_gib = 141
+vcpu = 16
+memory_mib = 245760
+disk_gib = 900
+max_hourly_micros = 4900000
+
+[[lium.sizes]]
+size = "lium-b200"
+model = "NVIDIA B200"
+match = ["NVIDIA B200"]
+gpus = 1
+gpu_memory_gib = 180
+vcpu = 16
+memory_mib = 204800
+disk_gib = 400
+max_hourly_micros = 9500000
+
+[hf]                          # Hugging Face Jobs, placed only while providers lists hf
+namespace = ""                # the organization the Jobs run and bill under, required with hf
+flavors = []                  # flavors sold, every GPU flavor when empty
+max_lifetime = "2h"
+extend_room = "60m"           # extension room in each Job's timeout
+timeout_margin = "10m"
+ready_timeout = "5m"          # create to RUNNING and sbx-server health
+start_billed = "3m"           # Starting, boot steps and minute rounding
+poll_every = "3s"             # Job reads while waiting for RUNNING
+sbx_server = "fetch"          # "baked" once the image holds it
+sbx_server_version = "0.7.0"
+sbx_server_sha256 = "eb2b04f79fbe765195300aaf1582be2a2a9ea698ff067d0cab428171d5584932"
+harden_required = false       # true means hf never serves, since harden cannot run there
+harden_allow = []
+token_plan = "free"           # the token user's Hub plan, "free" or "pro"
+ops_per_second = 3            # at most 3 on "free", 8 on "pro"
+max_concurrent = 10           # HF documents no cap
+creates_per_second = 1
 
 [boxd]
 region = "fra"                # served at <region>.boxd.sh:9443 outside fra

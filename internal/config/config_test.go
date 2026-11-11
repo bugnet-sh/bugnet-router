@@ -1065,7 +1065,7 @@ func TestCommittedFilesLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Names have no default, the example shows the production set
-	example.E2B.Templates, example.Names = nil, empty.Names
+	example.E2B.Templates, example.Names, example.Lium.Sizes = nil, empty.Names, nil
 	// The example shows the one boxd pool, which an empty file lacks
 	wantPool := []Pool{{Provider: "boxd", Size: "1x4", Min: 2, Max: 5, MaxAge: 24 * time.Hour}}
 	if !reflect.DeepEqual(example.Pools.Pool, wantPool) {
