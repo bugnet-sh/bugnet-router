@@ -227,8 +227,7 @@ type Deps struct {
 	ReserveShare float64
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
-	// ReadyTimeouts is how long each provider's new sandbox may take to become ready, 60 s for
-	// one it leaves out
+	// ReadyTimeouts is each provider's ready timeout by name, 60 s for one it leaves out
 	ReadyTimeouts map[string]time.Duration
 	// GPUPlacingBudget is how long a GPU package starts candidates, the CPU budget when zero
 	GPUPlacingBudget time.Duration

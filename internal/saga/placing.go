@@ -85,8 +85,7 @@ func (s *Saga) place(
 	pl.run()
 }
 
-// placingBudgetFor is how long a placement of pkg starts candidates, a GPU package's long enough
-// that the next GPU provider still starts after the first one's slowest boot that fails
+// placingBudgetFor is how long a placement of pkg starts candidates, longer for a GPU package
 func (s *Saga) placingBudgetFor(pkg catalog.Package) time.Duration {
 	if pkg.Resources.GPUCount > 0 && s.d.GPUPlacingBudget > 0 {
 		return s.d.GPUPlacingBudget

@@ -72,8 +72,7 @@ var small = provider.Size{
 	Name: "small", Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10},
 }
 
-// newLocal runs the built bugnet-run unless opts names another, sells the small size at 1,000 an
-// hour unless opts names others, and destroys its sandboxes last
+// newLocal fills opts' runner, sizes and cost when unset, and destroys its sandboxes last
 func newLocal(t *testing.T, opts local.Options) *local.Provider {
 	t.Helper()
 	if opts.Root == "" {

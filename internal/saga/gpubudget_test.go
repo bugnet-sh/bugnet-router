@@ -27,8 +27,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
-// slowestGPU takes each call to the end of its context, failing where Lium's slowest failing boot
-// fails, and logs every call with how long it took on the bubble's clock
+// slowestGPU takes each call to its context's end, failing where Lium's slowest boot fails
 type slowestGPU struct {
 	provider.Provider // nil, so a call the boot should not make panics
 	name              string
@@ -89,8 +88,7 @@ func (p slowestGPU) WriteFile(
 	return nil
 }
 
-// Exec never answers the baked runner's ping and fails harden as its timeout ends, while the
-// uploaded runner's ping and setup answer at their last moment
+// Exec fails the baked ping and harden at their timeouts, the other calls succeed at the last
 func (p slowestGPU) Exec(
 	ctx context.Context, _ provider.Ref, spec provider.ExecSpec,
 ) (provider.ExecStream, error) {
@@ -134,9 +132,7 @@ func (a *answered) Read(b []byte) (int, error) {
 func (*answered) Wait() (int, error) { return 0, nil }
 func (*answered) Close() error       { return nil }
 
-// TestGPUBudgetCoversLiumWorstCase runs Lium's slowest boot that fails on the bubble's fake clock,
-// every step to its timeout and harden failing last, then the destroy of its sandbox, and shows
-// that HF's create still starts and ends inside the GPU placing budget of an empty settings file
+// TestGPUBudgetCoversLiumWorstCase lets HF create inside the budget after Lium's slowest failure
 func TestGPUBudgetCoversLiumWorstCase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "router.toml")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {

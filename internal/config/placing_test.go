@@ -64,11 +64,9 @@ onto_gpu = true
 	eq(t, len(c.GPUOrder), 0)
 }
 
-// TestConfigPlacingBudget is check 9 of the GPU design's 5.3, the budget that lets HF start after
-// Lium's slowest boot that fails
+// TestConfigPlacingBudget is check 9 of the GPU design's 5.3
 func TestConfigPlacingBudget(t *testing.T) {
-	// Lium's create, its ready timeout, the baked runner's ping, the upload with its ping, setup,
-	// harden and the next provider's create
+	// Lium's create, ready wait, two runner pings, setup and harden, then the next create
 	eq(t, MinGPUPlacingBudget(6*time.Minute), 12*time.Minute+10*time.Second)
 	eq(t, MinGPUPlacingBudget(7*time.Minute), 13*time.Minute+10*time.Second)
 	c, err := LoadFile(writeFile(t, `gpu_placing_budget = "12m10s"`))

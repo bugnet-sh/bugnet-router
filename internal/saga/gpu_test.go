@@ -70,8 +70,7 @@ func (f failsLate) WaitReady(ctx context.Context, _ provider.Ref) error {
 	}
 }
 
-// TestGPUPackagePlacesUnderTheGPUBudget lets a second GPU candidate start after a failed boot that
-// outran the CPU budget, which a CPU package never does
+// TestGPUPackagePlacesUnderTheGPUBudget fails a GPU package over after the CPU budget ran out
 func TestGPUPackagePlacesUnderTheGPUBudget(t *testing.T) {
 	saga.SetPlacingBudget(t, 500*time.Millisecond)
 	lium := failsLate{gpuLocal{newLocal(t, local.Options{

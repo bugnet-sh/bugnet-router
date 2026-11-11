@@ -30,12 +30,10 @@ const (
 	maxGPUPlacingBudget = time.Hour
 )
 
-// gpuProviders are the GPU providers the placing settings name before providers may list them,
-// each with its starting ready timeout
+// gpuProviders are the GPU providers placing settings may name, with their starting ready timeouts
 var gpuProviders = map[string]time.Duration{"lium": 6 * time.Minute, "hf": 5 * time.Minute}
 
-// MinGPUPlacingBudget is the least gpu_placing_budget that lets the next GPU provider start after
-// Lium's slowest boot that fails, which is every boot step at its timeout and harden failing last
+// MinGPUPlacingBudget is Lium's slowest failing boot plus the next GPU provider's create
 func MinGPUPlacingBudget(liumReady time.Duration) time.Duration {
 	return GPUCreateBudget + liumReady + 2*UploadTimeout + SetupTimeout + HardenTimeout +
 		GPUCreateBudget

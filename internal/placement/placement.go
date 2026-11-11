@@ -81,8 +81,7 @@ func New(reg *provider.Registry, health Health, warm Warm) *Engine {
 	return &Engine{reg: reg, health: health, warm: warm}
 }
 
-// WithGPUOrder is the engine with a GPU package's candidates in the order names lists them, ahead
-// of speed and cost, and the providers it leaves out after them
+// WithGPUOrder is the engine with a GPU package's candidates in the order of names first
 func (e *Engine) WithGPUOrder(names []string) *Engine {
 	c := *e
 	c.gpuRank = make(map[string]int, len(names))
@@ -97,8 +96,7 @@ func (e *Engine) WithGPUOrder(names []string) *Engine {
 // Healthy reports whether the engine's health source lets the provider be tried now
 func (e *Engine) Healthy(name string) bool { return e.health.Healthy(name) }
 
-// Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate,
-// a GPU package's in the GPU order first
+// Candidates returns usable providers by GPU order, speed, then cost, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	req := in.Requirements
