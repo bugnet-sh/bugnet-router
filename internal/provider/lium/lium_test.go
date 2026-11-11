@@ -123,7 +123,7 @@ func TestLiumCosts(t *testing.T) {
 	eq(t, p.HourlyCostMicros(provider.Size{Name: "lium-b200"}), int64(0))
 	eq(t, p.BillingIncrement(), time.Second)
 
-	// 7 minutes at $0.35 an hour, billed per second and rounded up: 350000 x 420 / 3600
+	// 7 minutes at $0.35 an hour, billed per second and rounded up, is 350000 x 420 / 3600
 	cost, ok := p.StartCostMicros(rtx3090)
 	eq(t, cost, int64(40_834))
 	eq(t, ok, true)
