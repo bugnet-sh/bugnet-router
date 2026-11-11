@@ -2143,6 +2143,21 @@ func TestExtendRefusedBeforePayment(t *testing.T) {
 		t.Fatalf("listed %q without an end, want %q", got, want)
 	}
 
+	// An end a second short of ten minutes and the slack refuses ten, as Extend asks for the slack
+	short := p.Deadline.Add(15*time.Minute - time.Second)
+	a.known.Store(&short)
+	refused := []string{
+		"small-5m-a ok", "small-5m-b ok", "small-10m-more exceeds lifetime",
+		"small-10m exceeds lifetime", "small-30m-cheap exceeds lifetime",
+	}
+	if got := e.listed(t, h); !slices.Equal(got, refused) {
+		t.Fatalf("listed %q a second short of the end, want %q", got, refused)
+	}
+	_, _, err := e.saga.CheckExtend(t.Context(), h, morePkg)
+	if !errors.Is(err, saga.ErrExceedsLifetime) {
+		t.Fatalf("check a second past the end gave %v, want ErrExceedsLifetime", err)
+	}
+
 	// The sandbox ends ten minutes and the slack after the deadline
 	end := p.Deadline.Add(15 * time.Minute)
 	a.known.Store(&end)
