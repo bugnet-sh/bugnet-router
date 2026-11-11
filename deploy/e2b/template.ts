@@ -4,7 +4,8 @@ import { Template } from "e2b";
 export function templateFor(imageRef: string) {
     return Template()
         .fromImage(imageRef)
-        .runCmd("/usr/local/lib/bugnet/setup-image.sh finish --target e2b")
+        // The image's default user is E2B's own, and finish needs root
+        .runCmd("/usr/local/lib/bugnet/setup-image.sh finish --target e2b", { user: "root" })
         .setUser("root")
         .setWorkdir("/root");
 }
