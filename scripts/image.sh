@@ -110,7 +110,12 @@ record=deploy/image/builds/$channel-$version.json
 merge() { # merge KEY JSON
 	local tmp
 	tmp=$(mktemp)
-	jq --argjson part "$2" --arg key "$1" '.[$key] = ((.[$key] // {}) + $part)' "$record" >"$tmp"
+	# build runs under ||, where set -e is off, so a failed step must not reach the record
+	if ! jq --argjson part "$2" --arg key "$1" '.[$key] = ((.[$key] // {}) + $part)' "$record" \
+		>"$tmp"; then
+		rm -f "$tmp"
+		die "the $1 part is not JSON, $record is unchanged"
+	fi
 	mv "$tmp" "$record"
 }
 
@@ -131,7 +136,7 @@ build() {
 		local script=build
 		[ "$channel" = dev ] && script=build:dev
 		(cd deploy/e2b && IMAGE_REF=$ref IMAGE_VERSION=$version IMAGE_CHANNEL=$channel \
-			E2B_RECORD=$part pnpm run "$script")
+			E2B_RECORD=$part pnpm run "$script") || die "the E2B template build failed"
 		merge e2b "$(jq '{templates: .templates}' "$part")"
 		rm -f "$part"
 		;;

@@ -161,8 +161,16 @@ step9_sshd() {
     local target="$1"
     if [ "$target" != boat ]; then
         mkdir -p /etc/systemd/system
-        ln -sf /dev/null /etc/systemd/system/ssh.service
-        ln -sf /dev/null /etc/systemd/system/ssh.socket
+        if [ "$target" = oci ]; then
+            # E2B's provisioning enables ssh and fails on a masked unit, so finish masks it after
+            rm -f /etc/systemd/system/ssh.service /etc/systemd/system/sshd.service \
+                /etc/systemd/system/ssh.socket \
+                /etc/systemd/system/multi-user.target.wants/ssh.service \
+                /etc/systemd/system/sockets.target.wants/ssh.socket
+        else
+            ln -sf /dev/null /etc/systemd/system/ssh.service
+            ln -sf /dev/null /etc/systemd/system/ssh.socket
+        fi
         if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
             systemctl stop ssh.service ssh.socket 2>/dev/null || true
         fi

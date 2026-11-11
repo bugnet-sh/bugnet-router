@@ -123,8 +123,10 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 	eq(t, run(t, tag, "locale -a | grep -x C.utf8"), "C.utf8")
 	eq(t, run(t, tag, "ls /etc/ssh/ssh_host_* 2>/dev/null | wc -l"), "0")
 	eq(t, run(t, tag, "printf 'é\\n' | column -t >/dev/null && echo ok"), "ok")
-	eq(t, run(t, tag, "readlink /etc/systemd/system/ssh.service /etc/systemd/system/ssh.socket"),
-		"/dev/null\n/dev/null")
+	// The OCI image leaves ssh disabled, not masked, since finish masks it after E2B's provisioning
+	eq(t, run(t, tag, "ls /etc/systemd/system/ssh.service /etc/systemd/system/ssh.socket "+
+		"/etc/systemd/system/multi-user.target.wants/ssh.service "+
+		"/etc/systemd/system/sockets.target.wants/ssh.socket 2>/dev/null | wc -l"), "0")
 	eq(t, run(t, tag, "nft --version >/dev/null && hf version >/dev/null && "+
 		"pnpm --version >/dev/null && python3 --version >/dev/null && echo ok"), "ok")
 	eq(t, run(t, tag, "find /root /tmp -type f | wc -l"), "0")
