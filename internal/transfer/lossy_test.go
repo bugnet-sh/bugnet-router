@@ -28,7 +28,7 @@ case $3 in
 esac
 `
 
-// lossyExec runs commands on the host and decodes their output as String::from_utf8_lossy does
+// lossyExec runs commands on the host and decodes their output as Rust's from_utf8_lossy does
 type lossyExec struct {
 	provider.Provider // nil, so a call realPath should not make panics
 	bin               string

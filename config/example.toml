@@ -509,7 +509,7 @@ max_hourly_micros = 1500000
 [[lium.sizes]]
 size = "lium-rtxpro6000"
 model = "NVIDIA RTX PRO 6000"
-match = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]   # Workstation Edition nodes too
+match = ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]   # Workstation Edition nodes report this gpu_class too
 gpus = 1
 gpu_memory_gib = 96
 vcpu = 6

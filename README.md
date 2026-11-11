@@ -530,8 +530,8 @@ strictly, so an unknown or misspelt key, or one in the wrong case, is an error n
 its line, and the keys of `koyeb.instance_types` and `boat.types` must be size names of
 lowercase letters, digits and hyphens. Relative paths resolve against the working directory the
 binary starts in. Serving needs `order_token_public_key` and `packages_file`. Each provider's
-settings live in its own table, `[boxd]`, `[e2b]`, `[koyeb]` and `[boat]`, and the local
-provider starts only with `local.enabled = true`.
+settings live in its own table, `[boxd]`, `[e2b]`, `[koyeb]`, `[boat]`, `[lium]` and `[hf]`, and
+the local provider starts only with `local.enabled = true`.
 
 Each router that shares a provider account needs its own `deployment_id`. Every sandbox carries
 its router's deployment, and a router's sweep destroys the sandboxes of its deployment that its
@@ -703,8 +703,9 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 | `anonymous_failed_refunds_per_day` | `20` | The same for every placement without a payer, together |
 | `bytes_per_day` | `"50GiB"` | Edge and egress bytes one payer's placements carry together per UTC day |
 
-`[boat]`, `[e2b]`, `[boxd]` and `[koyeb]` each take `ops_per_second`, the user operations a
-second on that provider account, 0 for no bucket. Boat's is 50, the others 0.
+`[boat]`, `[e2b]`, `[boxd]`, `[koyeb]`, `[lium]` and `[hf]` each take `ops_per_second`, the user
+operations a second on that provider account, 0 for no bucket. Boat's is 50, Lium's 5, HF's 3,
+the others 0.
 
 `router-api` refuses to start with `use_payer = true` while `BUGNET_PAYMENTS_ROUTER_TOKEN` is
 empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
@@ -1910,10 +1911,10 @@ within 10 s, and each change writes a `provider_signals` row. A check that canno
 changes nothing. Boat's `GET /me` or `GET /limits` answering 403 means the key lacks
 `account.read`, which blocks nothing.
 
-Every provider table takes `creates_per_second`, 0 for no bucket (E2B's is 1). The saga takes a
-token from `rl:create:<provider>` before each create and fails over when none comes within 1 s.
-A `rate_limited` answer with a Retry-After pauses the provider's creates for that long, at most 5
-minutes. A rate limit or a quota refusal never counts against the provider's health.
+Every provider table takes `creates_per_second`, 0 for no bucket (E2B's, Lium's and HF's are 1). The
+saga takes a token from `rl:create:<provider>` before each create and fails over when none comes
+within 1 s. A `rate_limited` answer with a Retry-After pauses the provider's creates for that long,
+at most 5 minutes. A rate limit or a quota refusal never counts against the provider's health.
 
 `/monitor` reports a blocked provider, limits not polled for `stale_after` intervals, and Boat's
 `RateLimit` header with under 20% of its window left.

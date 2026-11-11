@@ -273,7 +273,8 @@ func start(
 			t.Errorf("destroy %s: %v", ref.ID, err)
 		}
 	})
-	if err := p.WaitReady(t.Context(), ref); err != nil {
+	ref, err = saga.WaitReady(t.Context(), p, ref)
+	if err != nil {
 		t.Fatalf("wait ready: %v", err)
 	}
 	return ref, time.Since(began)

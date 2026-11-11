@@ -94,8 +94,7 @@ func LockProviderSignals(ctx context.Context, q Querier, provider string) error 
 	return nil
 }
 
-// LostCount counts the placements of a provider that got one of classes since then, an
-// operator's end, a held end and a bare alert left out
+// LostCount counts placements lost to classes since then, less operator, held and alerted ends
 func LostCount(
 	ctx context.Context, q Querier, provider string, classes []string, since time.Time,
 ) (int, error) {

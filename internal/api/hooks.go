@@ -45,7 +45,7 @@ func CheckHooks(
 	return nil
 }
 
-// DeliverHook verifies a provider webhook, drops a duplicate and queues a hook_hint job
+// DeliverHook verifies a provider webhook, drops a duplicate and queues its hint or account check
 func (e *EdgeServer) DeliverHook(
 	ctx context.Context, req *connect.Request[routerv1.DeliverHookRequest],
 ) (*connect.Response[routerv1.DeliverHookResponse], error) {

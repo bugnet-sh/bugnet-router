@@ -161,10 +161,11 @@ func realPath(
 		return "", err
 	}
 	got := strings.TrimSuffix(string(out), "\n")
-	if caps.LossyExecText {
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(got))
-		if err != nil {
-			raw = nil
+	if caps.LossyExecText && code == 0 {
+		raw, derr := base64.StdEncoding.DecodeString(strings.TrimSpace(got))
+		if derr != nil {
+			return "", &provider.Error{Code: provider.CodeInternal,
+				Err: errors.New("realpath's answer is not base64")}
 		}
 		got = string(raw)
 	}
