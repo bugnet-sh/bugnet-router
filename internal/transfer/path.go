@@ -3,6 +3,7 @@ package transfer
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -143,16 +144,30 @@ func within(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
+// lossyRealPath prints realpath -m's answer in base64 and exits with realpath's own code
+const lossyRealPath = `p=$(realpath -m -- "$1") && printf %s "$p" | base64 -w 0`
+
 // realPath runs realpath -m, under sudo for a non-root exec user so unreadable parents resolve
 func realPath(
 	ctx context.Context, prov provider.Provider, ref provider.Ref, caps provider.Capabilities,
 	p string,
 ) (string, error) {
-	out, code, err := run(ctx, prov, ref, nonRoot(caps), "realpath", "-m", "--", p)
+	argv := []string{"realpath", "-m", "--", p}
+	if caps.LossyExecText {
+		argv = []string{"sh", "-c", lossyRealPath, "sh", p}
+	}
+	out, code, err := run(ctx, prov, ref, nonRoot(caps), argv...)
 	if err != nil {
 		return "", err
 	}
 	got := strings.TrimSuffix(string(out), "\n")
+	if caps.LossyExecText {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(got))
+		if err != nil {
+			raw = nil
+		}
+		got = string(raw)
+	}
 	if code != 0 || !path.IsAbs(got) || strings.ContainsAny(got, "\x00\n") {
 		return "", &provider.Error{Code: provider.CodeInternal,
 			Err: fmt.Errorf("realpath exited %d", code)}

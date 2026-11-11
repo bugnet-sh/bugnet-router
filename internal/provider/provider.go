@@ -45,6 +45,8 @@ type Capabilities struct {
 	Secrets bool
 	// ExecUser is the user Exec runs as, root when empty
 	ExecUser string
+	// LossyExecText means Exec output reaches the router as UTF-8 with bad bytes replaced
+	LossyExecText bool
 }
 
 // RunnerArch names the bugnet-run build the provider's sandboxes run
