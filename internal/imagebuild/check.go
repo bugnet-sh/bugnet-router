@@ -123,7 +123,7 @@ func checkOne(
 		return c, fmt.Errorf("create from the artifact: %w", err)
 	}
 	defer destroy(p, ref)
-	if err := p.WaitReady(ctx, ref); err != nil {
+	if ref, err = saga.WaitReady(ctx, p, ref); err != nil {
 		return c, fmt.Errorf("wait ready: %w", err)
 	}
 	c.readyMS = int(time.Since(start).Milliseconds())

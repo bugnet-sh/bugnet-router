@@ -111,3 +111,26 @@ func TestCheckScansBeforeAnyStartStep(t *testing.T) {
 		t.Error("a problem printed a secret")
 	}
 }
+
+// readyFake is the fake provider with ReadyMeta, which pins a host key per sandbox
+type readyFake struct{ *fakeProvider }
+
+func (readyFake) ReadyMeta(_ context.Context, ref provider.Ref) (map[string]string, error) {
+	return map[string]string{provider.MetaHostKey: "pinned-" + ref.ID}, nil
+}
+
+func TestCheckBootSeesReadyMeta(t *testing.T) {
+	f := newFakeProvider("e2b")
+	f.preset = []string{strings.Repeat("11", 32), strings.Repeat("22", 32)}
+	var seen []string
+	boot := func(_ context.Context, _ provider.Provider, ref provider.Ref) (provider.Ref, error) {
+		seen = append(seen, ref.Meta[provider.MetaHostKey])
+		ref.Meta = map[string]string{saga.MetaSSHHostKey: "k" + ref.ID}
+		return ref, nil
+	}
+	_, err := Check(t.Context(), readyFake{f}, boot, "art", small, needles())
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, strings.Join(seen, ","), "pinned-box-1,pinned-box-2")
+}

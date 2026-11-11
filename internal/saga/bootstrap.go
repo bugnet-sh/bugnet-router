@@ -247,7 +247,7 @@ func (s *Saga) boot(
 	readyCtx, cancel := context.WithTimeout(ctx, s.readyTimeoutFor(prov))
 	defer cancel()
 	start := s.now()
-	ref, err := waitReady(readyCtx, prov, ref)
+	ref, err := WaitReady(readyCtx, prov, ref)
 	rep.ReadyMS = int(s.now().Sub(start).Milliseconds())
 	if err != nil {
 		return ref, fmt.Errorf("wait ready: %w", err)
@@ -281,8 +281,8 @@ func (s *Saga) readyTimeoutFor(prov provider.Provider) time.Duration {
 	return readyTimeout
 }
 
-// waitReady waits for the sandbox and adds the Meta entries a ReadyReporter learned meanwhile
-func waitReady(
+// WaitReady waits for the sandbox and adds the Meta entries a ReadyReporter learned meanwhile
+func WaitReady(
 	ctx context.Context, prov provider.Provider, ref provider.Ref,
 ) (provider.Ref, error) {
 	r, ok := provider.As[provider.ReadyReporter](prov)
