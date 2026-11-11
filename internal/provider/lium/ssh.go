@@ -385,7 +385,7 @@ func (p *Provider) adopt(id, name, addr string, pin ssh.PublicKey, client *ssh.C
 	pl := p.pool(id, name, addr, pin)
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
-	if pl.closed {
+	if pl.closed || len(pl.conns)+pl.dialing >= pl.p.ssh.conns {
 		_ = client.Close()
 		return
 	}

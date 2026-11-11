@@ -344,6 +344,29 @@ func TestLiumSSHPool(t *testing.T) {
 		eq(t, accepted, 4)
 		eq(t, peak, 8)
 	})
+	t.Run("a ready check of a full pool keeps no fifth connection", func(t *testing.T) {
+		f, p := liveFake(t)
+		p.ssh.perConn = 1
+		ref, pod := readyRef(t, f, p)
+		pl := p.poolOf(pod.id)
+		var held []*sshConn
+		for range 4 {
+			c, err := pl.take(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = append(held, c)
+		}
+		for _, c := range held {
+			pl.release(c)
+		}
+		eq(t, pl.connCount(), 4)
+		if _, err := p.ReadyMeta(context.Background(), ref); err != nil {
+			t.Fatal(err)
+		}
+		eq(t, p.poolOf(pod.id), pl)
+		eq(t, pl.connCount(), 4)
+	})
 	t.Run("a connection opens only when the others are full", func(t *testing.T) {
 		f, p := liveFake(t)
 		ref, pod := readyRef(t, f, p)
