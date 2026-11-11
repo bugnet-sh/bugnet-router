@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -385,6 +387,20 @@ func TestLiumRetrySameNode(t *testing.T) {
 		t.Fatalf("created_at %q comes after the first rent at %v", ref.Meta["created_at"],
 			rents[0].at)
 	}
+
+	t.Run("a retry that never leaves", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.inject(rentRoute, fault{drop: true, times: 2})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		// The next rent waits on the create pace past the budget, so it is never sent
+		lim := rate.NewLimiter(rate.Every(time.Hour), 1)
+		lim.Allow()
+		p.api.creates, p.createBudget = lim, 100*time.Millisecond
+		_, err = p.Create(context.Background(), createReq(testKey))
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		eq(t, len(f.rents()), 2)
+	})
 }
 
 func TestLiumTransportErrorRetriesOnce(t *testing.T) {
