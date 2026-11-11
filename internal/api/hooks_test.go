@@ -189,6 +189,25 @@ func TestStartRefusesHookProviderWithoutSecret(t *testing.T) {
 	}
 }
 
+func TestStartWantsLiumWebhookSecretOnlyWhileListed(t *testing.T) {
+	reg, err := provider.NewRegistry(nil, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, api.CheckHooks(config.Hooks{}, nil, reg), nil)
+	err = api.CheckHooks(config.Hooks{Providers: []string{"lium"}}, nil, reg)
+	if err == nil || !strings.Contains(err.Error(),
+		"hooks.providers lists lium but its webhook secret is not set") {
+		t.Fatalf("lium without LIUM_WEBHOOK_SECRET: %v", err)
+	}
+	// With the secret set, the check goes on to the adapter, which this registry lacks
+	secrets := map[string]config.HookSecret{"lium": {Current: []byte("whsec")}}
+	err = api.CheckHooks(config.Hooks{Providers: []string{"lium"}}, secrets, reg)
+	if err == nil || !strings.Contains(err.Error(), "not in providers") {
+		t.Fatalf("lium with its secret: %v", err)
+	}
+}
+
 // accountHooked verifies a test webhook whose events are about the provider account alone
 type accountHooked struct{ faulty }
 
