@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/netip"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
@@ -286,6 +288,40 @@ func TestStartRefusesBadBoxdRefs(t *testing.T) {
 			t.Errorf("%s: %v", tc.name, err)
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 			t.Errorf("%s: got %v, want an error naming %s", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestStartRefusesGPUPackagesUnderTheMargin(t *testing.T) {
+	h200 := provider.Size{Name: "lium-h200", Resources: provider.Resources{
+		VCPU: 16, MemoryMiB: 240 << 10, DiskGiB: 900, GPUCount: 1, GPUMemoryGiB: 141,
+		GPUModel: gpu.H200,
+	}}
+	lium := local.New(local.Options{Name: "lium", Root: t.TempDir(),
+		Sizes: []provider.Size{h200}, HourlyCostMicros: 4_900_000, Increment: time.Second})
+	r, err := provider.NewRegistry([]provider.Provider{lium}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{GPUOrder: []string{"lium", "hf"}, MarginFloor: 0.5}
+	// 10 minutes at the $4.90 cap cost 816667 micros, so the floor wants 1633334
+	for price, want := range map[int64]string{
+		1_633_334: "",
+		1_633_333: `package "gpu-h200-10m" at 1633333 micros misses margin_floor 0.5 on lium`,
+	} {
+		cat, err := catalog.Load(writeTemp(t, "packages.json", fmt.Appendf(nil,
+			`{"packages": [{"id": "gpu-h200-10m", "resources": {"vcpu": 4, "memory_mib": `+
+				`12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 141, "gpu_model": `+
+				`"NVIDIA H200"}, "minutes": 10, "price_micros": %d}]}`, price)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = checkGPUMargin(r, cfg, cat)
+		switch {
+		case want == "" && err != nil:
+			t.Errorf("at %d micros: %v", price, err)
+		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
+			t.Errorf("at %d micros: got %v, want an error saying %q", price, err, want)
 		}
 	}
 }
