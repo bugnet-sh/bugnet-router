@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
@@ -72,6 +74,14 @@ type Options struct {
 	CreatesPerSecond int
 	// NodesEvery spaces the node listing reads, 30 seconds when 0 or less
 	NodesEvery time.Duration
+	// Image is images.lium.ref, the image by digest pods start from unless a create names one
+	Image string
+	// ImageVersion is images.lium.version, sent as the tag of Image's template
+	ImageVersion string
+	// TemplateVolume is the pod's volume path, /workspace when empty
+	TemplateVolume string
+	// Termination sets termination_hours from max_lifetime, the default, or the lifetime asked
+	Termination string
 }
 
 // size is one size sold and the resources it guarantees
@@ -96,6 +106,12 @@ type Provider struct {
 	// stop ends the listing loop New starts, which closes done
 	stop context.CancelFunc
 	done chan struct{}
+
+	image, imageVersion, volume string
+	// tmu guards templates, the template id of each image ref, and account, our account's id
+	tmu       sync.Mutex
+	templates map[string]string
+	account   *string
 }
 
 // New checks the options and starts the listing loop, which Close stops
@@ -134,6 +150,13 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 			"tried first")
 	case opts.StartBilled < 0:
 		return nil, errors.New("lium: start billed must not be negative")
+	case opts.TemplateVolume != "" && !path.IsAbs(opts.TemplateVolume):
+		return nil, errors.New("lium: the template volume must be an absolute path")
+	}
+	if opts.Image != "" {
+		if _, err := parseImageRef(opts.Image); err != nil {
+			return nil, fmt.Errorf("lium: %w", err)
+		}
 	}
 	sizes, err := sizesFor(opts.Sizes)
 	if err != nil {
@@ -164,6 +187,10 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		countries:      countrySet(opts.Countries),
 		blocked:        countrySet(opts.BlockedCountries),
 		otherCountries: opts.OtherCountries,
+		image:          opts.Image,
+		imageVersion:   opts.ImageVersion,
+		volume:         cmp.Or(opts.TemplateVolume, defaultVolume),
+		templates:      map[string]string{},
 	}, nil
 }
 

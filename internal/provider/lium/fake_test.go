@@ -3,7 +3,6 @@ package lium
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -131,16 +130,45 @@ type fakeLium struct {
 	// unpaged answers every node to every listing call, whatever page and size ask
 	unpaged bool
 	nextID  int
+
+	pods   map[string]*fakePod
+	events map[string][]fakeEvent
+	// rentFaults refuse rents of one node, by its id
+	rentFaults map[string]*fault
+	// idem keeps each Idempotency-Key's first body and answer
+	idem      map[string]idemRecord
+	templates []map[string]any
+	// checkIssues is what POST /templates/check answers
+	checkIssues []map[string]any
+	// userID is the id GET /users/me answers, none when empty
+	userID string
+	// startStatus is the status a rented pod starts in
+	startStatus string
+	// podIP is the executor address of every pod rented
+	podIP string
 }
 
 func newFake(t *testing.T) *fakeLium {
 	t.Helper()
-	f := &fakeLium{t: t, faults: map[string]*fault{}}
+	f := &fakeLium{
+		t: t, faults: map[string]*fault{}, pods: map[string]*fakePod{},
+		events: map[string][]fakeEvent{}, rentFaults: map[string]*fault{},
+		idem: map[string]idemRecord{}, userID: fakeUserID, startStatus: "PENDING",
+		podIP: "203.0.113.7",
+	}
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
 		"GET /executors":                       f.listNodes,
 		"GET /pods":                            f.listPods,
+		"GET /pods/{id}":                       f.getPod,
+		"GET /pods/{id}/events":                f.podEvents,
+		"DELETE /pods/{id}":                    f.deletePod,
+		"POST /pods/{id}/schedule-removal":     f.scheduleRemoval,
 		"POST /executors/{executor_uuid}/rent": f.rent,
+		"GET /templates":                       f.listTemplates,
+		"POST /templates":                      f.makeTemplate,
+		"POST /templates/check":                f.checkTemplate,
+		"GET /users/me":                        f.me,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -299,20 +327,4 @@ func (f *fakeLium) listNodes(w http.ResponseWriter, r *http.Request) {
 		out = []map[string]any{}
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// listPods answers the key's pods, none in this fake yet
-func (f *fakeLium) listPods(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
-}
-
-// rent answers a pod id for the node, keeping nothing
-func (f *fakeLium) rent(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	f.nextID++
-	id := fmt.Sprintf("pod-%d", f.nextID)
-	f.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "executor_id": r.PathValue("executor_uuid"), "status": "PENDING",
-	})
 }

@@ -73,6 +73,8 @@ func testOptions() Options {
 	return Options{
 		APIKey:           fakeKey,
 		SSHSeed:          bytes.Clone(testSeed),
+		Image:            testImage,
+		ImageVersion:     "2026.11.3",
 		Log:              slog.New(slog.DiscardHandler),
 		Sizes:            testSizes(),
 		Countries:        slices.Clone(euCountries),

@@ -36,6 +36,10 @@ func TestLiumNewRefusesBadOptions(t *testing.T) {
 		},
 		"negative start": {func(o *Options) { o.StartBilled = -time.Second },
 			"start billed must not be negative"},
+		"image by tag": {func(o *Options) { o.Image = "ghcr.io/bugnet-sh/bugnet-base:2026.11.3" },
+			"not named by digest"},
+		"relative volume": {func(o *Options) { o.TemplateVolume = "workspace" },
+			"template volume must be an absolute path"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
