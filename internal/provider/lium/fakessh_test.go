@@ -116,6 +116,8 @@ type fakeSSHD struct {
 	hostKey ssh.Signer
 	// conns counts the sessions open on each connection, running the commands not exited yet
 	conns, running map[*ssh.ServerConn]int
+	// sockets are the accepted connections, kept from before their handshake so a drop finds them
+	sockets map[net.Conn]bool
 	// shells are the login shells running commands, each the leader of its own session
 	shells map[*os.Process]bool
 	// accepted counts the connections that logged in, peak the most commands one ran at once
@@ -158,7 +160,7 @@ func (f *fakeLium) sshdLocked(pod string) *fakeSSHD {
 	s := &fakeSSHD{
 		f: f, pod: pod, ln: ln, hostKey: newHostKey(f.t), conns: map[*ssh.ServerConn]int{},
 		running: map[*ssh.ServerConn]int{}, shells: map[*os.Process]bool{},
-		maxSessions: fakeMaxSessions, done: make(chan struct{}),
+		maxSessions: fakeMaxSessions, done: make(chan struct{}), sockets: map[net.Conn]bool{},
 	}
 	f.sshds[pod] = s
 	go s.serve()
@@ -281,8 +283,8 @@ func (s *fakeSSHD) rekey(t *testing.T) {
 // dropConns breaks every connection, as a network fault would
 func (s *fakeSSHD) dropConns() {
 	s.mu.Lock()
-	conns := make([]*ssh.ServerConn, 0, len(s.conns))
-	for c := range s.conns {
+	conns := make([]net.Conn, 0, len(s.sockets))
+	for c := range s.sockets {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
@@ -358,12 +360,20 @@ func (s *fakeSSHD) serve() {
 		if err != nil {
 			return
 		}
+		s.mu.Lock()
+		s.sockets[c] = true
+		s.mu.Unlock()
 		go s.handle(c)
 	}
 }
 
 // handle logs a connection in by the pod's authorized keys and serves its sessions
 func (s *fakeSSHD) handle(c net.Conn) {
+	defer func() {
+		s.mu.Lock()
+		delete(s.sockets, c)
+		s.mu.Unlock()
+	}()
 	login := func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 		if meta.User() == "root" && s.f.authorized(s.pod, key) {
 			return nil, nil

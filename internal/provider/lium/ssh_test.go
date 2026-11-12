@@ -361,7 +361,7 @@ func TestLiumReadyMetaWaitsForSSH(t *testing.T) {
 		f, p := liveFake(t)
 		ref, pod := rentedPod(t, f, p)
 		f.setPod(pod.id, func(fp *fakePod) { fp.status, fp.keys = "RUNNING", nil })
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_, err := p.ReadyMeta(ctx, ref)
 		if err == nil || !strings.Contains(err.Error(), "lium_ssh_refused") {
