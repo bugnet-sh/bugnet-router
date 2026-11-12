@@ -394,6 +394,8 @@ func readError(status int, h http.Header, raw []byte) *apiError {
 // classify maps an error answer to a provider code by its status, design 4.13
 func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) error {
 	ae := readError(status, h, raw)
+	// An answer that echoes the token never carries it into an error or a log
+	ae.Message = strings.ReplaceAll(ae.Message, c.token, "[token]")
 	e := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: ae}
 	switch {
 	case status == http.StatusTooManyRequests:

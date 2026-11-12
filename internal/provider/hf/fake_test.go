@@ -30,7 +30,9 @@ type fault struct {
 	// raw replaces the envelope as the answer's body when set
 	raw string
 	// drop closes the connection once the request has arrived, with no answer
-	drop  bool
+	drop bool
+	// echo adds the request's Authorization header to the message
+	echo  bool
 	times int
 }
 
@@ -234,6 +236,11 @@ func (f *fakeHF) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 		}
 		f.mu.Unlock()
 		if ft != nil {
+			if ft.echo {
+				echoed := *ft
+				echoed.message += ", got " + r.Header.Get("Authorization")
+				ft = &echoed
+			}
 			ft.write(w)
 			return
 		}
