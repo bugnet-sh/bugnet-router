@@ -48,6 +48,7 @@ type Options struct {
 type Provider struct {
 	jobs        *jobsClient
 	log         *slog.Logger
+	hw          *hardware
 	maxLifetime time.Duration
 	startBilled time.Duration
 }
@@ -82,6 +83,7 @@ func newProvider(opts Options) (*Provider, error) {
 	return &Provider{
 		jobs:        newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log),
 		log:         log,
+		hw:          newHardware(opts.Flavors),
 		maxLifetime: cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled: opts.StartBilled,
 	}, nil
@@ -97,3 +99,53 @@ func (p *Provider) Capabilities() provider.Capabilities {
 		LossyExecText: true,
 	}
 }
+
+// SizeFor picks the cheapest flavor sold whose model matches a GPU floor and that covers it
+func (p *Provider) SizeFor(floor provider.Resources) (provider.Size, bool) {
+	if floor.GPUCount == 0 && floor.GPUMemoryGiB == 0 && floor.GPUModel == "" {
+		return provider.Size{}, false
+	}
+	for _, f := range p.hw.sold() {
+		r := f.resources
+		if (floor.GPUModel == "" || floor.GPUModel == r.GPUModel) && r.VCPU >= floor.VCPU &&
+			r.MemoryMiB >= floor.MemoryMiB && r.DiskGiB >= floor.DiskGiB &&
+			r.GPUCount >= floor.GPUCount && r.GPUMemoryGiB >= floor.GPUMemoryGiB {
+			return provider.Size{Name: f.name, Resources: r}, true
+		}
+	}
+	return provider.Size{}, false
+}
+
+// Sizes lists the flavors sold, cheapest first
+func (p *Provider) Sizes() []provider.Size {
+	sold := p.hw.sold()
+	out := make([]provider.Size, 0, len(sold))
+	for _, f := range sold {
+		out = append(out, provider.Size{Name: f.name, Resources: f.resources})
+	}
+	return out
+}
+
+// HourlyCostMicros is the flavor's hour with the exposed ports' fee, 0 for a size not sold
+func (p *Provider) HourlyCostMicros(sz provider.Size) int64 {
+	if f, ok := p.hw.flavor(sz.Name); ok {
+		return f.hourlyMicros()
+	}
+	return 0
+}
+
+// BillingIncrement is one minute, HF bills Jobs by the minute
+func (p *Provider) BillingIncrement() time.Duration { return time.Minute }
+
+// StartCostMicros prices the Starting time, boot steps and rounding HF bills before the paid clock
+func (p *Provider) StartCostMicros(sz provider.Size) (int64, bool) {
+	f, ok := p.hw.flavor(sz.Name)
+	if !ok {
+		return 0, false
+	}
+	minutes := int64((p.startBilled + time.Minute - 1) / time.Minute)
+	return ceilDiv(f.hourlyMicros()*minutes, 60), true
+}
+
+// ceilDiv divides a non-negative a by a positive b, rounding up
+func ceilDiv(a, b int64) int64 { return (a + b - 1) / b }

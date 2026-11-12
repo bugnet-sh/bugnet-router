@@ -14,7 +14,8 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 		want   string
 	}{
 		"no token":     {func(o *Options) { o.Token = "" }, "a Jobs token is required"},
-		"spaced token": {func(o *Options) { o.Token = " " + fakeToken }, "a Jobs token is required"},
+		"spaced token": {func(o *Options) { o.Token = " " + fakeToken },
+			"a Jobs token is required"},
 		"token with a newline": {func(o *Options) { o.Token = fakeToken + "\n" },
 			"a Jobs token is required"},
 		"no namespace": {func(o *Options) { o.Namespace = "" }, "a namespace is required"},
