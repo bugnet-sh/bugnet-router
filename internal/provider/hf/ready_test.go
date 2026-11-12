@@ -3,6 +3,7 @@ package hf
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -280,4 +281,37 @@ func TestHFWaitReadyDerivesAMissingToken(t *testing.T) {
 		t.Fatalf("a Job with no token anywhere gave %v", err)
 	}
 	eq(t, len(sbxRequests(f)), 1)
+}
+
+// TestHFWaitReadyKeepsToItsJob ends a wait whose read names another Job, which never gets a token
+func TestHFWaitReadyKeepsToItsJob(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	ref, _ := created(t, f, p)
+	other := keyed()
+	other.IdempotencyKey = "fedcba9876543210fedcba9876543210"
+	oref, err := p.Create(t.Context(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels map[string]string
+	f.set(f.job(oref.ID), func(j *fakeJob) {
+		j.stage, labels = "RUNNING", maps.Clone(j.labels)
+	})
+	f.mu.Lock()
+	f.show = func(j map[string]any) {
+		if j["id"] == ref.ID {
+			j["id"], j["labels"] = oref.ID, labels
+		}
+	}
+	f.mu.Unlock()
+	bare := cloneRef(ref)
+	delete(bare.Meta, "secret")
+	for _, r := range []provider.Ref{ref, bare} {
+		err := p.WaitReady(t.Context(), r)
+		if code, _ := codeOf(err); code != provider.CodeInternal {
+			t.Fatalf("a read naming another Job gave %v, want internal", err)
+		}
+	}
+	eq(t, len(sbxRequests(f)), 0)
 }

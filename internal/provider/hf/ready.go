@@ -51,6 +51,10 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 // readyStep reads one poll, wait being why the wait goes on and end an error that ends it
 func (p *Provider) readyStep(ctx context.Context, ref provider.Ref, j job) (wait, end error) {
 	switch s := j.Status.Stage; {
+	case j.ID != ref.ID:
+		// A read of another Job would send it this token, or derive a token from its labels
+		return nil, &provider.Error{Code: provider.CodeInternal,
+			Err: fmt.Errorf("hf answered Job %.40q for Job %s", j.ID, ref.ID)}
 	case s == stageScheduling:
 		return errors.New("stage SCHEDULING"), nil
 	case s == stageRunning:
@@ -69,13 +73,13 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 		key := j.Labels[labelKey]
 		if !keyHex.MatchString(key) {
 			return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-				"hf Job %s has no token in its ref and no key to derive one from", j.ID)}
+				"hf Job %s has no token in its ref and no key to derive one from", ref.ID)}
 		}
 		token = p.sandboxToken(key)
 	}
 	hctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	defer cancel()
-	h, err := p.sbx.health(hctx, j.ID, token)
+	h, err := p.sbx.health(hctx, ref.ID, token)
 	switch {
 	case isCode(err, provider.CodeInvalid):
 		return nil, err
@@ -83,16 +87,16 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 		return err, nil
 	case h.Protocol == nil:
 		// Only the server's own answer names a protocol, a proxy page never does
-		return fmt.Errorf("hf Job %s answered a health with no protocol", j.ID), nil
+		return fmt.Errorf("hf Job %s answered a health with no protocol", ref.ID), nil
 	case *h.Protocol < minProtocol:
-		return nil, refusedServer(j.ID, fmt.Errorf("sbx-server speaks protocol %d, %d or more "+
+		return nil, refusedServer(ref.ID, fmt.Errorf("sbx-server speaks protocol %d, %d or more "+
 			"is needed", *h.Protocol, minProtocol))
 	case h.Mode == "" && h.Auth == "":
 		// sbx-server shows its mode and auth only to its own token
-		return nil, refusedServer(j.ID, errors.New(
+		return nil, refusedServer(ref.ID, errors.New(
 			"hf_token_refused, sbx-server does not take the sandbox's token"))
 	case h.Mode != "dedicated" || h.Auth != "required":
-		return nil, refusedServer(j.ID, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
+		return nil, refusedServer(ref.ID, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
 			"%.20q, dedicated and required are needed", scrub(h.Mode, token),
 			scrub(h.Auth, token)))
 	}
