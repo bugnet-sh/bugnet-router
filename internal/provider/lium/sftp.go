@@ -157,8 +157,7 @@ func (s *sftpSession) start(client bool) error {
 	return err
 }
 
-// sftpFrames hands pkg/sftp's client only whole packets whose fields fit them, since it reads
-// a status, a handle or data unchecked and one cut short panics, in goroutines of its own too
+// sftpFrames hands pkg/sftp's client only packets whose fields fit, since it reads them unchecked
 type sftpFrames struct {
 	r io.Reader
 	// pkt is what is left to hand on of the packet read last
