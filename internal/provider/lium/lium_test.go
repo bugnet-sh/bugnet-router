@@ -2,12 +2,14 @@ package lium
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
 
 func TestLiumNewRefusesBadOptions(t *testing.T) {
@@ -290,4 +292,28 @@ func TestLiumSizeForNeedsAFreshListing(t *testing.T) {
 	if _, ok := p.SizeFor(floor); !ok {
 		t.Fatal("a fresh listing after an outage did not restore the size")
 	}
+}
+
+// liumReadyTimeout is lium.ready_timeout's default, the time the router gives a pod to boot
+const liumReadyTimeout = 6 * time.Minute
+
+func TestLiumContract(t *testing.T) {
+	f := newFake(t)
+	f.startStatus = "RUNNING"
+	f.setNodes(euNode("node-a"))
+	// The contract's files step writes under the host's /tmp, which the fake pod shares
+	t.Cleanup(func() {
+		for _, dir := range f.sftpMkdirs() {
+			if strings.HasPrefix(dir, "/tmp/bugnet-contract-") {
+				_ = os.RemoveAll(dir)
+			}
+		}
+	})
+	contract.Run(t, func(t *testing.T) provider.Provider {
+		p := f.provider(t, testOptions(), time.Now)
+		p.pollEvery = time.Millisecond
+		relist(t, p)
+		return p
+	}, contract.Floor(provider.Resources{GPUCount: 1, GPUModel: gpu.RTX3090}),
+		contract.ReadyTimeout(liumReadyTimeout))
 }
