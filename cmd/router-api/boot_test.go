@@ -325,29 +325,42 @@ func TestStartLogsEachPackageNoProviderPlaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// cheap runs the image 2026.10.1 in this registry
+	aged, err := provider.NewRegistry([]provider.Provider{p}, provider.Features{
+		Images: map[string]string{"cheap": "2026.10.1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The provider is down, which a boot check looks past
-	e := placement.New(reg, downHealth{}, nil)
+	e, agedE := placement.New(reg, downHealth{}, nil), placement.New(aged, downHealth{}, nil)
 	for _, tc := range []struct {
-		floor float64
-		want  []string
+		e      *placement.Engine
+		floor  float64
+		accept []string
+		want   []string
 	}{
-		{0.5, []string{"huge", "thin"}},
-		{0.3, []string{"huge"}},
+		{e, 0.5, nil, []string{"huge", "thin"}},
+		{e, 0.3, nil, []string{"huge"}},
+		{agedE, 0.3, []string{"2026.10.1"}, []string{"huge"}},
+		{agedE, 0.3, []string{"2026.11.1"}, []string{"fits", "huge", "thin"}},
 	} {
 		var logs bytes.Buffer
 		cfg := config.Config{MarginFloor: tc.floor}
-		checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), e, cat, cfg)
+		cfg.Images.Accept = tc.accept
+		checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), tc.e, cat, cfg)
 		var named []string
 		for line := range strings.Lines(logs.String()) {
 			if !strings.Contains(line, "level=ERROR") {
-				t.Errorf("floor %v logged %q", tc.floor, line)
+				t.Errorf("floor %v accept %v logged %q", tc.floor, tc.accept, line)
 			}
 			_, id, _ := strings.Cut(line, "package=")
 			named = append(named, strings.Fields(id)[0])
 		}
 		slices.Sort(named)
 		if !reflect.DeepEqual(named, tc.want) {
-			t.Errorf("floor %v named %v, want %v", tc.floor, named, tc.want)
+			t.Errorf("floor %v accept %v named %v, want %v", tc.floor, tc.accept, named,
+				tc.want)
 		}
 	}
 }
