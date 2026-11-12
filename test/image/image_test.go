@@ -22,6 +22,9 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/image"
 )
 
+// platform is the one build.sh builds for and the payload runner runs on
+const platform = "linux/amd64"
+
 func eq[T comparable](t *testing.T, got, want T) {
 	t.Helper()
 	if got != want {
@@ -60,6 +63,18 @@ func testCA(t *testing.T, extra string) (string, string) {
 	}
 	sum := sha256.Sum256(b)
 	return path, hex.EncodeToString(sum[:])
+}
+
+// hostCABundle returns the build host's CA bundle, which build.sh lends apt as apt-ca.pem
+func hostCABundle(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem"} {
+		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+			return p
+		}
+	}
+	t.Fatal("this host has no CA bundle to lend apt")
+	return ""
 }
 
 func repoRoot(t *testing.T) string {
@@ -175,8 +190,9 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 		filepath.Join(root, "deploy/image/setup-image.sh"): "setup-image.sh",
 		filepath.Join(root, "deploy/image/pins.conf"):      "pins.conf",
 		filepath.Join(root, "deploy/image/VERSION"):        "VERSION",
-		runner: "bugnet-run-linux-amd64",
-		ca:     "bugnet-egress-v1.crt",
+		runner:          "bugnet-run-linux-amd64",
+		ca:              "bugnet-egress-v1.crt",
+		hostCABundle(t): "apt-ca.pem",
 	} {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -186,8 +202,8 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	out, err := exec.Command("docker", "run", "--rm", "-v", payload+":/payload:ro",
-		"ubuntu:24.04", "bash", "-c", script).CombinedOutput()
+	out, err := exec.Command("docker", "run", "--rm", "--platform", platform,
+		"-v", payload+":/payload:ro", "ubuntu:24.04", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
