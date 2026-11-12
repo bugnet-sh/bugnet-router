@@ -24,7 +24,7 @@ const fakeServerName = "example.com"
 // fault answers matching calls with an error, every one when times is 0
 type fault struct {
 	status int
-	// message is written as HF's {"error": message} envelope
+	// message is written as the error field of the Hub's error envelope
 	message string
 	header  map[string]string
 	// raw replaces the envelope as the answer's body when set

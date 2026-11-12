@@ -370,7 +370,7 @@ func (e *apiError) Error() string {
 	return s
 }
 
-// readError reads the Hub's {"error": ...} envelope, its X-Error headers, or the bare body
+// readError reads the Hub's error or message field, its X-Error-Message header, or the body
 func readError(status int, h http.Header, raw []byte) *apiError {
 	var body struct {
 		Error   json.RawMessage `json:"error"`
