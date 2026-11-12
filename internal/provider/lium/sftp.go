@@ -236,14 +236,15 @@ func (p *Provider) sftpError(ctx context.Context, id string, err error) error {
 		errors.Is(err, syscall.ENOTDIR):
 		return invalid(fmt.Errorf("lium pod %s: %w", id, err), false)
 	case errors.As(err, &st):
-		return &provider.Error{Code: statusCode(st), Err: fmt.Errorf("lium pod %s: %w", id, err)}
+		return &provider.Error{Code: statusCode(err, st),
+			Err: fmt.Errorf("lium pod %s: %w", id, err)}
 	}
 	return p.sshError(ctx, id, err)
 }
 
-// statusCode reads a status sftp-server answered, by its words where they name ENOSPC or EISDIR
-func statusCode(st *sftp.StatusError) provider.Code {
-	text := strings.ToLower(st.Error())
+// statusCode reads the status in err by its words, where they name ENOSPC or EISDIR
+func statusCode(err error, st *sftp.StatusError) provider.Code {
+	text := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(text, "no space left"), strings.Contains(text, "quota exceeded"):
 		return provider.CodeNoSpace
@@ -258,7 +259,7 @@ func statusCode(st *sftp.StatusError) provider.Code {
 func spaceError(cl *sftp.Client, dir string, err error) error {
 	var st *sftp.StatusError
 	if !errors.As(err, &st) || st.FxCode() != sftp.ErrSSHFxFailure ||
-		statusCode(st) != provider.CodeInternal {
+		statusCode(err, st) != provider.CodeInternal {
 		return err
 	}
 	vfs, verr := cl.StatVFS(dir)

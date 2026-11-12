@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -147,4 +148,74 @@ func TestLiumFileErrors(t *testing.T) {
 		wantCode(t, p.WriteFile(ctx, ref, dir+"/sub/x", []byte("x"), 0o644),
 			provider.CodeInvalid, false)
 	}
+}
+
+func TestLiumListFiles(t *testing.T) {
+	f, p := liveFake(t)
+	ref, _ := readyRef(t, f, p)
+	ctx := context.Background()
+	dir := t.TempDir()
+	for name, data := range map[string]string{
+		"a.txt": "abc", "sub/b.txt": "b", "sub/deeper/c.txt": "c",
+	} {
+		if err := os.MkdirAll(filepath.Dir(dir+"/"+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir+"/"+name, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("sub", dir+"/link"); err != nil {
+		t.Fatal(err)
+	}
+	list := func(name string, depth, room int) *provider.Listing {
+		t.Helper()
+		l := provider.NewListing(room)
+		if err := p.ListFiles(ctx, ref, name, depth, l); err != nil {
+			t.Fatalf("ListFiles of %s to depth %d: %v", name, depth, err)
+		}
+		return l
+	}
+	paths := func(l *provider.Listing) []string {
+		var out []string
+		for _, e := range l.Entries {
+			out = append(out, strings.TrimPrefix(e.Path, dir+"/"))
+		}
+		slices.Sort(out)
+		return out
+	}
+
+	one := list(dir, 1, 100)
+	eq(t, paths(one), []string{"a.txt", "link", "sub"})
+	eq(t, one.Truncated, false)
+	for _, e := range one.Entries {
+		switch strings.TrimPrefix(e.Path, dir+"/") {
+		case "a.txt":
+			if e.Size != 3 || !e.Regular || e.IsDir || e.Mode != 0o600 || e.Modified.IsZero() {
+				t.Errorf("a.txt listed as %+v", e)
+			}
+		case "link":
+			if e.Regular || e.IsDir || e.Mode&fs.ModeSymlink == 0 {
+				t.Errorf("the link listed as %+v", e)
+			}
+		case "sub":
+			if !e.IsDir || e.Regular || !e.Mode.IsDir() {
+				t.Errorf("sub listed as %+v", e)
+			}
+		}
+	}
+	// The walk goes down directories, never through the link
+	eq(t, paths(list(dir+"/", 2, 100)),
+		[]string{"a.txt", "link", "sub", "sub/b.txt", "sub/deeper"})
+	eq(t, paths(list(dir, 5, 100)),
+		[]string{"a.txt", "link", "sub", "sub/b.txt", "sub/deeper", "sub/deeper/c.txt"})
+	// A full listing is truncated and reads no further
+	short := list(dir, 3, 4)
+	eq(t, len(short.Entries), 4)
+	eq(t, short.Truncated, true)
+
+	err := p.ListFiles(ctx, ref, dir+"/missing", 1, provider.NewListing(10))
+	wantCode(t, err, provider.CodeNotFound, false)
+	err = p.ListFiles(ctx, ref, dir, 0, provider.NewListing(10))
+	wantCode(t, err, provider.CodeInvalid, false)
 }
