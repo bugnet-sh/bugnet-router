@@ -2,13 +2,10 @@ package providers_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +16,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // fakeNet records the calls of the local server that stands in for every host
@@ -34,31 +32,17 @@ func (f *fakeNet) calls() []string {
 	return slices.Clone(f.seen)
 }
 
-// swapNet sends every default transport call to a local server until the test ends
+// swapNet answers every call with answer on a local server until the test ends, recording each
 func swapNet(t *testing.T, answer http.HandlerFunc) *fakeNet {
 	t.Helper()
 	f := &fakeNet{}
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	testenv.LocalInternet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != ""
 		f.mu.Lock()
 		f.seen = append(f.seen, fmt.Sprintf("%s %s%s key=%t", r.Method, r.Host, r.URL.Path, key))
 		f.mu.Unlock()
 		answer(w, r)
 	}))
-	tr := srv.Client().Transport.(*http.Transport).Clone()
-	// The test certificate names example.com, whichever host a call asks for
-	tr.TLSClientConfig.ServerName = "example.com"
-	tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", srv.Listener.Addr().String())
-	}
-	prev := http.DefaultTransport
-	http.DefaultTransport = tr
-	t.Cleanup(func() {
-		http.DefaultTransport = prev
-		tr.CloseIdleConnections()
-		srv.Close()
-	})
 	return f
 }
 

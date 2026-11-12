@@ -1,4 +1,4 @@
-// Package testenv gives tests an isolated Postgres database and Valkey key prefix.
+// Package testenv gives tests an isolated Postgres database, Valkey key prefix and internet.
 package testenv
 
 import (

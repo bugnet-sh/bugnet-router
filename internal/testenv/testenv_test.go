@@ -2,6 +2,8 @@ package testenv_test
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
@@ -92,5 +94,37 @@ func TestDataPlaneKeysAreFreshAndParse(t *testing.T) {
 	if keysA.Current().ID != "k1" || len(keysA.Roots()) != 1 {
 		t.Fatalf("keys hold %d roots, current %q, want only k1", len(keysA.Roots()),
 			keysA.Current().ID)
+	}
+}
+
+func TestLocalInternetAnswersEveryHost(t *testing.T) {
+	prev := http.DefaultTransport
+	t.Run("swapped", func(t *testing.T) {
+		testenv.LocalInternet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, r.Host+r.URL.Path)
+		}))
+		for _, host := range []string{"huggingface.co", "lium.io"} {
+			res, err := http.Get("https://" + host + "/api/pods")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(res.Body)
+			_ = res.Body.Close()
+			if string(body) != host+"/api/pods" {
+				t.Errorf("%s answered %q, want the local server's echo", host, body)
+			}
+		}
+		// Plain HTTP reaches the same TLS server, which refuses it
+		res, err := http.Get("http://lium.io/api/pods")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("plain http answered %d, want the local server's 400", res.StatusCode)
+		}
+	})
+	if http.DefaultTransport != prev {
+		t.Fatal("the default transport was not put back")
 	}
 }
