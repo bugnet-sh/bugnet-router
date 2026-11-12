@@ -1938,6 +1938,12 @@ within 10 s, and each change writes a `provider_signals` row. A check that canno
 changes nothing. Boat's `GET /me` or `GET /limits` answering 403 means the key lacks
 `account.read`, which blocks nothing.
 
+HF documents no balance, so its check also reads the Jobs HF ended for `NO_CREDITS` or
+`NO_SUBSCRIPTION` and the Jobs calls HF answered 402 in the last 10 minutes, as unfunded. Every
+process that calls HF, `router-api`'s creates and waits among them, keeps these sightings in Valkey
+under `valkey.prefix` (`hf:sightings`, at most 256, trimmed to the 10 minutes), so the worker's
+check sees them. While Valkey cannot answer, each process reads its own and logs one warning.
+
 Every provider table takes `creates_per_second`, 0 for no bucket (E2B's, Lium's and HF's are 1). The
 saga takes a token from `rl:create:<provider>` before each create and fails over when none comes
 within 1 s. A `rate_limited` answer with a Retry-After pauses the provider's creates for that long,
