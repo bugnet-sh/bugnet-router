@@ -146,8 +146,7 @@ func (e *Engine) Lands(in Inputs) []Landing {
 	return out
 }
 
-// fit is p's candidate for in without its health or warm members, ok false when p cannot host
-// the package and open false when p would refuse the start now
+// fit is p's candidate, health aside, ok false when p cannot host, open false when it refuses now
 func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 	pk := in.Package
 	req := in.Requirements

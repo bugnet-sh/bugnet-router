@@ -1,10 +1,11 @@
 // Package stats builds the public stats feed that bugnet.sh/stats and the landing's pricing read.
 //
 // router-worker's snapshot job reads the router's figures, calls Payments' totals, and merges both
-// with the catalog's start packages and the live limits into one summary, which router-api serves
-// as stored. Session pages are read from Postgres on request. Every value that a later task builds
-// comes from one source function in sources.go or internal/store/stats.go, which answers the form
-// the website's contract keeps for an unknown value until that task lands.
+// with the catalog's start packages, the servers they land on and the live limits into one
+// summary, which router-api serves as stored. Session pages are read from Postgres on request.
+// Every value that a later task builds comes from one source function in sources.go or
+// internal/store/stats.go, which answers the form the website's contract keeps for an unknown
+// value until that task lands.
 package stats
 
 import (
@@ -298,8 +299,7 @@ func Packages(pkgs []catalog.Package) []Package {
 	return out
 }
 
-// Servers lists each provider size a start package lands on under in's settings, health aside,
-// in the providers' order and then each provider's size order
+// Servers lists each provider size a start package lands on, in provider and then size order
 func Servers(
 	e *placement.Engine, reg *provider.Registry, pkgs []catalog.Package, in placement.Inputs,
 ) []Server {
@@ -378,8 +378,7 @@ func newServer(
 	return s
 }
 
-// longestRun is the most minutes a sandbox runs extended a package at a time, keeping the slack
-// the extension check leaves before the provider's lifetime limit
+// longestRun is the most whole runs of minutes that fit limit less the extend check's slack
 func longestRun(limit time.Duration, minutes int) int64 {
 	run := time.Duration(minutes) * time.Minute
 	return int64((limit-placement.LifetimeSlack)/run) * int64(minutes)

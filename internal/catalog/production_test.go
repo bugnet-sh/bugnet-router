@@ -8,8 +8,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 )
 
-// liveProviders builds the providers production runs from its settings file, each with a stand-in
-// key since no test here calls a provider
+// liveProviders builds production's providers from its settings, each with a stand-in key
 func liveProviders(t *testing.T) []provider.Provider {
 	t.Helper()
 	cfg, err := config.LoadFile("../../deploy/vps/config/router.toml")
@@ -30,9 +29,8 @@ func liveProviders(t *testing.T) []provider.Provider {
 	return reg.Ordered()
 }
 
-// TestProductionCatalog holds config/packages.json to what production's providers can run, so
-// every package loads, fits a size production sells and keeps the 50% margin floor on the
-// cheapest, each size and rate read from the adapter that sells it
+// TestProductionCatalog holds config/packages.json to production's providers, so every package
+// loads, fits a size they sell and keeps the 50% margin floor at the cheapest adapter's rate
 func TestProductionCatalog(t *testing.T) {
 	c, err := Load("../../config/packages.json")
 	if err != nil {

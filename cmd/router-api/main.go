@@ -418,8 +418,7 @@ func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catal
 	return nil
 }
 
-// checkPackages logs an error naming each start package that no configured provider can place
-// under margin_floor and images.accept, health aside, since every order of one finds no candidate
+// checkPackages logs each start package no configured provider can place, health aside
 func checkPackages(
 	log *slog.Logger, e *placement.Engine, cat *catalog.Catalog, cfg config.Config,
 ) {

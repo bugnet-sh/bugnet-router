@@ -111,8 +111,7 @@ func TestSessionsGolden(t *testing.T) {
 	golden(t, s.Page(sessionRows(), t0), "testdata/sessions.json")
 }
 
-// ss7 are SS 7's shapes and control-plane 20.6.1's servers, gpu with its model, every array
-// holding one element of its kind
+// ss7 are SS 7's shapes and CP 20.6.5's servers, gpu with its model, one element per array
 const ss7 = `{
 	"summary": {
 		"version": 1, "generatedAt": "2026-11-07T14:02:31Z",
