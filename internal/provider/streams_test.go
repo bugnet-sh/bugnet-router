@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -132,6 +133,29 @@ func TestFileReaderClassifiesBodyErrors(t *testing.T) {
 	_, errs := readEach(r, 16)
 	if len(errs) == 0 || errs[0] != classified {
 		t.Fatalf("a failing body gave %v, want the classified error", errs)
+	}
+}
+
+func TestFileReaderKeepsAFailureThatWrapsEOF(t *testing.T) {
+	// a GET whose connection closed before any answer fails with a url.Error wrapping io.EOF
+	lost := &url.Error{Op: "Get", URL: "https://executor/files", Err: io.EOF}
+	gone := &provider.Error{Code: provider.CodeNotFound, Err: lost}
+	b := &body{r: strings.NewReader("01"), err: gone}
+	r := provider.NewFileReader(t.Context(), b, provider.FileEntry{Size: 10}, 0, nil)
+	if _, errs := readEach(r, 16); len(errs) == 0 || errs[0] != gone {
+		t.Fatalf("a body failing with %v gave %v, want that error", gone, errs)
+	}
+	classified := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: lost}
+	b = &body{r: strings.NewReader("01"), err: lost}
+	r = provider.NewFileReader(t.Context(), b, provider.FileEntry{Size: 10}, 0,
+		func(err error) error {
+			if errors.Is(err, lost) {
+				return classified
+			}
+			return err
+		})
+	if _, errs := readEach(r, 16); len(errs) == 0 || errs[0] != classified {
+		t.Fatalf("a body failing with %v gave %v, want it classified", lost, errs)
 	}
 }
 

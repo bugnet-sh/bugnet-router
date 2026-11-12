@@ -128,7 +128,9 @@ type fileFault struct {
 	// encoding is the Content-Encoding a download claims
 	encoding string
 	// pad puts one entry of about so many bytes before a listing's own
-	pad   int64
+	pad int64
+	// drop closes a download's connection before any answer, as an executor gone mid-read would
+	drop  bool
 	times int
 }
 
@@ -1283,6 +1285,12 @@ func (f *fakeKoyeb) download(w http.ResponseWriter, r *http.Request) {
 	f.downloads = append(f.downloads, r.Header.Clone())
 	f.mu.Unlock()
 	ft := f.fileFault("GET /files")
+	if ft != nil && ft.drop {
+		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
+	}
 	if failed(w, ft) {
 		return
 	}
