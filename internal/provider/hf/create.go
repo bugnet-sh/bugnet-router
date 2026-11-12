@@ -240,7 +240,7 @@ func (p *Provider) findOwn(
 	if best == nil {
 		return provider.Ref{}, false, nil
 	}
-	// Every create of the key sends o.timeout, so a longer or missing one in HF's read leans short
+	// Every create of the key sends o.timeout, so HF.s read may shorten it but never lengthen it
 	return refOf(*best, o.token, sentAt, o.timeout), true, nil
 }
 
