@@ -1,6 +1,7 @@
 package hf
 
 import (
+	"context"
 	"maps"
 	"testing"
 	"time"
@@ -241,4 +242,42 @@ func TestHFSetLifetime(t *testing.T) {
 			t.Fatalf("SetLifetime of %+v gave %v, want not_found", r, err)
 		}
 	}
+}
+
+// TestHFSetLifetimeReadsOnlyForAnEnd lets an extension the ref's end allows pass whatever the read
+func TestHFSetLifetimeReadsOnlyForAnEnd(t *testing.T) {
+	ctx := t.Context()
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	ref, err := p.Create(ctx, keyed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(time.Minute)
+	f.inject(jobRoute, fault{status: 503, message: "Unavailable", times: 1})
+	if err := p.SetLifetime(ctx, ref, until); err != nil {
+		t.Fatalf("a failed read of a Job whose end the ref holds gave %v", err)
+	}
+	// A ref without its end has only the read to check it by
+	f.inject(jobRoute, fault{status: 503, message: "Unavailable", times: 1})
+	err = p.SetLifetime(ctx, provider.Ref{Provider: "hf", ID: ref.ID}, until)
+	if code, _ := codeOf(err); code != provider.CodeInternal {
+		t.Fatalf("a failed read of a Job with no end in its ref gave %v", err)
+	}
+	gone := cloneRef(ref)
+	gone.ID = "6911deadbeef"
+	err = p.SetLifetime(ctx, gone, until)
+	if code, _ := codeOf(err); code != provider.CodeNotFound {
+		t.Fatalf("a Job HF no longer has gave %v, want not_found", err)
+	}
+	// An extension holds the payer's wallet lock, so a 429's hold never delays one
+	reads := len(jobReads(f, ref.ID))
+	p.jobs.hold(time.Minute)
+	hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := p.SetLifetime(hctx, ref, until); err != nil || time.Since(start) > time.Second {
+		t.Fatalf("an extension under a 429's hold gave %v after %s", err, time.Since(start))
+	}
+	eq(t, len(jobReads(f, ref.ID)), reads)
 }

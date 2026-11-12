@@ -168,8 +168,17 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 	if known && until.After(end) {
 		return pastEnd(until, end)
 	}
+	if known && p.jobs.held() > 0 {
+		// An extension holds the payer's wallet lock, which a 429's hold must not keep
+		return nil
+	}
 	j, err := p.jobs.getJob(ctx, id)
 	switch {
+	case isCode(err, provider.CodeNotFound):
+		return err
+	case err != nil && known:
+		// The end is checked already, so the read only tells a Job HF ended apart
+		return nil
 	case err != nil:
 		return err
 	case !liveStage(j.Status.Stage):
