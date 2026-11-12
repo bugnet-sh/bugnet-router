@@ -329,6 +329,43 @@ func TestBuildHFRefusesBadConfig(t *testing.T) {
 	}
 }
 
+func TestBuildHFSharesItsSightings(t *testing.T) {
+	const ended = "6911aaaaaaaaaaaaaaaaaaaa"
+	swapNet(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/jobs/bugnet-test/" + ended:
+			_, _ = io.WriteString(w, `{"id": "`+ended+`", "status": {"stage": "CANCELED",
+				"cancelReason": "NO_CREDITS"}}`)
+		case "POST /api/jobs/bugnet-test/auth-check/write":
+		default:
+			hfHardware(w, r)
+		}
+	})
+	vk, prefix := testenv.Valkey(t)
+	cfg := load(t, hfSettings, map[string]string{"hf": "hf_test"})
+	cfg.ProviderSeeds, cfg.ValkeyPrefix = seeds("hf"), prefix
+	// router-api's and router-worker's registries, each built on its own
+	var hfs []provider.Provider
+	for range 2 {
+		reg, err := providers.Build(cfg, vk, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := reg.Get("hf")
+		closeOnCleanup(t, p)
+		hfs = append(hfs, p)
+	}
+	err := hfs[0].WaitReady(t.Context(), provider.Ref{Provider: "hf", ID: ended})
+	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeUnfunded {
+		t.Fatalf("router-api's wait gave %v, want unfunded", err)
+	}
+	checker, _ := provider.As[provider.AccountChecker](hfs[1])
+	acc, err := checker.CheckAccount(t.Context())
+	if err != nil || acc.Block != provider.BlockUnfunded || !strings.Contains(acc.Detail, ended) {
+		t.Fatalf("router-worker's check gave %+v, %v, want unfunded naming %s", acc, err, ended)
+	}
+}
+
 func TestBuildStopsWhatItBuiltWhenItRefuses(t *testing.T) {
 	swapNet(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Host == "lium.io" {

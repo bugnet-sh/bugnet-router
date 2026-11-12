@@ -114,7 +114,7 @@ func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry, opts .
 			}
 			ps = append(ps, p)
 		case "hf":
-			p, err := buildHF(cfg, o.packages)
+			p, err := buildHF(cfg, vk, o.packages)
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -316,7 +316,7 @@ func liumOptions(cfg config.Config, key string, seed []byte) lium.Options {
 }
 
 // buildHF builds HF, logging an error when an hourly price read puts one of pkgs under its margin
-func buildHF(cfg config.Config, pkgs []catalog.Package) (*hf.Provider, error) {
+func buildHF(cfg config.Config, vk valkey.Client, pkgs []catalog.Package) (*hf.Provider, error) {
 	token, seed := cfg.ProviderKeys["hf"], cfg.ProviderSeeds["hf"]
 	switch {
 	case token == "":
@@ -327,6 +327,8 @@ func buildHF(cfg config.Config, pkgs []catalog.Package) (*hf.Provider, error) {
 		return nil, errors.New(`hf.sbx_server must be "fetch" until an image holds sbx-server`)
 	}
 	opts := hfOptions(cfg, token, seed)
+	// router-api's creates and waits see what router-worker's account check reads
+	opts.Valkey, opts.Prefix = vk, cfg.ValkeyPrefix
 	var p *hf.Provider
 	// The first read may end before New returns, so the check waits for p
 	built := make(chan struct{})
