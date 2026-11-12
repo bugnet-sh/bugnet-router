@@ -190,6 +190,13 @@ func (f *fakeHF) dialed() []string {
 	return slices.Clone(f.dials)
 }
 
+// pacedCount returns how many 429s the pace answered
+func (f *fakeHF) pacedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.paced
+}
+
 // all returns every request the fake got
 func (f *fakeHF) all() []recorded {
 	f.mu.Lock()

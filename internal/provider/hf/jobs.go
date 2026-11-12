@@ -14,7 +14,9 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +35,10 @@ const (
 	maxErrorBytes = 64 << 10
 	// maxMessageBytes bounds the part of an error answer an error carries
 	maxMessageBytes = 512
+	// defaultRetryAfter is the least a 429 holds the calls back
+	defaultRetryAfter = time.Second
+	// maxRetryAfter is the Hub's rate limit window, the longest a 429 can rightly ask to wait
+	maxRetryAfter = 5 * time.Minute
 )
 
 var (
@@ -49,6 +55,9 @@ type jobsClient struct {
 	log              *slog.Logger
 	// ops paces every call, nil for no pacing
 	ops *rate.Limiter
+	// mu guards heldUntil, before which no call is sent once a 429 asked to wait
+	mu        sync.Mutex
+	heldUntil time.Time
 }
 
 func newJobsClient(token, namespace string, perSecond int, log *slog.Logger) *jobsClient {
@@ -174,14 +183,41 @@ func routeOf(raw string) string {
 	return jobsPath
 }
 
-// pace waits for a token of the ops bucket
+// pace waits out a 429's hold, then takes a token of the ops bucket
 func (c *jobsClient) pace(ctx context.Context) error {
-	if c.ops == nil {
-		return ctx.Err()
+	for {
+		if err := sleep(ctx, c.held()); err != nil {
+			return err
+		}
+		if err := take(ctx, c.ops); err != nil {
+			return err
+		}
+		// A 429 that came while this call waited for its token holds it back too
+		if c.held() <= 0 {
+			return nil
+		}
 	}
-	r := c.ops.Reserve()
-	d := r.Delay()
-	if d == 0 {
+}
+
+// hold keeps every call back for wait from now
+func (c *jobsClient) hold(wait time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if until := time.Now().Add(wait); until.After(c.heldUntil) {
+		c.heldUntil = until
+	}
+}
+
+// held is how long calls are still held back
+func (c *jobsClient) held() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Until(c.heldUntil)
+}
+
+// sleep waits for d, or until ctx ends
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
 		return ctx.Err()
 	}
 	t := time.NewTimer(d)
@@ -190,9 +226,21 @@ func (c *jobsClient) pace(ctx context.Context) error {
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
-		r.Cancel()
 		return ctx.Err()
 	}
+}
+
+// take takes one token from lim, giving it back when ctx ends first
+func take(ctx context.Context, lim *rate.Limiter) error {
+	if lim == nil {
+		return ctx.Err()
+	}
+	r := lim.Reserve()
+	if err := sleep(ctx, r.Delay()); err != nil {
+		r.Cancel()
+		return err
+	}
+	return nil
 }
 
 func drainClose(resp *http.Response) {
@@ -277,6 +325,9 @@ func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) er
 	ae := readError(status, h, raw)
 	e := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: ae}
 	switch {
+	case status == http.StatusTooManyRequests:
+		e.Code, e.RetryAfter = provider.CodeRateLimited, retryAfter(h)
+		c.hold(e.RetryAfter)
 	case status == http.StatusUnauthorized:
 		e.Code = provider.CodeAuth
 	case status == http.StatusPaymentRequired:
@@ -299,6 +350,62 @@ func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) er
 			"message", ae.Message, "request_id", ae.RequestID)
 	}
 	return provider.Named(e, providerName)
+}
+
+// retryAfter is how long a 429 asks to wait, the longer of Retry-After and RateLimit's reset
+func retryAfter(h http.Header) time.Duration {
+	wait := max(retryAfterHeader(h.Get("Retry-After")), rateLimitReset(h.Values("RateLimit")))
+	return min(max(wait, defaultRetryAfter), maxRetryAfter)
+}
+
+// retryAfterHeader reads Retry-After in seconds or as an HTTP date, 0 when it reads neither
+func retryAfterHeader(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if s, err := strconv.ParseInt(v, 10, 64); err == nil && s >= 0 {
+		return seconds(s)
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return time.Until(t)
+	}
+	return 0
+}
+
+// rateLimitReset reads RateLimit's t, the seconds until a window resets, a spent bucket's first
+func rateLimitReset(values []string) time.Duration {
+	spent, latest := int64(-1), int64(-1)
+	for _, v := range values {
+		for item := range strings.SplitSeq(v, ",") {
+			r, t := int64(-1), int64(-1)
+			// The first part names the bucket, the rest are its parameters
+			for _, param := range strings.Split(item, ";")[1:] {
+				k, val, _ := strings.Cut(strings.TrimSpace(param), "=")
+				n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+				switch {
+				case err != nil || n < 0:
+				case k == "r":
+					r = n
+				case k == "t":
+					t = n
+				}
+			}
+			if t < 0 {
+				continue
+			}
+			latest = max(latest, t)
+			if r == 0 {
+				spent = max(spent, t)
+			}
+		}
+	}
+	if spent >= 0 {
+		return seconds(spent)
+	}
+	return seconds(max(latest, 0))
+}
+
+// seconds converts a count of seconds, bounded so the product cannot overflow
+func seconds(n int64) time.Duration {
+	return time.Duration(min(n, int64(maxRetryAfter/time.Second)+1)) * time.Second
 }
 
 // transportError classifies a call that got no answer, a create that was sent may have started
