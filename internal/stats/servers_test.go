@@ -25,6 +25,16 @@ func (s shaped) Capabilities() provider.Capabilities { return s.caps }
 // unsized hides the sizes of the provider it holds
 type unsized struct{ provider.Provider }
 
+// unlisted places packages over 4 vCPUs on a size its Sizes leaves out
+type unlisted struct{ shaped }
+
+func (u unlisted) SizeFor(r provider.Resources) (provider.Size, bool) {
+	if r.VCPU > 4 {
+		return size("hidden", 16, 64, 200), true
+	}
+	return u.shaped.SizeFor(r)
+}
+
 // downHealth reports the providers it names as down
 type downHealth map[string]bool
 
@@ -175,6 +185,26 @@ func TestServersLongestRunIsTheLargestOverTheSizesPackages(t *testing.T) {
 			{ID: "small-60m", Minutes: 60, PriceMicros: 300000},
 		},
 	}})
+}
+
+func TestServersListASizeTheProviderDoesNotListLast(t *testing.T) {
+	a := unlisted{newShaped(t, "a", 1000, provider.Capabilities{}, size("s2x4", 2, 4, 51))}
+	reg, err := provider.NewRegistry([]provider.Provider{a}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// xl-10m comes first in catalog order and lands on the hidden size
+	e := placement.New(reg, downHealth{}, nil)
+	got := Servers(e, reg, serverPackages(t), placement.Inputs{MarginFloor: 0.5})
+	names := []string{}
+	for _, s := range got {
+		names = append(names, s.Size)
+	}
+	eq(t, names, []string{"s2x4", "hidden"})
+	eq(t, got[1], Server{
+		Provider: "a", Size: "hidden", VCPU: 16, MemoryMiB: 65536, DiskGiB: 200, User: "root",
+		Available: true, Packages: []ServerPackage{{ID: "xl-10m", Minutes: 10, PriceMicros: 40000}},
+	})
 }
 
 func TestServersEmptyWhenNothingLands(t *testing.T) {
