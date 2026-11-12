@@ -13,7 +13,7 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 		change func(*Options)
 		want   string
 	}{
-		"no token":     {func(o *Options) { o.Token = "" }, "a Jobs token is required"},
+		"no token": {func(o *Options) { o.Token = "" }, "a Jobs token is required"},
 		"spaced token": {func(o *Options) { o.Token = " " + fakeToken },
 			"a Jobs token is required"},
 		"token with a newline": {func(o *Options) { o.Token = fakeToken + "\n" },
