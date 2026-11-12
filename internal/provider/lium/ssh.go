@@ -208,7 +208,7 @@ func (p *Provider) pinHostKey(ctx context.Context, ref provider.Ref, addr string
 		if errors.Is(err, errHostKeyChanged) {
 			return "", p.sshError(ctx, id, err)
 		}
-		if ctx.Err() == nil {
+		if !ended(ctx) {
 			last = err
 		}
 		d, gerr := p.getPod(ctx, id)
@@ -225,6 +225,12 @@ func (p *Provider) pinHostKey(ctx context.Context, ref provider.Ref, addr string
 				last)
 		}
 	}
+}
+
+// ended reports a ctx done or past its deadline, which a dial meets before ctx.Err reports it
+func ended(ctx context.Context) bool {
+	d, ok := ctx.Deadline()
+	return ctx.Err() != nil || ok && !time.Now().Before(d)
 }
 
 // knownPin is the host key the ref pinned, else the one this process pinned at the same place

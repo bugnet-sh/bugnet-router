@@ -317,6 +317,21 @@ func TestLiumSSHFailures(t *testing.T) {
 	})
 }
 
+// lateCtx is past its deadline before a timer marks it done
+type lateCtx struct{ context.Context }
+
+func (lateCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+
+func TestLiumContextEnded(t *testing.T) {
+	eq(t, ended(context.Background()), false)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	eq(t, ended(ctx), false)
+	cancel()
+	eq(t, ended(ctx), true)
+	// A dial meets the deadline itself, so its error may come before ctx.Err reports it
+	eq(t, ended(lateCtx{context.Background()}), true)
+}
+
 func TestLiumSSHFromOlderRef(t *testing.T) {
 	f, p := liveFake(t)
 	ref, pod := readyRef(t, f, p)
