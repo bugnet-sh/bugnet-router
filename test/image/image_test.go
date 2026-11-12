@@ -22,6 +22,13 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/image"
 )
 
+// platform is the one build.sh builds for and the payload runner runs on
+const platform = "linux/amd64"
+
+// base2204 is the Ubuntu 22.04 image of 2026-10-20, no newer than APT_SNAPSHOT as apt needs
+const base2204 = "ubuntu:22.04@sha256:" +
+	"076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11"
+
 func eq[T comparable](t *testing.T, got, want T) {
 	t.Helper()
 	if got != want {
@@ -62,6 +69,34 @@ func testCA(t *testing.T, extra string) (string, string) {
 	return path, hex.EncodeToString(sum[:])
 }
 
+// hostCABundle returns the build host's CA bundle, which build.sh lends apt as apt-ca.pem
+func hostCABundle(t *testing.T) string {
+	t.Helper()
+	for _, p := range []string{"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem"} {
+		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+			return p
+		}
+	}
+	t.Fatal("this host has no CA bundle to lend apt")
+	return ""
+}
+
+// pin returns the value of key in deploy/image/pins.conf
+func pin(t *testing.T, key string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/image/pins.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok && v != "" {
+			return v
+		}
+	}
+	t.Fatalf("pins.conf has no %s", key)
+	return ""
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -97,12 +132,33 @@ func buildImage(t *testing.T, env ...string) string {
 
 func run(t *testing.T, tag, script string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
-		tag, "-c", script).CombinedOutput()
+	var stderr bytes.Buffer
+	cmd := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
+		"--entrypoint", "sh", tag, "-c", script)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s: %v\n%s", script, err, out)
+		t.Fatalf("%s: %v\n%s%s", script, err, out, stderr.Bytes())
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// nftNoNetlink is the error of nft under an emulator that refuses it the netfilter netlink socket
+const nftNoNetlink = "Netlink socket: Protocol not supported"
+
+// nftCheck returns a shell check of nft, or of its libraries where nft has no netlink socket
+func nftCheck(t *testing.T, tag string) string {
+	t.Helper()
+	out, err := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
+		"--entrypoint", "nft", tag, "--version").CombinedOutput()
+	if err == nil {
+		return "nft --version >/dev/null"
+	}
+	if !strings.Contains(string(out), nftNoNetlink) {
+		t.Fatalf("nft --version: %v\n%s", err, out)
+	}
+	t.Logf("nft cannot open its netlink socket here, so only its libraries are checked\n%s", out)
+	return `n="$(command -v nft)" && ldd "$n" >/dev/null && ! ldd "$n" | grep -q 'not found'`
 }
 
 func manifestIn(t *testing.T, tag string) image.Manifest {
@@ -127,9 +183,12 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 	eq(t, run(t, tag, "ls /etc/systemd/system/ssh.service /etc/systemd/system/ssh.socket "+
 		"/etc/systemd/system/multi-user.target.wants/ssh.service "+
 		"/etc/systemd/system/sockets.target.wants/ssh.socket 2>/dev/null | wc -l"), "0")
-	eq(t, run(t, tag, "nft --version >/dev/null && hf version >/dev/null && "+
+	eq(t, run(t, tag, nftCheck(t, tag)+" && hf version >/dev/null && "+
 		"pnpm --version >/dev/null && python3 --version >/dev/null && echo ok"), "ok")
-	eq(t, run(t, tag, "find /root /tmp -type f | wc -l"), "0")
+	// The base image ships /root/.bashrc and /root/.profile, which the build leaves as they are
+	eq(t, run(t, tag, "find /root /tmp -type f ! -path /root/.bashrc ! -path /root/.profile"), "")
+	dotfiles := "sha256sum /root/.bashrc /root/.profile"
+	eq(t, run(t, tag, dotfiles), run(t, pin(t, "BASE_IMAGE"), dotfiles))
 	eq(t, run(t, tag, "ls /var/lib/apt/lists | wc -l"), "0")
 	eq(t, run(t, tag, `. /etc/bugnet/image.env; export LANG LC_ALL; `+
 		`printf 'é\n' | column -t >/dev/null && echo ok`), "ok")
@@ -143,7 +202,7 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 
 func TestUbuntu2204BaseKeepsPython312(t *testing.T) {
 	needDocker(t)
-	tag := buildImage(t, "BUGNET_BASE_IMAGE=ubuntu:22.04")
+	tag := buildImage(t, "BUGNET_BASE_IMAGE="+base2204)
 	m := manifestIn(t, tag)
 	eq(t, m.OS, "ubuntu-22.04")
 	eq(t, m.Tools["python3"], "3.12")
@@ -175,8 +234,9 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 		filepath.Join(root, "deploy/image/setup-image.sh"): "setup-image.sh",
 		filepath.Join(root, "deploy/image/pins.conf"):      "pins.conf",
 		filepath.Join(root, "deploy/image/VERSION"):        "VERSION",
-		runner: "bugnet-run-linux-amd64",
-		ca:     "bugnet-egress-v1.crt",
+		runner:          "bugnet-run-linux-amd64",
+		ca:              "bugnet-egress-v1.crt",
+		hostCABundle(t): "apt-ca.pem",
 	} {
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -186,8 +246,8 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	out, err := exec.Command("docker", "run", "--rm", "-v", payload+":/payload:ro",
-		"ubuntu:24.04", "bash", "-c", script).CombinedOutput()
+	out, err := exec.Command("docker", "run", "--rm", "--platform", platform,
+		"-v", payload+":/payload:ro", pin(t, "BASE_IMAGE"), "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

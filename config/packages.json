@@ -51,19 +51,6 @@
 			"minutes": 10,
 			"price_micros": 300000,
 			"extension_of": "xlarge-10m"
-		},
-		{
-			"id": "2xlarge-10m",
-			"resources": {"vcpu": 16, "memory_mib": 32768, "disk_gib": 250, "gpu_count": 0, "gpu_memory_gib": 0},
-			"minutes": 10,
-			"price_micros": 500000
-		},
-		{
-			"id": "2xlarge-10m-more",
-			"resources": {"vcpu": 16, "memory_mib": 32768, "disk_gib": 250, "gpu_count": 0, "gpu_memory_gib": 0},
-			"minutes": 10,
-			"price_micros": 500000,
-			"extension_of": "2xlarge-10m"
 		}
 	]
 }
