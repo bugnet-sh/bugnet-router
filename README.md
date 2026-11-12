@@ -703,9 +703,10 @@ position, never its text. `shared_hosting_suffixes` holds the same 16 names as b
 | `anonymous_failed_refunds_per_day` | `20` | The same for every placement without a payer, together |
 | `bytes_per_day` | `"50GiB"` | Edge and egress bytes one payer's placements carry together per UTC day |
 
-`[boat]`, `[e2b]`, `[boxd]`, `[koyeb]`, `[lium]` and `[hf]` each take `ops_per_second`, the user
-operations a second on that provider account, 0 for no bucket. Boat's is 50, Lium's 5, HF's 3,
-the others 0.
+`[boat]`, `[e2b]`, `[boxd]` and `[koyeb]` each take `ops_per_second`, the user operations a second
+on that provider account, 0 for no bucket. Boat's is 50, the others 0. `[lium]` and `[hf]` take
+`ops_per_second` too, but there it paces the provider's API, the adapter's own calls to Lium's API
+or HF's Jobs API, and is not a per-account user operation bucket. Lium's is 5 and HF's 3.
 
 `router-api` refuses to start with `use_payer = true` while `BUGNET_PAYMENTS_ROUTER_TOKEN` is
 empty or `emit_events` is false, since Payments could then neither ask `CheckPayer` nor hear of a
@@ -902,6 +903,7 @@ The same calls but `OpenTransfer`, which a stranger holding the URL can make, al
 payer's bucket, `rl:wallet:ops:<payer>`, at `wallets.ops_per_second` with a burst of
 `wallets.ops_burst`, for a placement with a payer, and from the provider account's bucket,
 `rl:acct:<provider>`, at `<provider>.ops_per_second` with a burst of the same, when that is above 0.
+Lium and HF have no such bucket, since their `ops_per_second` paces their API alone.
 One script takes a token from each only when all have one, so a refusal takes nothing, and answers
 `RATE_LIMITED` with the longest wait. Control calls, `StopPlacement` among them, never take from
 these buckets, so a busy account still ends sandboxes.

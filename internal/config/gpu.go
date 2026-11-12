@@ -207,7 +207,7 @@ func (c *Config) checkGPU() error {
 		return err
 	}
 	// 0 means no bucket, which would let HF's calls run past the token user's rate limit
-	if most := hfPlanOps[c.HF.TokenPlan]; c.ProviderOps["hf"] < 1 || c.ProviderOps["hf"] > most {
+	if most := hfPlanOps[c.HF.TokenPlan]; c.HF.OpsPerSecond < 1 || c.HF.OpsPerSecond > most {
 		return fmt.Errorf("hf.ops_per_second must be 1 to %d while hf.token_plan is %q, the "+
 			"token user's Hub calls in each 5 minute window allow no more", most, c.HF.TokenPlan)
 	}

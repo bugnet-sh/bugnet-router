@@ -25,14 +25,14 @@ var liumDefaults = Lium{
 	BlockedCountries: []string{"BY", "CU", "IR", "KP", "RU", "SY"},
 	MaxLifetime:      2 * time.Hour, StartBilled: 7 * time.Minute, SSHPath: "native",
 	KeyDailyBudgetMicros: 2_300_000_000, TemplateVolume: "/workspace",
-	Termination: "max_lifetime",
+	Termination: "max_lifetime", OpsPerSecond: 5,
 }
 
 // hfDefaults is the [hf] table of an empty file, design 4.12
 var hfDefaults = HF{
 	MaxLifetime: 2 * time.Hour, ExtendRoom: time.Hour, TimeoutMargin: 10 * time.Minute,
 	StartBilled: 3 * time.Minute, PollEvery: 3 * time.Second, SBXServer: "fetch",
-	SBXServerVersion: "0.7.0", SBXServerSHA256: sbxSHA256, TokenPlan: "free",
+	SBXServerVersion: "0.7.0", SBXServerSHA256: sbxSHA256, TokenPlan: "free", OpsPerSecond: 3,
 }
 
 // rtx3090 is design 3.5's lium-rtx3090 row
@@ -50,8 +50,8 @@ func TestGPUProviderDefaults(t *testing.T) {
 			eq(t, c.HF, hfDefaults)
 			eq(t, c.ReadyTimeouts["lium"], 6*time.Minute)
 			eq(t, c.ReadyTimeouts["hf"], 5*time.Minute)
-			eq(t, c.ProviderOps["lium"], 5)
-			eq(t, c.ProviderOps["hf"], 3)
+			// Their ops_per_second paces the adapters' API calls, not the users' operations
+			wantNoAccountBucket(t, c)
 			for _, p := range []string{"lium", "hf"} {
 				eq(t, c.MaxConcurrent[p], 10)
 				eq(t, c.CreatesPerSecond[p], 1)
@@ -126,18 +126,18 @@ creates_per_second = 2
 		Countries: []string{"DE", "NL"}, MinDownloadMbps: 500, MaxLifetime: 3 * time.Hour,
 		StartBilled: 8 * time.Minute, SSHPath: "gate", KeyDailyBudgetMicros: 20_000_000,
 		TemplateVolume: "/root", Termination: "lifetime", Sizes: []LiumSize{rtx3090},
+		OpsPerSecond: 4,
 	})
 	eq(t, c.HF, HF{
 		Namespace: "bugnet-sh", Flavors: []string{"t4-small", "a100-large"},
 		MaxLifetime: 90 * time.Minute, ExtendRoom: 30 * time.Minute,
 		TimeoutMargin: 5 * time.Minute, StartBilled: 2 * time.Minute, PollEvery: 2 * time.Second,
 		SBXServer: "baked", SBXServerVersion: "0.8.0", SBXServerSHA256: strings.Repeat("a", 64),
-		TokenPlan: "pro",
+		TokenPlan: "pro", OpsPerSecond: 8,
 	})
 	eq(t, c.ReadyTimeouts["lium"], 7*time.Minute)
 	eq(t, c.ReadyTimeouts["hf"], 4*time.Minute)
-	eq(t, c.ProviderOps["lium"], 4)
-	eq(t, c.ProviderOps["hf"], 8)
+	wantNoAccountBucket(t, c)
 	eq(t, c.MaxConcurrent["lium"], 2)
 	eq(t, c.MaxConcurrent["hf"], 3)
 	eq(t, c.CreatesPerSecond["lium"], 2)
@@ -146,6 +146,16 @@ creates_per_second = 2
 		HardenRule{Required: true, Allow: []string{"10.0.0.0/24"}, NoGateway: true})
 	eq(t, c.Hardening.Rules["hf"], HardenRule{Required: true, Allow: []string{"192.168.1.1/32"}})
 	eq(t, len(c.NativeSSH()), 0)
+}
+
+// wantNoAccountBucket fails the test when lium or hf has a user operation bucket
+func wantNoAccountBucket(t *testing.T, c Config) {
+	t.Helper()
+	for _, p := range []string{"lium", "hf"} {
+		if rate, ok := c.ProviderOps[p]; ok {
+			t.Fatalf("%s has an account bucket of %d operations a second", p, rate)
+		}
+	}
 }
 
 func TestGPUProviderRefusals(t *testing.T) {

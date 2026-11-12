@@ -101,7 +101,7 @@ sbx_server_sha256 = "eb2b04f79fbe765195300aaf1582be2a2a9ea698ff067d0cab428171d55
 harden_required = false       # true means hf never serves, since harden cannot run there
 harden_allow = []
 token_plan = "free"           # the token user's Hub plan, "free" or "pro"
-ops_per_second = 3            # at most 3 on "free", 8 on "pro"
+ops_per_second = 3            # Jobs API calls, at most 3 on "free", 8 on "pro", no user bucket
 max_concurrent = 10
 creates_per_second = 1
 

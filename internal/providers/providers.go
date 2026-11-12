@@ -306,7 +306,7 @@ func liumOptions(cfg config.Config, key string, seed []byte) lium.Options {
 		APIKey: key, SSHSeed: seed, Sizes: sizes, Countries: l.Countries,
 		OtherCountries: l.OtherCountries, BlockedCountries: l.BlockedCountries,
 		MinDownloadMbps: l.MinDownloadMbps, MaxLifetime: l.MaxLifetime,
-		StartBilled: l.StartBilled, OpsPerSecond: cfg.ProviderOps["lium"],
+		StartBilled: l.StartBilled, OpsPerSecond: l.OpsPerSecond,
 		CreatesPerSecond: cfg.CreatesPerSecond["lium"], Image: cfg.Images.Lium.Ref,
 		ImageVersion: cfg.Images.Lium.Version, TemplateVolume: l.TemplateVolume,
 		Termination:   l.Termination,
@@ -353,7 +353,7 @@ func hfOptions(cfg config.Config, token string, seed []byte) hf.Options {
 	h := cfg.HF
 	return hf.Options{
 		Token: token, Namespace: h.Namespace, Flavors: h.Flavors, MaxLifetime: h.MaxLifetime,
-		StartBilled: h.StartBilled, OpsPerSecond: cfg.ProviderOps["hf"], SandboxSeed: seed,
+		StartBilled: h.StartBilled, OpsPerSecond: h.OpsPerSecond, SandboxSeed: seed,
 		Image: cfg.Images.HF.Ref, ExtendRoom: h.ExtendRoom, TimeoutMargin: h.TimeoutMargin,
 		PollEvery: h.PollEvery, SBXServerSHA256: h.SBXServerSHA256,
 	}

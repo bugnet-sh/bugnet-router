@@ -99,14 +99,15 @@ func TestLiumOptionsCarryEverySetting(t *testing.T) {
 	cfg.Lium = config.Lium{
 		Countries: []string{"DE", "NL"}, OtherCountries: true, BlockedCountries: []string{"RU"},
 		MinDownloadMbps: 500, MaxLifetime: 3 * time.Hour, StartBilled: 8 * time.Minute,
-		TemplateVolume: "/root", Termination: "lifetime",
+		TemplateVolume: "/root", Termination: "lifetime", OpsPerSecond: 4,
 		Sizes: []config.LiumSize{{
 			Size: "lium-rtx3090", Model: gpu.RTX3090, Match: []string{"NVIDIA GeForce RTX 3090"},
 			GPUs: 1, GPUMemoryGiB: 24, VCPU: 8, MemoryMiB: 28672, DiskGiB: 200,
 			MaxHourlyMicros: 350_000,
 		}},
 	}
-	cfg.ProviderOps = map[string]int{"lium": 4, "hf": 3}
+	// The account buckets are the users' operations, never the API pace
+	cfg.ProviderOps = map[string]int{"lium": 40, "hf": 30}
 	cfg.CreatesPerSecond = map[string]int{"lium": 2, "hf": 1}
 	cfg.MaxConcurrent = map[string]int{"lium": 3, "hf": 7}
 	cfg.LimitsPoll.AccountEvery = 7 * time.Minute
@@ -146,9 +147,9 @@ func TestHFOptionsCarryEverySetting(t *testing.T) {
 		MaxLifetime: 90 * time.Minute, ExtendRoom: 30 * time.Minute,
 		TimeoutMargin: 5 * time.Minute, StartBilled: 2 * time.Minute, PollEvery: 2 * time.Second,
 		SBXServer: "fetch", SBXServerVersion: "0.7.0", SBXServerSHA256: strings.Repeat("c", 64),
-		TokenPlan: "pro",
+		TokenPlan: "pro", OpsPerSecond: 8,
 	}
-	cfg.ProviderOps = map[string]int{"lium": 4, "hf": 8}
+	cfg.ProviderOps = map[string]int{"lium": 40, "hf": 80}
 	digest := "ghcr.io/bugnet-sh/bugnet-base@sha256:" + strings.Repeat("d", 64)
 	cfg.Images.HF = config.ProviderImage{Version: "2026.11.3", Ref: digest}
 	seed := []byte(strings.Repeat("h", 32))

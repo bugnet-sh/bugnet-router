@@ -123,7 +123,7 @@ type Config struct {
 	// GithubToken and HFToken read sources for the estimator, empty for anonymous reads
 	GithubToken string
 	HFToken     string
-	// ProviderOps is each provider account's user operations a second, absent for no bucket
+	// ProviderOps is each CPU provider account's user operations a second, absent for no bucket
 	ProviderOps map[string]int
 	// MaxConcurrent is each provider's own cap on concurrent sandboxes, absent for the account's
 	MaxConcurrent map[string]int
@@ -233,6 +233,8 @@ type Lium struct {
 	Termination string
 	// Sizes are the sizes sold, none until the file names them
 	Sizes []LiumSize
+	// OpsPerSecond paces the adapter's calls to Lium's API, 0 for none, never a user bucket
+	OpsPerSecond int
 }
 
 // LiumSize is one size sold on Lium, one GPU type on a whole node with a floor and a price cap
@@ -275,6 +277,8 @@ type HF struct {
 	SBXServerSHA256 string
 	// TokenPlan is the Hub plan of the token's user, free or pro
 	TokenPlan string
+	// OpsPerSecond paces the adapter's Jobs API calls, never a user bucket
+	OpsPerSecond int
 }
 
 // Names holds the public names the edges serve, each empty until a deployment sets it
@@ -1032,14 +1036,20 @@ func (f file) config() (Config, error) {
 	for _, o := range []struct {
 		name string
 		rate int64
-	}{{"e2b", f.E2B.OpsPerSecond}, {"boxd", f.Boxd.OpsPerSecond},
-		{"koyeb", f.Koyeb.OpsPerSecond}, {"boat", f.Boat.OpsPerSecond},
-		{"lium", f.Lium.OpsPerSecond}, {"hf", f.HF.OpsPerSecond}} {
+		// pace takes a GPU provider's rate, which paces its adapter's API calls alone
+		pace *int
+	}{{"e2b", f.E2B.OpsPerSecond, nil}, {"boxd", f.Boxd.OpsPerSecond, nil},
+		{"koyeb", f.Koyeb.OpsPerSecond, nil}, {"boat", f.Boat.OpsPerSecond, nil},
+		{"lium", f.Lium.OpsPerSecond, &c.Lium.OpsPerSecond},
+		{"hf", f.HF.OpsPerSecond, &c.HF.OpsPerSecond}} {
 		if o.rate < 0 || o.rate > maxWalletLimit {
 			return Config{}, fmt.Errorf("%s.ops_per_second must be 0 to %d", o.name,
 				maxWalletLimit)
 		}
-		if o.rate > 0 {
+		switch {
+		case o.pace != nil:
+			*o.pace = int(o.rate)
+		case o.rate > 0:
 			c.ProviderOps[o.name] = int(o.rate)
 		}
 	}

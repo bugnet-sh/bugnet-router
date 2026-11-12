@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -582,6 +584,34 @@ func TestThreeOperationBucketsTogether(t *testing.T) {
 	eq(t, e.bucketTokens(t, opsKey), ops)
 	eq(t, e.bucketTokens(t, walletKey), wallet)
 	eq(t, e.stop(t, h).GetState(), routerv1.PlacementState_PLACEMENT_STATE_TERMINATED)
+}
+
+func TestGPUOperationsSpendNoAccountBucket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.toml")
+	if err := os.WriteFile(path, []byte("[boat]\nops_per_second = 1\n[lium]\nops_per_second = 1\n"+
+		"[hf]\nops_per_second = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Lium's and HF's rate paces their adapters' API calls, which a user operation never makes
+	eq(t, []int{cfg.Lium.OpsPerSecond, cfg.HF.OpsPerSecond}, []int{1, 1})
+	for _, name := range []string{"boat", "lium", "hf"} {
+		t.Run(name, func(t *testing.T) {
+			// A slow bucket keeps its key a second after a take
+			e := newEnv(t, options{
+				providerName: name, providerOps: cfg.ProviderOps, opsPerSecond: 1, opsBurst: 2,
+			})
+			h, p := e.readyPlacement(t)
+			e.exec(t, sh(h, "true"))
+			if e.bucketTokens(t, "ops:"+p.GetPlacementId()) == "" {
+				t.Fatal("the exec took nothing from the placement's bucket")
+			}
+			eq(t, e.bucketTokens(t, "rl:acct:"+name) != "", name == "boat")
+		})
+	}
 }
 
 func TestWatchJobTakesFromThreeBuckets(t *testing.T) {
