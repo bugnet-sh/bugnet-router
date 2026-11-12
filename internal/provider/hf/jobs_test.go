@@ -246,6 +246,14 @@ func TestHFPacingGivesUpWithTheCaller(t *testing.T) {
 		t.Fatalf("a call its caller gave up on while paced gave %v", err)
 	}
 	eq(t, len(f.all()), 1)
+	// The token given back is the next call's, so it goes one interval after the first
+	if err := listOnce(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	got := arrivals(f.all())
+	if gap := got[1].Sub(got[0]); gap > 1500*time.Millisecond {
+		t.Fatalf("the next call went %s after the first, the given up token was kept", gap)
+	}
 }
 
 // idsOf lists the Jobs' ids in order
