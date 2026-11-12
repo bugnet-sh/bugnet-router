@@ -162,4 +162,7 @@ func TestOwnedReadsTheProviderSeed(t *testing.T) {
 	if code != 0 || out != "provider=lium\ncount=0\n" {
 		t.Fatalf("owned lium exited %d with %q and %q, want no pods", code, out, stderr)
 	}
+	if !testenv.GoroutinesGone("github.com/bugnet-sh/bugnet-router/internal/provider/lium.New") {
+		t.Fatal("lium's listing loop runs on after owned returned")
+	}
 }
