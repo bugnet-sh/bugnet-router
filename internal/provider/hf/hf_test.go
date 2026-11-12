@@ -1,12 +1,39 @@
 package hf
 
 import (
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
+
+// hfReadyTimeout is hf.ready_timeout's default, the time the router gives a Job to boot
+const hfReadyTimeout = 5 * time.Minute
+
+func TestHFContract(t *testing.T) {
+	f := newFake(t)
+	// The contract's files step writes under the host's /tmp, which the fake's Jobs share
+	t.Cleanup(func() {
+		f.mu.Lock()
+		wrote := slices.Clone(f.sbx.wrote)
+		f.mu.Unlock()
+		for _, name := range wrote {
+			first, _, _ := strings.Cut(strings.TrimPrefix(name, "/tmp/"), "/")
+			if strings.HasPrefix(name, "/tmp/") && strings.HasPrefix(first, "bugnet-contract-") {
+				_ = os.RemoveAll("/tmp/" + first)
+			}
+		}
+	})
+	contract.Run(t, func(t *testing.T) provider.Provider {
+		return f.provider(t, testOptions())
+	}, contract.Floor(provider.Resources{GPUCount: 1, GPUModel: gpu.T4}),
+		contract.ReadyTimeout(hfReadyTimeout))
+}
 
 func TestHFNewRefusesBadOptions(t *testing.T) {
 	cases := map[string]struct {

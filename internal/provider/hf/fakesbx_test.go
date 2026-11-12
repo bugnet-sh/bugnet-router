@@ -18,13 +18,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/bugnet-sh/bugnet-router/internal/provider/shell"
 )
 
 const (
-	// fakeToolEnv makes the test binary act as util-linux setsid -w or GNU mv -fT, which macOS lacks
-	fakeToolEnv = "HF_FAKE_TOOL"
+	// fakePerl runs the fake's stand-ins for util-linux setsid and GNU mv, which macOS lacks
+	fakePerl = "/usr/bin/perl"
 	// fakeChunk is the most one stdout or stderr event carries, as sbx-server reads
 	fakeChunk = 32 << 10
 	// fakeListDefault and fakeListMax are sbx-server's list limits
@@ -42,66 +40,24 @@ const (
 	sbxDeleteRoute = "DELETE /v1/files/delete"
 )
 
-func TestMain(m *testing.M) {
-	switch os.Getenv(fakeToolEnv) {
-	case "setsid":
-		os.Exit(fakeSetsid(os.Args[1:]))
-	case "mv":
-		os.Exit(fakeMv(os.Args[1:]))
-	}
-	os.Exit(m.Run())
+// fakeTools are the scripts standing in for the Job's own setsid and mv
+var fakeTools = map[string]string{
+	// setsid -w starts a session, forking and waiting first when it leads a group already
+	"setsid": `use POSIX ();
+shift @ARGV if @ARGV && $ARGV[0] eq '-w';
+exit 1 unless @ARGV;
+if (defined POSIX::setsid()) { exec { $ARGV[0] } @ARGV; exit 127 }
+my $pid = fork() // exit 1;
+if ($pid == 0) { POSIX::setsid(); exec { $ARGV[0] } @ARGV; exit 127 }
+waitpid($pid, 0);
+exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+`,
+	// mv -fT renames, refusing any other flags so the adapter's own are checked
+	"mv": `if (@ARGV != 4 || $ARGV[0] ne '-fT' || $ARGV[1] ne '--') {
+	print STDERR "fake mv takes -fT -- src dst\n"; exit 2
 }
-
-// toolEnv is the environment a fake tool passes on, without the switch that made it one
-func toolEnv() []string {
-	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		return strings.HasPrefix(kv, fakeToolEnv+"=")
-	})
-}
-
-// fakeSetsid starts a session and runs argv in it, as util-linux setsid -w does
-func fakeSetsid(args []string) int {
-	if len(args) > 0 && args[0] == "-w" {
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		return 1
-	}
-	path, err := exec.LookPath(args[0])
-	if err != nil {
-		return 127
-	}
-	if _, err := syscall.Setsid(); err == nil {
-		_ = syscall.Exec(path, args, toolEnv())
-		return 126
-	}
-	// A group leader cannot start a session, so setsid forks and waits as -w asks
-	cmd := exec.Command(path)
-	cmd.Args, cmd.Env = args, toolEnv()
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	err = cmd.Run()
-	var ee *exec.ExitError
-	switch {
-	case err == nil:
-		return 0
-	case errors.As(err, &ee) && ee.ExitCode() >= 0:
-		return ee.ExitCode()
-	}
-	return 1
-}
-
-// fakeMv renames as GNU mv -fT does, refusing any other flags so the adapter's own are checked
-func fakeMv(args []string) int {
-	if len(args) != 4 || args[0] != "-fT" || args[1] != "--" {
-		fmt.Fprintf(os.Stderr, "fake mv takes -fT -- src dst, got %q\n", args)
-		return 2
-	}
-	if err := os.Rename(args[2], args[3]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	return 0
+rename($ARGV[2], $ARGV[3]) or do { print STDERR "$!\n"; exit 1 };
+`,
 }
 
 // fakeSBX is where every Job's sbx-server runs, the host's own shell and files standing in
@@ -112,6 +68,10 @@ type fakeSBX struct {
 	pingEvery time.Duration
 	// listMax caps a list page below what the adapter asks, sbx-server's maximum when 0
 	listMax int
+	// slow holds each read and write that long, so parts in flight overlap
+	slow time.Duration
+	// inflight and peak count the calls of each route at once, now and at most
+	inflight, peak map[string]int
 	// groups are the process groups of the commands still running
 	groups map[int]bool
 	// wrote are the paths every write named
@@ -122,22 +82,21 @@ type fakeSBX struct {
 func newFakeSBX(t *testing.T) fakeSBX {
 	t.Helper()
 	dir := t.TempDir()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(fakePerl); err != nil {
+		t.Fatalf("the fake sbx-server's tools need %s: %v", fakePerl, err)
 	}
 	s := fakeSBX{
 		home: filepath.Join(dir, "root"), execDir: filepath.Join(dir, "exec"),
 		bin: filepath.Join(dir, "bin"), pingEvery: 15 * time.Second, groups: map[int]bool{},
+		inflight: map[string]int{}, peak: map[string]int{},
 	}
 	for _, d := range []string{s.home, s.bin} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, tool := range []string{"setsid", "mv"} {
-		script := "#!/bin/sh\n" + fakeToolEnv + "=" + tool + " exec " + shell.Quote(exe) +
-			" \"$@\"\n"
+	for tool, script := range fakeTools {
+		script = "#!" + fakePerl + "\n" + script
 		if err := os.WriteFile(filepath.Join(s.bin, tool), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -172,6 +131,33 @@ func (f *fakeHF) stopCommands() {
 	}
 	for _, g := range groups {
 		_ = syscall.Kill(-g, syscall.SIGKILL)
+	}
+}
+
+// peakOf is the most calls of a route the fake served at once
+func (f *fakeHF) peakOf(pattern string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sbx.peak[pattern]
+}
+
+// counted counts the calls of a route in flight, holding reads and writes as slow says
+func (f *fakeHF) counted(pattern string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.sbx.inflight[pattern]++
+		f.sbx.peak[pattern] = max(f.sbx.peak[pattern], f.sbx.inflight[pattern])
+		slow := f.sbx.slow
+		f.mu.Unlock()
+		defer func() {
+			f.mu.Lock()
+			f.sbx.inflight[pattern]--
+			f.mu.Unlock()
+		}()
+		if pattern == sbxReadRoute || pattern == sbxWriteRoute {
+			time.Sleep(slow)
+		}
+		h(w, r)
 	}
 }
 

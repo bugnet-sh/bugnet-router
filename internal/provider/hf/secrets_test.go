@@ -243,6 +243,14 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	f.inject(healthRoute, fault{status: 200, times: 1, raw: `{"status":"ok","protocol":3,` +
 		`"mode":"` + refs[0].Meta["secret"] + `","auth":"required"}`})
 	keep(p.WaitReady(ctx, refs[0]))
+	// Hex reads the same in capitals, so an echo of the token in capitals is the token
+	f.inject(healthRoute, fault{status: 200, times: 1, raw: `{"status":"ok","protocol":3,` +
+		`"mode":"dedicated","auth":"` + strings.ToUpper(refs[0].Meta["secret"]) + `"}`})
+	keep(p.WaitReady(ctx, refs[0]))
+	f.inject(healthRoute, fault{status: 500, times: 1,
+		raw: "got " + strings.ToUpper(refs[0].Meta["secret"])})
+	_, err = p.sbx.health(ctx, refs[0].ID, refs[0].Meta["secret"])
+	keep(err)
 	_, err = p.Inspect(ctx, ref)
 	keep(err)
 	owned, err := p.ListOwned(ctx, map[string]string{"bugnet": "1"})
@@ -268,7 +276,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	}
 	tokenParts := slices.Clone(tokens)
 	for _, tk := range tokens {
-		tokenParts = append(tokenParts, tk[:16], strings.ToUpper(tk))
+		tokenParts = append(tokenParts, tk[:16], strings.ToUpper(tk), strings.ToUpper(tk[:16]))
 	}
 	var created, health int
 	for _, r := range f.all() {
@@ -335,5 +343,147 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	}
 	if carries(logs.String(), append(append(tokenParts, tokenWords()...), seedWords()...)) {
 		t.Errorf("the log carries a secret: %s", logs.String())
+	}
+}
+
+// TestHFSandboxCallsCarryTheSandboxTokenAlone runs every sandbox call and holds each to its Job's
+// host with its own token, the Jobs token reaching none of them
+func TestHFSandboxCallsCarryTheSandboxTokenAlone(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	p := f.provider(t, opts)
+	p.partBytes = 1 << 10
+	ref := readyJob(t, f, p)
+	token := ref.Meta["secret"]
+	dir := t.TempDir()
+	var errs []error
+	keep := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	data := []byte(strings.Repeat("tenant bytes ", 300))
+	keep(p.WriteFile(ctx, ref, dir+"/a", data, 0o644))
+	_, _, err := p.ReadFile(ctx, ref, dir+"/a", 0, 64)
+	keep(err)
+	_, err = p.StatFile(ctx, ref, dir+"/a")
+	keep(err)
+	keep(p.ListFiles(ctx, ref, dir, 2, provider.NewListing(100)))
+	keep(streamUp(t, p, ref, dir+"/b", data))
+	_, err = streamDown(t, p, ref, dir+"/b", 3)
+	keep(err)
+	_, _, err = run(t, p, ref, sh("echo hi"))
+	keep(err)
+	// A cancel sends its kill, and a ref without its token derives it from the Job's key
+	cctx, cancel := context.WithCancel(ctx)
+	s, err := p.Exec(cctx, ref, sh("echo started; sleep 60"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.Read(make([]byte, 16))
+	cancel()
+	_, err = s.Wait()
+	keep(err)
+	within(t, 5*time.Second, "the kill", func() bool { return killExecs(f) == 1 })
+	_, _, err = run(t, p, provider.Ref{Provider: "hf", ID: ref.ID}, sh("true"))
+	keep(err)
+	// Error answers that echo the token they got, from sbx-server or what replaced it
+	for _, route := range []string{sbxStatRoute, sbxReadRoute, sbxWriteRoute, sbxListRoute,
+		sbxExecRoute, sbxDeleteRoute} {
+		for _, status := range []int{400, 403, 404, 500, 502, 503} {
+			f.inject(route, fault{status: status, times: 1,
+				message: "got X-Sandbox-Token " + token + " and " + strings.ToUpper(token)})
+			_, err = p.StatFile(ctx, ref, dir+"/a")
+			keep(err)
+			_, _, err = p.ReadFile(ctx, ref, dir+"/a", 0, 8)
+			keep(err)
+			keep(p.WriteFile(ctx, ref, dir+"/c", []byte("x"), 0o644))
+			keep(p.ListFiles(ctx, ref, dir, 1, provider.NewListing(10)))
+			_, _, err = run(t, p, ref, sh("true"))
+			keep(err)
+			f.clear(route)
+		}
+	}
+	f.inject(sbxExecRoute, fault{status: 200, times: 1, raw: token + "\n"})
+	_, _, err = run(t, p, ref, sh("true"))
+	keep(err)
+
+	var sandbox, hub int
+	for _, r := range f.all() {
+		where := r.method + " " + r.host + r.path
+		rest := r.header.Clone()
+		got := rest.Get("X-Sandbox-Token")
+		rest.Del("X-Sandbox-Token")
+		body := string(r.body)
+		if r.method == "POST" && r.path == "/api/jobs/"+testNamespace {
+			// The create carries the token once, as the Job secret HF encrypts
+			var spec map[string]any
+			if err := json.Unmarshal(r.body, &spec); err != nil {
+				t.Fatal(err)
+			}
+			if spec["secrets"].(map[string]any)["SBX_TOKEN"] != token {
+				t.Errorf("%s carried secrets %v", where, spec["secrets"])
+			}
+			delete(spec, "secrets")
+			plain, _ := json.Marshal(spec)
+			body = string(plain)
+		}
+		var other strings.Builder
+		other.WriteString(r.path + "?" + r.query.Encode() + body)
+		for k, vs := range rest {
+			other.WriteString(k + ": " + strings.Join(vs, ",") + "\n")
+		}
+		switch {
+		case r.host == ref.ID+"--49983.hf.jobs":
+			sandbox++
+			for _, name := range []string{"Authorization", "Cookie", "Proxy-Authorization"} {
+				if v := r.header.Get(name); v != "" {
+					t.Errorf("%s sent %s %q", where, name, v)
+				}
+			}
+			if got != token {
+				t.Errorf("%s sent X-Sandbox-Token %q", where, got)
+			}
+			if slices.ContainsFunc(append(tokenWords(), token, token[:16]), func(w string) bool {
+				return strings.Contains(other.String(), w)
+			}) {
+				t.Errorf("%s carried a token outside its header", where)
+			}
+		case r.host == jobsHost:
+			hub++
+			if got != "" || strings.Contains(other.String(), token) {
+				t.Errorf("%s carried the sandbox token", where)
+			}
+		default:
+			t.Errorf("%s went to a host neither HF's API nor the Job's", where)
+		}
+	}
+	if sandbox < 40 || hub < 3 {
+		t.Fatalf("%d sandbox and %d Jobs calls ran", sandbox, hub)
+	}
+	for _, d := range f.dialed() {
+		if d != jobsHost+":443" && d != ref.ID+"--49983.hf.jobs:443" {
+			t.Errorf("the adapter dialled %s", d)
+		}
+	}
+	if len(errs) < 25 {
+		t.Fatalf("only %d calls failed, the error answers did not run", len(errs))
+	}
+	secrets := append(tokenWords(), token, token[:16], strings.ToUpper(token),
+		strings.ToUpper(token[:16]))
+	for _, err := range errs {
+		for _, w := range secrets {
+			if strings.Contains(err.Error(), w) {
+				t.Errorf("the error %q carries a secret", err)
+			}
+		}
+	}
+	for _, w := range secrets {
+		if strings.Contains(logs.String(), w) {
+			t.Errorf("the log carries a secret: %s", logs.String())
+		}
 	}
 }

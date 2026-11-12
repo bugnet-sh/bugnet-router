@@ -186,7 +186,7 @@ func newFake(t *testing.T) *fakeHF {
 		sbxExecRoute: f.exec, sbxReadRoute: f.read, sbxWriteRoute: f.write,
 		sbxListRoute: f.list, sbxStatRoute: f.stat, sbxDeleteRoute: f.remove,
 	} {
-		mux.HandleFunc(pattern, f.sbxGate(pattern, f.sbxRoute(h)))
+		mux.HandleFunc(pattern, f.sbxGate(pattern, f.counted(pattern, f.sbxRoute(h))))
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("adapter called the unexpected route %s %s", r.Method, r.URL.Path)
@@ -234,6 +234,13 @@ func (f *fakeHF) inject(pattern string, ft fault) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.faults[pattern] = &ft
+}
+
+// clear drops the route pattern's fault
+func (f *fakeHF) clear(pattern string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.faults, pattern)
 }
 
 // addJob adds a Job in stage with labels and returns it

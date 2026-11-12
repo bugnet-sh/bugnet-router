@@ -95,8 +95,8 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 			"hf_token_refused, sbx-server does not take the sandbox's token"))
 	case h.Mode != "dedicated" || h.Auth != "required":
 		return nil, refusedServer(ref.ID, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
-			"%.20q, dedicated and required are needed", scrub(h.Mode, token),
-			scrub(h.Auth, token)))
+			"%.20q, dedicated and required are needed", scrubToken(h.Mode, token),
+			scrubToken(h.Auth, token)))
 	}
 	return nil, nil
 }

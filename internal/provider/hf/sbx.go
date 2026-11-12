@@ -149,7 +149,7 @@ func (p *Provider) answerError(
 	}
 	_ = json.Unmarshal(raw, &body)
 	// The Job's root may answer for sbx-server and echo the token it got
-	msg := scrub(cmp.Or(body.Error, strings.TrimSpace(string(raw)),
+	msg := scrubToken(cmp.Or(body.Error, strings.TrimSpace(string(raw)),
 		http.StatusText(resp.StatusCode)), sb.token)
 	status := resp.StatusCode
 	e := &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
@@ -254,7 +254,7 @@ func (c *sbxClient) health(ctx context.Context, id, token string) (health, error
 		// The Job's root may answer for sbx-server and echo the token it got
 		return health{}, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
 			"hf Job %s sbx-server health answered %d: %.200q", id, resp.StatusCode,
-			scrub(string(raw), token))}
+			scrubToken(string(raw), token))}
 	}
 	var h health
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHealthBytes)).Decode(&h); err != nil {
@@ -262,4 +262,36 @@ func (c *sbxClient) health(ctx context.Context, id, token string) (health, error
 			Err: fmt.Errorf("hf Job %s sbx-server health: %w", id, err)}
 	}
 	return h, nil
+}
+
+// scrubToken replaces the sandbox token in any case, since hex reads the same either way, then
+// cuts the text as scrub does
+func scrubToken(s, token string) string {
+	token = asciiLower(token)
+	if token == "" {
+		return scrub(s)
+	}
+	folded := asciiLower(s)
+	var b strings.Builder
+	for {
+		i := strings.Index(folded, token)
+		if i < 0 {
+			break
+		}
+		b.WriteString(s[:i] + "[token]")
+		s, folded = s[i+len(token):], folded[i+len(token):]
+	}
+	b.WriteString(s)
+	return scrub(b.String())
+}
+
+// asciiLower lowers ASCII letters alone, so every byte keeps its place
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }

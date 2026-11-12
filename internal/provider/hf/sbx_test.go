@@ -1,11 +1,15 @@
 package hf
 
 import (
+	"io"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
 
 // sbxRequests are the calls the fake's sbx-servers got
@@ -100,5 +104,60 @@ func TestHFSandboxClientBoundsTheAnswer(t *testing.T) {
 	})
 	if _, err := p.sbx.health(t.Context(), j.id, testKeyToken); err == nil {
 		t.Fatal("a 1 MiB health answer was read")
+	}
+}
+
+// toAgent sends every *.hf.jobs call to a plain HTTP server, and a call to any other host there
+type toAgent struct{ host string }
+
+func (a toAgent) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Hostname(), sbxDomain) {
+		r = r.Clone(r.Context())
+		r.URL.Scheme, r.URL.Host, r.Host = "http", a.host, ""
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TestHFSandboxCallsRefuseRedirects points every sandbox call at a server that only redirects
+func TestHFSandboxCallsRefuseRedirects(t *testing.T) {
+	agent, reached := contract.Redirector(t)
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	u, err := url.Parse(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.sbx.client.Transport = toAgent{host: u.Host}
+	ref := provider.Ref{Provider: "hf", ID: "6911aaaa", Meta: map[string]string{
+		"secret": testKeyToken,
+	}}
+	ctx := t.Context()
+	if s, err := p.Exec(ctx, ref, sh("true")); err == nil {
+		out, _ := io.ReadAll(s)
+		t.Errorf("an exec through a redirect gave %q", out)
+	}
+	if _, err := p.StatFile(ctx, ref, "/etc/hostname"); err == nil {
+		t.Error("a stat took a redirect as an answer")
+	}
+	if data, _, err := p.ReadFile(ctx, ref, "/etc/hostname", 0, 64); err == nil {
+		t.Errorf("a read through a redirect gave %q", data)
+	}
+	if err := p.WriteFile(ctx, ref, "/tmp/f", []byte("tenant bytes"), 0o644); err == nil {
+		t.Error("a write through a redirect succeeded")
+	}
+	if err := p.ListFiles(ctx, ref, "/tmp", 1, provider.NewListing(10)); err == nil {
+		t.Error("a listing took a redirect as an answer")
+	}
+	if r, err := p.OpenReader(ctx, ref, "/etc/hostname", 0); err == nil {
+		_ = r.Close()
+		t.Error("a stream through a redirect opened")
+	}
+	if w, err := p.OpenWriter(ctx, ref, "/tmp/f", provider.WriteSpec{Size: 1,
+		Mode: 0o644}); err == nil {
+		_ = w.Abort()
+		t.Error("a write stream through a redirect opened")
+	}
+	if reached.Load() {
+		t.Fatal("the sandbox client followed a redirect")
 	}
 }
