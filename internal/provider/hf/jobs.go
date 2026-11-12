@@ -284,6 +284,29 @@ func (c *jobsClient) getJob(ctx context.Context, id string) (job, error) {
 	return j, err
 }
 
+// createJob starts a Job from spec, the body of the create, and returns it as HF answers
+func (c *jobsClient) createJob(ctx context.Context, spec []byte) (job, error) {
+	var j job
+	_, err := c.do(ctx, call{
+		method: http.MethodPost, url: jobsURL(nil, c.namespace), body: spec, create: true,
+	}, &j)
+	if err == nil && !jobID.MatchString(j.ID) {
+		return job{}, &provider.Error{Code: provider.CodeOutcomeUnknown,
+			Err: fmt.Errorf("hf started a Job and named it %.40q", j.ID)}
+	}
+	return j, err
+}
+
+// cancelJob cancels one Job of the namespace, a not_found error once HF no longer has it
+func (c *jobsClient) cancelJob(ctx context.Context, id string) error {
+	u, err := c.jobURL(id, "cancel")
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, call{method: http.MethodPost, url: u, job: true}, nil)
+	return err
+}
+
 // listJobs reads the namespace's Jobs carrying every label in any of the stages, page by page
 func (c *jobsClient) listJobs(
 	ctx context.Context, labels map[string]string, stages []string,
