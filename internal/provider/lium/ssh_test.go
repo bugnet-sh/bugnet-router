@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -149,21 +148,18 @@ func TestLiumHostKeyPin(t *testing.T) {
 	eq(t, f.dials(), dials)
 }
 
-// running starts a blocker on ref and waits until the pod runs it
-func running(
-	t *testing.T, f *fakeLium, p *Provider, ref provider.Ref,
-) (provider.ExecStream, string) {
+// running starts a command on ref that runs until its gate file exists, and waits for its start
+func running(t *testing.T, p *Provider, ref provider.Ref) (provider.ExecStream, string) {
 	t.Helper()
 	gate := filepath.Join(t.TempDir(), "go")
-	s, err := p.Exec(context.Background(), ref, blocker(gate))
+	s, err := p.Exec(context.Background(), ref, sh("echo started; "+blocker(gate).Argv[2]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	within(t, 5*time.Second, "the blocker's start", func() bool {
-		return slices.ContainsFunc(f.execLines(), func(l string) bool {
-			return strings.Contains(l, gate)
-		})
-	})
+	line := make([]byte, len("started\n"))
+	if _, err := io.ReadFull(s, line); err != nil || string(line) != "started\n" {
+		t.Fatalf("read %q, %v", line, err)
+	}
 	return s, gate
 }
 
@@ -184,7 +180,7 @@ func TestLiumPinConflict(t *testing.T) {
 	t.Run("a ref with another pin leaves the pod's pool alone", func(t *testing.T) {
 		f, p := liveFake(t)
 		ref, pod := readyRef(t, f, p)
-		s, gate := running(t, f, p, ref)
+		s, gate := running(t, p, ref)
 		pl := p.poolOf(pod.id)
 		other := provider.Ref{Provider: ref.Provider, ID: ref.ID, Meta: maps.Clone(ref.Meta)}
 		other.Meta[provider.MetaHostKey] = authorizedKey(newHostKey(t).PublicKey())
@@ -223,7 +219,7 @@ func TestLiumPinConflict(t *testing.T) {
 		}
 		pinned := provider.Ref{Provider: ref.Provider, ID: ref.ID, Meta: maps.Clone(ref.Meta)}
 		maps.Copy(pinned.Meta, meta)
-		s, gate := running(t, f, p, pinned)
+		s, gate := running(t, p, pinned)
 		pl := p.poolOf(pod.id)
 		f.sshd(pod.id).rekey(t)
 		close(hold)

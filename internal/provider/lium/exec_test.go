@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -353,4 +354,68 @@ func TestLiumExecDeadline(t *testing.T) {
 		}
 		waitGroupGone(t, f, pgid)
 	})
+}
+
+func TestLiumExecEnds(t *testing.T) {
+	t.Run("a session lost on a live pod", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, pod := readyRef(t, f, p)
+		s, _ := startedGroup(context.Background(), t, f, p, ref)
+		f.sshd(pod.id).dropConns()
+		_, _ = io.ReadAll(s)
+		code, err := s.Wait()
+		eq(t, code, -1)
+		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		_ = s.Close()
+	})
+	t.Run("a session lost with its pod", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, _ := readyRef(t, f, p)
+		s, _ := startedGroup(context.Background(), t, f, p, ref)
+		other := f.provider(t, testOptions(), time.Now)
+		if err := other.Destroy(context.Background(), ref); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(s)
+		code, err := s.Wait()
+		eq(t, code, -1)
+		wantCode(t, err, provider.CodeNotFound, false)
+		_ = s.Close()
+	})
+	// A login shell a signal ended gives an exit-signal, which the router reads as 128 plus it
+	for _, c := range []struct {
+		sig  syscall.Signal
+		code int
+		err  provider.Code
+	}{
+		{syscall.SIGTERM, 128 + 15, ""},
+		// The fake names a signal outside its list by number, which no Linux sshd sends
+		{syscall.SIGUSR1, -1, provider.CodeOutcomeUnknown},
+	} {
+		t.Run("a login shell ended by "+c.sig.String(), func(t *testing.T) {
+			f, p := liveFake(t)
+			ref, pod := readyRef(t, f, p)
+			s, gate := running(t, p, ref)
+			shells := f.sshd(pod.id).loginShells()
+			if len(shells) != 1 {
+				t.Fatalf("login shells %v", shells)
+			}
+			if err := syscall.Kill(shells[0], c.sig); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(gate, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out, _ := io.ReadAll(s)
+			eq(t, string(out), "out\n")
+			code, err := s.Wait()
+			eq(t, code, c.code)
+			if c.err == "" && err != nil {
+				t.Fatal(err)
+			}
+			if c.err != "" {
+				wantCode(t, err, c.err, false)
+			}
+		})
+	}
 }
