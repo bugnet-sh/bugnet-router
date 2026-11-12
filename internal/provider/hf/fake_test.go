@@ -239,6 +239,17 @@ func (f *fakeHF) job(id string) *fakeJob {
 	return nil
 }
 
+// stageOf is the stage of the Job with id, empty when the fake has none
+func (f *fakeHF) stageOf(id string) string {
+	j := f.job(id)
+	if j == nil {
+		return ""
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return j.stage
+}
+
 // set changes a Job under the fake's lock
 func (f *fakeHF) set(j *fakeJob, change func(j *fakeJob)) {
 	f.mu.Lock()

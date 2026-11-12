@@ -3,7 +3,10 @@ package hf
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/gpustatus"
@@ -103,4 +106,113 @@ func (p *Provider) killReason(j job) string {
 // cancelReason is the Job's cancelReason in lowercase, as gpustatus names them
 func cancelReason(j job) string {
 	return strings.ToLower(strings.TrimSpace(j.Status.CancelReason))
+}
+
+// ListOwned lists the live Jobs carrying every label, checking each one HF lists
+func (p *Provider) ListOwned(
+	ctx context.Context, labels map[string]string,
+) ([]provider.Summary, error) {
+	if err := checkLabels(labels); err != nil {
+		return nil, err
+	}
+	jobs, err := p.jobs.listJobs(ctx, labels, liveStages)
+	if err != nil {
+		return nil, err
+	}
+	var out []provider.Summary
+	seen := map[string]bool{}
+	for _, j := range jobs {
+		// HF keeps ended Jobs, and a sweep must never reach a Job the filters let through wrongly
+		if !liveStage(j.Status.Stage) || !hasLabels(j.Labels, labels) ||
+			!jobID.MatchString(j.ID) || seen[j.ID] {
+			continue
+		}
+		seen[j.ID] = true
+		state := provider.StateRunning
+		if j.Status.Stage == stageScheduling {
+			state = provider.StateStarting
+		}
+		out = append(out, provider.Summary{
+			Ref: refOf(j, "", time.Time{}, 0), Labels: maps.Clone(j.Labels),
+			CreatedAt: j.CreatedAt, State: state,
+		})
+	}
+	return out, nil
+}
+
+// Destroy cancels the Job, nil once HF shows it ended or no longer has it
+func (p *Provider) Destroy(ctx context.Context, ref provider.Ref) error {
+	id, ok := jobOf(ref)
+	if !ok {
+		return nil
+	}
+	err := p.jobs.cancelJob(ctx, id)
+	if err == nil || isCode(err, provider.CodeNotFound) {
+		return nil
+	}
+	// What HF answers to a cancel of an ended Job is UNVERIFIED, so the Job's read decides
+	j, rerr := p.jobs.getJob(ctx, id)
+	if isCode(rerr, provider.CodeNotFound) || rerr == nil && !liveStage(j.Status.Stage) {
+		return nil
+	}
+	return err
+}
+
+// SetLifetime changes nothing at HF, it refuses an until past the Job's own end as invalid
+func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time.Time) error {
+	id, ok := jobOf(ref)
+	if !ok {
+		return notHF(ref)
+	}
+	end, known := p.MaxUntil(ref)
+	if known && until.After(end) {
+		return pastEnd(until, end)
+	}
+	j, err := p.jobs.getJob(ctx, id)
+	switch {
+	case err != nil:
+		return err
+	case !liveStage(j.Status.Stage):
+		return &provider.Error{Code: provider.CodeNotFound,
+			Err: fmt.Errorf("hf Job %s ended as %.40s", id, j.Status.Stage)}
+	case known:
+		return nil
+	}
+	if end, ok := p.endOf(refOf(j, "", time.Time{}, 0)); ok && until.After(end) {
+		return pastEnd(until, end)
+	}
+	return nil
+}
+
+// MaxUntil is the Job's own end, its timeout less the margin from its creation, design 5.13
+func (p *Provider) MaxUntil(ref provider.Ref) (time.Time, bool) {
+	if ref.Provider != providerName {
+		return time.Time{}, false
+	}
+	return p.endOf(ref)
+}
+
+// endOf reads the Job's end from the creation time and timeout its ref keeps
+func (p *Provider) endOf(ref provider.Ref) (time.Time, bool) {
+	created, err := time.Parse(time.RFC3339, ref.Meta[metaCreatedAt])
+	if err != nil {
+		return time.Time{}, false
+	}
+	secs, err := strconv.ParseInt(ref.Meta[metaTimeout], 10, 64)
+	if err != nil || secs <= 0 || secs >= maxTimeoutSeconds {
+		return time.Time{}, false
+	}
+	return created.Add(time.Duration(secs)*time.Second - p.margin), true
+}
+
+// pastEnd is the refusal of an until past the Job's end, which no call can move
+func pastEnd(until, end time.Time) error {
+	return invalid(fmt.Errorf("until %s is past the hf Job's own end at %s",
+		until.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)), false)
+}
+
+// isCode reports whether err is a provider error of code
+func isCode(err error, code provider.Code) bool {
+	e, ok := provider.AsError(err)
+	return ok && e.Code == code
 }
