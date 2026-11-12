@@ -351,6 +351,8 @@ type rangeReader struct {
 	held   int64
 	wg     sync.WaitGroup
 	closed bool
+	// err is the first failed part's error, which every later Read returns
+	err error
 }
 
 func (r *rangeReader) Read(b []byte) (int, error) {
@@ -360,6 +362,9 @@ func (r *rangeReader) Read(b []byte) (int, error) {
 		r.releaseCur()
 		if r.closed {
 			return 0, errReaderClosed
+		}
+		if r.err != nil {
+			return 0, r.err
 		}
 		if len(r.parts) == 0 && r.next >= r.size {
 			return 0, io.EOF
@@ -376,7 +381,8 @@ func (r *rangeReader) Read(b []byte) (int, error) {
 		r.parts = r.parts[1:]
 		if pt.err != nil {
 			r.p.readBuffers.Release(int64(len(pt.data)))
-			return 0, pt.err
+			r.err = pt.err
+			return 0, r.err
 		}
 		r.cur, r.held = pt.data, int64(len(pt.data))
 	}

@@ -165,6 +165,40 @@ func TestHFOpenReaderReissuesAShortRead(t *testing.T) {
 	_ = r.Close()
 }
 
+func TestHFOpenReaderKeepsAPartsError(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	p.partBytes = 4 << 10
+	// One part's room, so the parts go one at a time and the second read is the second part
+	p.readBuffers = semaphore.NewWeighted(p.partBytes)
+	ref := readyJob(t, f, p)
+	data := make([]byte, 4*p.partBytes)
+	_, _ = rand.Read(data)
+	name := t.TempDir() + "/f"
+	mustWrite(t, name, string(data), 0o644)
+	f.inject(sbxReadRoute, fault{status: 400, message: "bad", after: 1, times: 1})
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	buf := make([]byte, len(data))
+	n, err := r.Read(buf)
+	if err != nil || !bytes.Equal(buf[:n], data[:p.partBytes]) {
+		t.Fatalf("the first part read %d bytes, %v", n, err)
+	}
+	_, failed := r.Read(buf)
+	if c, _ := codeOf(failed); c != provider.CodeInvalid {
+		t.Fatalf("the refused part gave %v", failed)
+	}
+	// The stream never moves on past the part it lost
+	for range 3 {
+		if n, err := r.Read(buf); n != 0 || err != failed {
+			t.Fatalf("a Read after a failed part gave %d bytes, %v", n, err)
+		}
+	}
+}
+
 func TestHFOpenWriterCommit(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, testOptions())
