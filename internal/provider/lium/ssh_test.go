@@ -351,7 +351,7 @@ func TestLiumSSHPool(t *testing.T) {
 		pl := p.poolOf(pod.id)
 		var held []*sshConn
 		for range 4 {
-			c, err := pl.take(context.Background())
+			c, _, err := pl.take(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -401,6 +401,18 @@ func TestLiumSSHPool(t *testing.T) {
 		accepted, _, peak := sshd.stats()
 		eq(t, peak, 3)
 		eq(t, accepted, 2)
+	})
+	t.Run("a server refusing every session costs one dial", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, pod := readyRef(t, f, p)
+		f.sshd(pod.id).setMaxSessions(0)
+		dials := f.dials()
+		_, _, err := run(t, p, ref, sh("true"))
+		wantCode(t, err, provider.CodeInternal, false)
+		if !strings.Contains(err.Error(), "no more sessions") {
+			t.Fatalf("error %v is not the refusal", err)
+		}
+		eq(t, f.dials(), dials+1)
 	})
 	t.Run("an idle connection closes", func(t *testing.T) {
 		f, p := liveFake(t)

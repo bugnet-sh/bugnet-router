@@ -447,9 +447,9 @@ func (pl *sshPool) serves(name, addr string, pin ssh.PublicKey) bool {
 func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) {
 	var last error
 	redialled := false
-	// Each refusal lowers one connection's room, so the tries end
+	// A refusal lowers a pooled connection's room, and a connection dialled here ends the call
 	for range pl.p.ssh.conns*pl.p.ssh.perConn + 1 {
-		c, err := pl.take(ctx)
+		c, fresh, err := pl.take(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -468,11 +468,14 @@ func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) 
 		last = fmt.Errorf("open an SSH session: %w", err)
 		if refused := new(ssh.OpenChannelError); errors.As(err, &refused) {
 			pl.refused(c)
+			if fresh {
+				break
+			}
 			continue
 		}
 		pl.release(c)
 		pl.drop(c)
-		if redialled {
+		if fresh || redialled {
 			break
 		}
 		redialled = true
@@ -498,13 +501,13 @@ func (pl *sshPool) guard(ctx context.Context, c *sshConn) (stop func() bool) {
 	}
 }
 
-// take holds a session slot, a burst waiting on one dial at a time once every connection is full
-func (pl *sshPool) take(ctx context.Context) (*sshConn, error) {
+// take holds a session slot, fresh when it dialled the connection, one dial at a time once all full
+func (pl *sshPool) take(ctx context.Context) (c *sshConn, fresh bool, err error) {
 	for {
 		pl.mu.Lock()
 		if pl.closed {
 			pl.mu.Unlock()
-			return nil, errPoolClosed
+			return nil, false, errPoolClosed
 		}
 		for _, c := range pl.conns {
 			if c.sessions < c.room {
@@ -513,20 +516,21 @@ func (pl *sshPool) take(ctx context.Context) (*sshConn, error) {
 					c.idle.Stop()
 				}
 				pl.mu.Unlock()
-				return c, nil
+				return c, false, nil
 			}
 		}
 		if pl.dialing == 0 && len(pl.conns) < pl.p.ssh.conns {
 			pl.dialing++
 			pl.mu.Unlock()
-			return pl.dialOne(ctx)
+			c, err := pl.dialOne(ctx)
+			return c, true, err
 		}
 		freed := pl.freed
 		pl.mu.Unlock()
 		select {
 		case <-freed:
 		case <-ctx.Done():
-			return nil, fmt.Errorf("every SSH session to the pod is in use: %w",
+			return nil, false, fmt.Errorf("every SSH session to the pod is in use: %w",
 				context.Cause(ctx))
 		}
 	}
