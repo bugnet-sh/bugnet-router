@@ -22,6 +22,8 @@ const (
 	defaultExecDir = "/tmp/bugnet/exec"
 	// podSetsid is util-linux's setsid in our Ubuntu image, named whole so a user PATH misses it
 	podSetsid = "/usr/bin/setsid"
+	// staleMarkMinutes is the age at which a cancel mark no wrapper read is removed
+	staleMarkMinutes = 10
 )
 
 // errStreamClosed ends the stream of a command whose caller closed it
@@ -112,7 +114,7 @@ func (p *Provider) opContext(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(ctx, p.ssh.op)
 }
 
-// groupCommand runs argv under a new session's leader, which keeps its pid file while argv runs
+// groupCommand runs argv under a new session's leader, whose pid file stays while the group lives
 func (p *Provider) groupCommand(spec provider.ExecSpec, call string) (string, error) {
 	if len(spec.Argv) == 0 {
 		return "", invalid(errors.New("exec needs a command"), false)
@@ -120,11 +122,27 @@ func (p *Provider) groupCommand(spec provider.ExecSpec, call string) (string, er
 	pid, mark := p.callFiles(call)
 	// "$@" runs argv as a plain command, so no shell reads its first word as an option
 	script := fmt.Sprintf(`/bin/mkdir -p %[1]s 2>/dev/null; echo $$ >%[2]s 2>/dev/null; `+
-		`if [ -e %[3]s ]; then /bin/rm -f %[2]s %[3]s; exit 137; fi; `+
-		`"$@"; s=$?; /bin/rm -f %[2]s; exit $s`,
+		`if [ -e %[3]s ]; then /bin/rm -f %[2]s %[3]s; exit 137; fi; "$@"; exit $?`,
 		shell.Quote(p.execDir), shell.Quote(pid), shell.Quote(mark))
 	argv := append([]string{p.setsid, "-w", "/bin/sh", "-c", script, "sh"}, spec.Argv...)
-	return shell.Command(provider.ExecSpec{Argv: argv, Cwd: spec.Cwd, Env: spec.Env})
+	line, err := shell.Command(provider.ExecSpec{Argv: argv, Cwd: spec.Cwd, Env: spec.Env})
+	if err != nil {
+		return "", err
+	}
+	// The login shell sweeps after setsid returns, from outside the group it checks
+	return line + "; s=$?; " + p.sweepCommand() + "; exit $s", nil
+}
+
+// sweepCommand removes the pid files of groups that ended and the cancel marks gone stale
+func (p *Provider) sweepCommand() string {
+	dir := shell.Quote(strings.TrimRight(p.execDir, "/"))
+	// An empty pid file is one a wrapper is still writing
+	return fmt.Sprintf(`for f in %[1]s/*.pid; do p=; read -r p 2>/dev/null <"$f"; `+
+		`case $p in ''|*[!0-9]*) continue;; esac; `+
+		`kill -0 "-$p" 2>/dev/null || /bin/rm -f "$f"; done; `+
+		`for m in %[1]s/*.cancel; do [ -e "$m" ] && /usr/bin/find %[1]s -type f `+
+		`-name '*.cancel' -mmin +%[2]d -exec /bin/rm -f {} +; break; done`,
+		dir, staleMarkMinutes)
 }
 
 // killCommand kills a call's group by its pid file, or marks the call so argv never starts

@@ -122,8 +122,10 @@ func TestLiumExecLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(line, `cd '/w' && env 'A=1' '/usr/bin/setsid' '-w' '/bin/sh' '-c' `) ||
-		!strings.HasSuffix(line, ` 'sh' 'bugnet-run' 'attach' </dev/null`) ||
-		!strings.Contains(line, "/tmp/bugnet/exec/c0ffee.pid") {
+		!strings.Contains(line, ` 'sh' 'bugnet-run' 'attach' </dev/null; s=$?; `) ||
+		!strings.Contains(line, "/tmp/bugnet/exec/c0ffee.pid") ||
+		!strings.Contains(line, `for f in '/tmp/bugnet/exec'/*.pid;`) ||
+		!strings.HasSuffix(line, "; exit $s") {
 		t.Fatalf("line %q", line)
 	}
 	for _, bad := range []provider.ExecSpec{
@@ -240,6 +242,32 @@ func TestExecCancelKillsGroup(t *testing.T) {
 		}
 		if _, err := s.Read(make([]byte, 1)); err == nil {
 			t.Fatal("Read after Close gave no error")
+		}
+		waitGroupGone(t, f, pgid)
+	})
+
+	t.Run("a group whose first process returned", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s, err := p.Exec(ctx, ref, sh("ps -o pgid= -p $$; sleep 60 & exit 0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, err := bufio.NewReader(s).ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		pgid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// argv and the wrapper return while the sleep keeps stdout open
+		within(t, 5*time.Second, "argv's return", func() bool {
+			return len(groupAlive(t, pgid)) == 1
+		})
+		cancel()
+		if code, err := s.Wait(); code != -1 || err == nil {
+			t.Fatalf("Wait gave %d, %v", code, err)
 		}
 		waitGroupGone(t, f, pgid)
 	})
@@ -418,4 +446,58 @@ func TestLiumExecEnds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLiumExecSweep(t *testing.T) {
+	f, p := liveFake(t)
+	ref, _ := readyRef(t, f, p)
+	pidFiles := func() int {
+		files, _ := filepath.Glob(filepath.Join(f.sh.execDir, "*.pid"))
+		return len(files)
+	}
+
+	// A group that outlives its call keeps its pid file until a later call finds it ended
+	gate := filepath.Join(t.TempDir(), "go")
+	out, code, err := run(t, p, ref, sh("ps -o pgid= -p $$; ("+blocker(gate).Argv[2]+
+		") >/dev/null 2>&1 &"))
+	if err != nil || code != 0 {
+		t.Fatalf("exit %d, %v", code, err)
+	}
+	pgid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, pidFiles(), 1)
+	if _, _, err := run(t, p, ref, sh("true")); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, pidFiles(), 1)
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	within(t, 5*time.Second, "the group's end", func() bool {
+		return len(groupAlive(t, pgid)) == 0
+	})
+	if _, _, err := run(t, p, ref, sh("true")); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, pidFiles(), 0)
+
+	// A cancel mark goes once it is stale, as no wrapper will read it then
+	stale := filepath.Join(f.sh.execDir, "stale.cancel")
+	fresh := filepath.Join(f.sh.execDir, "fresh.cancel")
+	for _, mark := range []string{stale, fresh} {
+		if err := os.WriteFile(mark, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-(staleMarkMinutes + 5) * time.Minute)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, p, ref, sh("true")); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(filepath.Join(f.sh.execDir, "*"))
+	eq(t, left, []string{fresh})
 }
