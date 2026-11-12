@@ -565,7 +565,8 @@ timeout_margin = "10m"
 ready_timeout = "5m"          # create to RUNNING and sbx-server health
 start_billed = "3m"           # Starting, boot steps and minute rounding
 poll_every = "3s"             # Job reads while waiting for RUNNING
-sbx_server = "fetch"          # "baked" once the image holds it
+# "baked" runs the image's own sbx-server, which needs images.hf.version 2026.11.4 or later
+sbx_server = "fetch"          # downloaded at boot from HF's public bucket, checked by its sha256
 sbx_server_version = "0.7.0"
 sbx_server_sha256 = "eb2b04f79fbe765195300aaf1582be2a2a9ea698ff067d0cab428171d5584932"
 harden_required = false       # true means hf never serves, since harden cannot run there

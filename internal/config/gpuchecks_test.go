@@ -295,3 +295,29 @@ func TestConfigHFGatePort(t *testing.T) {
 			previews(8080), previews(65535, `"hf"`), want},
 	})
 }
+
+// TestConfigHFBakedImage refuses hf.sbx_server baked on an image too old to hold sbx-server
+func TestConfigHFBakedImage(t *testing.T) {
+	doc := "providers = [\"hf\"]\n[hf]\nnamespace = \"bugnet-sh\"\nsbx_server = %q\n" +
+		"[images.hf]\nversion = %q\nref = \"ghcr.io/bugnet-sh/bugnet-base@sha256:" +
+		strings.Repeat("4", 64) + "\"\n"
+	noImage := "providers = [\"hf\"]\n[hf]\nnamespace = \"bugnet-sh\"\nsbx_server = \"baked\"\n"
+	want := `hf.sbx_server = "baked" needs images.hf.version 2026.11.4 or later, the first ` +
+		"base image that holds sbx-server"
+	runGPUChecks(t, map[string]gpuCheck{
+		"an older image": {
+			pass:   fmt.Sprintf(doc, "baked", "2026.11.4"),
+			refuse: fmt.Sprintf(doc, "baked", "2026.11.3"),
+			want:   want,
+		},
+		"no image version": {
+			pass:   fmt.Sprintf(doc, "baked", "2026.12.1"),
+			refuse: noImage,
+			want:   want,
+		},
+	})
+	// Fetch mode downloads sbx-server, so any image serves it
+	if _, err := LoadFile(writeFile(t, fmt.Sprintf(doc, "fetch", "2026.11.3"))); err != nil {
+		t.Errorf("fetch on 2026.11.3 gave %v", err)
+	}
+}

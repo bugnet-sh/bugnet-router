@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -203,6 +204,11 @@ func (c *Config) checkGPU() error {
 	}
 	if slices.Contains(c.Providers, "lium") && len(c.Lium.Sizes) == 0 {
 		return errors.New("lium.sizes must name at least one size while providers lists lium")
+	}
+	if slices.Contains(c.Providers, "hf") && c.HF.SBXServer == "baked" &&
+		!image.VersionAtLeast(c.Images.HF.Version, image.SBXServerSince) {
+		return fmt.Errorf(`hf.sbx_server = "baked" needs images.hf.version %s or later, the `+
+			"first base image that holds sbx-server", image.SBXServerSince)
 	}
 	if err := c.checkLiumKeyBudget(); err != nil {
 		return err

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -88,4 +90,21 @@ func TestCommittedFilesWriteGPUSettings(t *testing.T) {
 			t.Errorf("config/dev.toml does not write %s", strings.Join(path, "."))
 		}
 	}
+}
+
+// TestHFSBXServerDefaultIsTheImagePin keeps hf's default build the one deploy/image bakes
+func TestHFSBXServerDefaultIsTheImagePin(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "deploy", "image", "pins.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := map[string]string{}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			pins[k] = v
+		}
+	}
+	d := defaultHF()
+	eq(t, pins["SBX_SERVER_SHA256_AMD64"], d.SBXServerSHA256)
+	eq(t, pins["SBX_SERVER_VERSION"], d.SBXServerVersion)
 }
