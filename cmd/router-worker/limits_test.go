@@ -134,9 +134,9 @@ func TestMonitorShowsABlockedProvider(t *testing.T) {
 func TestMonitorShowsAnUnblockedAccountsWarning(t *testing.T) {
 	st := store.New(migrated(t))
 	vk, _ := testenv.Valkey(t)
-	record := func(provider, block, detail string) {
+	record := func(name, block, detail string) {
 		t.Helper()
-		if _, err := st.RecordAccount(t.Context(), provider, block, detail, time.Now()); err != nil {
+		if _, err := st.RecordAccount(t.Context(), name, block, detail, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
