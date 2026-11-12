@@ -164,4 +164,9 @@ func TestHFOptionsCarryEverySetting(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("hf options %+v, want %+v", got, want)
 	}
+	cfg.HF.SBXServer = "baked"
+	want.SBXServerBaked = true
+	if got := hfOptions(cfg, "hf_test", seed); !reflect.DeepEqual(got, want) {
+		t.Fatalf("baked hf options %+v, want %+v", got, want)
+	}
 }

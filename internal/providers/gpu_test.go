@@ -309,8 +309,6 @@ func TestBuildHFRefusesBadConfig(t *testing.T) {
 	}{
 		"no token": {hfSettings, nil, seeds("hf"), "HF_JOBS_TOKEN"},
 		"no seed":  {hfSettings, keys, nil, "HF_SANDBOX_SEED"},
-		// The adapter fetches sbx-server at each boot, no image holds it yet
-		"baked": {hfSettings + "sbx_server = \"baked\"\n", keys, seeds("hf"), "hf.sbx_server"},
 		"a namespace hf refuses": {
 			strings.Replace(hfSettings, "bugnet-test", "bugnet..test", 1), keys, seeds("hf"),
 			"hf: the namespace",
@@ -327,6 +325,29 @@ func TestBuildHFRefusesBadConfig(t *testing.T) {
 			t.Errorf("%s: build gave %v, want an error naming %s", name, err, c.want)
 		}
 	}
+}
+
+// hfBaked is hfSettings running the sbx-server of an image that holds it
+const hfBaked = hfSettings + `sbx_server = "baked"
+[images.hf]
+version = "2026.11.4"
+ref = "ghcr.io/bugnet-sh/bugnet-base@sha256:` +
+	"0000000000000000000000000000000000000000000000000000000000000004" + `"
+`
+
+func TestBuildHFBaked(t *testing.T) {
+	swapNet(t, hfHardware)
+	cfg := load(t, hfBaked, map[string]string{"hf": "hf_test"})
+	cfg.ProviderSeeds = seeds("hf")
+	reg, err := providers.Build(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("a baked hf gave %v", err)
+	}
+	p, ok := reg.Get("hf")
+	if !ok {
+		t.Fatalf("registry %v lacks hf", reg.Ordered())
+	}
+	closeOnCleanup(t, p)
 }
 
 func TestBuildHFSharesItsSightings(t *testing.T) {
