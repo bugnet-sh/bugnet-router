@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/netip"
@@ -49,12 +50,18 @@ func WithPackages(pkgs []catalog.Package) Option {
 // Build returns the configured providers in their listed order with the features they passed,
 // each wrapped with traced.Wrap while tel is enabled
 func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry, opts ...Option) (
-	*provider.Registry, error) {
+	_ *provider.Registry, err error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
 	var ps []provider.Provider
+	// A refusal closes the providers built so far, Lium's and HF's background reads among them
+	defer func() {
+		if err != nil {
+			closeAll(ps)
+		}
+	}()
 	for _, name := range cfg.Providers {
 		switch name {
 		case "local":
@@ -127,6 +134,15 @@ func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry, opts .
 		return nil, fmt.Errorf("providers: %w", err)
 	}
 	return reg, nil
+}
+
+// closeAll closes every provider in ps that has a Close
+func closeAll(ps []provider.Provider) {
+	for _, p := range ps {
+		if c, ok := provider.As[io.Closer](p); ok {
+			_ = c.Close()
+		}
+	}
 }
 
 // features are the data-plane features and images the settings give each provider

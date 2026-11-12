@@ -328,3 +328,44 @@ func TestBuildHFRefusesBadConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStopsWhatItBuiltWhenItRefuses(t *testing.T) {
+	swapNet(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "lium.io" {
+			liumAnswers(w, r)
+			return
+		}
+		hfHardware(w, r)
+	})
+	const adapters = "github.com/bugnet-sh/bugnet-router/internal/provider/"
+	for name, c := range map[string]struct {
+		settings, key, started, want string
+		// previews stands in for previews.providers, which the settings check would refuse
+		previews []string
+	}{
+		// hf starts its hardware reads, then boxd has no key
+		"a later provider refuses": {
+			strings.Replace(hfSettings, `["hf"]`, `["hf", "boxd"]`, 1), "hf",
+			adapters + "hf.(*Provider).start", "BOXD_API_KEY", nil,
+		},
+		// lium starts its listing loop, then the registry refuses it previews
+		"the registry refuses": {
+			liumSettings, "lium", adapters + "lium.New", "preview", []string{"lium"},
+		},
+	} {
+		cfg := load(t, c.settings, map[string]string{c.key: c.key + "_test"})
+		cfg.ProviderSeeds = seeds(c.key)
+		cfg.Previews.Providers = c.previews
+		reg, err := providers.Build(cfg, nil, nil)
+		if err == nil {
+			p, _ := reg.Get(c.key)
+			closeOnCleanup(t, p)
+		}
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: build gave %v, want an error naming %s", name, err, c.want)
+		}
+		if !testenv.GoroutinesGone(c.started) {
+			t.Errorf("%s: %s still runs after the refusal", name, c.key)
+		}
+	}
+}
