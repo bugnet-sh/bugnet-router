@@ -771,6 +771,14 @@ A capable provider can still refuse a package for its health, its sizes, the mar
 maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
 `feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
 
+`CreatePlacement` and `ExtendPlacement` check that the order's `amount_micros`, less its x402
+allowance and fee, covers the package's price now. One that pays less answers
+`FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`,
+`paid_micros` and `price_micros`, the price the router asks now. A start is recorded as a failed,
+refundable placement with reason `price_changed` and a `placement.failed` event, so Payments
+refunds it in full, and a retry answers the same. An extension records nothing, and the gateway
+abandons it as it does every refused extension.
+
 ## Estimator
 
 `Estimate` also reads what the agent says it will run: `source`, `workload`, `entry_command`,
@@ -894,12 +902,13 @@ these buckets, so a busy account still ends sandboxes.
 
 An order token may carry `payer`, the base58 Solana address that paid, `fee_payer`, the payment
 requirements' `extra.feePayer`, `tx`, the payment's transaction signature, and on a start token
-`allowance_micros`, the x402 allowance inside `amount_micros`. A set address must be the one
-canonical base58 text of 32 bytes, and `tx` must decode to 64 bytes, else the token is refused
-with `PermissionDenied`. `allowance_micros` runs from 0 to `amount_micros`, and an extend token
-carrying it is refused. The underpaid check and `orders.amount_micros` use `amount_micros` less
-the allowance. Each order keeps its checked `tx` in `orders.tx`, which the public stats feed shows
-beside the start order's payer.
+`allowance_micros`, the x402 allowance inside `amount_micros`, and `fee_micros`, the x402 session
+fee inside it. A set address must be the one canonical base58 text of 32 bytes, and `tx` must
+decode to 64 bytes, else the token is refused with `PermissionDenied`. `allowance_micros` runs
+from 0 to `amount_micros`, `fee_micros` from 0 to what the allowance leaves of it, and an extend
+token carrying either is refused. The underpaid check, `orders.amount_micros` and the session
+record's payment use `amount_micros` less the allowance and the fee. Each order keeps its checked
+`tx` in `orders.tx`, which the public stats feed shows beside the start order's payer.
 
 The router decides the payer an order counts under in this order: `wallets.use_payer` false, no
 payer, a payer equal to the token's `fee_payer`, a payer in `wallets.facilitator_addresses` or seen
@@ -1048,6 +1057,7 @@ holds a handle or a job ID.
 | `PermissionDenied` | `WALLET_BLOCKED` | An order of a blocked payer |
 | `ResourceExhausted` | `WALLET_BUSY` | A start at the wallet's cap on live placements, or the anonymous cap |
 | `ResourceExhausted` | `WALLET_RATE_LIMITED` | A start while one of the payer's start buckets is empty, with `RetryInfo` |
+| `FailedPrecondition` | `PRICE_CHANGED` | An order that paid less than its package's price now, with `package_id`, `paid_micros` and `price_micros` in its metadata |
 | `FailedPrecondition` | `FACILITATOR_ADDRESS` | A block of a facilitator address |
 
 | `ResourceExhausted` | `TOO_MANY_SECRETS` | A 21st secret, a 33rd host in all, an 11th host or a 9th header name of one secret, or an x402 change past 32 hosts with the secret hosts |
@@ -1782,14 +1792,14 @@ exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
 | `deadline` | The paid deadline, null before ready |
 | `billed_seconds` | Seconds from ready to terminated |
 | `refundable` | Whether the order should be refunded |
-| `reason` | A stable code such as `stop`, `deadline`, `abuse`, `provider_failed`, `no_candidate`, `wallet_busy`, `wallet_rate_limited`, `provider_capacity`, `boot_failed` or `placing_stalled` |
+| `reason` | A stable code such as `stop`, `deadline`, `abuse`, `provider_failed`, `no_candidate`, `price_changed`, `wallet_busy`, `wallet_rate_limited`, `provider_capacity`, `boot_failed` or `placing_stalled` |
 | `unused_seconds` | On `placement.terminated` only, `max(0, deadline - terminated_at)` in whole seconds when refundable, else 0 |
 | `refunds` | On `placement.terminated` only, `[{order_id, refund_micros}]` when refundable, else `[]` |
 
 `refunds` takes the unused seconds from the newest order back to the start order. Each order
 refunds its share at its own price a second, `amount_micros / seconds_bought` rounded down to
-whole micros, where `amount_micros` already leaves out a start order's x402 allowance. An order
-from before `orders.seconds_bought` was kept stops the list there.
+whole micros, where `amount_micros` already leaves out a start order's x402 allowance and fee.
+An order from before `orders.seconds_bought` was kept stops the list there.
 
 With `wallets.emit_events`, `wallet.blocked` carries `{payer, until, reason, placement_id}`, with
 `until` and `placement_id` null when there is none, and `wallet.unblocked` carries `{payer}`.
