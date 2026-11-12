@@ -77,7 +77,7 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 		}
 		token = p.sandboxToken(key)
 	}
-	hctx, cancel := context.WithTimeout(ctx, healthTimeout)
+	hctx, cancel := context.WithTimeout(ctx, p.healthWait)
 	defer cancel()
 	h, err := p.sbx.health(hctx, ref.ID, token)
 	switch {

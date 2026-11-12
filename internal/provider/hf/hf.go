@@ -81,6 +81,7 @@ type Provider struct {
 	image, sbxSHA256  string
 	extendRoom        time.Duration
 	margin, pollEvery time.Duration
+	healthWait        time.Duration
 	sbx               *sbxClient
 	now               func() time.Time
 	// kmu guards kept, the Job each key got in this process, and creating, each key's create
@@ -172,6 +173,7 @@ func newProvider(opts Options) (*Provider, error) {
 		extendRoom:  opts.ExtendRoom,
 		margin:      opts.TimeoutMargin,
 		pollEvery:   cmp.Or(opts.PollEvery, defaultPollEvery),
+		healthWait:  healthTimeout,
 		sbx:         newSBXClient(),
 		now:         time.Now,
 		kept:        map[string]keptJob{},

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -314,4 +316,48 @@ func TestHFWaitReadyKeepsToItsJob(t *testing.T) {
 		}
 	}
 	eq(t, len(sbxRequests(f)), 0)
+}
+
+// stallFirst answers the first request with a 200 whose body never comes, the rest through next
+type stallFirst struct {
+	next    http.RoundTripper
+	stalled atomic.Bool
+}
+
+func (s *stallFirst) RoundTrip(r *http.Request) (*http.Response, error) {
+	if s.stalled.Swap(true) {
+		return s.next.RoundTrip(r)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{}, Body: stalledBody{r}, Request: r,
+	}, nil
+}
+
+// stalledBody sends nothing until its request ends
+type stalledBody struct{ r *http.Request }
+
+func (b stalledBody) Read([]byte) (int, error) {
+	<-b.r.Context().Done()
+	return 0, b.r.Context().Err()
+}
+
+func (stalledBody) Close() error { return nil }
+
+func TestHFWaitReadyBoundsAHealthRead(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	eq(t, p.healthWait, 10*time.Second)
+	p.healthWait = 100 * time.Millisecond
+	p.sbx.client.Transport = &stallFirst{next: p.sbx.client.Transport}
+	ref, _ := created(t, f, p)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := p.WaitReady(ctx, ref); err != nil {
+		t.Fatalf("a wait whose first health read stalled gave %v", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("a stalled health read held the wait for %s", took)
+	}
+	eq(t, len(sbxRequests(f)), 1)
 }
