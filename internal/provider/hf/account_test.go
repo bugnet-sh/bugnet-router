@@ -307,6 +307,51 @@ func TestHFCheckAccount(t *testing.T) {
 		}
 		wantAccount(t, p, provider.BlockUnfunded, fmt.Sprintf("and %d more", maxSightings-3))
 	})
+	t.Run("a full log drops its oldest sighting, never the new one", func(t *testing.T) {
+		f, p, _ := accountFake(t)
+		c := stopClock(p)
+		for range maxSightings {
+			endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		}
+		f.unfiltered = true
+		if _, err := p.ListOwned(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		c.now = c.now.Add(time.Hour)
+		j := endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		if _, err := p.Inspect(ctx, refTo(j)); err != nil {
+			t.Fatal(err)
+		}
+		wantAccount(t, p, provider.BlockUnfunded, j.id)
+	})
+	t.Run("a Job read again keeps its place in a full log", func(t *testing.T) {
+		f, p, _ := accountFake(t)
+		c := stopClock(p)
+		first := endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		if _, err := p.Inspect(ctx, refTo(first)); err != nil {
+			t.Fatal(err)
+		}
+		c.now = c.now.Add(time.Minute)
+		// Jobs HF ended an hour ago fill the log, the list reading the first Job again
+		for range maxSightings - 1 {
+			endedJob(f, "CANCELED", "NO_CREDITS", c.now.Add(-time.Hour))
+		}
+		f.unfiltered = true
+		if _, err := p.ListOwned(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		c.now = c.now.Add(time.Minute)
+		if _, err := p.Inspect(ctx, refTo(first)); err != nil {
+			t.Fatal(err)
+		}
+		wantAccount(t, p, provider.BlockUnfunded, first.id)
+		c.now = c.now.Add(time.Minute)
+		next := endedJob(f, "CANCELED", "NO_CREDITS", c.now.Add(-time.Hour))
+		if _, err := p.Inspect(ctx, refTo(next)); err != nil {
+			t.Fatal(err)
+		}
+		wantAccount(t, p, provider.BlockNone)
+	})
 	t.Run("failed calls prove nothing", func(t *testing.T) {
 		for _, ft := range []fault{
 			{status: 429, message: "slow down"},
