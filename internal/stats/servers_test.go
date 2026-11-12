@@ -64,8 +64,14 @@ const serverCatalog = `{"packages": [
 
 func serverPackages(t *testing.T) []catalog.Package {
 	t.Helper()
+	return loadPackages(t, serverCatalog)
+}
+
+// loadPackages is the catalog body's packages in catalog order
+func loadPackages(t *testing.T, body string) []catalog.Package {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "packages.json")
-	if err := os.WriteFile(path, []byte(serverCatalog), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := catalog.Load(path)
@@ -135,6 +141,40 @@ func TestServersListEachSizeAPackageLandsOn(t *testing.T) {
 			t.Errorf("the servers carry %q: %s", word, body)
 		}
 	}
+}
+
+func TestServersLongestRunIsTheLargestOverTheSizesPackages(t *testing.T) {
+	// a keeps a sandbox 30 days, which 10-minute runs fill to 43,190 and hourly ones to 43,140
+	a := newShaped(t, "a", 1000, provider.Capabilities{MaxLifetime: 30 * 24 * time.Hour},
+		size("s2x4", 2, 4, 51))
+	reg, err := provider.NewRegistry([]provider.Provider{a}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The hourly package costs more, so it comes after the 10-minute one in catalog order
+	pkgs := loadPackages(t, `{"packages": [
+		{"id": "small-60m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+			"minutes": 60, "price_micros": 300000},
+		{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+			"minutes": 10, "price_micros": 50000}
+	]}`)
+	e := placement.New(reg, downHealth{}, nil)
+	got := Servers(e, reg, pkgs, placement.Inputs{MarginFloor: 0.5})
+	runs := []int64{}
+	for _, s := range got {
+		if s.LongestRunMinutes != nil {
+			runs = append(runs, *s.LongestRunMinutes)
+		}
+	}
+	eq(t, runs, []int64{43190})
+	eq(t, got, []Server{{
+		Provider: "a", Size: "s2x4", VCPU: 2, MemoryMiB: 4096, DiskGiB: 51,
+		LongestRunMinutes: ptr(int64(43190)), User: "root", Available: true,
+		Packages: []ServerPackage{
+			{ID: "small-10m", Minutes: 10, PriceMicros: 50000},
+			{ID: "small-60m", Minutes: 60, PriceMicros: 300000},
+		},
+	}})
 }
 
 func TestServersEmptyWhenNothingLands(t *testing.T) {
