@@ -151,6 +151,8 @@ type fakeHF struct {
 	cancelEnded int
 	// createDelay holds each create's answer back once its Job exists
 	createDelay time.Duration
+	// show rewrites each Job the fake answers, as HF's read may differ from what was sent
+	show func(job map[string]any)
 }
 
 func newFake(t *testing.T) *fakeHF {
@@ -229,6 +231,15 @@ func (f *fakeHF) newJob(stage string, labels map[string]string) *fakeJob {
 	}
 	f.jobs = append(f.jobs, j)
 	return j
+}
+
+// answerOf is the Job as the fake answers it, with f.mu held
+func (f *fakeHF) answerOf(j *fakeJob) map[string]any {
+	out := j.json()
+	if f.show != nil {
+		f.show(out)
+	}
+	return out
 }
 
 // job returns the Job with id, nil when the fake has none
@@ -449,7 +460,7 @@ func (f *fakeHF) getJob(w http.ResponseWriter, r *http.Request) {
 	if j.stage == "SCHEDULING" && j.runAfter > 0 && j.reads >= j.runAfter {
 		j.stage = "RUNNING"
 	}
-	out := j.json()
+	out := f.answerOf(j)
 	f.mu.Unlock()
 	writeJSON(w, http.StatusOK, out)
 }
@@ -463,7 +474,7 @@ func (f *fakeHF) listJobs(w http.ResponseWriter, r *http.Request) {
 	for _, j := range f.jobs {
 		if !j.unlisted && (f.unfiltered || (len(q["stage"]) == 0 ||
 			slices.Contains(q["stage"], j.stage)) && carries(j, q)) {
-			match = append(match, j.json())
+			match = append(match, f.answerOf(j))
 		}
 	}
 	size, override := f.pageSize, f.nextLink
@@ -526,7 +537,7 @@ func (f *fakeHF) createJob(w http.ResponseWriter, r *http.Request) {
 	if sp.TimeoutSeconds != nil {
 		j.timeout = *sp.TimeoutSeconds
 	}
-	out, delay := j.json(), f.createDelay
+	out, delay := f.answerOf(j), f.createDelay
 	f.mu.Unlock()
 	time.Sleep(delay)
 	writeJSON(w, http.StatusOK, out)
@@ -587,7 +598,7 @@ func (f *fakeHF) cancelJob(w http.ResponseWriter, r *http.Request) {
 	if j.stage == "SCHEDULING" || j.stage == "RUNNING" {
 		j.stage, status = "CANCELED", 0
 	}
-	out := j.json()
+	out := f.answerOf(j)
 	f.mu.Unlock()
 	if status != 0 {
 		writeError(w, status, "Job has already finished")

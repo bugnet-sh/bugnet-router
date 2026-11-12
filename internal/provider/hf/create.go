@@ -141,7 +141,7 @@ func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (prov
 	if ref, ok := p.keptRef(o.key); ok {
 		return ref, nil
 	}
-	ref, found, err := p.findOwn(ctx, o)
+	ref, found, err := p.findOwn(ctx, o, time.Time{})
 	switch {
 	case err != nil:
 		return provider.Ref{}, err
@@ -222,8 +222,10 @@ func checkLabels(labels map[string]string) error {
 	return nil
 }
 
-// findOwn adopts the oldest live Job carrying the order's key and labels
-func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, error) {
+// findOwn adopts the oldest live Job carrying the order's key and labels, sentAt its post if any
+func (p *Provider) findOwn(
+	ctx context.Context, o order, sentAt time.Time,
+) (provider.Ref, bool, error) {
 	jobs, err := p.jobs.listJobs(ctx, map[string]string{labelKey: o.key}, liveStages)
 	if err != nil {
 		return provider.Ref{}, false, err
@@ -238,7 +240,8 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 	if best == nil {
 		return provider.Ref{}, false, nil
 	}
-	return refOf(*best, o.token, time.Time{}, 0), true, nil
+	// Every create of the key sends o.timeout, so a longer or missing one in HF's read leans short
+	return refOf(*best, o.token, sentAt, o.timeout), true, nil
 }
 
 // post sends the Job's create, and lists by its key when the answer may hide a Job HF started
@@ -255,7 +258,7 @@ func (p *Provider) post(ctx context.Context, o order) (provider.Ref, error) {
 	}
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relistBudget)
 	defer cancel()
-	ref, found, lerr := p.findOwn(lctx, o)
+	ref, found, lerr := p.findOwn(lctx, o, sentAt)
 	switch {
 	case found:
 		p.keep(o, ref)

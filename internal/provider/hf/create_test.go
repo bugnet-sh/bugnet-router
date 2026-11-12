@@ -284,7 +284,7 @@ func TestHFCreateAdoptsALiveJob(t *testing.T) {
 	newer := f.addJob("RUNNING", ours)
 	f.set(live, func(j *fakeJob) {
 		j.createdAt = time.Date(2026, 11, 12, 10, 0, 0, 500e6, time.UTC)
-		j.timeout = 6000
+		j.timeout = 5000
 	})
 	f.set(newer, func(j *fakeJob) { j.createdAt = time.Date(2026, 11, 12, 10, 1, 0, 0, time.UTC) })
 	ref, err := p.Create(t.Context(), req)
@@ -292,7 +292,7 @@ func TestHFCreateAdoptsALiveJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, ref, provider.Ref{Provider: "hf", ID: live.id, Meta: map[string]string{
-		"job_id": live.id, "created_at": "2026-11-12T10:00:00Z", "timeout": "6000",
+		"job_id": live.id, "created_at": "2026-11-12T10:00:00Z", "timeout": "5000",
 		"secret": testKeyToken, "arch": "amd64",
 	}})
 	eq(t, len(posts(t, f)), 0)
@@ -564,6 +564,54 @@ func TestHFCreateLostAnswerPastTheDeadline(t *testing.T) {
 	f.mu.Unlock()
 	eq(t, ref.ID, id)
 	eq(t, ref.Meta["secret"], testKeyToken)
+}
+
+// TestHFCreateLeansEarlyAndShort keeps a found Job's end no later than its create could make it
+func TestHFCreateLeansEarlyAndShort(t *testing.T) {
+	later := time.Now().Add(time.Hour).UTC()
+	for _, c := range []struct {
+		name string
+		show func(j map[string]any)
+	}{
+		{"a later start and a longer timeout", func(j map[string]any) {
+			j["createdAt"], j["timeout"] = later.Format(time.RFC3339Nano), 99999
+		}},
+		{"no timeout", func(j map[string]any) { delete(j, "timeout") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// A create whose answer was lost, found again by its key
+			f := newFake(t)
+			f.show = c.show
+			p := f.provider(t, testOptions())
+			f.inject(createRoute, fault{drop: true, served: true, times: 1})
+			before := time.Now().UTC().Truncate(time.Second)
+			ref, err := p.Create(t.Context(), keyed())
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := time.Parse(time.RFC3339, ref.Meta["created_at"])
+			if err != nil || created.Before(before) || created.After(time.Now()) {
+				t.Fatalf("created_at %q is not the create's send time", ref.Meta["created_at"])
+			}
+			eq(t, ref.Meta["timeout"], "5400")
+			end, ok := p.MaxUntil(ref)
+			eq(t, ok, true)
+			eq(t, end, created.Add(80*time.Minute))
+
+			// A live Job of the key another router started
+			f = newFake(t)
+			f.show = c.show
+			ours := maps.Clone(keyed().Labels)
+			ours["bugnet_key"] = testKey
+			j := f.addJob("RUNNING", ours)
+			ref, err = f.provider(t, testOptions()).Create(t.Context(), keyed())
+			if err != nil {
+				t.Fatal(err)
+			}
+			eq(t, ref.ID, j.id)
+			eq(t, ref.Meta["timeout"], "5400")
+		})
+	}
 }
 
 func TestHFCreateSameKeyAtOnce(t *testing.T) {
