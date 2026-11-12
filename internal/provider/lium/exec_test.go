@@ -477,13 +477,13 @@ func TestLiumExecSweep(t *testing.T) {
 	if err := os.WriteFile(gate, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	within(t, 5*time.Second, "the group's end", func() bool {
-		return len(groupAlive(t, pgid)) == 0
+	// A zombie not yet reaped still counts as the group's, so a later call may be needed
+	within(t, 5*time.Second, "the sweep of the ended group's pid file", func() bool {
+		if _, _, err := run(t, p, ref, sh("true")); err != nil {
+			t.Fatal(err)
+		}
+		return len(groupAlive(t, pgid)) == 0 && pidFiles() == 0
 	})
-	if _, _, err := run(t, p, ref, sh("true")); err != nil {
-		t.Fatal(err)
-	}
-	eq(t, pidFiles(), 0)
 
 	// A cancel mark goes once it is stale, as no wrapper will read it then
 	stale := filepath.Join(f.sh.execDir, "stale.cancel")
