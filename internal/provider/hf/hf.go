@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -19,6 +21,8 @@ import (
 const (
 	providerName       = "hf"
 	defaultMaxLifetime = 2 * time.Hour
+	// defaultPollEvery spaces the Job reads of a wait, so ten waits stay under the Hub's limit
+	defaultPollEvery = 3 * time.Second
 	// arch is the only architecture sbx-server and our image are built for
 	arch = "amd64"
 )
@@ -45,6 +49,18 @@ type Options struct {
 	// OnChange runs after a hardware read changed a price or the flavors sold, for a margin check
 	OnChange func()
 	Log      *slog.Logger // slog.Default when nil
+	// SandboxSeed is HF_SANDBOX_SEED decoded, the 32 bytes every sandbox's token derives from
+	SandboxSeed []byte
+	// Image is images.hf.ref, the image by digest Jobs start from unless a create names one
+	Image string
+	// ExtendRoom is the room for extensions in each Job's timeout
+	ExtendRoom time.Duration
+	// TimeoutMargin is each Job's timeout beyond its lifetime and room
+	TimeoutMargin time.Duration
+	// PollEvery spaces the Job reads of a wait for RUNNING, 3 seconds when 0
+	PollEvery time.Duration
+	// SBXServerSHA256 is the digest of the sbx-server build each Job fetches at boot
+	SBXServerSHA256 string
 }
 
 // Provider sells HF Jobs, answering sizes and prices from memory
@@ -60,6 +76,17 @@ type Provider struct {
 	// stop ends the hardware reads New starts, which close done
 	stop context.CancelFunc
 	done chan struct{}
+
+	seed              []byte
+	image, sbxSHA256  string
+	extendRoom        time.Duration
+	margin, pollEvery time.Duration
+	sbx               *sbxClient
+	now               func() time.Time
+	// kmu guards kept, the Job each key got in this process, and creating, each key's create
+	kmu      sync.Mutex
+	kept     map[string]keptJob
+	creating map[string]chan struct{}
 }
 
 // New checks the options and starts the hardware reads, which Close stops
@@ -110,6 +137,18 @@ func newProvider(opts Options) (*Provider, error) {
 		return nil, errors.New("hf: ops per second must not be negative")
 	case opts.HardwareEvery < 0:
 		return nil, errors.New("hf: the hardware interval must not be negative")
+	case len(opts.SandboxSeed) != seedBytes:
+		return nil, errors.New("hf: a sandbox seed of 32 bytes is required")
+	case opts.Image != "" && !imageByDigest.MatchString(opts.Image):
+		return nil, errors.New("hf: the image must be named by digest, name@sha256:<64 hex>")
+	case opts.ExtendRoom < 0:
+		return nil, errors.New("hf: the extend room must not be negative")
+	case opts.TimeoutMargin < 0:
+		return nil, errors.New("hf: the timeout margin must not be negative")
+	case opts.PollEvery < 0:
+		return nil, errors.New("hf: the poll interval must not be negative")
+	case !sha256Hex.MatchString(opts.SBXServerSHA256):
+		return nil, errors.New("hf: the sbx-server sha256 must be 64 lowercase hex digits")
 	}
 	for _, f := range opts.Flavors {
 		if !gpu.HFFlavor(f) {
@@ -127,6 +166,16 @@ func newProvider(opts Options) (*Provider, error) {
 		hwEvery:     cmp.Or(opts.HardwareEvery, hardwareEvery),
 		hwRetry:     hardwareRetry,
 		onChange:    opts.OnChange,
+		seed:        slices.Clone(opts.SandboxSeed),
+		image:       opts.Image,
+		sbxSHA256:   opts.SBXServerSHA256,
+		extendRoom:  opts.ExtendRoom,
+		margin:      opts.TimeoutMargin,
+		pollEvery:   cmp.Or(opts.PollEvery, defaultPollEvery),
+		sbx:         newSBXClient(),
+		now:         time.Now,
+		kept:        map[string]keptJob{},
+		creating:    map[string]chan struct{}{},
 	}, nil
 }
 

@@ -35,6 +35,21 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 			"ops per second must not be negative"},
 		"negative hardware interval": {func(o *Options) { o.HardwareEvery = -time.Second },
 			"hardware interval must not be negative"},
+		"no seed":    {func(o *Options) { o.SandboxSeed = nil }, "a sandbox seed of 32 bytes"},
+		"short seed": {func(o *Options) { o.SandboxSeed = o.SandboxSeed[:31] }, "of 32 bytes"},
+		"image by tag": {func(o *Options) { o.Image = "ghcr.io/bugnet-sh/bugnet-base:2026.11.3" },
+			"the image must be named by digest"},
+		"negative room": {func(o *Options) { o.ExtendRoom = -time.Second },
+			"extend room must not be negative"},
+		"negative margin": {func(o *Options) { o.TimeoutMargin = -time.Second },
+			"timeout margin must not be negative"},
+		"negative poll": {func(o *Options) { o.PollEvery = -time.Second },
+			"poll interval must not be negative"},
+		"no sbx-server digest": {func(o *Options) { o.SBXServerSHA256 = "" },
+			"the sbx-server sha256 must be 64 lowercase hex digits"},
+		"sbx-server digest in capitals": {
+			func(o *Options) { o.SBXServerSHA256 = strings.ToUpper(testSBXSHA256) },
+			"the sbx-server sha256 must be 64 lowercase hex digits"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -52,6 +67,11 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 		if _, err := newProvider(opts); err != nil {
 			t.Errorf("namespace %q: %v", ns, err)
 		}
+	} // No image is fine, as every create may name its own
+	opts := testOptions()
+	opts.Image, opts.ExtendRoom, opts.TimeoutMargin = "", 0, 0
+	if _, err := newProvider(opts); err != nil {
+		t.Fatal(err)
 	}
 }
 
