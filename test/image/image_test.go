@@ -143,17 +143,22 @@ func run(t *testing.T, tag, script string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// nftCheck returns a shell check of nft, which under emulation proves only that its libraries load
-func nftCheck(t *testing.T) string {
+// nftNoNetlink is the error of nft under an emulator that refuses it the netfilter netlink socket
+const nftNoNetlink = "Netlink socket: Protocol not supported"
+
+// nftCheck returns a shell check of nft, which proves only that its libraries load where the
+// emulator refuses nft its netlink socket
+func nftCheck(t *testing.T, tag string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "info", "--format", "{{.Architecture}}").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(out)) == "x86_64" {
+	out, err := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
+		"--entrypoint", "nft", tag, "--version").CombinedOutput()
+	if err == nil {
 		return "nft --version >/dev/null"
 	}
-	t.Log("qemu-user refuses the netfilter netlink socket, so nft is not run")
+	if !strings.Contains(string(out), nftNoNetlink) {
+		t.Fatalf("nft --version: %v\n%s", err, out)
+	}
+	t.Logf("nft cannot open its netlink socket here, so only its libraries are checked\n%s", out)
 	return `n="$(command -v nft)" && ldd "$n" >/dev/null && ! ldd "$n" | grep -q 'not found'`
 }
 
@@ -179,10 +184,12 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 	eq(t, run(t, tag, "ls /etc/systemd/system/ssh.service /etc/systemd/system/ssh.socket "+
 		"/etc/systemd/system/multi-user.target.wants/ssh.service "+
 		"/etc/systemd/system/sockets.target.wants/ssh.socket 2>/dev/null | wc -l"), "0")
-	eq(t, run(t, tag, nftCheck(t)+" && hf version >/dev/null && "+
+	eq(t, run(t, tag, nftCheck(t, tag)+" && hf version >/dev/null && "+
 		"pnpm --version >/dev/null && python3 --version >/dev/null && echo ok"), "ok")
-	// The base image ships /root/.bashrc and /root/.profile, so only files the build wrote count
+	// The base image ships /root/.bashrc and /root/.profile, which the build leaves as they are
 	eq(t, run(t, tag, "find /root /tmp -type f ! -path /root/.bashrc ! -path /root/.profile"), "")
+	dotfiles := "cat /root/.bashrc /root/.profile | sha256sum"
+	eq(t, run(t, tag, dotfiles), run(t, pin(t, "BASE_IMAGE"), dotfiles))
 	eq(t, run(t, tag, "ls /var/lib/apt/lists | wc -l"), "0")
 	eq(t, run(t, tag, `. /etc/bugnet/image.env; export LANG LC_ALL; `+
 		`printf 'é\n' | column -t >/dev/null && echo ok`), "ok")
