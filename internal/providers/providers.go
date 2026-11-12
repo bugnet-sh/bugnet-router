@@ -307,7 +307,7 @@ func buildHF(cfg config.Config, pkgs []catalog.Package) (*hf.Provider, error) {
 		return nil, errors.New("hf needs HF_JOBS_TOKEN")
 	case len(seed) == 0:
 		return nil, errors.New("hf needs HF_SANDBOX_SEED")
-	case cfg.HF.SBXServer != "fetch":
+	case cfg.HF.SBXServer == "baked":
 		return nil, errors.New(`hf.sbx_server must be "fetch" until an image holds sbx-server`)
 	}
 	opts := hfOptions(cfg, token, seed)
