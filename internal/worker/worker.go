@@ -58,6 +58,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/dpkeys"
 	"github.com/bugnet-sh/bugnet-router/internal/edgeevents"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
 	"github.com/bugnet-sh/bugnet-router/internal/probe"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -176,6 +177,9 @@ type Worker struct {
 	probeAges map[string]time.Duration
 	tel       *telemetry.Telemetry
 	tr        trace.Tracer
+	// engine and placing are the saga's, so the stats feed places starts as the saga does
+	engine  *placement.Engine
+	placing placement.Inputs
 }
 
 // New builds the River client that works the router's jobs and the saga inserting through it
@@ -222,6 +226,8 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		tr:       d.Telemetry.Tracer("bugnet-router/worker"),
 		store:    sd.Store,
 		registry: sd.Registry,
+		engine:   sd.Engine,
+		placing:  placement.Inputs{MarginFloor: sd.MarginFloor, ImageAccept: sd.ImageAccept},
 		log:      sd.Log,
 		bus:      streams.NewBus(sd.Valkey, sd.Prefix),
 		vk:       sd.Valkey,
