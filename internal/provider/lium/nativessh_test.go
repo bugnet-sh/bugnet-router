@@ -123,7 +123,7 @@ func TestLiumAuthorizeNativeSSH(t *testing.T) {
 		line := gatewayKey(t)
 		for _, bad := range []string{
 			"", "not a key", line + "\n" + gatewayKey(t), line + "\n", line + "\r",
-			line + "\x00", "\n" + line, strings.Repeat("a", 9000),
+			line + "\x00", "\n" + line, line + " " + strings.Repeat("a", 9000),
 		} {
 			_, err := p.AuthorizeNativeSSH(ctx, ref, bad)
 			wantCode(t, err, provider.CodeInvalid, false)

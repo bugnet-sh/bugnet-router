@@ -105,7 +105,8 @@ func (p *Provider) headroom(pods []podItem) int64 {
 
 // warningKind reads balance_warning's kind from an object or a bare word, empty for none
 func warningKind(raw json.RawMessage) string {
-	if !present(raw) {
+	var v any
+	if !present(raw) || json.Unmarshal(raw, &v) == nil && empty(v) {
 		return ""
 	}
 	var w struct {
@@ -119,6 +120,19 @@ func warningKind(raw json.RawMessage) string {
 		return s
 	}
 	return warningUnknown
+}
+
+// empty reports a JSON value that states nothing, as "", false or {} do
+func empty(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return x == ""
+	case bool:
+		return !x
+	case map[string]any:
+		return len(x) == 0
+	}
+	return false
 }
 
 // microsOf reads USD written as a JSON number or a number in a string, in micro-USD

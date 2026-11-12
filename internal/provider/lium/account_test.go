@@ -154,6 +154,18 @@ func TestLiumCheckAccount(t *testing.T) {
 			t.Fatalf("got %+v, %v", acc, err)
 		}
 	})
+	t.Run("an empty warning is none", func(t *testing.T) {
+		for _, warning := range []any{"", false, map[string]any{}} {
+			f, p, logs := accountFake(t)
+			f.setAccount(42.5, warning)
+			acc, err := p.CheckAccount(ctx)
+			if err != nil || acc.Block != provider.BlockNone ||
+				strings.Contains(acc.Detail, warningUnknown) ||
+				strings.Contains(logs.String(), "level=ERROR") {
+				t.Fatalf("warning %#v gave %+v, %v, log %q", warning, acc, err, logs.String())
+			}
+		}
+	})
 	t.Run("refused calls", func(t *testing.T) {
 		for _, tc := range []struct {
 			route string
@@ -167,6 +179,8 @@ func TestLiumCheckAccount(t *testing.T) {
 				provider.BlockAuth},
 			{"GET /users/me", fault{status: 403, code: "insufficient_balance"},
 				provider.BlockUnfunded},
+			{"GET /users/me", fault{status: 403, code: "account_balance_invalid"},
+				provider.BlockAuth},
 			{"GET /pods", fault{status: 402, code: "BALANCE_REQUIRED"}, provider.BlockUnfunded},
 			{"GET /pods", fault{status: 402, code: "API_KEY_BUDGET_EXCEEDED"},
 				provider.BlockUnfunded},
