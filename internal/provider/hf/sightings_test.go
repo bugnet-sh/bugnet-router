@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -234,4 +237,143 @@ func TestHFSkipsFailingSharedSightingsForAWhile(t *testing.T) {
 	}
 	eq(t, strings.Count(logs.String(), "level=WARN"), 1)
 	eq(t, strings.Count(logs.String(), "level=INFO"), 1)
+}
+
+// hungValkey is a client of the test Valkey through a relay that swallows every byte once hung
+func hungValkey(t *testing.T) (valkey.Client, *atomic.Bool) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	hung := &atomic.Bool{}
+	go func() {
+		for {
+			in, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", testenv.ValkeyAddr())
+			if err != nil {
+				_ = in.Close()
+				continue
+			}
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, err := in.Read(buf)
+					if err != nil {
+						break
+					}
+					if hung.Load() {
+						continue
+					}
+					if _, err := out.Write(buf[:n]); err != nil {
+						break
+					}
+				}
+				_ = out.Close()
+			}()
+			go func() { _, _ = io.Copy(in, out); _ = in.Close() }()
+		}
+	}()
+	vk, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{ln.Addr().String()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(vk.Close)
+	return vk, hung
+}
+
+func TestHFHungSharedSightingsBoundEveryCall(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	vk, hung := hungValkey(t)
+	_, prefix := testenv.Valkey(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Valkey, opts.Prefix = vk, prefix
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	p := f.provider(t, opts)
+	hung.Store(true)
+	// The write of a create's refusal gives up at sharedTimeout, far before Valkey's own timeouts
+	f.inject(createRoute, fault{status: 402, message: "No credits left", times: 1})
+	start := time.Now()
+	if _, err := p.Create(ctx, keyed()); !isCode(err, provider.CodeUnfunded) {
+		t.Fatalf("Create = %v", err)
+	}
+	if took := time.Since(start); took > sharedTimeout+2*time.Second {
+		t.Fatalf("a create answered 402 took %v against a hung valkey, want about %v", took,
+			sharedTimeout)
+	}
+	// The next wait and check skip Valkey, which failed moments ago
+	j := endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+	start = time.Now()
+	if err := p.WaitReady(ctx, refTo(j)); !isCode(err, provider.CodeUnfunded) {
+		t.Fatalf("WaitReady = %v", err)
+	}
+	wantAccount(t, p, provider.BlockUnfunded, j.id, "No credits left")
+	if took := time.Since(start); took > sharedTimeout/2 {
+		t.Fatalf("a wait and a check took %v, want valkey skipped", took)
+	}
+	eq(t, strings.Count(logs.String(), "level=WARN"), 1)
+}
+
+func TestHFReadOnlyOutageWarnsOnce(t *testing.T) {
+	f := newFake(t)
+	gone, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{testenv.ValkeyAddr()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone.Close()
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Valkey, opts.Prefix = gone, "bn:test:gone:"
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	worker := f.provider(t, opts)
+	// router-worker reads and writes nothing, its own sightings came in before Valkey went
+	now := time.Now()
+	worker.jobs.account.add("job 6911", sighting{
+		what: `hf ended Job "6911" for no_credits`, unfunded: true, at: now, seen: now,
+	}, false)
+	for range 3 {
+		wantAccount(t, worker, provider.BlockUnfunded, `"6911"`)
+		if worker.jobs.account.useShared(time.Now()) {
+			t.Fatal("a check that found valkey down asks it again at once")
+		}
+		worker.jobs.account.mu.Lock()
+		worker.jobs.account.sharedRetry = time.Now()
+		worker.jobs.account.mu.Unlock()
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Fatalf("an outage only checks saw logged %d warnings, want one: %s", n, logs)
+	}
+}
+
+func TestHFSightingsOutliveTheirCall(t *testing.T) {
+	f, api, _, vk, prefix := sharedFake(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Valkey, opts.Prefix = vk, prefix
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	worker := f.provider(t, opts)
+	j := endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+	// An adapter with no Valkey reads the Job, so only the note below reaches Valkey
+	read, err := f.provider(t, testOptions()).jobs.getJob(context.Background(), j.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A wait or create that ended with this very answer still leaves its sighting
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	api.jobs.noteJob(ended, read)
+	wantAccount(t, worker, provider.BlockUnfunded, j.id)
+	// A check given up on still reads the window, and says nothing of Valkey
+	if got := worker.jobs.recent(ended); len(got) != 1 || !strings.Contains(got[0].what, j.id) {
+		t.Fatalf("a canceled read gave %+v, want the Job %s", got, j.id)
+	}
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("a canceled call marked valkey down: %s", logs)
+	}
 }
