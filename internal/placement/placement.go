@@ -21,7 +21,8 @@ var ErrNoCapableProvider = fmt.Errorf("%w, none has the capabilities", ErrNoCand
 
 const (
 	slowReadyThreshold = 10 * time.Second
-	lifetimeSlack      = 5 * time.Minute
+	// LifetimeSlack is how far a provider's lifetime limit must reach past a package's minutes
+	LifetimeSlack = 5 * time.Minute
 )
 
 // Candidate is one provider and size that may host a package
@@ -86,60 +87,19 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	pk := in.Package
 	req := in.Requirements
 	req.GPU = req.GPU || pk.Resources.GPUCount > 0
-	need := time.Duration(pk.Minutes)*time.Minute + max(in.HoldMax, 0) + lifetimeSlack
-	billed := time.Duration(pk.Minutes)*time.Minute + max(in.Hold, 0)
 	var rs []ranked
 	for _, p := range e.reg.Ordered() {
 		name := p.Name()
 		if in.Exclude[name] || !e.health.Healthy(name) {
 			continue
 		}
-		if !e.reg.ImageAccepted(p, in.ImageAccept) {
+		c, open, ok := e.fit(p, in)
+		if !ok || !open {
 			continue
 		}
-		caps := e.reg.Capabilities(p)
-		if !capable(caps, req) {
-			continue
-		}
-		// A restricted package needs rules outside the VM, which Koyeb, Boat and local lack
-		if len(pk.EgressAllow) > 0 && !caps.EgressControl {
-			continue
-		}
-		if caps.MaxLifetime != 0 && caps.MaxLifetime < need {
-			continue
-		}
-		size, ok := p.SizeFor(pk.Resources)
-		if !ok {
-			continue
-		}
-		hourly := p.HourlyCostMicros(size)
-		cost := costMicros(hourly, billed, p.BillingIncrement())
-		var fee int64
-		if sc, ok := provider.As[provider.StartCoster](p); ok {
-			var ok bool
-			if fee, ok = sc.StartCostMicros(size); !ok {
-				continue
-			}
-			cost += fee
-		}
-		margin := 0.0
-		if pk.PriceMicros == 0 {
-			if cost != 0 {
-				continue
-			}
-		} else {
-			margin = float64(pk.PriceMicros-cost) / float64(pk.PriceMicros)
-			if margin < in.MarginFloor {
-				continue
-			}
-		}
-		c := Candidate{
-			Provider: p, Size: size, CostMicros: cost, MarginFraction: margin,
-			HourlyMicros: hourly, StartFeeMicros: fee,
-			// A pool member carries no egress restriction, so a restricted package creates cold
-			Warm: e.warm != nil && len(pk.EgressAllow) == 0 &&
-				e.warm.WarmAvailable(name, size.Name),
-		}
+		// A pool member carries no egress restriction, so a restricted package creates cold
+		c.Warm = e.warm != nil && len(pk.EgressAllow) == 0 &&
+			e.warm.WarmAvailable(name, c.Size.Name)
 		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
 	}
 	if len(rs) == 0 {
@@ -162,6 +122,82 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		out[i].Warm = r.Warm && (in.WarmFirst || i == 0)
 	}
 	return out, nil
+}
+
+// Landing is the size a package lands on at one provider, whatever the provider's state now
+type Landing struct {
+	Candidate
+	// Open is false while the provider is unhealthy or would refuse the start now
+	Open bool
+}
+
+// Lands returns each provider that can host in.Package, health aside, in the providers order
+func (e *Engine) Lands(in Inputs) []Landing {
+	var out []Landing
+	for _, p := range e.reg.Ordered() {
+		name := p.Name()
+		if in.Exclude[name] {
+			continue
+		}
+		if c, open, ok := e.fit(p, in); ok {
+			out = append(out, Landing{Candidate: c, Open: open && e.health.Healthy(name)})
+		}
+	}
+	return out
+}
+
+// fit is p's candidate for in without its health or warm members, ok false when p cannot host
+// the package and open false when p would refuse the start now
+func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
+	pk := in.Package
+	req := in.Requirements
+	req.GPU = req.GPU || pk.Resources.GPUCount > 0
+	need := time.Duration(pk.Minutes)*time.Minute + max(in.HoldMax, 0) + LifetimeSlack
+	billed := time.Duration(pk.Minutes)*time.Minute + max(in.Hold, 0)
+	if !e.reg.ImageAccepted(p, in.ImageAccept) {
+		return Candidate{}, false, false
+	}
+	caps := e.reg.Capabilities(p)
+	if !capable(caps, req) {
+		return Candidate{}, false, false
+	}
+	// A restricted package needs rules outside the VM, which Koyeb, Boat and local lack
+	if len(pk.EgressAllow) > 0 && !caps.EgressControl {
+		return Candidate{}, false, false
+	}
+	if caps.MaxLifetime != 0 && caps.MaxLifetime < need {
+		return Candidate{}, false, false
+	}
+	size, ok := p.SizeFor(pk.Resources)
+	if !ok {
+		return Candidate{}, false, false
+	}
+	hourly := p.HourlyCostMicros(size)
+	cost := costMicros(hourly, billed, p.BillingIncrement())
+	open := true
+	var fee int64
+	if sc, ok := provider.As[provider.StartCoster](p); ok {
+		// A refused start counts no fee, so the package still lands where its hours fit
+		if fee, open = sc.StartCostMicros(size); !open {
+			fee = 0
+		}
+		cost += fee
+	}
+	margin := 0.0
+	if pk.PriceMicros == 0 {
+		if cost != 0 {
+			return Candidate{}, false, false
+		}
+	} else {
+		margin = float64(pk.PriceMicros-cost) / float64(pk.PriceMicros)
+		if margin < in.MarginFloor {
+			return Candidate{}, false, false
+		}
+	}
+	return Candidate{
+		Provider: p, Size: size, CostMicros: cost, MarginFraction: margin,
+		HourlyMicros: hourly, StartFeeMicros: fee,
+	}, open, true
 }
 
 // capable reports whether caps covers every capability req asks for
