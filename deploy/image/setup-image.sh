@@ -34,7 +34,8 @@ tools_json() {
         --arg git "$(ver git --version)" --arg tar "$(ver tar --version)" \
         --arg python3 "$(ver python3 --version)" --arg node "$(ver node --version)" \
         --arg docker "$(ver docker --version)" --arg pnpm "$(ver pnpm --version)" \
-        --arg uv "$(ver uv --version)" --arg hf "$(ver hf version)" \
+        --arg uv "$(ver uv --version)" \
+        --arg hf "$(HF_HUB_DISABLE_UPDATE_CHECK=1 ver hf version)" \
         --arg gcc "$(ver gcc --version)" --arg make "$(ver make --version)" \
         --arg sshd "$(ver ssh -V)" --arg nft "$(ver nft --version)" \
         --arg curl "$(ver curl --version)" \
