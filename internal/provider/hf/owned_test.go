@@ -77,6 +77,8 @@ func TestHFListOwnedFiltersItself(t *testing.T) {
 	p := f.provider(t, testOptions())
 	ours := map[string]string{"bugnet": "1", "bugnet_deployment": "main"}
 	want := ownedJobs(f, ours)
+	// A Job whose id is not one plain path segment is never swept
+	f.set(f.addJob("RUNNING", maps.Clone(ours)), func(j *fakeJob) { j.id = "6911/../x" })
 	// A Job listed twice across pages is one sandbox
 	f.mu.Lock()
 	f.jobs = append(f.jobs, f.jobs[0])

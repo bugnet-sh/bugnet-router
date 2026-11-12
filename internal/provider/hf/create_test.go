@@ -209,16 +209,18 @@ func TestHFRetrySameJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	made := len(f.all())
+	want := cloneRef(first)
+	// A caller changing the ref it got leaves the kept one as it was
+	first.Meta["secret"] = "changed"
 	again, err := p.Create(t.Context(), keyed())
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, again, first)
+	eq(t, again, want)
 	// The key's Job comes from memory, with no list and no second create
 	eq(t, len(f.all()), made)
 	eq(t, len(posts(t, f)), 1)
 	eq(t, f.jobCount(), 1)
-	// A caller changing its ref leaves the kept one as it was
 	again.Meta["secret"] = "changed"
 	third, err := p.Create(t.Context(), keyed())
 	if err != nil {
@@ -242,6 +244,15 @@ func TestHFCreateForgetsAKeyAfterAnHour(t *testing.T) {
 		t.Fatalf("a retry within the hour gave %+v, %v", again, err)
 	}
 	now = now.Add(2 * time.Minute)
+	// No other key was kept since, so nothing dropped the key, and still it is past the hour
+	again, err := p.Create(t.Context(), keyed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID == first.ID {
+		t.Fatal("a key past the hour still gave its Job from memory")
+	}
+	now = now.Add(61 * time.Minute)
 	other := keyed()
 	other.IdempotencyKey = "fedcba9876543210fedcba9876543210"
 	if _, err := p.Create(t.Context(), other); err != nil {
@@ -253,13 +264,6 @@ func TestHFCreateForgetsAKeyAfterAnHour(t *testing.T) {
 	p.kmu.Unlock()
 	if kept {
 		t.Fatal("a key past the hour is still kept")
-	}
-	again, err := p.Create(t.Context(), keyed())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again.ID == first.ID {
-		t.Fatal("a key past the hour still gave its Job from memory")
 	}
 	eq(t, len(posts(t, f)), 3)
 }
@@ -487,6 +491,10 @@ func TestHFCreateLostAnswer(t *testing.T) {
 			fault: fault{status: 500, message: "Internal Error", served: true}},
 		{name: "an unreadable answer to a Job started",
 			fault: fault{status: 200, raw: "{not json", served: true}},
+		{name: "an answer naming no Job",
+			fault: fault{status: 200, raw: `{"status":{"stage":"SCHEDULING"}}`, served: true}},
+		{name: "an answer naming a Job by no plain id",
+			fault: fault{status: 200, raw: `{"id":"../x"}`, served: true}},
 		{name: "a fresh create sent and dropped, then listed", fresh: true,
 			fault: fault{drop: true, served: true}},
 		{name: "a server error that started nothing",
