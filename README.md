@@ -776,8 +776,10 @@ allowance and fee, covers the package's price now. One that pays less answers
 `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`,
 `paid_micros` and `price_micros`, the price the router asks now. A start is recorded as a failed,
 refundable placement with reason `price_changed` and a `placement.failed` event, so Payments
-refunds it in full, and a retry answers the same. An extension records nothing, and the gateway
-abandons it as it does every refused extension.
+refunds it in full. A retry answers `PRICE_CHANGED` again with the price now, which can be at or
+below `paid_micros` if the price fell since. An extension records nothing, and the gateway
+abandons it as it does every refused extension. A retry of an extension already applied answers
+as the first call did, whatever the price now.
 
 ## Estimator
 
