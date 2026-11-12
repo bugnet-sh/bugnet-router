@@ -388,12 +388,14 @@ func TestLiumExecEnds(t *testing.T) {
 	t.Run("a session lost on a live pod", func(t *testing.T) {
 		f, p := liveFake(t)
 		ref, pod := readyRef(t, f, p)
-		s, _ := startedGroup(context.Background(), t, f, p, ref)
+		s, pgid := startedGroup(context.Background(), t, f, p, ref)
 		f.sshd(pod.id).dropConns()
 		_, _ = io.ReadAll(s)
 		code, err := s.Wait()
 		eq(t, code, -1)
 		wantCode(t, err, provider.CodeOutcomeUnknown, false)
+		// No one reads the group's output any more, so it is killed as on a cancel
+		waitGroupGone(t, f, pgid)
 		_ = s.Close()
 	})
 	t.Run("a session lost with its pod", func(t *testing.T) {

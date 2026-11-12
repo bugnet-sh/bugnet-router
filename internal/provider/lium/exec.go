@@ -182,11 +182,12 @@ func (p *Provider) killGroup(ctx context.Context, pl *sshPool, call string) erro
 	return err
 }
 
-// killLate kills the group of a call whose start the caller gave up on
+// killLate kills the group of a call given up on, its start or its session's end unseen
 func (p *Provider) killLate(pl *sshPool, pod, call string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.ssh.kill)
 	defer cancel()
-	if err := p.killGroup(ctx, pl, call); err != nil {
+	// A closed pool is a pod destroyed or a provider closed, with nothing left to kill from here
+	if err := p.killGroup(ctx, pl, call); err != nil && !errors.Is(err, errPoolClosed) {
 		p.log.Warn("lium: the group of a command given up on was not killed", "pod", pod,
 			"err", err)
 	}
@@ -230,6 +231,11 @@ func (s *execStream) pump(stdout io.Reader) {
 	case <-s.aborted:
 	default:
 		code, err = s.p.exitOf(s.pod, werr)
+		// A session that ended with no exit leaves no reader, so its group goes as on a cancel
+		if e, ok := provider.AsError(err); ok && e.Code != provider.CodeNotFound &&
+			werr != nil && !errors.As(werr, new(*ssh.ExitError)) {
+			go s.p.killLate(s.pl, s.pod, s.call)
+		}
 	}
 	s.mu.Lock()
 	s.code, s.err = code, err
