@@ -359,6 +359,11 @@ func TestBuildHFSharesItsSightings(t *testing.T) {
 	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeUnfunded {
 		t.Fatalf("router-api's wait gave %v, want unfunded", err)
 	}
+	// The shared Valkey holds every deployment's keys, so the sightings stay under valkey.prefix
+	n, err := vk.Do(t.Context(), vk.B().Zcard().Key(prefix+"hf:sightings").Build()).AsInt64()
+	if err != nil || n != 1 {
+		t.Fatalf("valkey.prefix holds %d sightings, %v, want 1", n, err)
+	}
 	checker, _ := provider.As[provider.AccountChecker](hfs[1])
 	acc, err := checker.CheckAccount(t.Context())
 	if err != nil || acc.Block != provider.BlockUnfunded || !strings.Contains(acc.Detail, ended) {
