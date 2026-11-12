@@ -140,6 +140,8 @@ func TestHFTransportErrors(t *testing.T) {
 	}
 	// A call that never reached HF started nothing, so the order may go elsewhere
 	f.srv.Close()
+	// A kept connection would take the write before the dial is refused
+	p.jobs.client.CloseIdleConnections()
 	e, ok = provider.AsError(createOnce(ctx, p))
 	if !ok || e.Code != provider.CodeInternal || !e.CanFailOver {
 		t.Fatalf("a create that never connected gave %v, want internal with fail over", e)
