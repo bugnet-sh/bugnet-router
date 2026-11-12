@@ -170,6 +170,18 @@ func manifestIn(t *testing.T, tag string) image.Manifest {
 	return m
 }
 
+// checkSBXServer checks the sbx-server hf's baked mode runs, root's alone and the pinned build
+func checkSBXServer(t *testing.T, tag string, m image.Manifest) {
+	t.Helper()
+	sum := pin(t, "SBX_SERVER_SHA256_AMD64")
+	eq(t, run(t, tag, "stat -c '%a %U %G' "+image.SBXServerPath), "755 root root")
+	eq(t, run(t, tag, "sha256sum "+image.SBXServerPath), sum+"  "+image.SBXServerPath)
+	eq(t, run(t, tag, "echo '"+sum+"  "+image.SBXServerPath+"' | sha256sum -c -"),
+		image.SBXServerPath+": OK")
+	eq(t, len(m.SBXServerSHA256), 1)
+	eq(t, m.SBXServerSHA256["amd64"], sum)
+}
+
 func TestImageBuildsAndPassesItsScan(t *testing.T) {
 	needDocker(t)
 	tag := buildImage(t)
@@ -192,6 +204,7 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 	eq(t, run(t, tag, "ls /var/lib/apt/lists | wc -l"), "0")
 	eq(t, run(t, tag, `. /etc/bugnet/image.env; export LANG LC_ALL; `+
 		`printf 'é\n' | column -t >/dev/null && echo ok`), "ok")
+	checkSBXServer(t, tag, m)
 	// The same inputs give the same tools
 	eq(t, manifestIn(t, buildImage(t)).Tools["node"], m.Tools["node"])
 	again := manifestIn(t, buildImage(t))
@@ -225,9 +238,15 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 	needDocker(t)
 	root := repoRoot(t)
 	ca, sum := testCA(t, "")
+	// A Boat snapshot holds the same sbx-server as the OCI image, recorded in its manifest
+	sbx := pin(t, "SBX_SERVER_SHA256_AMD64")
 	script := `set -e; mkdir /p; cp /payload/* /p/; echo CA_SHA256_DEV_V1=` + sum +
 		` >> /p/pins.conf; /p/setup-image.sh build --target boat --channel dev --inputs ` +
-		strings.Repeat("0", 64) + `; test ! -L /etc/systemd/system/ssh.service; echo kept`
+		strings.Repeat("0", 64) + `; test ! -L /etc/systemd/system/ssh.service; ` +
+		`test "$(stat -c '%a %U %G' ` + image.SBXServerPath + `)" = "755 root root"; ` +
+		`echo '` + sbx + `  ` + image.SBXServerPath + `' | sha256sum -c - >/dev/null; ` +
+		`test "$(jq -r .sbx_server_sha256.amd64 ` + image.ManifestPath + `)" = ` + sbx +
+		`; echo kept`
 	payload := t.TempDir()
 	runner := filepath.Join(root, "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
 	for src, dst := range map[string]string{
