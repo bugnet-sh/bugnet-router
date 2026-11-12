@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -150,6 +151,18 @@ func TestHFOpenReaderReissuesAShortRead(t *testing.T) {
 		t.Fatalf("%d reads for %d stalls", n, readStalls)
 	}
 	f.clear(sbxReadRoute)
+
+	// A chunked answer one byte longer than its part is a file that changed, never the part
+	f.inject(sbxReadRoute, fault{times: 1, serve: func(w http.ResponseWriter, r *http.Request) {
+		n, _ := strconv.Atoi(r.URL.Query().Get("length"))
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+		_, _ = w.Write(make([]byte, n+1))
+	}})
+	if _, err := streamDown(t, p, ref, name, 0); err == nil ||
+		!strings.Contains(err.Error(), "changed size") {
+		t.Fatalf("an answer a byte past its part gave %v", err)
+	}
 
 	// A file that shrinks while read is an error, never a short file
 	r, err := p.OpenReader(t.Context(), ref, name, 0)

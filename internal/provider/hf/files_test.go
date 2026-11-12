@@ -236,7 +236,9 @@ func TestHFWriteFile(t *testing.T) {
 	eq(t, len(left), 0)
 
 	calls := len(f.all())
-	for _, bad := range []string{"relative", "/", dir + "/..", "/tmp/\xff"} {
+	for _, bad := range []string{
+		"relative", "/", dir + "/..", dir + "/f/", dir + "/f/.", "/tmp/\xff",
+	} {
 		err := p.WriteFile(ctx, ref, bad, []byte("x"), 0o644)
 		if c, _ := codeOf(err); c != provider.CodeInvalid {
 			t.Errorf("a write to %q gave %v", bad, err)
@@ -382,6 +384,14 @@ func TestHFListFiles(t *testing.T) {
 	f.inject(sbxListRoute, fault{status: 200, times: 1,
 		raw: `{"entries":[{"name":"` + strings.Repeat("x", maxListBytes) + `"}]}`})
 	eq(t, list(1, 100).Truncated, true)
+	// A subdirectory that goes, or turns into a file, while the walk reaches it is skipped
+	for _, ft := range []fault{
+		{status: 404, message: "No such file or directory (os error 2)", after: 1, times: 1},
+		{status: 400, message: "not a directory", after: 1, times: 1},
+	} {
+		f.inject(sbxListRoute, ft)
+		eq(t, paths(list(2, 100)), []string{"a", "b", "c", "d", "h", "link"})
+	}
 
 	for _, c := range []struct {
 		name  string
