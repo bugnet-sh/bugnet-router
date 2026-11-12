@@ -285,6 +285,16 @@ func TestHFExecEvents(t *testing.T) {
 			t.Fatalf("exit %d, %v", code, err)
 		}
 	})
+	t.Run("a full chunk of bytes JSON escapes", func(t *testing.T) {
+		// Each control byte of a 32 KiB read goes as six, so the line is six times the chunk
+		chunk := strings.Repeat("\x01", fakeChunk)
+		data, _ := json.Marshal(chunk)
+		out, code, err := answer(t, ndjson(`{"event":"stdout","data":`+string(data)+`}`,
+			`{"event":"exit","exit_code":0,"signal":null}`))
+		if err != nil || code != 0 || out != chunk {
+			t.Fatalf("gave %d bytes, exit %d, %v", len(out), code, err)
+		}
+	})
 	for name, line := range map[string]string{
 		"a timeout":        `{"event":"exit","exit_code":null,"signal":9,"timed_out":true}`,
 		"no code":          `{"event":"exit","exit_code":null,"signal":null,"timed_out":false}`,
@@ -424,6 +434,16 @@ func TestHFExecErrors(t *testing.T) {
 			t.Fatalf("gave %v", err)
 		}
 	})
+	t.Run("a Job HF no longer has behind the proxy", func(t *testing.T) {
+		f.mu.Lock()
+		f.jobs = slices.DeleteFunc(f.jobs, func(j *fakeJob) bool { return j.id == ref.ID })
+		f.mu.Unlock()
+		_, _, err := run(t, p, ref, sh("true"))
+		if c, _ := codeOf(err); c != provider.CodeNotFound ||
+			!strings.Contains(err.Error(), "no longer has") {
+			t.Fatalf("gave %v", err)
+		}
+	})
 }
 
 func TestHFExecDerivesAMissingToken(t *testing.T) {
@@ -444,11 +464,30 @@ func TestHFExecDerivesAMissingToken(t *testing.T) {
 	if c, _ := codeOf(err); c != provider.CodeInternal {
 		t.Fatalf("gave %v", err)
 	}
-	// A token of the wrong shape never goes in a header
-	bad := provider.Ref{Provider: "hf", ID: ref.ID, Meta: map[string]string{"secret": "a\r\nb"}}
-	_, _, err = run(t, p, bad, sh("true"))
+	// A Jobs read that names another Job gives no token, and no call reaches the sandbox
+	f.mu.Lock()
+	f.show = func(job map[string]any) { job["id"] = other.id }
+	f.mu.Unlock()
+	execs = f.requestsTo("POST", "/v1/exec")
+	_, _, err = run(t, p, bare, sh("true"))
 	if c, _ := codeOf(err); c != provider.CodeInternal {
-		t.Fatalf("gave %v", err)
+		t.Fatalf("a read of another Job gave %v", err)
+	}
+	eq(t, len(f.requestsTo("POST", "/v1/exec")), len(execs))
+	f.mu.Lock()
+	f.show = nil
+	f.mu.Unlock()
+
+	// A token that is not 64 lowercase hex never goes in a header, nor anywhere else
+	for _, secret := range []string{"a\r\nb", strings.Repeat("g", 64),
+		strings.ToUpper(testKeyToken)} {
+		calls := len(f.all())
+		bad := provider.Ref{Provider: "hf", ID: ref.ID, Meta: map[string]string{"secret": secret}}
+		_, _, err = run(t, p, bad, sh("true"))
+		if c, _ := codeOf(err); c != provider.CodeInternal {
+			t.Fatalf("a token %q gave %v", secret, err)
+		}
+		eq(t, len(f.all()), calls)
 	}
 }
 
