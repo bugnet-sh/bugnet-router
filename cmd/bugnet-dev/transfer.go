@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -108,6 +109,9 @@ func (c *cli) owned(args []string) error {
 			return fmt.Errorf("%s is not set", env)
 		}
 	}
+	if cfg.ProviderSeeds, err = c.providerSeeds(name); err != nil {
+		return err
+	}
 	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		return err
@@ -115,6 +119,10 @@ func (c *cli) owned(args []string) error {
 	prov, ok := reg.Get(name)
 	if !ok {
 		return errors.New("the provider was not built")
+	}
+	// Lium and HF read in the background until closed
+	if closer, ok := prov.(io.Closer); ok {
+		defer func() { _ = closer.Close() }()
 	}
 	all, err := prov.ListOwned(c.ctx, map[string]string{})
 	if err != nil {

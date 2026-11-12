@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -181,5 +182,35 @@ func TestImageRetireRefusesLiveVersion(t *testing.T) {
 	}
 	if strings.Join(fake.deleted, ",") != "bugnet-dev-2026-11-1" {
 		t.Errorf("deleted %v, want the record's saved snapshot", fake.deleted)
+	}
+}
+
+func TestImageProviderReadsTheProviderSeed(t *testing.T) {
+	seed := bytes.Repeat([]byte("s"), 32)
+	vars := map[string]string{"LIUM_SSH_SEED": base64.StdEncoding.EncodeToString(seed)}
+	var built config.Config
+	c := &cli{
+		ctx: t.Context(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, getenv: env(vars),
+		configPath: writeSettings(t, ""), environ: []string{},
+		provFor: func(cfg config.Config, name string) (provider.Provider, error) {
+			built = cfg
+			return &imageFake{name: name}, nil
+		},
+	}
+	if _, _, err := c.imageProvider("lium", "lium_test"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(built.ProviderSeeds["lium"], seed) ||
+		built.ProviderKeys["lium"] != "lium_test" {
+		t.Fatalf("lium built with seeds %v and keys %v", built.ProviderSeeds, built.ProviderKeys)
+	}
+	if _, _, err := c.imageProvider("hf", "hf_test"); err == nil ||
+		!strings.Contains(err.Error(), "HF_SANDBOX_SEED is not set") {
+		t.Fatalf("hf without its seed gave %v", err)
+	}
+	// A provider without a seed builds with none
+	if _, _, err := c.imageProvider("boat", "boat_test"); err != nil ||
+		len(built.ProviderSeeds) != 0 {
+		t.Fatalf("boat gave %v with seeds %v", err, built.ProviderSeeds)
 	}
 }

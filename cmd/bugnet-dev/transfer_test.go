@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +21,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // transferRouter answers CreateTransfer with a fixed URL and records each request
@@ -125,5 +130,36 @@ func TestOwnedCountsBugnetSandboxes(t *testing.T) {
 			args...)...); code != 2 {
 			t.Errorf("%v exited %d, want 2", args, code)
 		}
+	}
+}
+
+// liumSizes is one lium size, which a lium build needs
+const liumSizes = `[[lium.sizes]]
+size = "lium-rtx3090"
+model = "NVIDIA RTX 3090"
+match = ["NVIDIA GeForce RTX 3090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 350000
+`
+
+func TestOwnedReadsTheProviderSeed(t *testing.T) {
+	// Lium answers no pods and no nodes
+	testenv.LocalInternet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "[]")
+	}))
+	settings := writeSettings(t, liumSizes)
+	vars := map[string]string{"LIUM_API_KEY": "lium_test"}
+	_, stderr, code := runCLI(t, env(vars), "--config", settings, "owned", "lium")
+	if code != 1 || !strings.Contains(stderr, "LIUM_SSH_SEED is not set") {
+		t.Fatalf("owned lium without its seed exited %d with %q", code, stderr)
+	}
+	vars["LIUM_SSH_SEED"] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("s"), 32))
+	out, stderr, code := runCLI(t, env(vars), "--config", settings, "owned", "lium")
+	if code != 0 || out != "provider=lium\ncount=0\n" {
+		t.Fatalf("owned lium exited %d with %q and %q, want no pods", code, out, stderr)
 	}
 }

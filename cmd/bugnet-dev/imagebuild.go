@@ -72,6 +72,9 @@ func (c *cli) imageProvider(name, key string) (provider.Provider, config.Config,
 	}
 	cfg.Providers = []string{name}
 	cfg.ProviderKeys = map[string]string{name: key}
+	if cfg.ProviderSeeds, err = c.providerSeeds(name); err != nil {
+		return nil, cfg, err
+	}
 	if c.provFor != nil {
 		p, err := c.provFor(cfg, name)
 		return p, cfg, err
@@ -97,6 +100,15 @@ func (c *cli) providerKey(name string) (string, error) {
 		return v, nil
 	}
 	return "", fmt.Errorf("%s is not set", env)
+}
+
+// providerSeeds reads the seed a provider derives its sandbox keys from, none for most providers
+func (c *cli) providerSeeds(name string) (map[string][]byte, error) {
+	seed, err := config.ProviderSeed(name, c.getenv)
+	if err != nil || seed == nil {
+		return nil, err
+	}
+	return map[string][]byte{name: seed}, nil
 }
 
 // imageNeedles are the needles of the environment, the provider key and the extra secrets
