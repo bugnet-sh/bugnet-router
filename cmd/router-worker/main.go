@@ -159,7 +159,7 @@ func serve(
 		return err
 	}
 	defer tel.Close()
-	reg, err := providers.Build(cfg, vk, tel)
+	reg, err := providers.Build(cfg, vk, tel, providers.WithPackages(cat.All()))
 	if err != nil {
 		return err
 	}

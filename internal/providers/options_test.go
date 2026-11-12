@@ -5,10 +5,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/hf"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/koyeb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/lium"
 )
 
 func TestKoyebOptionsCarryTheTransferParts(t *testing.T) {
@@ -87,5 +91,76 @@ func TestImageArtifactsReachEachAdapter(t *testing.T) {
 	p, err := buildBoat(config.Boat{}, "boat_test", nil, "", 0, "bugnet-dev-2026-11-1")
 	if err != nil || p == nil {
 		t.Fatalf("buildBoat gave %v", err)
+	}
+}
+
+func TestLiumOptionsCarryEverySetting(t *testing.T) {
+	var cfg config.Config
+	cfg.Lium = config.Lium{
+		Countries: []string{"DE", "NL"}, OtherCountries: true, BlockedCountries: []string{"RU"},
+		MinDownloadMbps: 500, MaxLifetime: 3 * time.Hour, StartBilled: 8 * time.Minute,
+		TemplateVolume: "/root", Termination: "lifetime",
+		Sizes: []config.LiumSize{{
+			Size: "lium-rtx3090", Model: gpu.RTX3090, Match: []string{"NVIDIA GeForce RTX 3090"},
+			GPUs: 1, GPUMemoryGiB: 24, VCPU: 8, MemoryMiB: 28672, DiskGiB: 200,
+			MaxHourlyMicros: 350_000,
+		}},
+	}
+	cfg.ProviderOps = map[string]int{"lium": 4, "hf": 3}
+	cfg.CreatesPerSecond = map[string]int{"lium": 2, "hf": 1}
+	cfg.MaxConcurrent = map[string]int{"lium": 3, "hf": 7}
+	cfg.LimitsPoll.AccountEvery = 7 * time.Minute
+	digest := "ghcr.io/bugnet-sh/bugnet-base@sha256:" + strings.Repeat("b", 64)
+	cfg.Images.Lium = config.ProviderImage{Version: "2026.11.3", Ref: digest}
+	seed := []byte(strings.Repeat("s", 32))
+	got := liumOptions(cfg, "lium_test", seed)
+	want := lium.Options{
+		APIKey: "lium_test", SSHSeed: seed,
+		Sizes: []lium.SizeSpec{{
+			Name: "lium-rtx3090", Model: gpu.RTX3090, Match: []string{"NVIDIA GeForce RTX 3090"},
+			GPUs: 1, GPUMemoryGiB: 24, VCPU: 8, MemoryMiB: 28672, DiskGiB: 200,
+			MaxHourlyMicros: 350_000,
+		}},
+		Countries: []string{"DE", "NL"}, OtherCountries: true, BlockedCountries: []string{"RU"},
+		MinDownloadMbps: 500, MaxLifetime: 3 * time.Hour, StartBilled: 8 * time.Minute,
+		OpsPerSecond: 4, CreatesPerSecond: 2, Image: digest, ImageVersion: "2026.11.3",
+		TemplateVolume: "/root", Termination: "lifetime", MaxConcurrent: 3,
+		AccountEvery: 7 * time.Minute,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lium options %+v, want %+v", got, want)
+	}
+	// With no lium.max_concurrent the headroom keeps room for the default slots
+	delete(cfg.MaxConcurrent, "lium")
+	got = liumOptions(cfg, "lium_test", seed)
+	if got.MaxConcurrent != config.DefaultMaxConcurrent {
+		t.Errorf("max concurrent %d without a setting, want %d", got.MaxConcurrent,
+			config.DefaultMaxConcurrent)
+	}
+}
+
+func TestHFOptionsCarryEverySetting(t *testing.T) {
+	var cfg config.Config
+	cfg.HF = config.HF{
+		Namespace: "bugnet-test", Flavors: []string{"t4-small", "l4x1"},
+		MaxLifetime: 90 * time.Minute, ExtendRoom: 30 * time.Minute,
+		TimeoutMargin: 5 * time.Minute, StartBilled: 2 * time.Minute, PollEvery: 2 * time.Second,
+		SBXServer: "fetch", SBXServerVersion: "0.7.0", SBXServerSHA256: strings.Repeat("c", 64),
+		TokenPlan: "pro",
+	}
+	cfg.ProviderOps = map[string]int{"lium": 4, "hf": 8}
+	digest := "ghcr.io/bugnet-sh/bugnet-base@sha256:" + strings.Repeat("d", 64)
+	cfg.Images.HF = config.ProviderImage{Version: "2026.11.3", Ref: digest}
+	seed := []byte(strings.Repeat("h", 32))
+	got := hfOptions(cfg, "hf_test", seed)
+	want := hf.Options{
+		Token: "hf_test", Namespace: "bugnet-test", Flavors: []string{"t4-small", "l4x1"},
+		MaxLifetime: 90 * time.Minute, StartBilled: 2 * time.Minute, OpsPerSecond: 8,
+		SandboxSeed: seed, Image: digest, ExtendRoom: 30 * time.Minute,
+		TimeoutMargin: 5 * time.Minute, PollEvery: 2 * time.Second,
+		SBXServerSHA256: strings.Repeat("c", 64),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hf options %+v, want %+v", got, want)
 	}
 }

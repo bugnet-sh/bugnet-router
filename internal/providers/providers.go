@@ -2,6 +2,7 @@
 package providers
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,12 +13,15 @@ import (
 
 	"github.com/valkey-io/valkey-go"
 
+	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/e2b"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/hf"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/koyeb"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/lium"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/traced"
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry"
@@ -29,10 +33,27 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 	GPUCount: math.MaxInt32, GPUMemoryGiB: math.MaxInt32,
 }}
 
+// Option adds to what Build reads beside the settings
+type Option func(*options)
+
+type options struct {
+	// packages are the packages sold, held to margin_floor at each new HF price
+	packages []catalog.Package
+}
+
+// WithPackages names the packages sold, so a new HF price that breaks one's margin logs an error
+func WithPackages(pkgs []catalog.Package) Option {
+	return func(o *options) { o.packages = pkgs }
+}
+
 // Build returns the configured providers in their listed order with the features they passed,
 // each wrapped with traced.Wrap while tel is enabled
-func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry) (
+func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry, opts ...Option) (
 	*provider.Registry, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var ps []provider.Provider
 	for _, name := range cfg.Providers {
 		switch name {
@@ -75,6 +96,18 @@ func Build(cfg config.Config, vk valkey.Client, tel *telemetry.Telemetry) (
 			p, err := buildBoat(
 				cfg.Boat, cfg.ProviderKeys["boat"], vk, cfg.ValkeyPrefix, cfg.Hooks.BoatWindow,
 				cfg.Images.Boat.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
+		case "lium":
+			p, err := buildLium(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("providers: %w", err)
+			}
+			ps = append(ps, p)
+		case "hf":
+			p, err := buildHF(cfg, o.packages)
 			if err != nil {
 				return nil, fmt.Errorf("providers: %w", err)
 			}
@@ -228,4 +261,82 @@ func buildBoat(
 		return nil, fmt.Errorf("boat.types: %w", err)
 	}
 	return p, nil
+}
+
+// buildLium builds Lium from its settings, its key and the seed of every pod's SSH key
+func buildLium(cfg config.Config) (*lium.Provider, error) {
+	key, seed := cfg.ProviderKeys["lium"], cfg.ProviderSeeds["lium"]
+	switch {
+	case key == "":
+		return nil, errors.New("lium needs LIUM_API_KEY")
+	case len(seed) == 0:
+		return nil, errors.New("lium needs LIUM_SSH_SEED")
+	}
+	return lium.New(liumOptions(cfg, key, seed))
+}
+
+// liumOptions maps Lium's settings, max_concurrent and account_every sizing its balance headroom
+func liumOptions(cfg config.Config, key string, seed []byte) lium.Options {
+	var sizes []lium.SizeSpec
+	for _, s := range cfg.Lium.Sizes {
+		sizes = append(sizes, lium.SizeSpec{
+			Name: s.Size, Model: s.Model, Match: s.Match, GPUs: s.GPUs,
+			GPUMemoryGiB: s.GPUMemoryGiB, VCPU: s.VCPU, MemoryMiB: s.MemoryMiB,
+			DiskGiB: s.DiskGiB, MaxHourlyMicros: s.MaxHourlyMicros,
+		})
+	}
+	l := cfg.Lium
+	return lium.Options{
+		APIKey: key, SSHSeed: seed, Sizes: sizes, Countries: l.Countries,
+		OtherCountries: l.OtherCountries, BlockedCountries: l.BlockedCountries,
+		MinDownloadMbps: l.MinDownloadMbps, MaxLifetime: l.MaxLifetime,
+		StartBilled: l.StartBilled, OpsPerSecond: cfg.ProviderOps["lium"],
+		CreatesPerSecond: cfg.CreatesPerSecond["lium"], Image: cfg.Images.Lium.Ref,
+		ImageVersion: cfg.Images.Lium.Version, TemplateVolume: l.TemplateVolume,
+		Termination:   l.Termination,
+		MaxConcurrent: cmp.Or(cfg.MaxConcurrent["lium"], config.DefaultMaxConcurrent),
+		AccountEvery:  cfg.LimitsPoll.AccountEvery,
+	}
+}
+
+// buildHF builds HF, logging an error when an hourly price read puts one of pkgs under its margin
+func buildHF(cfg config.Config, pkgs []catalog.Package) (*hf.Provider, error) {
+	token, seed := cfg.ProviderKeys["hf"], cfg.ProviderSeeds["hf"]
+	switch {
+	case token == "":
+		return nil, errors.New("hf needs HF_JOBS_TOKEN")
+	case len(seed) == 0:
+		return nil, errors.New("hf needs HF_SANDBOX_SEED")
+	case cfg.HF.SBXServer != "fetch":
+		return nil, errors.New(`hf.sbx_server must be "fetch" until an image holds sbx-server`)
+	}
+	opts := hfOptions(cfg, token, seed)
+	var p *hf.Provider
+	// The first read may end before New returns, so the check waits for p
+	built := make(chan struct{})
+	if len(pkgs) > 0 {
+		opts.OnChange = func() {
+			<-built
+			if err := cfg.CheckGPUMargin(pkgs, []provider.Provider{p}); err != nil {
+				slog.Error("hf: a new price puts a package under margin_floor", "err", err)
+			}
+		}
+	}
+	var err error
+	if p, err = hf.New(opts); err != nil {
+		return nil, err
+	}
+	close(built)
+	return p, nil
+}
+
+// hfOptions maps HF's settings to its options
+func hfOptions(cfg config.Config, token string, seed []byte) hf.Options {
+	h := cfg.HF
+	return hf.Options{
+		Token: token, Namespace: h.Namespace, Flavors: h.Flavors, MaxLifetime: h.MaxLifetime,
+		StartBilled: h.StartBilled, OpsPerSecond: cfg.ProviderOps["hf"], SandboxSeed: seed,
+		Image: cfg.Images.HF.Ref, ExtendRoom: h.ExtendRoom, TimeoutMargin: h.TimeoutMargin,
+		PollEvery: h.PollEvery, SBXServerSHA256: h.SBXServerSHA256,
+	}
 }
