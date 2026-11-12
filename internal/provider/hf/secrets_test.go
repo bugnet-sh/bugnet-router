@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -12,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
+
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 // tokenWords are the forms the token could take beside its own header, whole, encoded or cut
@@ -233,6 +237,96 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	for _, w := range tokenWords() {
 		if strings.Contains(logs.String(), w) {
 			t.Errorf("the log carries the token: %s", logs.String())
+		}
+	}
+}
+
+// TestHFSightingsKeepTheTokenOutOfValkey holds every sighting kept in Valkey free of the token
+func TestHFSightingsKeepTheTokenOutOfValkey(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	f.pageSize = 1
+	vk, prefix := testenv.Valkey(t)
+	p := sharedProvider(t, f, vk, prefix)
+	labels := map[string]string{"bugnet": "1"}
+	// Jobs HF names by the token, ended for credit and at a limit
+	credit := endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+	limit := endedJob(f, "CANCELED", "SPEND_LIMIT", time.Time{})
+	f.mu.Lock()
+	f.show = func(job map[string]any) {
+		switch job["id"] {
+		case credit.id:
+			job["id"] = fakeToken
+		case limit.id:
+			job["id"] = "job-" + strings.ToLower(fakeToken)
+		}
+	}
+	f.mu.Unlock()
+	if _, err := p.jobs.listJobs(ctx, labels, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.show = nil
+	f.mu.Unlock()
+	// Refusals for credit echoing the token as written and in lowercase
+	f.inject(listRoute, fault{status: 402, message: "No credits", echo: true, times: 1})
+	if _, err := p.ReadLimits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.inject(jobRoute, fault{status: 402, times: 1, header: map[string]string{
+		"X-Error-Message": "No credits for " + strings.ToLower(fakeToken),
+		"X-Request-Id":    "req-" + strings.ToLower(fakeToken),
+	}})
+	if _, err := p.jobs.getJob(ctx, credit.id); !isCode(err, provider.CodeUnfunded) {
+		t.Fatalf("getJob = %v", err)
+	}
+	// A next page HF names by the token, refused for credit
+	f.mu.Lock()
+	f.nextLink = "https://" + jobsHost + "/api/jobs/" + testNamespace + "/" + fakeToken +
+		"?cursor=1"
+	f.mu.Unlock()
+	f.inject(jobRoute, fault{status: 402, message: "No credits", times: 1})
+	if _, err := p.jobs.listJobs(ctx, labels, nil); !isCode(err, provider.CodeUnfunded) {
+		t.Fatalf("listJobs = %v", err)
+	}
+
+	var keys []string
+	for cursor := uint64(0); ; {
+		scan, err := vk.Do(ctx, vk.B().Scan().Cursor(cursor).Match(prefix+"*").Count(1000).
+			Build()).AsScanEntry()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, scan.Elements...)
+		if cursor = scan.Cursor; cursor == 0 {
+			break
+		}
+	}
+	slices.Sort(keys)
+	eq(t, keys, []string{prefix + "hf:sightings", prefix + "hf:sightings:words"})
+	var kept strings.Builder
+	for _, key := range keys {
+		kept.WriteString(key + "\n")
+		for _, cmd := range []valkey.Completed{
+			vk.B().Zrange().Key(key).Min("0").Max("-1").Withscores().Build(),
+			vk.B().Hgetall().Key(key).Build(),
+		} {
+			// Each key answers one of the two, the other a wrong type error
+			if all, err := vk.Do(ctx, cmd).ToAny(); err == nil {
+				kept.WriteString(fmt.Sprintf("%v\n", all))
+			}
+		}
+	}
+	// The last list's first page reads the Job ended for credit once more, by its own id
+	if n := zcard(t, vk, prefix+"hf:sightings"); n != 6 {
+		t.Fatalf("Valkey keeps %d sightings, want 6: %s", n, kept.String())
+	}
+	if !strings.Contains(kept.String(), "[token]") {
+		t.Fatalf("no sighting names the token's place: %s", kept.String())
+	}
+	for _, w := range tokenWords() {
+		if strings.Contains(kept.String(), w) {
+			t.Errorf("Valkey keeps the token: %s", kept.String())
 		}
 	}
 }

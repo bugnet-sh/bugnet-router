@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/valkey-io/valkey-go"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
@@ -63,6 +64,9 @@ type Options struct {
 	PollEvery time.Duration
 	// SBXServerSHA256 is the digest of the sbx-server build each Job fetches at boot
 	SBXServerSHA256 string
+	// Valkey shares the account sightings with the other processes under Prefix, none when nil
+	Valkey valkey.Client
+	Prefix string
 }
 
 // Provider sells HF Jobs, answering sizes and prices from memory
@@ -167,8 +171,12 @@ func newProvider(opts Options) (*Provider, error) {
 		}
 	}
 	log := cmp.Or(opts.Log, slog.Default())
+	jobs := newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log)
+	if opts.Valkey != nil {
+		jobs.account.shared = newSharedSightings(opts.Valkey, opts.Prefix)
+	}
 	return &Provider{
-		jobs:         newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log),
+		jobs:         jobs,
 		log:          log,
 		hw:           newHardware(opts.Flavors),
 		maxLifetime:  cmp.Or(opts.MaxLifetime, defaultMaxLifetime),

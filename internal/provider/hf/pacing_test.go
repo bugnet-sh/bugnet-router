@@ -112,7 +112,7 @@ func TestHFRateLimitKeepsTheLongerHold(t *testing.T) {
 	}
 	limited := func(retryAfter string) {
 		h := http.Header{"Retry-After": {retryAfter}}
-		_ = p.jobs.classify(http.StatusTooManyRequests, h, nil, call{})
+		_ = p.jobs.classify(t.Context(), http.StatusTooManyRequests, h, nil, call{})
 	}
 	limited("30")
 	limited("1")

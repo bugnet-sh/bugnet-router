@@ -174,7 +174,7 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 	defer drainClose(resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
-		return resp.Header, c.classify(resp.StatusCode, resp.Header, raw, cl)
+		return resp.Header, c.classify(ctx, resp.StatusCode, resp.Header, raw, cl)
 	}
 	if out == nil {
 		return resp.Header, nil
@@ -304,7 +304,7 @@ func (c *jobsClient) getJob(ctx context.Context, id string) (job, error) {
 	var j job
 	_, err = c.do(ctx, call{method: http.MethodGet, url: u, job: true}, &j)
 	if err == nil {
-		c.noteJob(j)
+		c.noteJob(ctx, j)
 	}
 	return j, err
 }
@@ -317,7 +317,7 @@ func (c *jobsClient) createJob(ctx context.Context, spec []byte, secret string) 
 		secret: secret,
 	}, &j)
 	if err == nil {
-		c.noteJob(j)
+		c.noteJob(ctx, j)
 	}
 	if err == nil && !jobID.MatchString(j.ID) {
 		return job{}, &provider.Error{Code: provider.CodeOutcomeUnknown,
@@ -356,7 +356,7 @@ func (c *jobsClient) listJobs(
 			return nil, err
 		}
 		for _, j := range page {
-			c.noteJob(j)
+			c.noteJob(ctx, j)
 		}
 		out = append(out, page...)
 		if next, err = nextLink(next, h); err != nil || next == "" {
@@ -466,8 +466,10 @@ func scrub(s string, secrets ...string) string {
 }
 
 // classify maps an error answer to a provider code by its status, design 4.13
-func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) error {
-	ae := readError(status, h, raw, c.token, cl.secret)
+func (c *jobsClient) classify(
+	ctx context.Context, status int, h http.Header, raw []byte, cl call,
+) error {
+	ae := readError(status, h, raw, c.token, strings.ToLower(c.token), cl.secret)
 	e := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: ae}
 	switch {
 	case status == http.StatusTooManyRequests:
@@ -479,7 +481,7 @@ func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) er
 		e.Code = provider.CodeUnfunded
 		// A public call goes without the token, so its answer says nothing of the account
 		if !cl.public {
-			c.noteRefusal(c.routeOf(cl), ae)
+			c.noteRefusal(ctx, c.routeOf(cl), ae)
 		}
 	case status == http.StatusForbidden && lockWords.MatchString(ae.Message):
 		e.Code = provider.CodeAbuseLock
