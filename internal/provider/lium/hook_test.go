@@ -75,10 +75,10 @@ func TestLiumWebhook(t *testing.T) {
 			{
 				`{"id":"evt_grace","type":"balance_grace_started",` +
 					`"created_at":"2026-11-11T11:59:30Z",` +
-					`"data":{"balance":0,"pods_stop_at":"2026-11-11T12:01:30Z"}}`,
+					`"data":{"balance":0,"pods_stop_at":"2026-11-11T12:01:45Z"}}`,
 				provider.HookEvent{
 					ID: "evt_grace", Type: provider.HookAccount, At: at,
-					StopAt: at.Add(2 * time.Minute),
+					StopAt: at.Add(2*time.Minute + 15*time.Second),
 				},
 			},
 			{
