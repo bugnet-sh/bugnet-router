@@ -105,6 +105,41 @@ func TestHFRateLimitHoldsEveryCall(t *testing.T) {
 	eq(t, len(f.all()), 5)
 }
 
+// TestHFRateLimitHoldsQueuedCalls has calls waiting for their token when a 429 arrives
+func TestHFRateLimitHoldsQueuedCalls(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	opts := testOptions()
+	opts.OpsPerSecond = 2
+	p := f.provider(t, opts)
+	f.inject(listRoute, fault{status: 429, message: "slow down", times: 1,
+		header: map[string]string{"Retry-After": "2"}})
+	errs := make(chan error, 3)
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() { errs <- listOnce(ctx, p) })
+	}
+	wg.Wait()
+	close(errs)
+	var limited int
+	for err := range errs {
+		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
+			limited++
+		} else if err != nil {
+			t.Error(err)
+		}
+	}
+	got := arrivals(f.all())
+	eq(t, len(got), 3)
+	eq(t, limited, 1)
+	// The first call got the 429, the two queued behind it at 0.5 s and 1 s wait out its hold
+	for _, at := range got[1:] {
+		if gap := at.Sub(got[0]); gap < 2*time.Second-50*time.Millisecond {
+			t.Fatalf("a queued call went %s after the 429 that asked for 2 s", gap)
+		}
+	}
+}
+
 // waitRunning reads the Job until it runs, as WaitReady polls, waiting out a 429's ask
 func waitRunning(ctx context.Context, p *Provider, id string) (limited int, err error) {
 	for {
