@@ -167,6 +167,28 @@ func TestLiumSFTPHostile(t *testing.T) {
 			return err
 		})
 	})
+	t.Run("StalledSpaceCheckWithNoDeadline", func(t *testing.T) {
+		// A write's bare failure asks statvfs, which the operation limit bounds too
+		_, p, ref, _ := hostilePod(t)
+		p.ssh.op = 300 * time.Millisecond
+		w, err := p.OpenWriter(context.Background(), ref, hostileStallVFS+"/f",
+			provider.WriteSpec{Size: 4, Mode: 0o644})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = w.Abort() }()
+		done := make(chan error, 1)
+		go func() {
+			_, err := w.Write([]byte("data"))
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			wantCode(t, err, provider.CodeInternal, false)
+		case <-time.After(p.ssh.op + time.Second):
+			t.Fatalf("a write whose space check stalls ran past a limit of %v", p.ssh.op)
+		}
+	})
 	t.Run("NoSpace", func(t *testing.T) {
 		// ENOSPC in the status's words, and OpenSSH's bare failure on a full disk
 		_, p, ref, _ := hostilePod(t)

@@ -220,12 +220,14 @@ type upload struct {
 func (u *upload) Write(b []byte) (int, error) {
 	stop := u.s.limit(u.timed)
 	n, err := u.t.f.Write(b)
+	if err != nil {
+		err = spaceError(u.t.cl, u.t.dir(), fmt.Errorf("write %s: %w", u.t.temp, err))
+	}
 	if stop() {
 		return n, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
 			"a write of %s on lium pod %s took past %v", u.t.temp, u.s.pod, u.p.ssh.op)}
 	}
 	if err != nil {
-		err = spaceError(u.t.cl, u.t.dir(), fmt.Errorf("write %s: %w", u.t.temp, err))
 		return n, u.s.classify(context.Background(), err)
 	}
 	return n, nil

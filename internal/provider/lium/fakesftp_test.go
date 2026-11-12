@@ -270,6 +270,8 @@ const (
 	hostileFull = "/full"
 	// hostileStallWrite is a directory where writes never answer
 	hostileStallWrite = "/stallwrite"
+	// hostileStallVFS is a directory where writes fail bare and statvfs never answers
+	hostileStallVFS = "/stallvfs"
 )
 
 func (h *hostileFS) handlers() sftp.Handlers {
@@ -295,7 +297,7 @@ func (h *hostileFS) info(name string) (fakeInfo, bool) {
 	dir := fakeInfo{name: path.Base(name), mode: fs.ModeDir | 0o755}
 	switch name {
 	case "/", hostileEndless, hostileDots, hostileLongName, hostileStallDir, hostileNoSpace,
-		hostileFull, hostileStallWrite:
+		hostileFull, hostileStallWrite, hostileStallVFS:
 		return dir, true
 	case hostileHuge:
 		return fakeInfo{name: path.Base(name), size: 1 << 62, mode: 0o644}, true
@@ -344,12 +346,12 @@ func (h *hostileFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	return nil, os.ErrNotExist
 }
 
-// Filewrite takes files only on the two full disks, where every write fails, and the stalled one
+// Filewrite takes files only in the directories where every write fails or never answers
 func (h *hostileFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	switch path.Dir(r.Filepath) {
 	case hostileNoSpace:
 		return failWriter{&os.PathError{Op: "write", Path: r.Filepath, Err: syscall.ENOSPC}}, nil
-	case hostileFull:
+	case hostileFull, hostileStallVFS:
 		return failWriter{errors.New("failure")}, nil
 	case hostileStallWrite:
 		return stalledWriter(h.release), nil
@@ -360,8 +362,12 @@ func (h *hostileFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 // Filecmd takes every command, so a write gets as far as its data
 func (h *hostileFS) Filecmd(*sftp.Request) error { return nil }
 
-// StatVFS states a full disk under hostileFull and a roomy one elsewhere
+// StatVFS never answers under hostileStallVFS, states a full disk under hostileFull, else roomy
 func (h *hostileFS) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
+	if r.Filepath == hostileStallVFS {
+		<-h.release
+		return nil, os.ErrNotExist
+	}
 	free := uint64(1 << 20)
 	if r.Filepath == hostileFull || path.Dir(r.Filepath) == hostileFull {
 		free = 0
