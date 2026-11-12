@@ -56,6 +56,7 @@ const (
 	HFDeleted            = "deleted"
 	HFNotFound           = "not_found"
 	HFCompleted          = "completed"
+	HFError              = "error"
 )
 
 // LiumReason is a Lium pod's Reason, its status, set flags and own reasons as words
