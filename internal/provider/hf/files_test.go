@@ -2,8 +2,10 @@ package hf
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"io/fs"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -394,6 +396,28 @@ func TestHFListFiles(t *testing.T) {
 			t.Errorf("a listing of %s to %d gave %v, want %s", c.name, c.depth, err, c.code)
 		}
 	}
+}
+
+func TestHFListFilesEndlessEmptyPages(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	ref := readyJob(t, f, p)
+	dir := t.TempDir()
+	// A hostile sbx-server answers no entries and a next that always moves on
+	f.inject(sbxListRoute, fault{serve: func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}, "truncated": true,
+			"next": r.URL.Query().Get("after") + "x"})
+	}})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	l := provider.NewListing(100)
+	if err := p.ListFiles(ctx, ref, dir, 1, l); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(l.Entries), 0)
+	eq(t, l.Truncated, true)
+	// A page that adds no entry ends the listing there
+	eq(t, len(f.requestsTo("GET", "/v1/files/list")), 1)
 }
 
 func TestHFListLimit(t *testing.T) {

@@ -381,6 +381,7 @@ func (p *Provider) listDir(
 		if err != nil {
 			return nil, err
 		}
+		added := 0
 		for _, e := range page.Entries {
 			// The answer comes from inside the Job, so a name is taken only as one plain entry
 			if !entryName(e.Name) || after != "" && e.Name <= after {
@@ -390,6 +391,7 @@ func (p *Provider) listDir(
 			if !into.Add(fe) {
 				return subdirs, nil
 			}
+			added++
 			if fe.IsDir {
 				subdirs = append(subdirs, fe.Path)
 			}
@@ -400,8 +402,8 @@ func (p *Provider) listDir(
 			return subdirs, nil
 		case !page.Truncated:
 			return subdirs, nil
-		case page.Next == nil || *page.Next <= after || into.Full():
-			// A page that does not move on, or no room for the next, ends the listing here
+		case added == 0 || page.Next == nil || *page.Next <= after || into.Full():
+			// A page that adds nothing or never moves on, or no room for the next, ends the listing
 			into.Truncated = true
 			return subdirs, nil
 		}

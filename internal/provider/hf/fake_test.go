@@ -45,6 +45,8 @@ type fault struct {
 	times int
 	// only limits the fault to the calls whose body holds it, when set
 	only string
+	// serve answers a sandbox call in place of its route, when set
+	serve http.HandlerFunc
 }
 
 // recorded is one request the fake served, kept for the secret and pacing checks
@@ -428,6 +430,9 @@ func (f *fakeHF) sbxGate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 			return
 		case ft.cut > 0:
 			cutAnswer(w, r, h, ft.cut)
+			return
+		case ft.serve != nil:
+			ft.serve(w, r)
 			return
 		}
 		if ft.served {
