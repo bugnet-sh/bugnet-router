@@ -396,6 +396,26 @@ func TestUnderpaidUsesPackageShare(t *testing.T) {
 	eq(t, errors.Is(err, saga.ErrUnderpaid), true)
 }
 
+func TestUnderpaidStartTakesNoStartToken(t *testing.T) {
+	e := walletEnv(t, func(w *config.Wallets) { w.MaxConcurrent = 50 })
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.token(t, ordertoken.Claims{
+			OrderID: "short", Kind: ordertoken.KindStart, PackageID: smallPkg,
+			AmountMicros: smallPrice - 1, Payer: payerA, FeePayer: facilitator,
+		}),
+		Requirements: placement.Requirements{},
+	})
+	eq(t, errors.Is(err, saga.ErrUnderpaid), true)
+	eq(t, p.Payer, payerA)
+	eq(t, p.FailureReason, saga.ReasonPriceChanged)
+	// The wallet still has all five starts of its burst
+	for i := range 5 {
+		if _, err := e.createPaid(t, "order-"+string(rune('a'+i)), payerA); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestCreateWaitsForABlockInFlight(t *testing.T) {
 	e := walletEnv(t, nil)
 	ctx := t.Context()

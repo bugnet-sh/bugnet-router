@@ -119,6 +119,9 @@ const ReasonDeadline = "deadline"
 // ReasonPlacingStalled is the failure reason when the saga placing a placement stopped heartbeating
 const ReasonPlacingStalled = "placing_stalled"
 
+// ReasonPriceChanged is the failure reason when a start paid less than its package's price now
+const ReasonPriceChanged = "price_changed"
+
 // Failure reasons are stable codes the gateway may show, the attempts and logs keep the details
 const (
 	reasonFull       = "capacity_full"        // every candidate provider had no free slot
@@ -328,7 +331,8 @@ type CreateInput struct {
 // Create records a verified start order and places it, binding a matching reservation
 //
 // A package no provider can host fails at once with ErrNoCandidate, unless the quote's ready
-// reservation matches, since a prepared sandbox then exists.
+// reservation matches, since a prepared sandbox then exists. An order that paid less than its
+// package's price now fails at once with an UnderpaidError.
 func (s *Saga) Create(
 	ctx context.Context, in CreateInput,
 ) (store.Placement, string, error) {
@@ -338,7 +342,7 @@ func (s *Saga) Create(
 	if err != nil {
 		return store.Placement{}, "", err
 	}
-	pkg, err := s.paidPackage(c)
+	pkg, err := s.lookupPackage(c.PackageID)
 	if err != nil {
 		return store.Placement{}, "", err
 	}
@@ -355,7 +359,11 @@ func (s *Saga) Create(
 		PaidAt:        s.paidAt(c, arrived),
 	}
 	bind := s.bindTo(in, pkg)
-	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
+	if covers(c, pkg) {
+		_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
+	} else {
+		np.FailureReason = ReasonPriceChanged
+	}
 	switch {
 	case errors.Is(err, placement.ErrNoCandidate):
 		if !s.readyFits(ctx, bind) {
@@ -385,6 +393,8 @@ func (s *Saga) Create(
 		switch p.FailureReason {
 		case ReasonNoCandidate:
 			refusal = fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
+		case ReasonPriceChanged:
+			refusal = underpaid(c, pkg)
 		case ReasonWalletBusy:
 			refusal = ErrWalletBusy
 		case ReasonWalletRateLimited:
@@ -557,12 +567,37 @@ func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
 	if err != nil {
 		return pkg, err
 	}
-	// The x402 allowance rides along in a start's amount and never pays for the package
-	if paid := c.PackageMicros(); paid < pkg.PriceMicros {
-		return pkg, fmt.Errorf("%w: paid %d, %s costs %d", ErrUnderpaid, paid, pkg.ID,
-			pkg.PriceMicros)
+	if !covers(c, pkg) {
+		return pkg, underpaid(c, pkg)
 	}
 	return pkg, nil
+}
+
+// UnderpaidError is ErrUnderpaid with what the order paid and the price the router asks now
+type UnderpaidError struct {
+	PackageID   string
+	PaidMicros  int64
+	PriceMicros int64
+}
+
+func (e *UnderpaidError) Error() string {
+	return fmt.Sprintf("%v: paid %d, %s costs %d", ErrUnderpaid, e.PaidMicros, e.PackageID,
+		e.PriceMicros)
+}
+
+// Unwrap makes an UnderpaidError match ErrUnderpaid
+func (e *UnderpaidError) Unwrap() error { return ErrUnderpaid }
+
+// covers reports whether the order paid pkg's price now, the x402 allowance and fee left out
+func covers(c ordertoken.Claims, pkg catalog.Package) bool {
+	return c.PackageMicros() >= pkg.PriceMicros
+}
+
+// underpaid is the refusal of an order that paid less than pkg's price now
+func underpaid(c ordertoken.Claims, pkg catalog.Package) *UnderpaidError {
+	return &UnderpaidError{
+		PackageID: pkg.ID, PaidMicros: c.PackageMicros(), PriceMicros: pkg.PriceMicros,
+	}
 }
 
 // lookupPackage returns the catalog's package with this ID or ErrUnknownPackage

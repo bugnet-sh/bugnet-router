@@ -834,21 +834,83 @@ func TestCreateRejectsExpiredAndForgedTokens(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsAmountBelowPrice(t *testing.T) {
-	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+func TestCreateRecordsAnUnderpaidStartRefundable(t *testing.T) {
+	a := newLocal(t, local.Options{Name: "a"})
+	e := newEnv(t, a)
 	tok := e.token(t, ordertoken.Claims{
 		OrderID: "o", Kind: ordertoken.KindStart, PackageID: smallPkg,
 		AmountMicros: smallPrice - 1,
 	})
-	if _, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+	wantH, _ := handle.Derive(e.handleKey, "o")
+	p, h, err := e.saga.Create(t.Context(), saga.CreateInput{
 		Token: tok, Requirements: placement.Requirements{},
-	}); !errors.Is(
-		err, saga.ErrUnderpaid) {
-		t.Fatalf("err %v, want ErrUnderpaid", err)
+	})
+	var ue *saga.UnderpaidError
+	if !errors.Is(err, saga.ErrUnderpaid) || !errors.As(err, &ue) {
+		t.Fatalf("err %v, want an UnderpaidError", err)
 	}
-	if n := e.placementCount(t); n != 0 {
-		t.Fatalf("%d placements recorded", n)
+	if ue.PackageID != smallPkg || ue.PaidMicros != smallPrice-1 || ue.PriceMicros != smallPrice {
+		t.Fatalf("refusal %+v", ue)
 	}
+	if h != wantH || p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != saga.ReasonPriceChanged {
+		t.Fatalf("placement %+v, handle %q", p, h)
+	}
+	o, err := e.store.OrderByID(t.Context(), "o")
+	if err != nil || o.PlacementID != p.ID || o.AmountMicros != smallPrice-1 {
+		t.Fatalf("order %+v %v", o, err)
+	}
+	ev := e.oneEvent(t, saga.EventFailed)
+	if ev.PlacementID != p.ID || ev.OrderID != "o" || ev.State != store.PlacementFailed ||
+		!ev.Refundable || ev.Reason != saga.ReasonPriceChanged {
+		t.Fatalf("failed event %+v", ev)
+	}
+
+	// A retry answers the same refusal and records nothing more
+	again, h2, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
+	if !errors.As(err, &ue) || ue.PriceMicros != smallPrice || again.ID != p.ID || h2 != wantH {
+		t.Fatalf("retry %+v %q %v", again, h2, err)
+	}
+	e.saga.Wait()
+	eq(t, e.placementCount(t), 1)
+	eq(t, len(e.events(t, saga.EventFailed)), 1)
+	eq(t, len(e.attempts(t, p.ID)), 0)
+	eq(t, len(owned(t, a)), 0)
+}
+
+func TestRetriedStartKeepsItsAnswerWhenThePriceRises(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeReady(t, "o")
+	// The same order now pays less than the package costs, as a price raised after it would
+	short := e.token(t, ordertoken.Claims{
+		OrderID: "o", Kind: ordertoken.KindStart, PackageID: smallPkg,
+		AmountMicros: smallPrice - 1,
+	})
+	again, h2, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: short, Requirements: placement.Requirements{},
+	})
+	if err != nil || again.ID != p.ID || h2 != h || again.State != store.PlacementReady {
+		t.Fatalf("retry %+v %q %v", again, h2, err)
+	}
+	eq(t, len(e.events(t, saga.EventFailed)), 0)
+}
+
+func TestUnderpaidExtensionRecordsNothing(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeReady(t, "order-1")
+	_, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice-1, h))
+	var ue *saga.UnderpaidError
+	if !errors.As(err, &ue) || ue.PackageID != morePkg || ue.PaidMicros != morePrice-1 ||
+		ue.PriceMicros != morePrice {
+		t.Fatalf("err %v, want an UnderpaidError for %s", err, morePkg)
+	}
+	_, err = e.store.OrderByID(t.Context(), "ext-1")
+	eq(t, errors.Is(err, store.ErrNotFound), true)
+	eq(t, e.reload(t, p.ID).Deadline.Equal(*p.Deadline), true)
+	eq(t, len(e.events(t, saga.EventExtended)), 0)
+	eq(t, len(e.events(t, saga.EventFailed)), 0)
 }
 
 func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
