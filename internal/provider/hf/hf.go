@@ -87,9 +87,9 @@ type Provider struct {
 	sbx               *sbxClient
 	// execDir holds each command's pid file in the Job, setsid and mv name the Job's own tools
 	execDir, setsid, mv string
-	// partBytes is each ranged part of a stream, buffers bounds the parts every stream holds
-	partBytes int64
-	buffers   *semaphore.Weighted
+	// partBytes is each ranged part of a stream, the pools bound the parts all streams hold
+	partBytes                 int64
+	readBuffers, writeBuffers *semaphore.Weighted
 	// retryWait spaces reissued reads and is the first pause between attempts of a part
 	retryWait time.Duration
 	now       func() time.Time
@@ -168,31 +168,32 @@ func newProvider(opts Options) (*Provider, error) {
 	}
 	log := cmp.Or(opts.Log, slog.Default())
 	return &Provider{
-		jobs:        newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log),
-		log:         log,
-		hw:          newHardware(opts.Flavors),
-		maxLifetime: cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
-		startBilled: opts.StartBilled,
-		hwEvery:     cmp.Or(opts.HardwareEvery, hardwareEvery),
-		hwRetry:     hardwareRetry,
-		onChange:    opts.OnChange,
-		seed:        slices.Clone(opts.SandboxSeed),
-		image:       opts.Image,
-		sbxSHA256:   opts.SBXServerSHA256,
-		extendRoom:  opts.ExtendRoom,
-		margin:      opts.TimeoutMargin,
-		pollEvery:   cmp.Or(opts.PollEvery, defaultPollEvery),
-		healthWait:  healthTimeout,
-		sbx:         newSBXClient(),
-		execDir:     defaultExecDir,
-		setsid:      jobSetsid,
-		mv:          jobMv,
-		partBytes:   defaultPartBytes,
-		buffers:     semaphore.NewWeighted(bufferTotal),
-		retryWait:   defaultRetryWait,
-		now:         time.Now,
-		kept:        map[string]keptJob{},
-		creating:    map[string]chan struct{}{},
+		jobs:         newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log),
+		log:          log,
+		hw:           newHardware(opts.Flavors),
+		maxLifetime:  cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
+		startBilled:  opts.StartBilled,
+		hwEvery:      cmp.Or(opts.HardwareEvery, hardwareEvery),
+		hwRetry:      hardwareRetry,
+		onChange:     opts.OnChange,
+		seed:         slices.Clone(opts.SandboxSeed),
+		image:        opts.Image,
+		sbxSHA256:    opts.SBXServerSHA256,
+		extendRoom:   opts.ExtendRoom,
+		margin:       opts.TimeoutMargin,
+		pollEvery:    cmp.Or(opts.PollEvery, defaultPollEvery),
+		healthWait:   healthTimeout,
+		sbx:          newSBXClient(),
+		execDir:      defaultExecDir,
+		setsid:       jobSetsid,
+		mv:           jobMv,
+		partBytes:    defaultPartBytes,
+		readBuffers:  semaphore.NewWeighted(bufferTotal),
+		writeBuffers: semaphore.NewWeighted(bufferTotal),
+		retryWait:    defaultRetryWait,
+		now:          time.Now,
+		kept:         map[string]keptJob{},
+		creating:     map[string]chan struct{}{},
 	}, nil
 }
 

@@ -346,8 +346,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	}
 }
 
-// TestHFSandboxCallsCarryTheSandboxTokenAlone runs every sandbox call and holds each to its Job's
-// host with its own token, the Jobs token reaching none of them
+// TestHFSandboxCallsCarryTheSandboxTokenAlone holds every sandbox call to its Job and its token
 func TestHFSandboxCallsCarryTheSandboxTokenAlone(t *testing.T) {
 	ctx := context.Background()
 	f := newFake(t)

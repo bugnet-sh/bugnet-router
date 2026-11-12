@@ -38,8 +38,7 @@ type sbxClient struct {
 	client *http.Client
 }
 
-// newSBXClient talks HTTP/1.1 only, so parallel parts get connections of their own, and never
-// asks for compression, so lengths stay exact
+// newSBXClient talks HTTP/1.1 so each part has its own connection, and asks for no compression
 func newSBXClient() *sbxClient {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
@@ -56,7 +55,7 @@ type sandbox struct {
 	end time.Time
 }
 
-// sandbox reads the ref's Job and token, deriving the token from the Job's key when the ref lacks it
+// sandbox reads the ref's Job and token, the token derived from the Job's key when the ref lacks it
 func (p *Provider) sandbox(ctx context.Context, ref provider.Ref) (sandbox, error) {
 	id, ok := jobOf(ref)
 	if !ok {
@@ -264,8 +263,7 @@ func (c *sbxClient) health(ctx context.Context, id, token string) (health, error
 	return h, nil
 }
 
-// scrubToken replaces the sandbox token in any case, since hex reads the same either way, then
-// cuts the text as scrub does
+// scrubToken replaces the sandbox token in any case, as hex reads the same, then cuts as scrub does
 func scrubToken(s, token string) string {
 	token = asciiLower(token)
 	if token == "" {

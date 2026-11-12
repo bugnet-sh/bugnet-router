@@ -22,8 +22,8 @@ const (
 	defaultPartBytes = 8 << 20
 	// partsInFlight is how many parts of one stream go side by side, STARTING VALUE
 	partsInFlight = 4
-	// bufferTotal bounds the part buffers every stream holds together
-	bufferTotal = 256 << 20
+	// bufferTotal bounds the parts reads hold, and writes apart, so no write waits on a read
+	bufferTotal = 128 << 20
 	// partRetries is how often a part is sent again after a failure worth a retry
 	partRetries = 3
 	// readStalls is how many reads of a part in a row may move no bytes before it fails
@@ -149,7 +149,7 @@ func (u *upload) Write(b []byte) (int, error) {
 					u.target), false)
 			}
 			// Waiting here for a free buffer is the back-pressure every Write may apply
-			if err := u.p.buffers.Acquire(u.ctx, size); err != nil {
+			if err := u.p.writeBuffers.Acquire(u.ctx, size); err != nil {
 				return n, err
 			}
 			u.held, u.buf = size, make([]byte, 0, size)
@@ -178,7 +178,7 @@ func (u *upload) dispatch() error {
 	go func() {
 		defer u.wg.Done()
 		defer func() { <-u.slots }()
-		defer u.p.buffers.Release(held)
+		defer u.p.writeBuffers.Release(held)
 		if err := u.put(u.ctx, buf, offset, false); err != nil {
 			u.fail(err)
 		}
@@ -279,7 +279,7 @@ func (u *upload) Discard(ctx context.Context) error {
 // release gives the part buffer back to the pool
 func (u *upload) release() {
 	if u.held > 0 {
-		u.p.buffers.Release(u.held)
+		u.p.writeBuffers.Release(u.held)
 	}
 	u.held, u.buf = 0, nil
 }
@@ -375,7 +375,7 @@ func (r *rangeReader) Read(b []byte) (int, error) {
 		}
 		r.parts = r.parts[1:]
 		if pt.err != nil {
-			r.p.buffers.Release(int64(len(pt.data)))
+			r.p.readBuffers.Release(int64(len(pt.data)))
 			return 0, pt.err
 		}
 		r.cur, r.held = pt.data, int64(len(pt.data))
@@ -390,10 +390,10 @@ func (r *rangeReader) schedule() error {
 	for len(r.parts) < partsInFlight && r.next < r.size {
 		n := min(r.p.partBytes, r.size-r.next)
 		if len(r.parts) == 0 {
-			if err := r.p.buffers.Acquire(r.ctx, n); err != nil {
+			if err := r.p.readBuffers.Acquire(r.ctx, n); err != nil {
 				return err
 			}
-		} else if !r.p.buffers.TryAcquire(n) {
+		} else if !r.p.readBuffers.TryAcquire(n) {
 			return nil
 		}
 		pt := &readPart{offset: r.next, data: make([]byte, n), done: make(chan struct{})}
@@ -480,7 +480,7 @@ func (r *rangeReader) changed() error {
 // releaseCur gives back the buffer of the part read through
 func (r *rangeReader) releaseCur() {
 	if r.held > 0 {
-		r.p.buffers.Release(r.held)
+		r.p.readBuffers.Release(r.held)
 	}
 	r.cur, r.held = nil, 0
 }
@@ -496,7 +496,7 @@ func (r *rangeReader) Close() error {
 	}
 	r.closed = true
 	for _, pt := range r.parts {
-		r.p.buffers.Release(int64(len(pt.data)))
+		r.p.readBuffers.Release(int64(len(pt.data)))
 	}
 	r.parts = nil
 	r.releaseCur()

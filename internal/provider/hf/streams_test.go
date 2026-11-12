@@ -104,7 +104,7 @@ func TestHFStreamsLargeFile(t *testing.T) {
 	slices.Sort(offsets)
 	eq(t, offsets[0], int64(5))
 	eq(t, len(offsets), 13)
-	// The writes: the empty one at open, the parts, and the last with the size and mode
+	// The writes are the empty one at open, the parts, and the last with the size and mode
 	w := writes(f)
 	eq(t, len(w), 1+13)
 	eq(t, len(w[0].body), 0)
@@ -255,7 +255,8 @@ func TestHFStreamsShareTheBuffers(t *testing.T) {
 	p := f.provider(t, testOptions())
 	p.partBytes = 1 << 10
 	// One part's room in all, so every stream waits its turn and none deadlocks
-	p.buffers = semaphore.NewWeighted(p.partBytes)
+	p.readBuffers = semaphore.NewWeighted(p.partBytes)
+	p.writeBuffers = semaphore.NewWeighted(p.partBytes)
 	ref := readyJob(t, f, p)
 	dir := t.TempDir()
 	data := make([]byte, 10<<10+5)
@@ -284,7 +285,7 @@ func TestHFStreamsShareTheBuffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Every buffer came back
-	if !p.buffers.TryAcquire(p.partBytes) {
+	if !p.readBuffers.TryAcquire(p.partBytes) || !p.writeBuffers.TryAcquire(p.partBytes) {
 		t.Fatal("a buffer was never given back")
 	}
 }
@@ -313,10 +314,9 @@ func TestHFStreamsCloseGivesTheBuffersBack(t *testing.T) {
 	}
 	_, _ = w.Write(make([]byte, 3<<10))
 	_ = w.Abort()
-	if !p.buffers.TryAcquire(bufferTotal) {
+	if !p.readBuffers.TryAcquire(bufferTotal) || !p.writeBuffers.TryAcquire(bufferTotal) {
 		t.Fatal("a buffer was never given back")
 	}
-	p.buffers.Release(bufferTotal)
 	// The aborted writer's temporary file is gone
 	left, _ := filepath.Glob(path.Dir(name) + "/.f.w.bugnet-*")
 	eq(t, len(left), 0)

@@ -333,7 +333,7 @@ func (f *fakeHF) exec(w http.ResponseWriter, r *http.Request) {
 				open--
 				continue
 			}
-			// JSON holds text alone, so bytes that are not UTF-8 are replaced as from_utf8_lossy does
+			// JSON holds text alone, so bytes not UTF-8 are replaced as from_utf8_lossy does
 			send(map[string]any{"event": ev.stream, "data": string(ev.data)})
 			silence.Reset(ping)
 		case <-silence.C:

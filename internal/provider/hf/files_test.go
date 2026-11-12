@@ -269,7 +269,8 @@ func TestHFWriteFileInParts(t *testing.T) {
 	for i, r := range w {
 		offsets = append(offsets, r.query.Get("offset"))
 		last := i == len(w)-1
-		if last != (r.query.Get("truncate_to") == "4500") || last != (r.query.Get("mode") == "600") {
+		if last != (r.query.Get("truncate_to") == "4500") ||
+			last != (r.query.Get("mode") == "600") {
 			t.Fatalf("part %d asked %v", i, r.query)
 		}
 		if len(r.body) > 1000 {
@@ -368,7 +369,8 @@ func TestHFListFiles(t *testing.T) {
 	f.sbx.listMax = 0
 	f.mu.Unlock()
 	f.inject(sbxListRoute, fault{status: 200, times: 2, raw: `{"entries":[` +
-		`{"name":"../../etc","type":"dir"},{"name":"a/b","type":"file"},{"name":"..","type":"dir"},` +
+		`{"name":"../../etc","type":"dir"},{"name":"a/b","type":"file"},` +
+		`{"name":"..","type":"dir"},` +
 		`{"name":"","type":"file"},{"name":"ok","type":"file","size":1}],` +
 		`"truncated":true,"next":"ok"}`})
 	odd := list(2, 100)
