@@ -33,7 +33,7 @@ var unfundedKills = map[string]bool{gpustatus.HFNoCredits: true, gpustatus.HFNoS
 
 // sighting is one answer of HF that spoke of the account
 type sighting struct {
-	// what says what HF answered, in words free of the token
+	// what says what HF answered, cut and free of the token
 	what     string
 	unfunded bool
 	// at is when HF ended the Job or answered, seen when the adapter first saw it
@@ -98,8 +98,10 @@ func (c *jobsClient) noteJob(j job) {
 	if end, ok := endTime(j.FinishedAt); ok && end.Before(now) {
 		at = end
 	}
-	c.account.add("job "+j.ID, sighting{
-		what: fmt.Sprintf("hf ended Job %.40q for %s", j.ID, r), unfunded: unfundedKills[r],
+	// The id is a part of HF's answer, so it is cut and kept free of the token as the others are
+	id := scrub(j.ID, c.token, strings.ToLower(c.token))
+	c.account.add("job "+id, sighting{
+		what: fmt.Sprintf("hf ended Job %.40q for %s", id, r), unfunded: unfundedKills[r],
 		at: at, seen: now,
 	}, false)
 }

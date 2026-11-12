@@ -94,6 +94,38 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	f.inject(listRoute, fault{status: 402, message: "No credits", echo: true, times: 1})
 	_, err = p.ReadLimits(ctx)
 	keep(err)
+	// A next page HF names by the token, refused for credit and then dropped
+	linkPath := "/api/jobs/" + testNamespace + "/" + fakeToken
+	f.mu.Lock()
+	f.nextLink = "https://" + jobsHost + linkPath + "?cursor=1"
+	f.mu.Unlock()
+	f.inject(jobRoute, fault{status: 402, message: "No credits", times: 1})
+	_, err = p.jobs.listJobs(ctx, labels, nil)
+	keep(err)
+	f.inject(jobRoute, fault{drop: true})
+	_, err = p.jobs.listJobs(ctx, labels, nil)
+	keep(err)
+	f.clear(jobRoute)
+	// Jobs HF names by the token, ended for credit and at a limit
+	credit, limit := f.addJob("CANCELED", labels), f.addJob("CANCELED", labels)
+	f.set(credit, func(j *fakeJob) { j.cancelReason = "NO_CREDITS" })
+	f.set(limit, func(j *fakeJob) { j.cancelReason = "SPEND_LIMIT" })
+	f.mu.Lock()
+	f.nextLink = ""
+	f.show = func(job map[string]any) {
+		switch job["id"] {
+		case credit.id:
+			job["id"] = fakeToken
+		case limit.id:
+			job["id"] = strings.ToLower(fakeToken)
+		}
+	}
+	f.mu.Unlock()
+	_, err = p.jobs.listJobs(ctx, labels, nil)
+	keep(err)
+	f.mu.Lock()
+	f.show = nil
+	f.mu.Unlock()
 	var details []string
 	for _, want := range []provider.Block{provider.BlockUnfunded, provider.BlockBanned} {
 		acc, err := p.CheckAccount(ctx)
@@ -128,8 +160,13 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 			t.Errorf("%s carried Authorization %q", where, auth)
 		}
 		r.header.Del("Authorization")
+		path := r.path
+		if path == linkPath {
+			// HF's own Link named this path, so the call sends it back to HF as HF wrote it
+			path = ""
+		}
 		var rest strings.Builder
-		rest.WriteString(r.path + "?" + r.query.Encode() + string(r.body))
+		rest.WriteString(path + "?" + r.query.Encode() + string(r.body))
 		for k, vs := range r.header {
 			rest.WriteString(k + ": " + strings.Join(vs, ",") + "\n")
 		}

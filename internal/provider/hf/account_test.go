@@ -324,6 +324,49 @@ func TestHFCheckAccount(t *testing.T) {
 		}
 		wantAccount(t, p, provider.BlockUnfunded, fmt.Sprintf("and %d more", maxSightings-3))
 	})
+	t.Run("the words kept are bounded", func(t *testing.T) {
+		// A next page HF names by a long path, refused for credit
+		f, p, _ := accountFake(t)
+		f.pageSize = 1
+		f.addJob("RUNNING", nil)
+		f.addJob("RUNNING", nil)
+		f.mu.Lock()
+		f.nextLink = "https://" + jobsHost + "/api/jobs/" + testNamespace + "/" +
+			strings.Repeat("a", 200<<10)
+		f.mu.Unlock()
+		f.inject(jobRoute, fault{status: 402, message: "No credits"})
+		if _, err := p.ReadLimits(ctx); err != nil {
+			t.Fatal(err)
+		}
+		acc, err := p.CheckAccount(ctx)
+		if err != nil || acc.Block != provider.BlockUnfunded ||
+			len(acc.Detail) > 2*maxMessageBytes {
+			t.Fatalf("got a detail of %d bytes, block %q, %v", len(acc.Detail), acc.Block, err)
+		}
+		// Jobs HF names by long ids
+		f, p, _ = accountFake(t)
+		for range maxSightings + 44 {
+			endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		}
+		f.mu.Lock()
+		f.show = func(job map[string]any) {
+			job["id"] = job["id"].(string) + strings.Repeat("a", 10<<10)
+		}
+		f.mu.Unlock()
+		f.unfiltered = true
+		if _, err := p.ListOwned(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		size := 0
+		p.jobs.account.mu.Lock()
+		for k, s := range p.jobs.account.sightings {
+			size += len(k) + len(s.what)
+		}
+		p.jobs.account.mu.Unlock()
+		if size > maxSightings*2*maxMessageBytes {
+			t.Fatalf("the sightings hold %d bytes", size)
+		}
+	})
 	t.Run("a full log drops its oldest sighting, never the new one", func(t *testing.T) {
 		f, p, _ := accountFake(t)
 		c := stopClock(p)

@@ -140,7 +140,7 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 	if err := checkURL(cl.url); err != nil {
 		return nil, &provider.Error{Code: provider.CodeInternal, Err: err}
 	}
-	route := cl.method + " " + routeOf(cl.url)
+	route := c.routeOf(cl)
 	if err := c.pace(ctx); err != nil {
 		return nil, &provider.Error{
 			Code: provider.CodeInternal, CanFailOver: true,
@@ -169,6 +169,11 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
+		// The client's error repeats the whole URL, whose path and query a Link of HF's may name
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, transportError(fmt.Errorf("hf %s: %w", route, err), sent.Load(), cl.create)
 	}
 	defer drainClose(resp)
@@ -185,12 +190,13 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 	return resp.Header, nil
 }
 
-// routeOf is a URL's path, which errors name without the query
-func routeOf(raw string) string {
-	if u, err := url.Parse(raw); err == nil {
-		return u.Path
+// routeOf is a call's method and path as errors name it, cut and free of the query and the token
+func (c *jobsClient) routeOf(cl call) string {
+	path := jobsPath
+	if u, err := url.Parse(cl.url); err == nil {
+		path = u.Path
 	}
-	return jobsPath
+	return cl.method + " " + scrub(path, c.token, strings.ToLower(c.token), cl.secret)
 }
 
 // pace waits out a 429's hold, then takes a token of the ops bucket
@@ -464,7 +470,7 @@ func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) er
 		e.Code = provider.CodeUnfunded
 		// A public call goes without the token, so its answer says nothing of the account
 		if !cl.public {
-			c.noteRefusal(cl.method+" "+routeOf(cl.url), ae)
+			c.noteRefusal(c.routeOf(cl), ae)
 		}
 	case status == http.StatusForbidden && lockWords.MatchString(ae.Message):
 		e.Code = provider.CodeAbuseLock
