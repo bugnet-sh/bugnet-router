@@ -3,6 +3,7 @@ package lium
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"maps"
@@ -63,6 +64,7 @@ func TestLiumSendsNoSecret(t *testing.T) {
 		if err := p.SetLifetime(ctx, ref, time.Now().Add(20*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
+		sftpCalls(t, p, ref)
 	}
 	if _, err := p.ListOwned(ctx, placementLabels()); err != nil {
 		t.Fatal(err)
@@ -139,5 +141,62 @@ func TestLiumSendsNoSecret(t *testing.T) {
 	}
 	if len(lines) < 6 || kills < 2 {
 		t.Fatalf("only %d exec lines, %d kills", len(lines), kills)
+	}
+
+	// Every byte sent over SFTP and every file written that way, reassembled
+	sessions, files := f.sftpSent()
+	written := 0
+	for _, file := range files {
+		if bytes.Equal(file, []byte(sftpFileData)) || bytes.Equal(file, []byte(sftpStreamData)) {
+			written++
+		}
+	}
+	if len(sessions) < 10 || written < 2*len(refs) {
+		t.Fatalf("only %d SFTP sessions and %d of the files written recorded", len(sessions),
+			written)
+	}
+	for _, sent := range append(sessions, files...) {
+		for _, n := range needles {
+			if n != "" && bytes.Contains(sent, []byte(n)) {
+				t.Errorf("an SFTP session carries a secret: %q", n)
+			}
+		}
+	}
+}
+
+// What sftpCalls writes, which the fake must find among the files it recorded
+const (
+	sftpFileData   = "a file written whole"
+	sftpStreamData = "a file written as a stream"
+)
+
+// sftpCalls writes, reads and lists files on the pod over SFTP
+func sftpCalls(t *testing.T, p *Provider, ref provider.Ref) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := p.WriteFile(ctx, ref, dir+"/a/f", []byte(sftpFileData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := p.OpenWriter(ctx, ref, dir+"/g",
+		provider.WriteSpec{Size: int64(len(sftpStreamData)), Mode: 0o644})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(sftpStreamData)); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(sftpStreamData))
+	if _, err := w.Commit(ctx, sum[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.ReadFile(ctx, ref, dir+"/a/f", 0, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ListFiles(ctx, ref, dir, 2, provider.NewListing(10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.StatFile(ctx, ref, dir+"/g"); err != nil {
+		t.Fatal(err)
 	}
 }
