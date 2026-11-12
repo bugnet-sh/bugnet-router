@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -35,6 +36,8 @@ const (
 	maxErrorBytes = 64 << 10
 	// maxMessageBytes bounds the part of an error answer an error carries
 	maxMessageBytes = 512
+	// maxPages bounds one listing, so a list that never ends cannot hold a caller
+	maxPages = 100
 	// defaultRetryAfter is the least a 429 holds the calls back
 	defaultRetryAfter = time.Second
 	// maxRetryAfter is the Hub's rate limit window, the longest a 429 can rightly ask to wait
@@ -46,6 +49,8 @@ var (
 	jobID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	// lockWords are what a 403 says of an account HF suspended or banned, wording UNVERIFIED
 	lockWords = regexp.MustCompile(`(?i)\b(suspended|banned)\b`)
+	// linkValue is one link of a Link header and the parameters after it
+	linkValue = regexp.MustCompile(`<([^>]*)>([^,]*)`)
 )
 
 // jobsClient calls HF's Jobs API under one namespace, pacing every call
@@ -277,6 +282,72 @@ func (c *jobsClient) getJob(ctx context.Context, id string) (job, error) {
 	var j job
 	_, err = c.do(ctx, call{method: http.MethodGet, url: u, job: true}, &j)
 	return j, err
+}
+
+// listJobs reads the namespace's Jobs carrying every label in any of the stages, page by page
+func (c *jobsClient) listJobs(
+	ctx context.Context, labels map[string]string, stages []string,
+) ([]job, error) {
+	q := url.Values{}
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
+		q.Add("label", k+"="+labels[k])
+	}
+	for _, s := range stages {
+		q.Add("stage", s)
+	}
+	var out []job
+	next := jobsURL(q, c.namespace)
+	for range maxPages {
+		var page []job
+		h, err := c.do(ctx, call{method: http.MethodGet, url: next}, &page)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if next, err = nextLink(next, h); err != nil || next == "" {
+			return out, err
+		}
+	}
+	return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
+		"hf: the Jobs list ran past %d pages", maxPages)}
+}
+
+// nextLink is the Link header's rel="next" read against the page that gave it, empty for none
+func nextLink(page string, h http.Header) (string, error) {
+	for _, v := range h.Values("Link") {
+		for _, m := range linkValue.FindAllStringSubmatch(v, -1) {
+			if !relNext(m[2]) {
+				continue
+			}
+			base, err := url.Parse(page)
+			if err != nil {
+				return "", &provider.Error{Code: provider.CodeInternal, Err: err}
+			}
+			ref, err := url.Parse(strings.TrimSpace(m[1]))
+			if err != nil {
+				return "", &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
+					"hf: the Jobs list's next page link: %w", err)}
+			}
+			return base.ResolveReference(ref).String(), nil
+		}
+	}
+	return "", nil
+}
+
+// relNext reports whether a link's parameters hold rel with next among its values
+func relNext(params string) bool {
+	for p := range strings.SplitSeq(params, ";") {
+		k, v, ok := strings.Cut(strings.TrimSpace(p), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), "rel") {
+			continue
+		}
+		for _, r := range strings.Fields(strings.Trim(strings.TrimSpace(v), `"`)) {
+			if strings.EqualFold(r, "next") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 /* Errors */

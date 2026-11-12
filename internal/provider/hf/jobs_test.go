@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -225,4 +226,118 @@ func TestHFPacingGivesUpWithTheCaller(t *testing.T) {
 		t.Fatalf("a call its caller gave up on while paced gave %v", err)
 	}
 	eq(t, len(f.all()), 1)
+}
+
+// idsOf lists the Jobs' ids in order
+func idsOf(js []job) []string {
+	var out []string
+	for _, j := range js {
+		out = append(out, j.ID)
+	}
+	return out
+}
+
+func TestHFListJobsFollowsPages(t *testing.T) {
+	f := newFake(t)
+	f.pageSize = 2
+	p := f.provider(t, testOptions())
+	ours := map[string]string{"bugnet": "1", "placement": "p1"}
+	var want []string
+	for _, stage := range []string{"RUNNING", "SCHEDULING", "CANCELED", "RUNNING", "RUNNING"} {
+		j := f.addJob(stage, ours)
+		if stage != "CANCELED" {
+			want = append(want, j.id)
+		}
+	}
+	f.addJob("RUNNING", map[string]string{"bugnet": "1"})
+	got, err := p.jobs.listJobs(context.Background(), ours, []string{"SCHEDULING", "RUNNING"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, idsOf(got), want)
+	pages := f.requestsTo("GET", "/api/jobs/"+testNamespace)
+	eq(t, len(pages), 2)
+	for _, r := range pages {
+		eq(t, r.query["label"], []string{"bugnet=1", "placement=p1"})
+		eq(t, r.query["stage"], []string{"SCHEDULING", "RUNNING"})
+	}
+	eq(t, pages[1].query.Get("cursor"), "2")
+	eq(t, got[0].Labels, ours)
+	eq(t, got[0].Status.Stage, "RUNNING")
+
+	// A relative link is read against the page that gave it
+	f.mu.Lock()
+	f.nextLink = "?cursor=2&label=bugnet%3D1&label=placement%3Dp1&stage=SCHEDULING&stage=RUNNING"
+	f.mu.Unlock()
+	got, err = p.jobs.listJobs(context.Background(), ours, []string{"SCHEDULING", "RUNNING"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, idsOf(got), want)
+}
+
+func TestHFListJobsRefusesPagesOffTheJobsAPI(t *testing.T) {
+	for _, next := range []string{
+		"https://evil.example/api/jobs/" + testNamespace + "?cursor=2",
+		"http://huggingface.co/api/jobs/" + testNamespace + "?cursor=2",
+		"/api/whoami-v2?cursor=2",
+		"//evil.example/api/jobs/x",
+		"../../whoami-v2",
+	} {
+		f := newFake(t)
+		f.pageSize = 1
+		f.nextLink = next
+		p := f.provider(t, testOptions())
+		f.addJob("RUNNING", map[string]string{"bugnet": "1"})
+		f.addJob("RUNNING", map[string]string{"bugnet": "1"})
+		_, err := p.jobs.listJobs(context.Background(), map[string]string{"bugnet": "1"}, nil)
+		if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeInternal {
+			t.Errorf("a next page at %q gave %v, want it refused", next, err)
+		}
+		if got := len(f.all()); got != 1 {
+			t.Errorf("a next page at %q was read, %d requests", next, got)
+		}
+		eq(t, slices.Compact(f.dialed()), []string{"huggingface.co:443"})
+	}
+}
+
+func TestHFListJobsStopsAnEndlessList(t *testing.T) {
+	f := newFake(t)
+	f.pageSize = 1
+	p := f.provider(t, testOptions())
+	f.addJob("RUNNING", nil)
+	f.addJob("RUNNING", nil)
+	f.nextLink = jobsURL(nil, testNamespace) + "?cursor=0"
+	_, err := p.jobs.listJobs(context.Background(), nil, nil)
+	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeInternal {
+		t.Fatalf("an endless list gave %v", err)
+	}
+	eq(t, len(f.all()), maxPages)
+}
+
+func TestHFNextLink(t *testing.T) {
+	base := jobsURL(nil, testNamespace) + "?label=a%3D1"
+	cases := []struct{ link, want string }{
+		{"", ""},
+		{`<https://huggingface.co/api/jobs/x?cursor=2>; rel="next"`,
+			"https://huggingface.co/api/jobs/x?cursor=2"},
+		{`<https://huggingface.co/api/jobs/x?cursor=1>; rel="prev", ` +
+			`<https://huggingface.co/api/jobs/x?cursor=3>; rel="next"`,
+			"https://huggingface.co/api/jobs/x?cursor=3"},
+		{`<?cursor=4>; rel=next`, jobsURL(nil, testNamespace) + "?cursor=4"},
+		{`<https://huggingface.co/api/jobs/x?cursor=5>; rel="last next"`,
+			"https://huggingface.co/api/jobs/x?cursor=5"},
+		{`<https://huggingface.co/api/jobs/x?cursor=6>; rel="prev"`, ""},
+		{`<https://huggingface.co/api/jobs/x?cursor=7>; title="next"`, ""},
+	}
+	for _, tc := range cases {
+		h := http.Header{}
+		if tc.link != "" {
+			h.Set("Link", tc.link)
+		}
+		got, err := nextLink(base, h)
+		if err != nil || got != tc.want {
+			t.Errorf("nextLink(%q) = %q, %v, want %q", tc.link, got, err, tc.want)
+		}
+	}
 }
