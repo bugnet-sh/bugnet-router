@@ -110,6 +110,26 @@ func TestHFErrorMapping(t *testing.T) {
 	}
 }
 
+func TestHFErrorAnswerIsBounded(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	j := f.addJob("RUNNING", nil)
+	long := strings.Repeat("r", 4096)
+	f.inject(jobRoute, fault{status: 500, raw: strings.Repeat("A", 20<<20), times: 1,
+		header: map[string]string{"X-Error-Code": long, "X-Request-Id": long}})
+	_, err := p.jobs.getJob(context.Background(), j.id)
+	if e, ok := provider.AsError(err); !ok || e.Code != provider.CodeInternal {
+		t.Fatalf("a 20 MiB error answer gave %v", err)
+	}
+	// The message, code and request id are each cut at maxMessageBytes
+	if n := len(err.Error()); n > 3*maxMessageBytes+100 {
+		t.Fatalf("the error is %d bytes", n)
+	}
+	if !strings.Contains(err.Error(), strings.Repeat("A", maxMessageBytes)+"...") {
+		t.Fatalf("the error lost the start of the answer: %.80q", err)
+	}
+}
+
 func TestHFTransportErrors(t *testing.T) {
 	ctx := context.Background()
 	f := newFake(t)

@@ -3,6 +3,7 @@ package hf
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,11 +12,12 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
-// tokenWords are the forms the token could take in a request beside its own header
+// tokenWords are the forms the token could take beside its own header, whole, encoded or cut
 func tokenWords() []string {
 	return []string{
 		fakeToken, base64.StdEncoding.EncodeToString([]byte(fakeToken)),
 		base64.RawURLEncoding.EncodeToString([]byte(fakeToken)), strings.ToLower(fakeToken),
+		fakeToken[:8],
 	}
 }
 
@@ -24,7 +26,10 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	ctx := context.Background()
 	f := newFake(t)
 	f.pageSize = 1
-	p := f.provider(t, testOptions())
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	p := f.provider(t, opts)
 	labels := map[string]string{"bugnet": "1"}
 	j := f.addJob("RUNNING", labels)
 	f.addJob("SCHEDULING", labels)
@@ -56,6 +61,20 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	keep(err)
 	// Error answers, one of which echoes the token it got
 	f.inject(jobRoute, fault{status: 401, message: "Invalid credentials", echo: true, times: 1})
+	_, err = p.jobs.getJob(ctx, j.id)
+	keep(err)
+	f.inject(jobRoute, fault{status: 401, message: "Invalid credentials", times: 1,
+		header: map[string]string{"X-Error-Code": fakeToken}})
+	_, err = p.jobs.getJob(ctx, j.id)
+	keep(err)
+	// A status the table lacks is logged with its request id
+	f.inject(jobRoute, fault{status: 418, message: "I'm a teapot", times: 1,
+		header: map[string]string{"X-Request-Id": "req-" + fakeToken}})
+	_, err = p.jobs.getJob(ctx, j.id)
+	keep(err)
+	// A token across the cut of a long message
+	f.inject(jobRoute, fault{status: 403, times: 1,
+		message: strings.Repeat("x", maxMessageBytes-10) + fakeToken})
 	_, err = p.jobs.getJob(ctx, j.id)
 	keep(err)
 	f.inject(jobRoute, fault{status: 429, message: "slow down", times: 1})
@@ -115,7 +134,15 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 			}
 		}
 	}
-	if len(errs) < 8 {
+	if len(errs) < 11 {
 		t.Fatalf("only %d calls failed, the refused ones did not run", len(errs))
+	}
+	if !strings.Contains(logs.String(), "status=418") {
+		t.Fatal("the status the table lacks was not logged")
+	}
+	for _, w := range tokenWords() {
+		if strings.Contains(logs.String(), w) {
+			t.Errorf("the log carries the token: %s", logs.String())
+		}
 	}
 }

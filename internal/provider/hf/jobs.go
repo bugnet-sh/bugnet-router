@@ -371,7 +371,7 @@ func (e *apiError) Error() string {
 }
 
 // readError reads the Hub's error or message field, its X-Error-Message header, or the body
-func readError(status int, h http.Header, raw []byte) *apiError {
+func readError(status int, h http.Header, raw []byte, token string) *apiError {
 	var body struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
@@ -382,20 +382,27 @@ func readError(status int, h http.Header, raw []byte) *apiError {
 	_ = json.Unmarshal(body.Error, &text)
 	msg := cmp.Or(text, body.Message, h.Get("X-Error-Message"), strings.TrimSpace(string(raw)),
 		http.StatusText(status))
-	if len(msg) > maxMessageBytes {
-		msg = strings.ToValidUTF8(msg[:maxMessageBytes], "") + "..."
-	}
 	return &apiError{
-		Status: status, Code: h.Get("X-Error-Code"), Message: msg,
-		RequestID: h.Get("X-Request-Id"),
+		Status: status, Code: scrub(h.Get("X-Error-Code"), token), Message: scrub(msg, token),
+		RequestID: scrub(h.Get("X-Request-Id"), token),
 	}
+}
+
+// scrub replaces the token in a part of an answer, then cuts it at maxMessageBytes
+func scrub(s, token string) string {
+	// An answer that echoes the token never carries it into an error or a log, even cut
+	if token != "" {
+		s = strings.ReplaceAll(s, token, "[token]")
+	}
+	if len(s) > maxMessageBytes {
+		s = strings.ToValidUTF8(s[:maxMessageBytes], "") + "..."
+	}
+	return s
 }
 
 // classify maps an error answer to a provider code by its status, design 4.13
 func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) error {
-	ae := readError(status, h, raw)
-	// An answer that echoes the token never carries it into an error or a log
-	ae.Message = strings.ReplaceAll(ae.Message, c.token, "[token]")
+	ae := readError(status, h, raw, c.token)
 	e := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: ae}
 	switch {
 	case status == http.StatusTooManyRequests:
