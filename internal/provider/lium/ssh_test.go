@@ -7,10 +7,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"maps"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,6 +147,96 @@ func TestLiumHostKeyPin(t *testing.T) {
 		wantCode(t, err, provider.CodeInternal, false)
 	}
 	eq(t, f.dials(), dials)
+}
+
+// running starts a blocker on ref and waits until the pod runs it
+func running(
+	t *testing.T, f *fakeLium, p *Provider, ref provider.Ref,
+) (provider.ExecStream, string) {
+	t.Helper()
+	gate := filepath.Join(t.TempDir(), "go")
+	s, err := p.Exec(context.Background(), ref, blocker(gate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	within(t, 5*time.Second, "the blocker's start", func() bool {
+		return slices.ContainsFunc(f.execLines(), func(l string) bool {
+			return strings.Contains(l, gate)
+		})
+	})
+	return s, gate
+}
+
+// finish opens the blocker's gate and checks that it ran to its end
+func finish(t *testing.T, s provider.ExecStream, gate string) {
+	t.Helper()
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(s)
+	code, err := s.Wait()
+	if string(out) != "out\n" || code != 0 || err != nil {
+		t.Fatalf("the running command gave %q, exit %d, %v", out, code, err)
+	}
+}
+
+func TestLiumPinConflict(t *testing.T) {
+	t.Run("a ref with another pin leaves the pod's pool alone", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, pod := readyRef(t, f, p)
+		s, gate := running(t, f, p, ref)
+		pl := p.poolOf(pod.id)
+		other := provider.Ref{Provider: ref.Provider, ID: ref.ID, Meta: maps.Clone(ref.Meta)}
+		other.Meta[provider.MetaHostKey] = authorizedKey(newHostKey(t).PublicKey())
+		_, _, err := run(t, p, other, sh("true"))
+		wantCode(t, err, provider.CodeInternal, false)
+		if !strings.Contains(err.Error(), "another host key") {
+			t.Fatalf("error %v names no host key", err)
+		}
+		if p.poolOf(pod.id) != pl {
+			t.Fatal("the pod's pool was replaced")
+		}
+		finish(t, s, gate)
+	})
+	t.Run("two first dials that see two keys pin one", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, pod := rentedPod(t, f, p)
+		f.setPod(pod.id, func(fp *fakePod) { fp.status = "RUNNING" })
+		var n atomic.Int32
+		hold := make(chan struct{})
+		dial := p.dial
+		p.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if n.Add(1) == 1 {
+				<-hold
+			}
+			return dial(ctx, network, addr)
+		}
+		first := make(chan error, 1)
+		go func() {
+			_, err := p.ReadyMeta(context.Background(), ref)
+			first <- err
+		}()
+		within(t, 5*time.Second, "the first dial", func() bool { return n.Load() == 1 })
+		meta, err := p.ReadyMeta(context.Background(), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned := provider.Ref{Provider: ref.Provider, ID: ref.ID, Meta: maps.Clone(ref.Meta)}
+		maps.Copy(pinned.Meta, meta)
+		s, gate := running(t, f, p, pinned)
+		pl := p.poolOf(pod.id)
+		f.sshd(pod.id).rekey(t)
+		close(hold)
+		err = <-first
+		wantCode(t, err, provider.CodeInternal, false)
+		if !strings.Contains(err.Error(), "another host key") {
+			t.Fatalf("error %v names no host key", err)
+		}
+		if p.poolOf(pod.id) != pl {
+			t.Fatal("the pod's pool was replaced")
+		}
+		finish(t, s, gate)
+	})
 }
 
 func TestLiumSSHFailures(t *testing.T) {

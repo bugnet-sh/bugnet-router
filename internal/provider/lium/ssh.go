@@ -66,6 +66,7 @@ var (
 	errHostKeyChanged = errors.New("the pod's sshd showed another host key than the one pinned")
 	errKeyRefused     = errors.New(sshRefused + ", the pod's sshd refused the router's key")
 	errPoolClosed     = errors.New("the pod's SSH connections are closed")
+	errPinConflict    = errors.New("this process pinned another host key for the pod")
 	// plainHostKeyAlgos are the host keys a first connection takes, never a certificate
 	plainHostKeyAlgos = []string{
 		ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
@@ -199,7 +200,9 @@ func (p *Provider) pinHostKey(ctx context.Context, ref provider.Ref, addr string
 		h := &hostCheck{pin: pin}
 		client, err := p.dialPod(ctx, name, addr, h)
 		if err == nil {
-			p.adopt(id, name, addr, h.seen, client)
+			if err := p.adopt(id, name, addr, h.seen, client); err != nil {
+				return "", p.sshError(ctx, id, err)
+			}
 			return authorizedKey(h.seen), nil
 		}
 		if errors.Is(err, errHostKeyChanged) {
@@ -304,7 +307,7 @@ func (p *Provider) poolFor(ctx context.Context, ref provider.Ref) (*sshPool, err
 		return nil, &provider.Error{Code: provider.CodeInternal,
 			Err: fmt.Errorf("lium pod %s has no pinned host key", id)}
 	}
-	return p.pool(id, name, addr, pin), nil
+	return p.pool(id, name, addr, pin)
 }
 
 // metaTarget reads the pod name and the sshd's address from Ref.Meta, empty when it lacks them
@@ -363,13 +366,18 @@ func (p *Provider) readTarget(ctx context.Context, id, name, addr string) (strin
 	return name, addr, nil
 }
 
-// pool returns the pod's pool for this name, address and pin, replacing one made for others
-func (p *Provider) pool(id, name, addr string, pin ssh.PublicKey) *sshPool {
+// pool returns the pod's pool for this name, address and pin, replacing one made for another place
+func (p *Provider) pool(id, name, addr string, pin ssh.PublicKey) (*sshPool, error) {
 	p.smu.Lock()
 	old := p.pools[id]
-	if old != nil && old.serves(name, addr, pin) {
+	switch {
+	case old != nil && old.serves(name, addr, pin):
 		p.smu.Unlock()
-		return old
+		return old, nil
+	case old != nil && old.name == name && old.addr == addr:
+		// One sshd shows one host key, so the pool's running sessions stay and the call fails
+		p.smu.Unlock()
+		return nil, errPinConflict
 	}
 	pl := &sshPool{p: p, name: name, addr: addr, pin: pin, freed: make(chan struct{})}
 	p.pools[id] = pl
@@ -377,19 +385,24 @@ func (p *Provider) pool(id, name, addr string, pin ssh.PublicKey) *sshPool {
 	if old != nil {
 		old.close()
 	}
-	return pl
+	return pl, nil
 }
 
-// adopt keeps the connection that pinned the host key in the pod's pool
-func (p *Provider) adopt(id, name, addr string, pin ssh.PublicKey, client *ssh.Client) {
-	pl := p.pool(id, name, addr, pin)
+// adopt keeps the connection that pinned the host key in the pod's pool, closing it otherwise
+func (p *Provider) adopt(id, name, addr string, pin ssh.PublicKey, client *ssh.Client) error {
+	pl, err := p.pool(id, name, addr, pin)
+	if err != nil {
+		_ = client.Close()
+		return err
+	}
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
 	if pl.closed || len(pl.conns)+pl.dialing >= pl.p.ssh.conns {
 		_ = client.Close()
-		return
+		return nil
 	}
 	pl.idleLocked(pl.addLocked(client))
+	return nil
 }
 
 // dropPool closes the pod's connections, as Destroy does
