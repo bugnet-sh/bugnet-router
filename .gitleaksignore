@@ -1,2 +1,10 @@
 # Test idempotency key in a pod name round-trip test, not a credential
 ea63e2e17eddb4bbd3a8380d6bd470a9077014cf:internal/provider/lium/names_test.go:generic-api-key:10
+
+# HF test fixtures: counting idempotency keys and a token derived from the test seed bytes 0 to 31
+f92732b251a9deb1fa10d65420ab16680b3fc33f:internal/provider/hf/ready_test.go:generic-api-key:292
+c37d6dcb156c562fcabe457de675b277ab082363:internal/provider/hf/secrets_test.go:generic-api-key:188
+3178f9052d81d6941aeeb81d4e7e7ceb584e88bd:internal/provider/hf/create_test.go:generic-api-key:17
+3178f9052d81d6941aeeb81d4e7e7ceb584e88bd:internal/provider/hf/create_test.go:generic-api-key:19
+3178f9052d81d6941aeeb81d4e7e7ceb584e88bd:internal/provider/hf/create_test.go:generic-api-key:246
+3178f9052d81d6941aeeb81d4e7e7ceb584e88bd:internal/provider/hf/create_test.go:generic-api-key:566
