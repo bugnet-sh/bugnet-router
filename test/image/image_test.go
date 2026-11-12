@@ -77,6 +77,22 @@ func hostCABundle(t *testing.T) string {
 	return ""
 }
 
+// pin returns the value of key in deploy/image/pins.conf
+func pin(t *testing.T, key string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy/image/pins.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, key+"="); ok && v != "" {
+			return v
+		}
+	}
+	t.Fatalf("pins.conf has no %s", key)
+	return ""
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -203,7 +219,7 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 		}
 	}
 	out, err := exec.Command("docker", "run", "--rm", "--platform", platform,
-		"-v", payload+":/payload:ro", "ubuntu:24.04", "bash", "-c", script).CombinedOutput()
+		"-v", payload+":/payload:ro", pin(t, "BASE_IMAGE"), "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
