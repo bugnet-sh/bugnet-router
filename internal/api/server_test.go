@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -677,6 +678,20 @@ func wantCode(t *testing.T, err error, want connect.Code) {
 	}
 	if got := connect.CodeOf(err); got != want {
 		t.Fatalf("error %v has code %v, want %v", err, got, want)
+	}
+}
+
+// wantPriceChanged checks err is PRICE_CHANGED naming the package, what was paid and the price now
+func wantPriceChanged(t *testing.T, err error, pkg string, paid, price int64) {
+	t.Helper()
+	mustCode(t, err, connect.CodeFailedPrecondition, "PRICE_CHANGED")
+	want := map[string]string{
+		"package_id":   pkg,
+		"paid_micros":  strconv.FormatInt(paid, 10),
+		"price_micros": strconv.FormatInt(price, 10),
+	}
+	if got := errInfo(t, err).GetMetadata(); !maps.Equal(got, want) {
+		t.Fatalf("metadata %v, want %v", got, want)
 	}
 }
 
@@ -1733,9 +1748,11 @@ func TestErrorCodes(t *testing.T) {
 		wantCode(t, extend(h, e.startToken(t, smallPkg, smallPrice)),
 			connect.CodePermissionDenied)
 	})
-	t.Run("underpaid order is permission denied", func(t *testing.T) {
+	t.Run("underpaid order is a changed price", func(t *testing.T) {
 		_, err := e.createWith(t, e.startToken(t, smallPkg, smallPrice-1))
-		wantCode(t, err, connect.CodePermissionDenied)
+		wantPriceChanged(t, err, smallPkg, smallPrice-1, smallPrice)
+		err = extend(h, e.extendToken(t, h, morePkg, morePrice-1))
+		wantPriceChanged(t, err, morePkg, morePrice-1, morePrice)
 	})
 	t.Run("extend for another handle is permission denied", func(t *testing.T) {
 		other, _ := handle.New()

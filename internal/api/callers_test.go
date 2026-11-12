@@ -736,6 +736,24 @@ func TestGetOrderUnknownAndFailedRefundable(t *testing.T) {
 	eq(t, got.GetEndedAt() != nil, true)
 }
 
+func TestGetOrderUnderpaidStartRefundable(t *testing.T) {
+	e := newEnv(t, options{})
+	order, tok := e.startOrder(t, smallPkg, smallPrice-1)
+	_, err := e.createWith(t, tok)
+	wantPriceChanged(t, err, smallPkg, smallPrice-1, smallPrice)
+	got := e.getOrder(t, order)
+	eq(t, got.GetRedeemed(), true)
+	eq(t, got.GetKind(), "start")
+	eq(t, got.GetPlacementState(), "failed")
+	eq(t, got.GetRefundable(), true)
+	eq(t, got.GetFailureReason(), "price_changed")
+	eq(t, got.GetEndedAt() != nil, true)
+
+	// A retry answers the same, so the gateway never abandons an order the router recorded
+	_, err = e.createWith(t, tok)
+	wantPriceChanged(t, err, smallPkg, smallPrice-1, smallPrice)
+}
+
 func TestGetOrderRefusesOtherCallersAndAnEmptyID(t *testing.T) {
 	e := newEnv(t, options{})
 	for _, tok := range []string{internalToken, edgeToken, operatorToken, ""} {

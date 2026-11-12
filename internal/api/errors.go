@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,8 @@ const (
 	reasonHookBadSignature = "HOOK_BAD_SIGNATURE"
 	// reasonSessionUnknown marks a session id with no record and a wrong key alike
 	reasonSessionUnknown = "SESSION_UNKNOWN"
+	// reasonPriceChanged marks an order that paid less than the price the router asks now
+	reasonPriceChanged = "PRICE_CHANGED"
 )
 
 // Transfer reasons, named as DP 11.3 names them
@@ -169,7 +172,7 @@ var codes = []struct {
 	{wallets.ErrFacilitator, connect.CodeFailedPrecondition, reasonFacilitatorAddress},
 	{wallet.ErrBadAddress, connect.CodeInvalidArgument, reasonPayerInvalid},
 	{saga.ErrBadToken, connect.CodePermissionDenied, ""},
-	{saga.ErrUnderpaid, connect.CodePermissionDenied, ""},
+	{saga.ErrUnderpaid, connect.CodeFailedPrecondition, reasonPriceChanged},
 	{saga.ErrHandleMismatch, connect.CodePermissionDenied, ""},
 	{saga.ErrUnknownPackage, connect.CodeInvalidArgument, ""},
 	{saga.ErrQuoteInvalid, connect.CodeInvalidArgument, reasonQuoteInvalid},
@@ -289,6 +292,16 @@ func rateLimited(wait time.Duration) error {
 		errors.New("too many sandbox operations, slow down")), reasonRateLimited), wait)
 }
 
+// priceChanged refuses an underpaid order, naming its package, what it paid and the price now
+func priceChanged(ue *saga.UnderpaidError) error {
+	return withMeta(connect.NewError(connect.CodeFailedPrecondition, ue), reasonPriceChanged,
+		map[string]string{
+			"package_id":   ue.PackageID,
+			"paid_micros":  strconv.FormatInt(ue.PaidMicros, 10),
+			"price_micros": strconv.FormatInt(ue.PriceMicros, 10),
+		})
+}
+
 // withRetry attaches a google.rpc.RetryInfo holding wait to ce
 func withRetry(ce *connect.Error, wait time.Duration) *connect.Error {
 	d, err := connect.NewErrorDetail(&errdetails.RetryInfo{RetryDelay: durationpb.New(wait)})
@@ -346,6 +359,9 @@ func (s *Server) toConnect(err error, fileOp bool) error {
 	if we, ok := errors.AsType[*saga.WaitError](err); ok {
 		return withRetry(withInfo(connect.NewError(connect.CodeResourceExhausted,
 			saga.ErrWalletRateLimited), reasonWalletRateLimited), we.Wait)
+	}
+	if ue, ok := errors.AsType[*saga.UnderpaidError](err); ok {
+		return priceChanged(ue)
 	}
 	for _, c := range codes {
 		if !errors.Is(err, c.err) {
