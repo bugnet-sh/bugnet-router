@@ -1877,6 +1877,13 @@ goes behind the faster ones. The order of `providers` only breaks ties in cost.
   has no sizes and is never chosen.
 - `koyeb` runs Koyeb sandbox services, one app each, with the RTX 4000 SFF Ada for GPU packages,
   with `KOYEB_API_TOKEN`, `koyeb.region` and `[koyeb.instance_types]`.
+- `hf` runs Hugging Face Jobs, one Job per GPU sandbox, with `HF_JOBS_TOKEN`, `HF_SANDBOX_SEED`
+  and `[hf]`. A Job's command checks `sbx-server` against `hf.sbx_server_sha256` with
+  `sha256sum -c` and execs it as PID 1. With `hf.sbx_server = "fetch"` it first downloads the
+  build from HF's public bucket, whose URL rides in the Job's environment. With `"baked"` it runs
+  the copy the base image holds at `/usr/local/lib/bugnet/sbx-server`, with no download and no
+  URL, which needs `images.hf.version` 2026.11.4 or later. A missing or different binary ends the
+  Job as `ERROR` before anything listens, and the start fails over.
 - `boat` runs Boat sandboxes in the EU without the account's secrets, snapshots or monitoring,
   with `BOAT_API_KEY` and `[boat.types]`. `large` needs a first payment and `xlarge` the $100
   plan, so `[boat.types]` can leave them out. The fee of a start past the plan's included starts
@@ -1901,6 +1908,8 @@ Both routers also refuse to start when:
   `native`, since a Lium pod runs no gate.
 - `lium.harden_required` or `lium.harden_no_gateway` is `false`.
 - `providers` lists `hf` without `hf.namespace`, or `lium` without a `[[lium.sizes]]` table.
+- `providers` lists `hf` with `hf.sbx_server = "baked"` while `images.hf.version` is empty or
+  older than 2026.11.4, an image without `sbx-server`.
 - A Lium size has a name that is not lowercase letters, digits and hyphens or that an earlier size
   has, a `model` that is not a canonical GPU model, a `max_hourly_micros` cap under 1, `gpus`
   under 1 or an empty `match`; an `hf.flavors` entry is not an HF GPU flavor; `lium.countries`
@@ -2488,8 +2497,10 @@ destroys an unused claim and counts the pool as it refills.
 
 `deploy/image` builds one image for every provider (CP 19). `setup-image.sh` installs Ubuntu
 24.04's tools, Python 3.12 with uv, Node.js with pnpm, the Hugging Face CLI, openssh-server with
-its service masked, nftables, the Bugnet CA, `bugnet-run` at `/usr/local/lib/bugnet/bugnet-run`
-and a manifest at `/etc/bugnet/image.json`. Every input is pinned in `pins.conf`.
+its service masked, nftables, the Bugnet CA, `bugnet-run` at `/usr/local/lib/bugnet/bugnet-run`,
+`sbx-server` 0.7.0 at `/usr/local/lib/bugnet/sbx-server` (root's, mode 0755, from 2026.11.4 on)
+and a manifest at `/etc/bugnet/image.json`, which records both binaries' SHA-256 in
+`runner_sha256` and `sbx_server_sha256`. Every input is pinned in `pins.conf`.
 `build.sh --channel dev|prod --ca FILE... [--no-push]` assembles the payload from an allowlist,
 scans it, builds and scans the OCI image, then pushes it and starts
 `builds/<channel>-<version>.json`. `bugnet-dev image scan --dir DIR | --oci TAG` runs the leak

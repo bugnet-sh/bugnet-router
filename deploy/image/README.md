@@ -23,6 +23,20 @@ deploy/image/build.sh --channel dev --ca ~/path/bugnet-egress-v1.crt
 The CA file is named `bugnet-egress-v<N>.crt`, stays outside every repository, and its SHA-256 is
 the pin `CA_SHA256_<CHANNEL>_V<N>` in `pins.conf`. `--no-push` stops after the image scan. The
 payload holds `setup-image.sh`, `pins.conf`, `VERSION`, the `bugnet-run` build and each CA.
+`BUGNET_LOCAL_TAG` replaces the local tag `bugnet-base:<version>-<channel>`, and the container
+tests give each build a tag of its own.
+
+## sbx-server
+
+From 2026.11.4 every target (OCI, E2B, boxd and Boat) holds `sbx-server`, which the HF adapter
+runs as each Job's PID 1. `setup-image.sh` downloads the build the pins `SBX_SERVER_VERSION`,
+`SBX_SERVER_SHA256_AMD64` and `SBX_SERVER_URL_AMD64` name, HF's public bucket and the same build
+`hf.sbx_server = "fetch"` downloads at boot, checks it with `fetch_checked` and installs it at
+`/usr/local/lib/bugnet/sbx-server`, owned by root, mode 0755. The manifest records its SHA-256 as
+`sbx_server_sha256.amd64`. With `hf.sbx_server = "baked"` a Job's command checks that file
+against `hf.sbx_server_sha256` with `sha256sum -c` and execs it, with no download. The router
+refuses `baked` while `images.hf.version` is older than 2026.11.4, so the switch comes with the
+first such build's digest in `images.hf.ref`.
 
 ## Inputs and versions
 
