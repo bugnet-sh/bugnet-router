@@ -74,7 +74,7 @@ func (p *Provider) Inspect(ctx context.Context, ref provider.Ref) (provider.Stat
 // statusOf maps a Job's stage, an ERROR the account caused reading as gone as 5.12 expects
 func (p *Provider) statusOf(j job) (provider.Status, error) {
 	st := provider.Status{
-		Reason: scrub(j.Status.Message, p.jobs.token), KillReason: p.killReason(j),
+		Reason: p.jobs.words(j.Status.Message), KillReason: p.killReason(j),
 	}
 	switch s := j.Status.Stage; {
 	case s == stageScheduling:
@@ -87,7 +87,7 @@ func (p *Provider) statusOf(j job) (provider.Status, error) {
 		st.State = provider.StateGone
 	default:
 		return provider.Status{}, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID), s)}
+			Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID), p.jobs.words(s))}
 	}
 	return st, nil
 }
@@ -183,7 +183,8 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 		return err
 	case !liveStage(j.Status.Stage):
 		return &provider.Error{Code: provider.CodeNotFound,
-			Err: fmt.Errorf("hf Job %s ended as %.40s", p.jobs.jobName(id), j.Status.Stage)}
+			Err: fmt.Errorf("hf Job %s ended as %.40s", p.jobs.jobName(id),
+				p.jobs.words(j.Status.Stage))}
 	case known:
 		return nil
 	}

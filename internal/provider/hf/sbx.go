@@ -152,8 +152,8 @@ func (p *Provider) answerError(
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &body)
-	// The Job's root may answer for sbx-server and echo the token it got
-	msg := scrubToken(cmp.Or(body.Error, strings.TrimSpace(string(raw)),
+	// The Job's root may answer for sbx-server and echo the token it got or the host
+	msg := p.sbxWords(cmp.Or(body.Error, strings.TrimSpace(string(raw)),
 		http.StatusText(resp.StatusCode)), sb.token)
 	status := resp.StatusCode
 	e := &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
@@ -193,7 +193,7 @@ func (p *Provider) lost(ctx context.Context, sb sandbox, e *provider.Error) erro
 			Err: fmt.Errorf("%w, and hf no longer has the Job", e.Err)}
 	case err == nil && !liveStage(j.Status.Stage):
 		return &provider.Error{Code: provider.CodeNotFound,
-			Err: fmt.Errorf("%w, and hf shows the Job %.40s", e.Err, j.Status.Stage)}
+			Err: fmt.Errorf("%w, and hf shows the Job %.40s", e.Err, p.jobs.words(j.Status.Stage))}
 	}
 	return e
 }
@@ -232,7 +232,7 @@ func checkSBXURL(raw string) error {
 }
 
 // health reads the Job's sbx-server health with its token, an error for any answer but a 200
-func (c *sbxClient) health(ctx context.Context, sb sandbox) (health, error) {
+func (p *Provider) health(ctx context.Context, sb sandbox) (health, error) {
 	u, err := sbxURL(sb, sbxPort, "/health")
 	if err != nil {
 		return health{}, err
@@ -247,7 +247,7 @@ func (c *sbxClient) health(ctx context.Context, sb sandbox) (health, error) {
 	req.Header.Set("X-Sandbox-Token", sb.token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "bugnet-router")
-	resp, err := c.client.Do(req)
+	resp, err := p.sbx.client.Do(req)
 	if err != nil {
 		return health{}, &provider.Error{Code: provider.CodeInternal,
 			Err: fmt.Errorf("hf Job %s sbx-server health: %w", sb.name, bareCause(err))}
@@ -255,10 +255,10 @@ func (c *sbxClient) health(ctx context.Context, sb sandbox) (health, error) {
 	defer drainClose(resp)
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes))
-		// The Job's root may answer for sbx-server and echo the token it got
+		// The Job's root may answer for sbx-server and echo the token it got or the host
 		return health{}, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
 			"hf Job %s sbx-server health answered %d: %.200q", sb.name, resp.StatusCode,
-			scrubToken(string(raw), sb.token))}
+			p.sbxWords(string(raw), sb.token))}
 	}
 	var h health
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHealthBytes)).Decode(&h); err != nil {
@@ -268,11 +268,16 @@ func (c *sbxClient) health(ctx context.Context, sb sandbox) (health, error) {
 	return h, nil
 }
 
-// scrubToken replaces the sandbox token in any case, as hex reads the same, then cuts as scrub does
-func scrubToken(s, token string) string {
+// sbxWords is text sbx-server or the Job's root answered, cut and free of both tokens
+func (p *Provider) sbxWords(s, token string) string {
+	return scrubToken(s, token, p.jobs.token, strings.ToLower(p.jobs.token))
+}
+
+// scrubToken replaces the sandbox token in any case, as hex reads the same, then works as scrub
+func scrubToken(s, token string, secrets ...string) string {
 	token = asciiLower(token)
 	if token == "" {
-		return scrub(s)
+		return scrub(s, secrets...)
 	}
 	folded := asciiLower(s)
 	var b strings.Builder
@@ -285,7 +290,7 @@ func scrubToken(s, token string) string {
 		s, folded = s[i+len(token):], folded[i+len(token):]
 	}
 	b.WriteString(s)
-	return scrub(b.String())
+	return scrub(b.String(), secrets...)
 }
 
 // asciiLower lowers ASCII letters alone, so every byte keeps its place

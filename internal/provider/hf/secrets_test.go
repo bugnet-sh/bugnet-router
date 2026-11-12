@@ -346,6 +346,7 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 			errs = append(errs, err)
 		}
 	}
+	var reasons []string
 	waitBriefly := func(ref provider.Ref) {
 		wctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
@@ -418,6 +419,19 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 			return strings.Count(logs.String(), "was not killed") == i+1
 		})
 		f.clear(sbxExecRoute)
+		// sbx-server, which the Job's root may replace, echoes the host that names the Job
+		host := id + "--49983.hf.jobs"
+		f.inject(sbxStatRoute, fault{status: 500, times: 1, raw: "bad host " + host})
+		_, err = p.StatFile(ctx, ref, "/tmp/a")
+		keep(err)
+		f.inject(healthRoute, fault{status: 500, raw: "bad host " + host})
+		waitBriefly(ref)
+		f.clear(healthRoute)
+		f.set(j, func(j *fakeJob) {
+			j.health = `{"status":"ok","protocol":3,"mode":"` + host + `","auth":"required"}`
+		})
+		keep(p.WaitReady(ctx, ref))
+		f.set(j, func(j *fakeJob) { j.health = "" })
 		// A ref with no token for a Job with no key to derive one from, and one with a bad token
 		_, err = p.StatFile(ctx, provider.Ref{Provider: "hf", ID: id}, "/tmp/a")
 		keep(err)
@@ -430,6 +444,20 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		keep(err)
 		f.set(j, func(j *fakeJob) { j.stage = "COMPLETED" })
 		keep(p.SetLifetime(ctx, provider.Ref{Provider: "hf", ID: id}, time.Now().Add(time.Hour)))
+		// HF answers the token as the stage, read by a check, a wait, a failed call and a renewal
+		f.set(j, func(j *fakeJob) { j.stage = id })
+		_, err = p.Inspect(ctx, ref)
+		keep(err)
+		keep(p.WaitReady(ctx, ref))
+		_, err = p.StatFile(ctx, ref, "/tmp/a")
+		keep(err)
+		keep(p.SetLifetime(ctx, provider.Ref{Provider: "hf", ID: id}, time.Now().Add(time.Hour)))
+		// A Job that ended its start with a message naming the token
+		f.set(j, func(j *fakeJob) { j.stage, j.message = "ERROR", "boom "+id })
+		keep(p.WaitReady(ctx, ref))
+		st, err := p.Inspect(ctx, ref)
+		keep(err)
+		reasons = append(reasons, st.Reason)
 		// Ids that are not one plain segment
 		_, err = p.GateRoute(provider.Ref{Provider: "hf", ID: id + ".x"},
 			provider.DefaultGatePort)
@@ -437,14 +465,17 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		_, err = p.Inspect(ctx, provider.Ref{Provider: "hf", ID: id + "/x"})
 		keep(err)
 	}
-	if len(errs) < 36 {
+	if len(errs) < 52 {
 		t.Fatalf("only %d calls failed, the failing paths did not run", len(errs))
 	}
 	// Each path that names the Job from a transport error or an answer ran
 	for _, path := range []string{
 		"sbx-server GET /v1/files/stat: ", "sbx-server health: ",
 		"sbx-server PUT /v1/files/write: ", "moved no bytes", "stat of /tmp/a: ",
-		"not 64 lowercase hex", "at its timeout",
+		"not 64 lowercase hex", "at its timeout", "answered 500: bad host [token]",
+		`health answered 500: "bad host [token]`, `runs with mode "[token]`,
+		`has stage "[token]"`, "hf shows the Job [token]", "ended as [token]",
+		"ended its start as ERROR: boom [token]",
 	} {
 		if !slices.ContainsFunc(errs, func(err error) bool {
 			return strings.Contains(err.Error(), path)
@@ -465,6 +496,9 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 	for _, w := range tokenWords() {
 		if strings.Contains(logs.String(), w) {
 			t.Errorf("the log carries the token: %s", logs.String())
+		}
+		if slices.ContainsFunc(reasons, func(r string) bool { return strings.Contains(r, w) }) {
+			t.Errorf("a status reason carries the token: %q", reasons)
 		}
 	}
 }
@@ -557,7 +591,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	keep(p.WaitReady(ctx, refs[0]))
 	// An sbx-server the Job's root replaced may echo the token it got
 	f.inject(healthRoute, fault{status: 500, raw: "got " + refs[0].Meta["secret"], times: 1})
-	_, err = p.sbx.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
+	_, err = p.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
 	keep(err)
 	f.inject(healthRoute, fault{status: 200, times: 1, raw: `{"status":"ok","protocol":3,` +
 		`"mode":"` + refs[0].Meta["secret"] + `","auth":"required"}`})
@@ -568,7 +602,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	keep(p.WaitReady(ctx, refs[0]))
 	f.inject(healthRoute, fault{status: 500, times: 1,
 		raw: "got " + strings.ToUpper(refs[0].Meta["secret"])})
-	_, err = p.sbx.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
+	_, err = p.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
 	keep(err)
 	_, err = p.Inspect(ctx, ref)
 	keep(err)

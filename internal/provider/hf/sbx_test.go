@@ -48,7 +48,7 @@ func TestHFSandboxClientRefusesOtherHosts(t *testing.T) {
 	p := f.provider(t, testOptions())
 	// A Job id is one plain part of a host name, so it cannot lead the token elsewhere
 	for _, id := range []string{"", "a.b", "evil.example/x", "a b", "a?b", "../x", "a%2F"} {
-		_, err := p.sbx.health(t.Context(), sandboxOf(id, testKeyToken))
+		_, err := p.health(t.Context(), sandboxOf(id, testKeyToken))
 		if code, _ := codeOf(err); code != provider.CodeInvalid {
 			t.Errorf("a health read of Job %q gave %v, want it refused as invalid", id, err)
 		}
@@ -64,7 +64,7 @@ func TestHFSandboxClientSendsTheSandboxTokenAlone(t *testing.T) {
 	p := f.provider(t, testOptions())
 	j := f.addJob("RUNNING", nil)
 	f.set(j, func(j *fakeJob) { j.token = testKeyToken })
-	h, err := p.sbx.health(t.Context(), sandboxOf(j.id, testKeyToken))
+	h, err := p.health(t.Context(), sandboxOf(j.id, testKeyToken))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestHFSandboxClientRefusesRedirects(t *testing.T) {
 		"https://other--49983.hf.jobs/health"} {
 		f.inject(healthRoute, fault{status: 307, raw: "moved", times: 1,
 			header: map[string]string{"Location": to}})
-		if _, err := p.sbx.health(t.Context(), sandboxOf(j.id, testKeyToken)); err == nil {
+		if _, err := p.health(t.Context(), sandboxOf(j.id, testKeyToken)); err == nil {
 			t.Fatalf("a redirect to %s was taken as health", to)
 		}
 	}
@@ -105,7 +105,7 @@ func TestHFSandboxClientBoundsTheAnswer(t *testing.T) {
 	f.set(j, func(j *fakeJob) {
 		j.health = `{"status":"ok","protocol":3,"pad":"` + strings.Repeat("x", 1<<20) + `"}`
 	})
-	if _, err := p.sbx.health(t.Context(), sandboxOf(j.id, testKeyToken)); err == nil {
+	if _, err := p.health(t.Context(), sandboxOf(j.id, testKeyToken)); err == nil {
 		t.Fatal("a 1 MiB health answer was read")
 	}
 }

@@ -64,7 +64,8 @@ func (p *Provider) readyStep(ctx context.Context, ref provider.Ref, j job) (wait
 		return nil, p.startEnded(j)
 	}
 	return nil, &provider.Error{Code: provider.CodeInternal,
-		Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID), j.Status.Stage)}
+		Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID),
+			p.jobs.words(j.Status.Stage))}
 }
 
 // checkHealth asks the Job's sbx-server for its health with the sandbox's token
@@ -79,7 +80,7 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 	sb := sandbox{id: ref.ID, name: p.jobs.jobName(ref.ID), token: token}
 	hctx, cancel := context.WithTimeout(ctx, p.healthWait)
 	defer cancel()
-	h, err := p.sbx.health(hctx, sb)
+	h, err := p.health(hctx, sb)
 	switch {
 	case isCode(err, provider.CodeInvalid):
 		return nil, err
@@ -97,8 +98,8 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 			"hf_token_refused, sbx-server does not take the sandbox's token"))
 	case h.Mode != "dedicated" || h.Auth != "required":
 		return nil, refusedServer(sb.name, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
-			"%.20q, dedicated and required are needed", scrubToken(h.Mode, token),
-			scrubToken(h.Auth, token)))
+			"%.20q, dedicated and required are needed", p.sbxWords(h.Mode, token),
+			p.sbxWords(h.Auth, token)))
 	}
 	return nil, nil
 }
@@ -112,7 +113,7 @@ func refusedServer(name string, err error) error {
 // startEnded is the error of a Job that ended before it was ready, design 4.13
 func (p *Provider) startEnded(j job) error {
 	why := fmt.Errorf("hf Job %s ended its start as %s: %s", p.jobs.jobName(j.ID),
-		j.Status.Stage, scrub(j.Status.Message, p.jobs.token))
+		j.Status.Stage, p.jobs.words(j.Status.Message))
 	switch r := cancelReason(j); {
 	case r == gpustatus.HFNoCredits || r == gpustatus.HFNoSubscription:
 		return provider.Named(&provider.Error{

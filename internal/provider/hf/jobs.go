@@ -195,8 +195,11 @@ func bareCause(err error) error {
 }
 
 // jobName is a Job id HF answered as errors and logs name it, cut and free of the token
-func (c *jobsClient) jobName(id string, secrets ...string) string {
-	return scrub(id, append([]string{c.token, strings.ToLower(c.token)}, secrets...)...)
+func (c *jobsClient) jobName(id string, secrets ...string) string { return c.words(id, secrets...) }
+
+// words is text HF answered as errors and logs quote it, cut and free of the token in either case
+func (c *jobsClient) words(s string, secrets ...string) string {
+	return scrub(s, append([]string{c.token, strings.ToLower(c.token)}, secrets...)...)
 }
 
 // routeOf is a call's method and path as errors name it, cut and free of the query and the token
