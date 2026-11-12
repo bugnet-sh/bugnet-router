@@ -70,12 +70,10 @@ func (p *Provider) readyStep(ctx context.Context, ref provider.Ref, j job) (wait
 func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wait, end error) {
 	token := ref.Meta[metaSecret]
 	if token == "" {
-		key := j.Labels[labelKey]
-		if !keyHex.MatchString(key) {
-			return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-				"hf Job %s has no token in its ref and no key to derive one from", ref.ID)}
+		var err error
+		if token, err = p.tokenOf(j); err != nil {
+			return nil, err
 		}
-		token = p.sandboxToken(key)
 	}
 	hctx, cancel := context.WithTimeout(ctx, p.healthWait)
 	defer cancel()

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -33,6 +34,8 @@ type fault struct {
 	raw string
 	// drop closes the connection once the request has arrived, with no answer
 	drop bool
+	// cut sends the route's own head and only the first cut bytes of its body, then closes
+	cut int
 	// echo adds the request's Authorization header to the message
 	echo bool
 	// served runs the route before the fault answers, so the call took effect unseen
@@ -40,6 +43,8 @@ type fault struct {
 	// after lets that many matching calls through before the fault answers
 	after int
 	times int
+	// only limits the fault to the calls whose body holds it, when set
+	only string
 }
 
 // recorded is one request the fake served, kept for the secret and pacing checks
@@ -153,13 +158,18 @@ type fakeHF struct {
 	createDelay time.Duration
 	// show rewrites each Job the fake answers, as HF's read may differ from what was sent
 	show func(job map[string]any)
+	// sbx is where every Job's sbx-server runs its commands and keeps its files
+	sbx fakeSBX
+	// holdExecs holds that many exec answers once their command started, until execGate closes
+	holdExecs int
+	execGate  chan struct{}
 }
 
 func newFake(t *testing.T) *fakeHF {
 	t.Helper()
 	f := &fakeHF{
 		t: t, faults: map[string]*fault{}, hardware: bytes.Clone(compiledHardware),
-		pageSize: 50, runAfter: 1,
+		pageSize: 50, runAfter: 1, sbx: newFakeSBX(t),
 	}
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -172,12 +182,20 @@ func newFake(t *testing.T) *fakeHF {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
 	mux.HandleFunc(healthRoute, f.sbxGate(healthRoute, f.health))
+	for pattern, h := range map[string]http.HandlerFunc{
+		sbxExecRoute: f.exec, sbxReadRoute: f.read, sbxWriteRoute: f.write,
+		sbxListRoute: f.list, sbxStatRoute: f.stat, sbxDeleteRoute: f.remove,
+	} {
+		mux.HandleFunc(pattern, f.sbxGate(pattern, f.sbxRoute(h)))
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("adapter called the unexpected route %s %s", r.Method, r.URL.Path)
 		writeError(w, http.StatusNotFound, "not in the fake")
 	})
 	f.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(f.srv.Close)
+	// Commands left running hold their handlers, which the server's Close waits for
+	t.Cleanup(f.stopCommands)
 	return f
 }
 
@@ -205,6 +223,8 @@ func (f *fakeHF) provider(t *testing.T, opts Options) *Provider {
 	}
 	p.jobs.client.Transport = f.transport()
 	p.sbx.client.Transport = f.transport()
+	p.execDir, p.setsid, p.mv = f.sbx.execDir, filepath.Join(f.sbx.bin, "setsid"),
+		filepath.Join(f.sbx.bin, "mv")
 	return p
 }
 
@@ -325,9 +345,12 @@ func (f *fakeHF) record(r *http.Request) time.Time {
 	return now
 }
 
-// takeFault returns the route's fault, counting it against its times, with f.mu held
-func (f *fakeHF) takeFault(pattern string) *fault {
+// takeFault returns the route's fault for a call with body, counting it, with f.mu held
+func (f *fakeHF) takeFault(pattern string, body []byte) *fault {
 	ft := f.faults[pattern]
+	if ft != nil && ft.only != "" && !bytes.Contains(body, []byte(ft.only)) {
+		return nil
+	}
 	if ft != nil && ft.after > 0 {
 		ft.after--
 		return nil
@@ -369,7 +392,7 @@ func (f *fakeHF) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		f.lastServed = now
-		ft := f.takeFault(pattern)
+		ft := f.takeFault(pattern, nil)
 		f.mu.Unlock()
 		if ft == nil {
 			serve(w, r)
@@ -386,11 +409,17 @@ func (f *fakeHF) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 func (f *fakeHF) sbxGate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		f.mu.Lock()
-		ft := f.takeFault(pattern)
+		ft := f.takeFault(pattern, body)
 		f.mu.Unlock()
-		if ft == nil {
+		switch {
+		case ft == nil:
 			h(w, r)
+			return
+		case ft.cut > 0:
+			cutAnswer(w, r, h, ft.cut)
 			return
 		}
 		if ft.served {

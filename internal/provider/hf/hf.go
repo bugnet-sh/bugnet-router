@@ -83,7 +83,9 @@ type Provider struct {
 	margin, pollEvery time.Duration
 	healthWait        time.Duration
 	sbx               *sbxClient
-	now               func() time.Time
+	// execDir holds each command's pid file in the Job, setsid and mv name the Job's own tools
+	execDir, setsid, mv string
+	now                 func() time.Time
 	// kmu guards kept, the Job each key got in this process, and creating, each key's create
 	kmu      sync.Mutex
 	kept     map[string]keptJob
@@ -175,6 +177,9 @@ func newProvider(opts Options) (*Provider, error) {
 		pollEvery:   cmp.Or(opts.PollEvery, defaultPollEvery),
 		healthWait:  healthTimeout,
 		sbx:         newSBXClient(),
+		execDir:     defaultExecDir,
+		setsid:      jobSetsid,
+		mv:          jobMv,
 		now:         time.Now,
 		kept:        map[string]keptJob{},
 		creating:    map[string]chan struct{}{},

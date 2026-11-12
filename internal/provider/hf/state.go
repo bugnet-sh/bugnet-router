@@ -201,8 +201,17 @@ func (p *Provider) MaxUntil(ref provider.Ref) (time.Time, bool) {
 	return p.endOf(ref)
 }
 
-// endOf reads the Job's end from the creation time and timeout its ref keeps
+// endOf is the last moment a lease may reach, the Job's end less the margin
 func (p *Provider) endOf(ref provider.Ref) (time.Time, bool) {
+	end, ok := jobEnd(ref)
+	if !ok {
+		return time.Time{}, false
+	}
+	return end.Add(-p.margin), true
+}
+
+// jobEnd is when HF stops the Job, from the creation time and timeout its ref keeps
+func jobEnd(ref provider.Ref) (time.Time, bool) {
 	created, err := time.Parse(time.RFC3339, ref.Meta[metaCreatedAt])
 	if err != nil {
 		return time.Time{}, false
@@ -211,7 +220,7 @@ func (p *Provider) endOf(ref provider.Ref) (time.Time, bool) {
 	if err != nil || secs <= 0 || secs >= maxTimeoutSeconds {
 		return time.Time{}, false
 	}
-	return created.Add(time.Duration(secs)*time.Second - p.margin), true
+	return created.Add(time.Duration(secs) * time.Second), true
 }
 
 // pastEnd is the refusal of an until past the Job's end, which no call can move
