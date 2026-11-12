@@ -3,8 +3,11 @@ package hf
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,5 +147,158 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 		if strings.Contains(logs.String(), w) {
 			t.Errorf("the log carries the token: %s", logs.String())
 		}
+	}
+}
+
+// seedWords are the forms the sandbox seed could take in a request, a log or an error
+func seedWords() []string {
+	return []string{
+		string(testSeed), hex.EncodeToString(testSeed),
+		base64.StdEncoding.EncodeToString(testSeed), base64.RawURLEncoding.EncodeToString(testSeed),
+	}
+}
+
+// TestHFSandboxSecretsStayInPlace holds each sandbox token to its create and its own sbx-server
+func TestHFSandboxSecretsStayInPlace(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	p := f.provider(t, opts)
+	var refs []provider.Ref
+	var errs []error
+	keep := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, key := range []string{testKey, ""} {
+		req := keyed()
+		req.IdempotencyKey = key
+		ref, err := p.Create(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, ref)
+		keep(p.WaitReady(ctx, ref))
+	}
+	// A create whose answer was lost, found again by its key
+	lost := keyed()
+	lost.IdempotencyKey = "fedcba9876543210fedcba9876543210"
+	f.inject(createRoute, fault{status: 500, message: "Internal Error", served: true, times: 1})
+	ref, err := p.Create(ctx, lost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs = append(refs, ref)
+	// Waits that end in errors, one sbx-server refusing the token and one echoing it
+	wrong := cloneRef(ref)
+	wrong.Meta["secret"] = refs[0].Meta["secret"]
+	keep(p.WaitReady(ctx, wrong))
+	f.set(f.job(ref.ID), func(j *fakeJob) {
+		j.health = `{"status":"ok","protocol":2,"echo":"` + j.token + `"}`
+	})
+	keep(p.WaitReady(ctx, ref))
+	f.inject(healthRoute, fault{status: 401, message: "bad token", echo: true, times: 1})
+	keep(p.WaitReady(ctx, refs[0]))
+	// An sbx-server the Job's root replaced may echo the token it got
+	f.inject(healthRoute, fault{status: 500, raw: "got " + refs[0].Meta["secret"], times: 1})
+	_, err = p.sbx.health(ctx, refs[0].ID, refs[0].Meta["secret"])
+	keep(err)
+	f.inject(healthRoute, fault{status: 200, times: 1, raw: `{"status":"ok","protocol":3,` +
+		`"mode":"` + refs[0].Meta["secret"] + `","auth":"required"}`})
+	keep(p.WaitReady(ctx, refs[0]))
+	_, err = p.Inspect(ctx, ref)
+	keep(err)
+	owned, err := p.ListOwned(ctx, map[string]string{"bugnet": "1"})
+	keep(err)
+	for _, s := range owned {
+		if _, ok := s.Ref.Meta["secret"]; ok {
+			t.Errorf("ListOwned's ref of %s carries a token", s.Ref.ID)
+		}
+	}
+	keep(p.SetLifetime(ctx, ref, time.Now().Add(time.Hour)))
+	keep(p.Destroy(ctx, ref))
+
+	var tokens []string
+	for _, r := range refs {
+		if r.Meta["secret"] == "" {
+			t.Fatalf("%s has no token", r.ID)
+		}
+		tokens = append(tokens, r.Meta["secret"])
+	}
+	carries := func(s string, words []string) bool {
+		return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(s, w) })
+	}
+	tokenParts := slices.Clone(tokens)
+	for _, tk := range tokens {
+		tokenParts = append(tokenParts, tk[:16], strings.ToUpper(tk))
+	}
+	var created, health int
+	for _, r := range f.all() {
+		where := r.method + " " + r.host + r.path
+		sandboxToken := r.header.Get("X-Sandbox-Token")
+		rest := r.header.Clone()
+		rest.Del("X-Sandbox-Token")
+		rest.Del("Authorization")
+		body := string(r.body)
+		if r.method == "POST" && r.path == "/api/jobs/"+testNamespace {
+			// The create carries the token once, as the Job secret HF encrypts
+			var spec map[string]any
+			if err := json.Unmarshal(r.body, &spec); err != nil {
+				t.Fatal(err)
+			}
+			secret, _ := spec["secrets"].(map[string]any)["SBX_TOKEN"].(string)
+			if !slices.Contains(tokens, secret) {
+				t.Errorf("%s carried secret %q", where, secret)
+			}
+			delete(spec, "secrets")
+			plain, _ := json.Marshal(spec)
+			body = string(plain)
+			created++
+		}
+		var other strings.Builder
+		other.WriteString(r.path + "?" + r.query.Encode() + body)
+		for k, vs := range rest {
+			other.WriteString(k + ": " + strings.Join(vs, ",") + "\n")
+		}
+		switch {
+		case r.host == jobsHost:
+			if sandboxToken != "" {
+				t.Errorf("%s carried a sandbox token", where)
+			}
+		case strings.HasSuffix(r.host, "--49983.hf.jobs"):
+			health++
+			if r.header.Get("Authorization") != "" || carries(other.String(), tokenWords()) {
+				t.Errorf("%s carried the Jobs token", where)
+			}
+			if !slices.Contains(tokens, sandboxToken) {
+				t.Errorf("%s carried X-Sandbox-Token %q", where, sandboxToken)
+			}
+		default:
+			t.Errorf("%s went to a host neither HF's API nor a Job's", where)
+		}
+		if carries(other.String(), tokenParts) {
+			t.Errorf("%s carried a sandbox token outside its place", where)
+		}
+		if carries(other.String()+sandboxToken+r.header.Get("Authorization"), seedWords()) {
+			t.Errorf("%s carried the seed", where)
+		}
+	}
+	// Both fresh and keyed creates, the lost one and the waits all ran
+	if created != 3 || health < 4 {
+		t.Fatalf("%d creates and %d health reads ran", created, health)
+	}
+	if len(errs) < 3 {
+		t.Fatalf("only %d calls failed, the failing waits and reads did not run", len(errs))
+	}
+	for _, err := range errs {
+		if carries(err.Error(), append(append(tokenParts, tokenWords()...), seedWords()...)) {
+			t.Errorf("the error %q carries a secret", err)
+		}
+	}
+	if carries(logs.String(), append(append(tokenParts, tokenWords()...), seedWords()...)) {
+		t.Errorf("the log carries a secret: %s", logs.String())
 	}
 }

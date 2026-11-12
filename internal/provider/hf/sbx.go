@@ -88,8 +88,10 @@ func (c *sbxClient) health(ctx context.Context, id, token string) (health, error
 	defer drainClose(resp)
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes))
+		// The Job's root may answer for sbx-server and echo the token it got
 		return health{}, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s sbx-server health answered %d: %.200q", id, resp.StatusCode, raw)}
+			"hf Job %s sbx-server health answered %d: %.200q", id, resp.StatusCode,
+			scrub(string(raw), token))}
 	}
 	var h health
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHealthBytes)).Decode(&h); err != nil {
