@@ -3,6 +3,7 @@ package image_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bugnet-sh/bugnet-router/internal/image"
@@ -13,6 +14,26 @@ func TestImageInputsNeedANewVersion(t *testing.T) {
 	_, err := image.SyncInputs(filepath.Join("..", "..", "deploy"), false)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSBXServerSinceIsTheUnbuiltVersion keeps SBXServerSince on VERSION until a build of it exists
+func TestSBXServerSinceIsTheUnbuiltVersion(t *testing.T) {
+	dir := filepath.Join("..", "..", "deploy", "image")
+	built, err := filepath.Glob(filepath.Join(dir, "builds", "*-"+image.SBXServerSince+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built) > 0 {
+		return
+	}
+	v, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(v)); got != image.SBXServerSince {
+		t.Fatalf("VERSION is %s and no build of %s exists, so SBXServerSince must be %s",
+			got, image.SBXServerSince, got)
 	}
 }
 

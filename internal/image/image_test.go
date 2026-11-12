@@ -86,6 +86,8 @@ func TestVersionAtLeast(t *testing.T) {
 		{"", "2026.11.4", false},
 		{"2026.11", "2026.11.4", false},
 		{"2026.11.4", "latest", false},
+		{"2026.11.4.1", "2026.11.4", false},
+		{"+2026.11.4", "2026.11.4", false},
 	} {
 		if got := image.VersionAtLeast(c.v, c.floor); got != c.want {
 			t.Errorf("VersionAtLeast(%q, %q) = %v, want %v", c.v, c.floor, got, c.want)
