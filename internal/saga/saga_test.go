@@ -930,6 +930,51 @@ func TestRetriedExtensionKeepsItsAnswerWhenThePriceRises(t *testing.T) {
 	eq(t, len(e.events(t, saga.EventExtended)), 1)
 }
 
+func TestInFlightExtensionRetryKeepsItsAnswerWhenThePriceRises(t *testing.T) {
+	a := newCapped(t, t.TempDir(), 0)
+	e := newEnv(t, a)
+	p, h := e.placeReady(t, "order-1")
+	free := sync.OnceFunc(func() { close(a.release) })
+	t.Cleanup(free)
+	a.hold.Store(true)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice, h))
+		first <- err
+	}()
+	select {
+	case <-a.held:
+	case err := <-first:
+		t.Fatalf("first extension ended before setting the lifetime: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("first extension never set the lifetime")
+	}
+	// The retry pays less, as the same order would once the price rose, and arrives mid-apply
+	type answer struct {
+		p   store.Placement
+		err error
+	}
+	second := make(chan answer, 1)
+	go func() {
+		got, err := e.saga.Extend(t.Context(), h,
+			e.extendToken(t, "ext-1", morePkg, morePrice-1, h))
+		second <- answer{got, err}
+	}()
+	e.waitForLockWait(t)
+	free()
+
+	if err := <-first; err != nil {
+		t.Fatalf("first extension: %v", err)
+	}
+	want := p.Deadline.Add(10 * time.Minute)
+	if got := <-second; got.err != nil || !got.p.Deadline.Equal(want) {
+		t.Fatalf("retry %v %v, want deadline %v", got.p.Deadline, got.err, want)
+	}
+	eq(t, e.reload(t, p.ID).Deadline.Equal(want), true)
+	e.oneEvent(t, saga.EventExtended)
+}
+
 func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a"})
 	e := newEnv(t, a)

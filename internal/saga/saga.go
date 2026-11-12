@@ -1333,10 +1333,6 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if x.replay {
 		return s.replayExtend(ctx, x.p), nil
 	}
-	// The price is checked after the replay, so a retry of an applied order answers as it did
-	if !covers(c, pkg) {
-		return store.Placement{}, underpaid(c, pkg)
-	}
 
 	prov, ref, by := x.prov, x.ref, x.by
 	var applied bool
@@ -1366,6 +1362,10 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}, by)
 		if err != nil || !applied {
 			return err
+		}
+		// Only the call that applies the order checks the price, so every retry answers as it did
+		if !covers(c, pkg) {
+			return underpaid(c, pkg)
 		}
 		if payer != "" {
 			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {
