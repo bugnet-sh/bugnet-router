@@ -93,6 +93,8 @@ type call struct {
 	job bool
 	// create marks a call that may start a Job, so one sent without an answer may have started it
 	create bool
+	// secret is a sandbox token the body carries, kept out of the call's errors as the token is
+	secret string
 }
 
 // jobsURL is a route under jobsBase, each segment escaped, with the query when it has one
@@ -284,15 +286,16 @@ func (c *jobsClient) getJob(ctx context.Context, id string) (job, error) {
 	return j, err
 }
 
-// createJob starts a Job from spec, the body of the create, and returns it as HF answers
-func (c *jobsClient) createJob(ctx context.Context, spec []byte) (job, error) {
+// createJob starts a Job from spec, the body of the create carrying secret, as HF answers
+func (c *jobsClient) createJob(ctx context.Context, spec []byte, secret string) (job, error) {
 	var j job
 	_, err := c.do(ctx, call{
 		method: http.MethodPost, url: jobsURL(nil, c.namespace), body: spec, create: true,
+		secret: secret,
 	}, &j)
 	if err == nil && !jobID.MatchString(j.ID) {
 		return job{}, &provider.Error{Code: provider.CodeOutcomeUnknown,
-			Err: fmt.Errorf("hf started a Job and named it %.40q", j.ID)}
+			Err: fmt.Errorf("hf started a Job and named it %.40q", scrub(j.ID, secret))}
 	}
 	return j, err
 }
@@ -394,7 +397,7 @@ func (e *apiError) Error() string {
 }
 
 // readError reads the Hub's error or message field, its X-Error-Message header, or the body
-func readError(status int, h http.Header, raw []byte, token string) *apiError {
+func readError(status int, h http.Header, raw []byte, secrets ...string) *apiError {
 	var body struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
@@ -406,16 +409,18 @@ func readError(status int, h http.Header, raw []byte, token string) *apiError {
 	msg := cmp.Or(text, body.Message, h.Get("X-Error-Message"), strings.TrimSpace(string(raw)),
 		http.StatusText(status))
 	return &apiError{
-		Status: status, Code: scrub(h.Get("X-Error-Code"), token), Message: scrub(msg, token),
-		RequestID: scrub(h.Get("X-Request-Id"), token),
+		Status: status, Code: scrub(h.Get("X-Error-Code"), secrets...),
+		Message: scrub(msg, secrets...), RequestID: scrub(h.Get("X-Request-Id"), secrets...),
 	}
 }
 
-// scrub replaces the token in a part of an answer, then cuts it at maxMessageBytes
-func scrub(s, token string) string {
-	// An answer that echoes the token never carries it into an error or a log, even cut
-	if token != "" {
-		s = strings.ReplaceAll(s, token, "[token]")
+// scrub replaces each secret in a part of an answer, then cuts it at maxMessageBytes
+func scrub(s string, secrets ...string) string {
+	// An answer that echoes a secret never carries it into an error or a log, even cut
+	for _, secret := range secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[token]")
+		}
 	}
 	if len(s) > maxMessageBytes {
 		s = strings.ToValidUTF8(s[:maxMessageBytes], "") + "..."
@@ -425,7 +430,7 @@ func scrub(s, token string) string {
 
 // classify maps an error answer to a provider code by its status, design 4.13
 func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) error {
-	ae := readError(status, h, raw, c.token)
+	ae := readError(status, h, raw, c.token, cl.secret)
 	e := &provider.Error{Code: provider.CodeInternal, CanFailOver: true, Err: ae}
 	switch {
 	case status == http.StatusTooManyRequests:

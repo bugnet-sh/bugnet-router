@@ -192,6 +192,40 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs = append(refs, ref)
+	// Creates whose error answers quote the sandbox token their body carried
+	var failed []string
+	for i, c := range []struct {
+		fault    fault
+		unlisted bool
+		relist   *fault
+	}{
+		{fault: fault{status: 422}},
+		{fault: fault{status: 500, served: true}, unlisted: true},
+		{fault: fault{status: 500, served: true},
+			relist: &fault{status: 500, message: "Internal Error", after: 1, times: 1}},
+		{fault: fault{status: 418}},
+	} {
+		req := keyed()
+		req.IdempotencyKey = strings.Repeat(string(rune('a'+i)), 32)
+		token := p.sandboxToken(req.IdempotencyKey)
+		failed = append(failed, token)
+		c.fault.message, c.fault.times = "Invalid body: secrets.SBX_TOKEN "+token, 1
+		f.mu.Lock()
+		f.unlistNew = c.unlisted
+		f.mu.Unlock()
+		f.inject(createRoute, c.fault)
+		if c.relist != nil {
+			f.inject(listRoute, *c.relist)
+		}
+		_, err := p.Create(ctx, req)
+		if err == nil {
+			t.Fatalf("a create answered %d gave no error", c.fault.status)
+		}
+		keep(err)
+	}
+	f.mu.Lock()
+	f.unlistNew = false
+	f.mu.Unlock()
 	// Waits that end in errors, one sbx-server refusing the token and one echoing it
 	wrong := cloneRef(ref)
 	wrong.Meta["secret"] = refs[0].Meta["secret"]
@@ -228,6 +262,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 		}
 		tokens = append(tokens, r.Meta["secret"])
 	}
+	tokens = append(tokens, failed...)
 	carries := func(s string, words []string) bool {
 		return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(s, w) })
 	}
@@ -286,8 +321,8 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 			t.Errorf("%s carried the seed", where)
 		}
 	}
-	// Both fresh and keyed creates, the lost one and the waits all ran
-	if created != 3 || health < 4 {
+	// Both fresh and keyed creates, the lost and failed ones and the waits all ran
+	if created != 3+len(failed) || health < 4 {
 		t.Fatalf("%d creates and %d health reads ran", created, health)
 	}
 	if len(errs) < 3 {

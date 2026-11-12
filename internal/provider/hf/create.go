@@ -244,7 +244,7 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 // post sends the Job's create, and lists by its key when the answer may hide a Job HF started
 func (p *Provider) post(ctx context.Context, o order) (provider.Ref, error) {
 	sentAt := p.now()
-	j, err := p.jobs.createJob(ctx, o.spec)
+	j, err := p.jobs.createJob(ctx, o.spec, o.token)
 	if err == nil {
 		ref := refOf(j, o.token, sentAt, o.timeout)
 		p.keep(o, ref)

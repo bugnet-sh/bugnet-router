@@ -37,7 +37,9 @@ type fault struct {
 	echo bool
 	// served runs the route before the fault answers, so the call took effect unseen
 	served bool
-	times  int
+	// after lets that many matching calls through before the fault answers
+	after int
+	times int
 }
 
 // recorded is one request the fake served, kept for the secret and pacing checks
@@ -315,6 +317,10 @@ func (f *fakeHF) record(r *http.Request) time.Time {
 // takeFault returns the route's fault, counting it against its times, with f.mu held
 func (f *fakeHF) takeFault(pattern string) *fault {
 	ft := f.faults[pattern]
+	if ft != nil && ft.after > 0 {
+		ft.after--
+		return nil
+	}
 	if ft != nil && ft.times > 0 {
 		if ft.times--; ft.times == 0 {
 			delete(f.faults, pattern)
