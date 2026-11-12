@@ -156,22 +156,7 @@ func TestHFRateLimitHoldsQueuedCalls(t *testing.T) {
 	}
 }
 
-// waitRunning reads the Job until it runs, as WaitReady polls, waiting out a 429's ask
-func waitRunning(ctx context.Context, p *Provider, id string) (limited int, err error) {
-	for {
-		j, err := p.jobs.getJob(ctx, id)
-		if e, ok := provider.AsError(err); ok && e.Code == provider.CodeRateLimited {
-			limited++
-			time.Sleep(e.RetryAfter)
-			continue
-		}
-		if err != nil || j.Status.Stage == "RUNNING" {
-			return limited, err
-		}
-	}
-}
-
-// TestHFPacing starts ten waits at once against a fake that answers 429 past the pace
+// TestHFPacing starts ten WaitReady calls at once against a fake that answers 429 past the pace
 func TestHFPacing(t *testing.T) {
 	const ops = 10
 	f := newFake(t)
@@ -179,36 +164,34 @@ func TestHFPacing(t *testing.T) {
 	opts := testOptions()
 	opts.OpsPerSecond = ops
 	p := f.provider(t, opts)
-	var ids []string
+	var refs []provider.Ref
 	for range 10 {
 		j := f.addJob("SCHEDULING", map[string]string{"bugnet": "1"})
-		f.mu.Lock()
-		j.runAfter = 2
-		f.mu.Unlock()
-		ids = append(ids, j.id)
+		f.set(j, func(j *fakeJob) { j.runAfter, j.token = 2, freshKey() })
+		refs = append(refs, refTo(j))
 	}
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		limited int
-	)
-	for _, id := range ids {
+	var wg sync.WaitGroup
+	for _, ref := range refs {
 		wg.Go(func() {
-			n, err := waitRunning(t.Context(), p, id)
-			if err != nil {
+			if err := p.WaitReady(t.Context(), ref); err != nil {
 				t.Error(err)
 			}
-			mu.Lock()
-			limited += n
-			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	got := arrivals(f.all())
-	eq(t, len(got), 20)
-	if limited != 0 || f.pacedCount() != 0 {
-		t.Fatalf("the waits got %d 429s and the fake answered %d", limited, f.pacedCount())
+	// The health reads go to HF's proxy, which the Hub's rate limit does not count
+	var hub []recorded
+	for _, r := range f.all() {
+		if r.host == jobsHost {
+			hub = append(hub, r)
+		}
 	}
+	eq(t, len(hub), 20)
+	eq(t, len(sbxRequests(f)), 10)
+	if f.pacedCount() != 0 {
+		t.Fatalf("the fake answered %d 429s", f.pacedCount())
+	}
+	got := arrivals(hub)
 	span := got[len(got)-1].Sub(got[0])
 	if rate := float64(len(got)-1) / span.Seconds(); rate > ops*1.05 {
 		t.Fatalf("%d calls in %s is %.1f a second, over %d", len(got), span, rate, ops)
