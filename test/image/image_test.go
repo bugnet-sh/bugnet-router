@@ -146,8 +146,7 @@ func run(t *testing.T, tag, script string) string {
 // nftNoNetlink is the error of nft under an emulator that refuses it the netfilter netlink socket
 const nftNoNetlink = "Netlink socket: Protocol not supported"
 
-// nftCheck returns a shell check of nft, which proves only that its libraries load where the
-// emulator refuses nft its netlink socket
+// nftCheck returns a shell check of nft, or of its libraries where nft has no netlink socket
 func nftCheck(t *testing.T, tag string) string {
 	t.Helper()
 	out, err := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
@@ -188,7 +187,7 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 		"pnpm --version >/dev/null && python3 --version >/dev/null && echo ok"), "ok")
 	// The base image ships /root/.bashrc and /root/.profile, which the build leaves as they are
 	eq(t, run(t, tag, "find /root /tmp -type f ! -path /root/.bashrc ! -path /root/.profile"), "")
-	dotfiles := "cat /root/.bashrc /root/.profile | sha256sum"
+	dotfiles := "sha256sum /root/.bashrc /root/.profile"
 	eq(t, run(t, tag, dotfiles), run(t, pin(t, "BASE_IMAGE"), dotfiles))
 	eq(t, run(t, tag, "ls /var/lib/apt/lists | wc -l"), "0")
 	eq(t, run(t, tag, `. /etc/bugnet/image.env; export LANG LC_ALL; `+
