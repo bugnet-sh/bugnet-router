@@ -133,6 +133,8 @@ type fakeSSHD struct {
 	execGate chan struct{}
 	// hostile serves SFTP as a hostile pod would, the host's files when nil
 	hostile *hostileFS
+	// broken names the answer a raw sftp-server cuts short, none when empty
+	broken string
 	// sftpOut counts the bytes every SFTP session sent the adapter
 	sftpOut atomic.Int64
 	// done closes when the sshd closes

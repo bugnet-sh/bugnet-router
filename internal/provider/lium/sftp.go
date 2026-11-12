@@ -2,6 +2,7 @@ package lium
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -41,9 +42,10 @@ type sftpSession struct {
 	ended chan struct{}
 	in    io.WriteCloser
 	out   *endReader
-	// cl speaks SFTP on in and out, nil for a session that reads its packets itself
-	cl   *sftp.Client
-	once sync.Once
+	// cl speaks SFTP on in and frames, nil for a session that reads its packets itself
+	cl     *sftp.Client
+	frames *sftpFrames
+	once   sync.Once
 }
 
 // endReader closes ended once its reader fails
@@ -81,7 +83,15 @@ func (p *Provider) withSFTP(
 	if !stop() && err != nil {
 		return timedOut(sctx, id)
 	}
-	return p.sftpError(ctx, id, err)
+	return s.classify(ctx, err)
+}
+
+// classify is sftpError, but names the answer that broke the session when one did
+func (s *sftpSession) classify(ctx context.Context, err error) error {
+	if bad := s.frames.err(); bad != nil && err != nil {
+		return bad
+	}
+	return s.p.sftpError(ctx, s.pod, err)
 }
 
 // timedOut is the error of a file call the deadline cut
@@ -137,10 +147,91 @@ func (s *sftpSession) start(client bool) error {
 		return err
 	}
 	if client {
+		s.frames = &sftpFrames{r: s.out}
 		// Writes go to a temporary file, so a write cut short leaves no hole in the target
-		s.cl, err = sftp.NewClientPipe(s.out, s.in, sftp.UseConcurrentWrites(true))
+		s.cl, err = sftp.NewClientPipe(s.frames, s.in, sftp.UseConcurrentWrites(true))
+	}
+	if bad := s.frames.err(); bad != nil {
+		return bad
 	}
 	return err
+}
+
+// sftpFrames hands pkg/sftp's client only whole packets whose fields fit them, since it reads
+// a status, a handle or data unchecked and one cut short panics, in goroutines of its own too
+type sftpFrames struct {
+	r io.Reader
+	// pkt is what is left to hand on of the packet read last
+	pkt []byte
+	mu  sync.Mutex
+	bad error
+}
+
+func (f *sftpFrames) Read(b []byte) (int, error) {
+	if len(f.pkt) == 0 {
+		if err := f.next(); err != nil {
+			return 0, err
+		}
+	}
+	n := copy(b, f.pkt)
+	f.pkt = f.pkt[n:]
+	return n, nil
+}
+
+// next reads one packet, never one longer than pkg/sftp's own bound, and checks its fields
+func (f *sftpFrames) next() error {
+	var head [4]byte
+	if _, err := io.ReadFull(f.r, head[:]); err != nil {
+		return err
+	}
+	n := binary.BigEndian.Uint32(head[:])
+	if n == 0 || n > maxListPacket {
+		return f.fail(malformed(fmt.Sprintf("a packet of %d bytes", n)))
+	}
+	pkt := make([]byte, 4+n)
+	copy(pkt, head[:])
+	if _, err := io.ReadFull(f.r, pkt[4:]); err != nil {
+		return err
+	}
+	if err := checkFrame(pkt[4], pkt[5:]); err != nil {
+		return f.fail(err)
+	}
+	f.pkt = pkt
+	return nil
+}
+
+func (f *sftpFrames) fail(err error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bad = err
+	return err
+}
+
+// err is why the frames refused a packet, nil while they refused none or for a raw session
+func (f *sftpFrames) err() error {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bad
+}
+
+// checkFrame refuses an answer whose fixed fields pkg/sftp reads past the packet's end
+func checkFrame(typ byte, body []byte) error {
+	id, rest, _ := readUint32(body)
+	switch typ {
+	case fxpStatus:
+		if _, _, ok := readUint32(rest); !ok {
+			return malformed("a status cut short")
+		}
+	case fxpHandle, fxpData:
+		if _, _, ok := readString(rest); !ok {
+			return malformed(fmt.Sprintf("an answer of type %d to request %d cut short", typ,
+				id))
+		}
+	}
+	return nil
 }
 
 // guard aborts the session when ctx ends before stop

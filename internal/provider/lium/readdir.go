@@ -26,6 +26,7 @@ const (
 	fxpReaddir = 12
 	fxpStatus  = 101
 	fxpHandle  = 102
+	fxpData    = 103
 	fxpName    = 104
 
 	fxEOF              = 1

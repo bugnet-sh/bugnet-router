@@ -3,6 +3,7 @@ package lium
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,4 +183,35 @@ func TestLiumSFTPHostile(t *testing.T) {
 			_ = w.Abort()
 		}
 	})
+}
+
+// TestLiumSFTPBrokenAnswers feeds pkg/sftp's client answers cut short, which it reads unchecked
+func TestLiumSFTPBrokenAnswers(t *testing.T) {
+	for _, kind := range []string{brokenStatus, brokenHandle, brokenData} {
+		t.Run(kind, func(t *testing.T) {
+			f, p := liveFake(t)
+			ref, pod := readyRef(t, f, p)
+			f.sshd(pod.id).setBroken(kind)
+			ctx := context.Background()
+			_, _, err := p.ReadFile(ctx, ref, "/f", 0, 10)
+			wantCode(t, err, provider.CodeInternal, false)
+			if !strings.Contains(err.Error(), "the pod's sftp-server sent") {
+				t.Fatalf("the error %v does not name the broken answer", err)
+			}
+			if kind != brokenData {
+				return
+			}
+			// A read of a whole chunk runs in goroutines of pkg/sftp's own
+			r, err := p.OpenReader(ctx, ref, "/f", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = r.Close() }()
+			_, err = r.Read(make([]byte, 64<<10))
+			wantCode(t, err, provider.CodeInternal, false)
+			if !strings.Contains(err.Error(), "the pod's sftp-server sent") {
+				t.Fatalf("the error %v does not name the broken answer", err)
+			}
+		})
+	}
 }

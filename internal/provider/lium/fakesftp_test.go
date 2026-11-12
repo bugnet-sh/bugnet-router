@@ -70,9 +70,11 @@ func (s *fakeSSHD) serveSFTP(ch ssh.Channel) {
 	s.f.mu.Unlock()
 	wire := &sftpWire{ch: ch, in: in, out: &s.sftpOut}
 	s.mu.Lock()
-	hostile := s.hostile
+	hostile, broken := s.hostile, s.broken
 	s.mu.Unlock()
-	if hostile != nil {
+	if broken != "" {
+		serveBroken(wire, broken)
+	} else if hostile != nil {
 		_ = sftp.NewRequestServer(wire, hostile.handlers()).Serve()
 	} else if srv, err := sftp.NewServer(wire,
 		sftp.WithServerWorkingDirectory(s.f.sh.home)); err == nil {
@@ -89,6 +91,69 @@ func (s *fakeSSHD) setHostile(t *testing.T) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hostile = h
+}
+
+// setBroken makes the pod's sftp-server cut the answer that kind names short
+func (s *fakeSSHD) setBroken(kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.broken = kind
+}
+
+// Answers a broken sftp-server cuts short, each a field pkg/sftp's client reads unchecked
+const (
+	// brokenStatus answers every request with a status that ends after its id
+	brokenStatus = "status"
+	// brokenHandle answers OPEN with a handle longer than its packet
+	brokenHandle = "handle"
+	// brokenData answers READ with data longer than its packet
+	brokenData = "data"
+)
+
+// serveBroken speaks SFTP for a regular file of 1 MiB but cuts short the answer kind names
+func serveBroken(rw io.ReadWriter, kind string) {
+	answer := func(typ byte, fields ...[]byte) bool {
+		pkt := []byte{typ}
+		for _, f := range fields {
+			pkt = append(pkt, f...)
+		}
+		_, err := rw.Write(append(binary.BigEndian.AppendUint32(nil, uint32(len(pkt))), pkt...))
+		return err == nil
+	}
+	u32 := func(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+	for {
+		var head [4]byte
+		if _, err := io.ReadFull(rw, head[:]); err != nil {
+			return
+		}
+		pkt := make([]byte, binary.BigEndian.Uint32(head[:]))
+		if _, err := io.ReadFull(rw, pkt); err != nil || len(pkt) < 5 {
+			return
+		}
+		typ, id := pkt[0], pkt[1:5]
+		ok := true
+		switch {
+		case typ == 1:
+			ok = answer(2, u32(3))
+		case kind == brokenStatus:
+			ok = answer(101, id)
+		case typ == 7 || typ == 8 || typ == 17:
+			// LSTAT, FSTAT and STAT state a regular file of 1 MiB
+			ok = answer(105, id, u32(0x5), binary.BigEndian.AppendUint64(nil, 1<<20),
+				u32(0o100644))
+		case typ == 3 && kind == brokenHandle:
+			ok = answer(102, id, u32(1000), []byte("h"))
+		case typ == 3:
+			ok = answer(102, id, u32(1), []byte("h"))
+		case typ == 5:
+			ok = answer(103, id, u32(1000), []byte("abc"))
+		default:
+			ok = answer(101, id, u32(4), u32(0), u32(0))
+		}
+		if !ok {
+			return
+		}
+	}
 }
 
 // sftpSent is every SFTP session's input and each file the adapter wrote, reassembled

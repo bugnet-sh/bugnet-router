@@ -61,12 +61,12 @@ func (p *Provider) OpenReader(
 		if !stopped {
 			return nil, timedOut(sctx, id)
 		}
-		return nil, p.sftpError(ctx, id, err)
+		return nil, s.classify(ctx, err)
 	}
 	body := &sftpBody{s: s, f: f, name: clean, off: offset, left: info.Size - offset,
 		timed: !hasDeadline(ctx)}
 	return provider.NewFileReader(ctx, body, info, offset, func(err error) error {
-		return p.sftpError(ctx, id, err)
+		return s.classify(ctx, err)
 	}), nil
 }
 
@@ -200,7 +200,7 @@ func (p *Provider) OpenWriter(
 		if !stopped {
 			return nil, timedOut(sctx, id)
 		}
-		return nil, p.sftpError(ctx, id, err)
+		return nil, s.classify(ctx, err)
 	}
 	u := &upload{p: p, ref: ref, s: s, t: t, size: spec.Size, timed: !hasDeadline(ctx)}
 	return provider.NewFileWriter(ctx, spec, u), nil
@@ -226,7 +226,7 @@ func (u *upload) Write(b []byte) (int, error) {
 	}
 	if err != nil {
 		err = spaceError(u.t.cl, u.t.dir(), fmt.Errorf("write %s: %w", u.t.temp, err))
-		return n, u.p.sftpError(context.Background(), u.s.pod, err)
+		return n, u.s.classify(context.Background(), err)
 	}
 	return n, nil
 }
@@ -241,7 +241,7 @@ func (u *upload) Finish(ctx context.Context, sum []byte) (provider.FileEntry, er
 		return provider.FileEntry{}, timedOut(fctx, u.s.pod)
 	}
 	if err != nil {
-		return provider.FileEntry{}, u.p.sftpError(ctx, u.s.pod, err)
+		return provider.FileEntry{}, u.s.classify(ctx, err)
 	}
 	u.s.end()
 	return entry, nil
