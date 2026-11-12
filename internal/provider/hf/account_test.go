@@ -103,6 +103,20 @@ func TestHFCheckAccount(t *testing.T) {
 		}
 		wantAccount(t, p, provider.BlockUnfunded, j.id, "no_subscription")
 
+		// A create HF answers with a Job it already ended, read nowhere else
+		f, p, _ = accountFake(t)
+		f.mu.Lock()
+		f.show = func(job map[string]any) {
+			job["status"] = map[string]any{"stage": "CANCELED", "cancelReason": "NO_CREDITS"}
+		}
+		f.mu.Unlock()
+		ref, err := p.Create(ctx, keyed())
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, len(f.requestsTo("GET", "/api/jobs/"+testNamespace+"/"+ref.ID)), 0)
+		wantAccount(t, p, provider.BlockUnfunded, ref.ID, "no_credits")
+
 		// A Job HF names oddly still speaks for the account, its name quoted and cut
 		f, p, _ = accountFake(t)
 		j = endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
@@ -214,10 +228,12 @@ func TestHFCheckAccount(t *testing.T) {
 		wantAccount(t, p, provider.BlockNone)
 		eq(t, logs.String(), "")
 	})
-	t.Run("the detail names three Jobs and counts the rest", func(t *testing.T) {
+	t.Run("the detail names the three newest Jobs and counts the rest", func(t *testing.T) {
 		f, p, _ := accountFake(t)
-		for range 5 {
-			endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		c := stopClock(p)
+		var jobs []*fakeJob
+		for _, ago := range []time.Duration{5, 1, 4, 2, 3} {
+			jobs = append(jobs, endedJob(f, "CANCELED", "NO_CREDITS", c.now.Add(-ago*time.Minute)))
 		}
 		f.unfiltered = true
 		if _, err := p.ListOwned(ctx, nil); err != nil {
@@ -228,10 +244,11 @@ func TestHFCheckAccount(t *testing.T) {
 			t.Fatal(err)
 		}
 		eq(t, acc.Block, provider.BlockUnfunded)
-		if n := strings.Count(acc.Detail, "no_credits"); n != 3 ||
-			!strings.HasSuffix(acc.Detail, "and 2 more") {
-			t.Fatalf("detail %q", acc.Detail)
+		var words []string
+		for _, i := range []int{1, 3, 4} {
+			words = append(words, `hf ended Job "`+jobs[i].id+`" for no_credits`)
 		}
+		eq(t, acc.Detail, strings.Join(append(words, "and 2 more"), ", "))
 	})
 	t.Run("refused calls", func(t *testing.T) {
 		for _, tc := range []struct {
