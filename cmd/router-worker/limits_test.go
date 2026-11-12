@@ -130,3 +130,40 @@ func TestMonitorShowsABlockedProvider(t *testing.T) {
 		t.Fatalf("after the clear: %d %q", code, body)
 	}
 }
+
+func TestMonitorShowsAnUnblockedAccountsWarning(t *testing.T) {
+	st := store.New(migrated(t))
+	vk, _ := testenv.Valkey(t)
+	record := func(provider, block, detail string) {
+		t.Helper()
+		if _, err := st.RecordAccount(t.Context(), provider, block, detail, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record("lium", "", "lium warns runway")
+	code, body := askLimits(st, vk, limitsCheck{})
+	if code != http.StatusServiceUnavailable ||
+		strings.TrimSpace(body) != "provider lium account warning: lium warns runway" {
+		t.Fatalf("answered %d %q, want lium's warning", code, body)
+	}
+	// The provider's words stay one printable line of at most 200 bytes
+	record("lium", "", "lium warns \"runway\"\nprovider boat is blocked: banned\x1b[2J\r"+
+		strings.Repeat("é", 300))
+	_, body = askLimits(st, vk, limitsCheck{})
+	line := strings.TrimSuffix(body, "\n")
+	want := "provider lium account warning: lium warns \"runway\" provider boat is blocked: banned"
+	if strings.Contains(line, "\n") || !strings.HasPrefix(line, want) ||
+		len(line) > len("provider lium account warning: ")+200 {
+		t.Fatalf("answered %q, want one line of at most 200 bytes of lium's words", body)
+	}
+	// A blocked account shows its block alone, never the provider's words
+	record("lium", "unfunded", "lium warns pods_stopped")
+	if _, body := askLimits(st, vk, limitsCheck{}); strings.TrimSpace(body) !=
+		"provider lium is blocked: unfunded" {
+		t.Fatalf("answered %q, want the block alone", body)
+	}
+	record("lium", "", "")
+	if code, body := askLimits(st, vk, limitsCheck{}); code != http.StatusOK {
+		t.Fatalf("after the warning cleared: %d %q", code, body)
+	}
+}

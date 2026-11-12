@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/valkey-io/valkey-go"
 
@@ -361,6 +362,8 @@ type limitsHealth struct {
 	stale []staleLimits
 	// blocked names the providers whose account is blocked, with the block
 	blocked []blockedProvider
+	// warned names the providers whose working account the last check warned of, with its words
+	warned []accountWarning
 	// rate is Boat's request window when it is under rateAlertPercent
 	rate    boat.RateLeft
 	rateLow bool
@@ -372,6 +375,11 @@ type staleLimits struct {
 }
 
 type blockedProvider struct{ provider, block string }
+
+type accountWarning struct{ provider, detail string }
+
+// maxWarning bounds the provider's words a warning line shows, in bytes
+const maxWarning = 200
 
 // checkLimits finds old limits, blocked accounts and a Boat request window nearly spent
 func checkLimits(
@@ -397,8 +405,11 @@ func checkLimits(
 		log.Warn("monitor cannot read the provider health rows", "err", err)
 	}
 	for _, r := range healths {
-		if r.Blocked != "" {
+		switch {
+		case r.Blocked != "":
 			h.blocked = append(h.blocked, blockedProvider{r.Provider, r.Blocked})
+		case r.BlockedDetail != "":
+			h.warned = append(h.warned, accountWarning{r.Provider, oneLine(r.BlockedDetail)})
 		}
 	}
 	if c.rate == nil {
@@ -419,6 +430,9 @@ func (l limitsHealth) problems() []string {
 	for _, b := range l.blocked {
 		out = append(out, fmt.Sprintf("provider %s is blocked: %s", b.provider, b.block))
 	}
+	for _, w := range l.warned {
+		out = append(out, fmt.Sprintf("provider %s account warning: %s", w.provider, w.detail))
+	}
 	for _, s := range l.stale {
 		out = append(out, fmt.Sprintf("provider %s limits not polled for %d s", s.provider,
 			int(s.age.Seconds())))
@@ -428,4 +442,15 @@ func (l limitsHealth) problems() []string {
 			l.rate.Remaining, l.rate.Limit))
 	}
 	return out
+}
+
+// oneLine keeps the provider's words to printable ASCII on one line of at most maxWarning bytes
+func oneLine(words string) string {
+	words = strings.Map(func(r rune) rune {
+		if r > unicode.MaxASCII || !unicode.IsPrint(r) {
+			return ' '
+		}
+		return r
+	}, words)
+	return strings.TrimSpace(words[:min(len(words), maxWarning)])
 }

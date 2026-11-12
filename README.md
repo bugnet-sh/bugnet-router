@@ -1939,7 +1939,9 @@ within 1 s. A `rate_limited` answer with a Retry-After pauses the provider's cre
 at most 5 minutes. A rate limit or a quota refusal never counts against the provider's health.
 
 `/monitor` reports a blocked provider, limits not polled for `stale_after` intervals, and Boat's
-`RateLimit` header with under 20% of its window left.
+`RateLimit` header with under 20% of its window left. A working account whose last check left a
+warning, a Lium balance warning or HF Jobs ended at an account limit, shows as
+`provider X account warning:` and the provider's words, cut to 200 characters on one line.
 
 E2B's create blocks the IPv4 entries of `hardening.deny_ranges` outside the VM with
 `network.denyOut`. `harden` blocks the IPv6 entries inside the VM, all but `fe80::/10`, which
