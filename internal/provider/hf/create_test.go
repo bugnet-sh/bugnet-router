@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -157,6 +159,50 @@ func TestHFCreateSendsTheJobSpec(t *testing.T) {
 		"job_id": id, "created_at": ref.Meta["created_at"], "timeout": "5400",
 		"secret": testKeyToken, "arch": "amd64",
 	}})
+}
+
+// bakedCommand is the baked mode's boot, the image's sbx-server checked and run with no download
+const bakedCommand = `set -e; d=/usr/local/lib/bugnet/sbx-server; ` +
+	`echo "$SBX_SERVER_SHA256  $d" | sha256sum -c -; unset SBX_SERVER_SHA256; exec "$d"`
+
+func TestHFCreateBakedSendsTheJobSpec(t *testing.T) {
+	f := newFake(t)
+	opts := testOptions()
+	opts.SBXServerBaked = true
+	p := f.provider(t, opts)
+	if _, err := p.Create(t.Context(), keyed()); err != nil {
+		t.Fatal(err)
+	}
+	// design 4.10's body but for the command and the environment, which hold no URL
+	var want map[string]any
+	if err := json.Unmarshal([]byte(design410), &want); err != nil {
+		t.Fatal(err)
+	}
+	want["command"] = []any{"/bin/sh", "-c", bakedCommand}
+	want["environment"] = map[string]any{"SBX_PORT": "49983", "SBX_SERVER_SHA256": testSBXSHA256}
+	got := posts(t, f)
+	eq(t, len(got), 1)
+	eq(t, got[0], want)
+	if strings.Contains(string(f.requestsTo("POST", "/api/jobs/"+testNamespace)[0].body),
+		"huggingface.co/buckets") {
+		t.Fatal("a baked Job's create names the bucket")
+	}
+}
+
+// TestHFImageBakesTheBuildJobsFetch keeps deploy/image/pins.conf on the build fetch mode names
+func TestHFImageBakesTheBuildJobsFetch(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "image", "pins.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := map[string]string{}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			pins[k] = v
+		}
+	}
+	eq(t, pins["SBX_SERVER_SHA256_AMD64"], testSBXSHA256)
+	eq(t, pins["SBX_SERVER_URL_AMD64"], sbxServerBucket+testSBXSHA256)
 }
 
 func TestHFCreateTimeout(t *testing.T) {

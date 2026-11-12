@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -76,6 +78,8 @@ type fakeJob struct {
 	unlisted bool
 	// health replaces the sbx-server's /health body when set
 	health string
+	// bootErr is the status of a command that failed, which ends the Job as ERROR once it runs
+	bootErr string
 }
 
 // fakeSpec is a create body as HF's schema reads it
@@ -170,6 +174,9 @@ type fakeHF struct {
 	// holdExecs holds that many exec answers once their command started, until execGate closes
 	holdExecs int
 	execGate  chan struct{}
+	// boot runs each created Job's command on the host, boots keeping what each printed
+	boot  bool
+	boots []string
 }
 
 func newFake(t *testing.T) *fakeHF {
@@ -507,6 +514,9 @@ func (f *fakeHF) getJob(w http.ResponseWriter, r *http.Request) {
 	j.reads++
 	if j.stage == "SCHEDULING" && j.runAfter > 0 && j.reads >= j.runAfter {
 		j.stage = "RUNNING"
+		if j.bootErr != "" {
+			j.stage, j.message, j.finishedAt = "ERROR", j.bootErr, time.Now().UTC()
+		}
 	}
 	out := f.answerOf(j)
 	f.mu.Unlock()
@@ -586,9 +596,14 @@ func (f *fakeHF) createJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, why)
 		return
 	}
+	var bootErr string
+	if f.boot {
+		bootErr = f.runBoot(&sp)
+	}
 	f.mu.Lock()
 	j := f.newJob("SCHEDULING", sp.Labels)
 	j.flavor, j.spec, j.token, j.runAfter = sp.Flavor, &sp, sp.Secrets["SBX_TOKEN"], f.runAfter
+	j.bootErr = bootErr
 	j.unlisted = f.unlistNew
 	if sp.TimeoutSeconds != nil {
 		j.timeout = *sp.TimeoutSeconds
@@ -597,6 +612,36 @@ func (f *fakeHF) createJob(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	time.Sleep(delay)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// runBoot runs a Job's command as its VM would, returning the status a failed command leaves
+func (f *fakeHF) runBoot(sp *fakeSpec) string {
+	cmd := exec.Command(sp.Command[0], append(sp.Command[1:], sp.Arguments...)...)
+	cmd.Env = f.sbx.env()
+	for _, vars := range []map[string]string{sp.Environment, sp.Secrets} {
+		for k, v := range vars {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	out, err := cmd.CombinedOutput()
+	f.mu.Lock()
+	f.boots = append(f.boots, string(out))
+	f.mu.Unlock()
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		return fmt.Sprintf("exit code %d", exit.ExitCode())
+	case err != nil:
+		return err.Error()
+	}
+	return ""
+}
+
+// bootOutput is what every boot the fake ran printed
+func (f *fakeHF) bootOutput() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.boots, "")
 }
 
 // refused says why HF's schema would refuse the body, empty when it takes it

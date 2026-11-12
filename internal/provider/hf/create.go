@@ -33,8 +33,8 @@ const (
 	sbxPort = 49983
 	// sbxServerBucket is where a Job fetches sbx-server by its digest, HF's public bucket
 	sbxServerBucket = "https://huggingface.co/buckets/huggingface/sbx-server/resolve/sbx-server-"
-	// bootScript fetches sbx-server, checks its digest and runs it as PID 1, design 4.10
-	bootScript = `set -e; d=/tmp/.sbx-server; curl -fsSL -o "$d" "$SBX_SERVER_URL"; ` +
+	// fetchScript fetches sbx-server, checks its digest and runs it as PID 1, design 4.10
+	fetchScript = `set -e; d=/tmp/.sbx-server; curl -fsSL -o "$d" "$SBX_SERVER_URL"; ` +
 		`echo "$SBX_SERVER_SHA256  $d" | sha256sum -c -; chmod +x "$d"; ` +
 		`unset SBX_SERVER_URL SBX_SERVER_SHA256; exec "$d"`
 	// maxTimeoutSeconds bounds a timeout read from a Job, past which it is not believed
@@ -187,15 +187,11 @@ func (p *Provider) orderFor(req provider.CreateRequest) (order, error) {
 	}
 	o.labels[labelKey] = o.key
 	ports := []int{sbxPort, provider.DefaultGatePort}
+	script, env := p.boot()
 	spec, err := json.Marshal(jobSpec{
-		DockerImage: image, Command: []string{"/bin/sh", "-c", bootScript}, Arguments: []string{},
-		Environment: map[string]string{
-			"SBX_PORT":          strconv.Itoa(sbxPort),
-			"SBX_SERVER_URL":    sbxServerBucket + p.sbxSHA256,
-			"SBX_SERVER_SHA256": p.sbxSHA256,
-		},
-		Secrets: map[string]string{"SBX_TOKEN": o.token}, Flavor: f.name, Arch: arch,
-		TimeoutSeconds: o.timeout, Attempts: 1, Labels: o.labels,
+		DockerImage: image, Command: []string{"/bin/sh", "-c", script}, Arguments: []string{},
+		Environment: env, Secrets: map[string]string{"SBX_TOKEN": o.token},
+		Flavor: f.name, Arch: arch, TimeoutSeconds: o.timeout, Attempts: 1, Labels: o.labels,
 		Expose: jobExpose{Ports: ports, PortsPublic: ports},
 	})
 	if err != nil {
@@ -203,6 +199,17 @@ func (p *Provider) orderFor(req provider.CreateRequest) (order, error) {
 	}
 	o.spec = spec
 	return o, nil
+}
+
+// boot is a Job's script and environment, which run sbx-server as PID 1 once its digest matches
+func (p *Provider) boot() (string, map[string]string) {
+	env := map[string]string{"SBX_PORT": strconv.Itoa(sbxPort), "SBX_SERVER_SHA256": p.sbxSHA256}
+	if p.sbxPath == "" {
+		env["SBX_SERVER_URL"] = sbxServerBucket + p.sbxSHA256
+		return fetchScript, env
+	}
+	return `set -e; d=` + quote(p.sbxPath) + `; echo "$SBX_SERVER_SHA256  $d" | ` +
+		`sha256sum -c -; unset SBX_SERVER_SHA256; exec "$d"`, env
 }
 
 // timeoutFor is a Job's timeoutSeconds, its lifetime with the room and margin, design 4.7

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/image"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -62,8 +63,10 @@ type Options struct {
 	TimeoutMargin time.Duration
 	// PollEvery spaces the Job reads of a wait for RUNNING, 3 seconds when 0
 	PollEvery time.Duration
-	// SBXServerSHA256 is the digest of the sbx-server build each Job fetches at boot
+	// SBXServerSHA256 is the digest of the sbx-server build each Job checks before it runs it
 	SBXServerSHA256 string
+	// SBXServerBaked runs the image's own sbx-server, else each Job fetches it at boot
+	SBXServerBaked bool
 	// Valkey shares the account sightings with the other processes under Prefix, none when nil
 	Valkey valkey.Client
 	Prefix string
@@ -83,8 +86,10 @@ type Provider struct {
 	stop context.CancelFunc
 	done chan struct{}
 
-	seed              []byte
-	image, sbxSHA256  string
+	seed             []byte
+	image, sbxSHA256 string
+	// sbxPath is the image's sbx-server a baked Job runs, empty when each Job fetches it
+	sbxPath           string
 	extendRoom        time.Duration
 	margin, pollEvery time.Duration
 	healthWait        time.Duration
@@ -170,6 +175,10 @@ func newProvider(opts Options) (*Provider, error) {
 				strings.Join(gpu.HFFlavors(), ", "))
 		}
 	}
+	var sbxPath string
+	if opts.SBXServerBaked {
+		sbxPath = image.SBXServerPath
+	}
 	log := cmp.Or(opts.Log, slog.Default())
 	jobs := newJobsClient(opts.Token, opts.Namespace, opts.OpsPerSecond, log)
 	if opts.Valkey != nil {
@@ -187,6 +196,7 @@ func newProvider(opts Options) (*Provider, error) {
 		seed:         slices.Clone(opts.SandboxSeed),
 		image:        opts.Image,
 		sbxSHA256:    opts.SBXServerSHA256,
+		sbxPath:      sbxPath,
 		extendRoom:   opts.ExtendRoom,
 		margin:       opts.TimeoutMargin,
 		pollEvery:    cmp.Or(opts.PollEvery, defaultPollEvery),
