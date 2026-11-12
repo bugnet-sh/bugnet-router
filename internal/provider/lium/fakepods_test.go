@@ -423,6 +423,25 @@ func (f *fakeLium) me(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// podRecord answers a pod's record, also for a deleted pod
+func (f *fakeLium) podRecord(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	rec, ok := f.records[r.PathValue("id")]
+	f.mu.Unlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "pod_not_found", "No such pod on this account")
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// setRecord sets what GET /pods/{id}/record answers for one pod
+func (f *fakeLium) setRecord(id string, rec map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records[id] = rec
+}
+
 // setAccount sets what GET /users/me answers
 func (f *fakeLium) setAccount(balance, warning any) {
 	f.mu.Lock()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 var (
 	_ provider.AccountChecker = (*Provider)(nil)
 	_ provider.LimitsReader   = (*Provider)(nil)
+	_ provider.UsageReader    = (*Provider)(nil)
 )
 
 const (
@@ -30,6 +32,13 @@ const (
 	warningUnknown = "unknown"
 	// maxUSD bounds an amount the adapter reads, far above any balance
 	maxUSD = 1e9
+	// maxBilledSeconds bounds a pod's billed seconds, far above any pod's life
+	maxBilledSeconds = 1e9
+	// usagePage is how many records one page of ReadUsage reads
+	usagePage = 25
+	// usageRefs and usageListing start the cursors of the two phases of ReadUsage
+	usageRefs    = "r"
+	usageListing = "l:"
 )
 
 // userMe holds the fields of GET /users/me the account check reads, their types unverified
@@ -114,6 +123,15 @@ func warningKind(raw json.RawMessage) string {
 
 // microsOf reads USD written as a JSON number or a number in a string, in micro-USD
 func microsOf(raw json.RawMessage) (int64, bool) {
+	f, ok := numberOf(raw)
+	if !ok || math.Abs(f) >= maxUSD {
+		return 0, false
+	}
+	return micros(f), true
+}
+
+// numberOf reads a JSON number or a number in a string, never NaN or infinite
+func numberOf(raw json.RawMessage) (float64, bool) {
 	if !present(raw) {
 		return 0, false
 	}
@@ -128,10 +146,7 @@ func microsOf(raw json.RawMessage) (int64, bool) {
 			return 0, false
 		}
 	}
-	if math.IsNaN(f) || math.Abs(f) >= maxUSD {
-		return 0, false
-	}
-	return micros(f), true
+	return f, !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
 // usd writes micro-USD as dollars and cents
@@ -152,4 +167,109 @@ func (p *Provider) ReadLimits(ctx context.Context) (provider.Limits, error) {
 		}
 	}
 	return provider.Limits{Active: n}, nil
+}
+
+// podRecord holds the fields of GET /pods/{id}/record the cost check reads, their types unverified
+type podRecord struct {
+	Name          json.RawMessage `json:"pod_name"`
+	Removed       json.RawMessage `json:"removed"`
+	RemovedAt     json.RawMessage `json:"removed_at"`
+	BilledSeconds json.RawMessage `json:"billed_seconds"`
+	Total         json.RawMessage `json:"total"`
+}
+
+// ReadUsage reads each ref's record 25 a page, then lists the key's pods to name ours not in refs
+func (p *Provider) ReadUsage(
+	ctx context.Context, from, to time.Time, refs []provider.Ref, cursor string,
+) (provider.Usage, error) {
+	if cursor == usageListing {
+		return p.usageListing(ctx, from, to, refs)
+	}
+	var ids []string
+	for _, r := range refs {
+		if id, ok := podID(r); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	offset := 0
+	if rest, ok := strings.CutPrefix(cursor, usageRefs); ok {
+		offset, _ = strconv.Atoi(rest)
+	}
+	offset = min(max(offset, 0), len(ids))
+	end := min(offset+usagePage, len(ids))
+	out := provider.Usage{TotalMicros: -1, Complete: true, Attributed: true, Next: usageListing}
+	for _, id := range ids[offset:end] {
+		u, final, found, err := p.podUsage(ctx, id)
+		if err != nil {
+			return provider.Usage{}, err
+		}
+		if found {
+			out.Sandboxes = append(out.Sandboxes, u)
+			out.Complete = out.Complete && final
+		}
+	}
+	if end < len(ids) {
+		out.Next = usageRefs + strconv.Itoa(end)
+	}
+	return out, nil
+}
+
+// podUsage reads one pod's record, final once Lium removed the pod, found false with no record
+func (p *Provider) podUsage(
+	ctx context.Context, id string,
+) (u provider.SandboxUsage, final, found bool, err error) {
+	var r podRecord
+	_, err = p.api.do(ctx, call{method: http.MethodGet, route: podRoute(id, "/record")}, &r)
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return u, false, false, nil
+	}
+	if err != nil {
+		return u, false, false, err
+	}
+	u = provider.SandboxUsage{ID: id, CostMicros: -1}
+	if s, ok := numberOf(r.BilledSeconds); ok && s >= 0 && s < maxBilledSeconds {
+		u.Seconds = int64(math.Round(s))
+	}
+	// The unit of total is unverified, read as USD as every other amount Lium writes
+	if m, ok := microsOf(r.Total); ok && m >= 0 {
+		u.CostMicros = m
+	}
+	var name string
+	if json.Unmarshal(r.Name, &name) == nil {
+		if _, labels, ok := parsePodName(name); ok {
+			u.Deployment = labels[labelDeployment]
+		}
+	}
+	var removed bool
+	_ = json.Unmarshal(r.Removed, &removed)
+	return u, removed || present(r.RemovedAt), true, nil
+}
+
+// usageListing names the bugnet pods the key sees, made in the window, that are not in refs
+func (p *Provider) usageListing(
+	ctx context.Context, from, to time.Time, refs []provider.Ref,
+) (provider.Usage, error) {
+	pods, err := p.listPods(ctx)
+	if err != nil {
+		return provider.Usage{}, err
+	}
+	ours := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		ours[r.ID] = true
+	}
+	out := provider.Usage{TotalMicros: -1, Complete: true, Attributed: true}
+	for _, pod := range pods {
+		_, labels, named := parsePodName(pod.Name)
+		made, ok := parseTime(pod.CreatedAt)
+		if pod.ID == "" || ours[pod.ID] || !named || labels[labelBugnet] != "1" || !ok ||
+			made.Before(from) || !made.Before(to) {
+			continue
+		}
+		out.Sandboxes = append(out.Sandboxes, provider.SandboxUsage{
+			ID: pod.ID, CostMicros: -1, Deployment: labels[labelDeployment],
+		})
+	}
+	return out, nil
 }

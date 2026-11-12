@@ -148,6 +148,8 @@ type fakeLium struct {
 	userID string
 	// balance and warning are what GET /users/me answers, no balance field when balance is nil
 	balance, warning any
+	// records are what GET /pods/{id}/record answers by pod id, pod_not_found for a pod not in it
+	records map[string]map[string]any
 	// startStatus is the status a rented pod starts in
 	startStatus string
 	// podIP is the executor address of every pod rented
@@ -173,6 +175,7 @@ func newFake(t *testing.T) *fakeLium {
 		events: map[string][]fakeEvent{}, rentFaults: map[string]*fault{},
 		idem: map[string]idemRecord{}, userID: fakeUserID, startStatus: "PENDING", balance: 42.5,
 		podIP: "203.0.113.7", sh: newFakeShell(t), sshds: map[string]*fakeSSHD{},
+		records: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]http.HandlerFunc{
@@ -180,6 +183,7 @@ func newFake(t *testing.T) *fakeLium {
 		"GET /pods":                            f.listPods,
 		"GET /pods/{id}":                       f.getPod,
 		"GET /pods/{id}/events":                f.podEvents,
+		"GET /pods/{id}/record":                f.podRecord,
 		"DELETE /pods/{id}":                    f.deletePod,
 		"POST /pods/{id}/schedule-removal":     f.scheduleRemoval,
 		"POST /executors/{executor_uuid}/rent": f.rent,

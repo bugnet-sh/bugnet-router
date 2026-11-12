@@ -16,6 +16,8 @@ const (
 	prefixOwned = "bn"
 	prefixOther = "bx"
 	labelBugnet = "bugnet"
+	// labelDeployment names the deployment that made a pod
+	labelDeployment = "bugnet_deployment"
 	// codeHexKey starts the code of a label key that has no letter of its own
 	codeHexKey = "x"
 	// hexValue starts a value written in hex, which a plain value never starts with
