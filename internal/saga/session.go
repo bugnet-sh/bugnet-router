@@ -21,14 +21,9 @@ const (
 	defaultAbuseHold   = 30 * 24 * time.Hour
 )
 
-// paymentClaims is the one place the payment event reads Task 28's Tx and AllowanceMicros claims
+// paymentClaims is the package's share and the Tx claim, the one place the payment event reads
 func paymentClaims(c ordertoken.Claims) (packageMicros int64, tx string) {
-	return packageShare(c.AmountMicros, c.AllowanceMicros), c.Tx
-}
-
-// packageShare is an order's amount less the x402 allowance it carries (XS 6.15)
-func packageShare(amountMicros, allowanceMicros int64) int64 {
-	return amountMicros - allowanceMicros
+	return c.PackageMicros(), c.Tx
 }
 
 // endSession marks the ended placement's record and inserts its copy, both in tx
