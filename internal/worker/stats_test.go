@@ -245,15 +245,7 @@ func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
 	})
 	loc := newLocal(t, "local")
 	e, _, _ := statsEnv(t, options{providers: []provider.Provider{dear, loc}})
-	servers := func() []stats.Server {
-		var body struct {
-			Servers []stats.Server `json:"servers"`
-		}
-		if err := json.Unmarshal(e.snapshot(t).Body, &body); err != nil {
-			t.Fatal(err)
-		}
-		return body.Servers
-	}
+	servers := func() []stats.Server { return e.servers(t) }
 	run := int64((24*60 - 5) / 10 * 10)
 	want := []stats.Server{{
 		Provider: "local", Size: "small", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
@@ -269,6 +261,35 @@ func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
 	}
 	want[0].Available = false
 	eq(t, servers(), want)
+}
+
+// servers is a fresh snapshot body's servers
+func (e *env) servers(t *testing.T) []stats.Server {
+	t.Helper()
+	var body struct {
+		Servers []stats.Server `json:"servers"`
+	}
+	if err := json.Unmarshal(e.snapshot(t).Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Servers
+}
+
+func TestSnapshotLeavesOutAProviderImagesAcceptRefuses(t *testing.T) {
+	// old runs an image the saga's images.accept leaves out
+	old, loc := newLocal(t, "old"), newLocal(t, "local")
+	e, _, _ := statsEnv(t, options{
+		providers: []provider.Provider{old, loc},
+		features: provider.Features{Images: map[string]string{
+			"old": "2026.10.1", "local": "2026.11.1",
+		}},
+		imageAccept: []string{"2026.11.1"},
+	})
+	listed := []string{}
+	for _, s := range e.servers(t) {
+		listed = append(listed, s.Provider)
+	}
+	eq(t, listed, []string{"local"})
 }
 
 func TestSnapshotJobLimits(t *testing.T) {

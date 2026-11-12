@@ -217,6 +217,8 @@ type options struct {
 	pools *config.Pools
 	// tel makes the saga's and the worker's spans, off when nil
 	tel *telemetry.Telemetry
+	// imageAccept is the saga's images.accept, any image when nil
+	imageAccept []string
 }
 
 type env struct {
@@ -307,6 +309,7 @@ func newEnv(t *testing.T, o options) *env {
 		Wallets:      o.wallets,
 		Reserve:      o.reserve,
 		Telemetry:    o.tel,
+		ImageAccept:  o.imageAccept,
 	}
 	if o.pools != nil {
 		w := poolpkg.NewWarmth(st, poolpkg.Configs(*o.pools), nil)
