@@ -132,10 +132,13 @@ func buildImage(t *testing.T, env ...string) string {
 
 func run(t *testing.T, tag, script string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
-		"--entrypoint", "sh", tag, "-c", script).CombinedOutput()
+	var stderr bytes.Buffer
+	cmd := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
+		"--entrypoint", "sh", tag, "-c", script)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s: %v\n%s", script, err, out)
+		t.Fatalf("%s: %v\n%s%s", script, err, out, stderr.Bytes())
 	}
 	return strings.TrimSpace(string(out))
 }
