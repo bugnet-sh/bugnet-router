@@ -105,6 +105,22 @@ func TestHFRateLimitHoldsEveryCall(t *testing.T) {
 	eq(t, len(f.all()), 5)
 }
 
+func TestHFRateLimitKeepsTheLongerHold(t *testing.T) {
+	p, err := newProvider(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited := func(retryAfter string) {
+		h := http.Header{"Retry-After": {retryAfter}}
+		_ = p.jobs.classify(http.StatusTooManyRequests, h, nil, call{})
+	}
+	limited("30")
+	limited("1")
+	if held := p.jobs.held(); held < 29*time.Second {
+		t.Fatalf("a 1 s 429 after a 30 s one left a hold of %s", held)
+	}
+}
+
 // TestHFRateLimitHoldsQueuedCalls has calls waiting for their token when a 429 arrives
 func TestHFRateLimitHoldsQueuedCalls(t *testing.T) {
 	ctx := context.Background()
