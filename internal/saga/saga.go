@@ -561,18 +561,6 @@ func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, er
 	return c, nil
 }
 
-// paidPackage returns the token's package once the amount paid covers its price
-func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
-	pkg, err := s.lookupPackage(c.PackageID)
-	if err != nil {
-		return pkg, err
-	}
-	if !covers(c, pkg) {
-		return pkg, underpaid(c, pkg)
-	}
-	return pkg, nil
-}
-
 // UnderpaidError is ErrUnderpaid with what the order paid and the price the router asks now
 type UnderpaidError struct {
 	PackageID   string
@@ -1324,7 +1312,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if want, err := hex.DecodeString(c.HandleSHA256); err != nil || !hmac.Equal(want, sha) {
 		return store.Placement{}, ErrHandleMismatch
 	}
-	pkg, err := s.paidPackage(c)
+	pkg, err := s.lookupPackage(c.PackageID)
 	if err != nil {
 		return store.Placement{}, err
 	}
@@ -1344,6 +1332,10 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	}
 	if x.replay {
 		return s.replayExtend(ctx, x.p), nil
+	}
+	// The price is checked after the replay, so a retry of an applied order answers as it did
+	if !covers(c, pkg) {
+		return store.Placement{}, underpaid(c, pkg)
 	}
 
 	prov, ref, by := x.prov, x.ref, x.by

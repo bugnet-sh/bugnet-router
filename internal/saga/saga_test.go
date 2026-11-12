@@ -913,6 +913,23 @@ func TestUnderpaidExtensionRecordsNothing(t *testing.T) {
 	eq(t, len(e.events(t, saga.EventFailed)), 0)
 }
 
+func TestRetriedExtensionKeepsItsAnswerWhenThePriceRises(t *testing.T) {
+	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
+	p, h := e.placeReady(t, "order-1")
+	first, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, morePrice, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same order now pays less than the package costs, as a price raised after it would
+	short := e.extendToken(t, "ext-1", morePkg, morePrice-1, h)
+	again, err := e.saga.Extend(t.Context(), h, short)
+	if err != nil || again.ID != p.ID || !again.Deadline.Equal(*first.Deadline) {
+		t.Fatalf("retry %+v %v", again, err)
+	}
+	eq(t, e.reload(t, p.ID).Deadline.Equal(*first.Deadline), true)
+	eq(t, len(e.events(t, saga.EventExtended)), 1)
+}
+
 func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a"})
 	e := newEnv(t, a)
