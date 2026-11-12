@@ -331,8 +331,7 @@ func TestHFSightingsKeepTheTokenOutOfValkey(t *testing.T) {
 	}
 }
 
-// TestHFJobNamedByTheTokenStaysOutOfErrors keeps the token out of every error and log naming a
-// ref's Job, since HF answered the id the ref holds
+// TestHFJobNamedByTheTokenStaysOutOfErrors keeps a ref's token-named Job out of errors and logs
 func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 	ctx := context.Background()
 	f := newFake(t)
