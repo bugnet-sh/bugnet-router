@@ -1153,6 +1153,21 @@ func ProviderKeyEnv(name string) (string, bool) {
 	return "", false
 }
 
+// ProviderSeed reads a provider's seed through get, nil for a provider without one
+func ProviderSeed(name string, get func(string) string) ([]byte, error) {
+	for _, s := range providerSeedVars {
+		if s.name != name {
+			continue
+		}
+		raw := get(s.env)
+		if raw == "" {
+			return nil, fmt.Errorf("%s is not set", s.env)
+		}
+		return decodeKey(s.env, raw, providerSeedBytes)
+	}
+	return nil, nil
+}
+
 // Load reads the settings file at path and the secrets through getenv, as a server needs them
 func Load(path string, getenv func(string) (string, bool)) (Config, error) {
 	c, err := LoadFile(path)

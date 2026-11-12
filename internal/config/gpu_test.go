@@ -285,6 +285,30 @@ func TestLoadReadsProviderSeeds(t *testing.T) {
 	}
 }
 
+func TestProviderSeed(t *testing.T) {
+	seed := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("l", 32)))
+	vars := map[string]string{"LIUM_SSH_SEED": seed, "HF_SANDBOX_SEED": "not base64 at all!"}
+	get := func(name string) string { return vars[name] }
+	got, err := ProviderSeed("lium", get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, got, []byte(strings.Repeat("l", 32)))
+	_, err = ProviderSeed("hf", get)
+	if err == nil || err.Error() != "HF_SANDBOX_SEED must be base64 of 32 bytes" {
+		t.Errorf("a bad hf seed gave %v, want it refused unquoted", err)
+	}
+	delete(vars, "LIUM_SSH_SEED")
+	_, err = ProviderSeed("lium", get)
+	if err == nil || err.Error() != "LIUM_SSH_SEED is not set" {
+		t.Errorf("no lium seed gave %v", err)
+	}
+	// A provider without a seed reads none
+	if got, err := ProviderSeed("boat", get); got != nil || err != nil {
+		t.Errorf("boat's seed %v, %v, want none", got, err)
+	}
+}
+
 func TestLoadReadsLiumWebhookSecret(t *testing.T) {
 	c, err := Load(writeFile(t, serving(t)), env(map[string]string{
 		"LIUM_WEBHOOK_SECRET": "lium-now", "LIUM_WEBHOOK_SECRET_PREVIOUS": "lium-old",
