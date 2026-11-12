@@ -1,22 +1,27 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
+	"log/slog"
 	"math/big"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
@@ -286,6 +291,63 @@ func TestStartRefusesBadBoxdRefs(t *testing.T) {
 			t.Errorf("%s: %v", tc.name, err)
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 			t.Errorf("%s: got %v, want an error naming %s", tc.name, err, tc.want)
+		}
+	}
+}
+
+// downHealth reports every provider as down
+type downHealth struct{}
+
+func (downHealth) Healthy(string) bool           { return false }
+func (downHealth) ReadyP95(string) time.Duration { return 0 }
+
+func TestStartLogsEachPackageNoProviderPlaces(t *testing.T) {
+	small := provider.Size{Name: "small", Resources: provider.Resources{
+		VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
+	}}
+	// 10 minutes cost 3,000, so a price of 5,000 keeps 40% of it
+	p := local.New(local.Options{Name: "cheap", Root: t.TempDir(),
+		Sizes: []provider.Size{small}, HourlyCostMicros: 18000, Increment: time.Second})
+	reg, err := provider.NewRegistry([]provider.Provider{p}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := func(id string, vcpu int, price int64, extends string) string {
+		return fmt.Sprintf(`{"id": %q, "resources": {"vcpu": %d, "memory_mib": 2048, `+
+			`"disk_gib": 10}, "minutes": 10, "price_micros": %d, "extension_of": %q}`,
+			id, vcpu, price, extends)
+	}
+	cat, err := catalog.Load(writeTemp(t, "packages.json", []byte(`{"packages": [`+
+		strings.Join([]string{
+			pkg("fits", 2, 50000, ""), pkg("fits-more", 2, 10, "fits"),
+			pkg("thin", 2, 5000, ""), pkg("huge", 64, 50000, ""),
+		}, ", ")+`]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The provider is down, which a boot check looks past
+	e := placement.New(reg, downHealth{}, nil)
+	for _, tc := range []struct {
+		floor float64
+		want  []string
+	}{
+		{0.5, []string{"huge", "thin"}},
+		{0.3, []string{"huge"}},
+	} {
+		var logs bytes.Buffer
+		cfg := config.Config{MarginFloor: tc.floor}
+		checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), e, cat, cfg)
+		var named []string
+		for line := range strings.Lines(logs.String()) {
+			if !strings.Contains(line, "level=ERROR") {
+				t.Errorf("floor %v logged %q", tc.floor, line)
+			}
+			_, id, _ := strings.Cut(line, "package=")
+			named = append(named, strings.Fields(id)[0])
+		}
+		slices.Sort(named)
+		if !reflect.DeepEqual(named, tc.want) {
+			t.Errorf("floor %v named %v, want %v", tc.floor, named, tc.want)
 		}
 	}
 }

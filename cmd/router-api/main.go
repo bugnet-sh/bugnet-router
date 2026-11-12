@@ -205,6 +205,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	warmth, warm := poolWarmth(cfg, reg, st)
 	shared := health.NewShared(st, tracker, log)
 	engine := placement.New(reg, shared, warm)
+	checkPackages(log, engine, cat, cfg)
 	// Insert only, so it serves ListPools and DrainPool from Postgres alone
 	pools, err := poolpkg.New(poolpkg.Deps{
 		Store: st, Registry: reg, River: rc, Settings: cfg.Pools, Replica: cfg.ReplicaID, Log: log,
@@ -415,6 +416,25 @@ func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catal
 		}
 	}
 	return nil
+}
+
+// checkPackages logs an error naming each start package that no configured provider can place
+// under margin_floor and images.accept, health aside, since every order of one finds no candidate
+func checkPackages(
+	log *slog.Logger, e *placement.Engine, cat *catalog.Catalog, cfg config.Config,
+) {
+	for _, pkg := range cat.All() {
+		if pkg.ExtensionOf != "" {
+			continue
+		}
+		in := placement.Inputs{
+			Package: pkg, MarginFloor: cfg.MarginFloor, ImageAccept: cfg.Images.Accept,
+		}
+		if len(e.Lands(in)) == 0 {
+			log.Error("no configured provider can place a start package under margin_floor",
+				"package", pkg.ID, "margin_floor", cfg.MarginFloor)
+		}
+	}
 }
 
 // poolWarmth is the view of warm members that marks candidates, none while no pool is on
