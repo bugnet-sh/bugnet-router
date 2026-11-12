@@ -39,7 +39,7 @@ const (
 	sshRefused = "lium_ssh_refused"
 )
 
-// sshLimits bound each pod's pool and every SSH operation, all design 3.4's starting values
+// sshLimits bound each pod's pool and every SSH operation, 3.4's starting values but kill and stall
 type sshLimits struct {
 	// dial bounds one connection's dial, handshake and login
 	dial time.Duration
