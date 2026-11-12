@@ -88,6 +88,23 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	p.jobs.mu.Unlock()
 	_, err = p.jobs.getJob(ctx, "missing")
 	keep(err)
+	// The limits and the account check, refusals echoing the token they got
+	_, err = p.ReadLimits(ctx)
+	keep(err)
+	f.inject(listRoute, fault{status: 402, message: "No credits", echo: true, times: 1})
+	_, err = p.ReadLimits(ctx)
+	keep(err)
+	var details []string
+	for _, want := range []provider.Block{provider.BlockUnfunded, provider.BlockBanned} {
+		acc, err := p.CheckAccount(ctx)
+		keep(err)
+		if acc.Block != want || !strings.Contains(acc.Detail, "[token]") {
+			t.Fatalf("the account check gave %+v, want %s", acc, want)
+		}
+		details = append(details, acc.Detail)
+		f.inject(authCheckRoute, fault{status: 403, message: "Org suspended", echo: true,
+			times: 1})
+	}
 	// Calls the client refuses before sending
 	_, err = p.jobs.do(ctx, call{method: http.MethodGet, url: "https://evil.example/api/jobs"}, nil)
 	keep(err)
@@ -139,6 +156,13 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	}
 	if len(errs) < 11 {
 		t.Fatalf("only %d calls failed, the refused ones did not run", len(errs))
+	}
+	for _, d := range details {
+		for _, w := range tokenWords() {
+			if strings.Contains(d, w) {
+				t.Errorf("the account detail %q carries the token", d)
+			}
+		}
 	}
 	if !strings.Contains(logs.String(), "status=418") {
 		t.Fatal("the status the table lacks was not logged")

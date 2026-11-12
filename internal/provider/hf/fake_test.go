@@ -63,7 +63,9 @@ type fakeJob struct {
 	id, flavor, stage, message, cancelReason string
 	labels                                   map[string]string
 	createdAt                                time.Time
-	timeout                                  int
+	// finishedAt is when the Job ended, left out of its answers while zero
+	finishedAt time.Time
+	timeout    int
 	// runAfter turns a SCHEDULING Job RUNNING on its runAfter-th read, never when 0
 	runAfter, reads int
 	// spec is the create body a POST sent, nil for a Job a test added
@@ -115,6 +117,9 @@ func (j *fakeJob) json() map[string]any {
 		// Fields the adapter never reads, which it must ignore
 		"durations": map[string]any{"schedulingSecs": 4, "runningSecs": 0, "totalSecs": 4},
 		"retry":     0,
+	}
+	if !j.finishedAt.IsZero() {
+		out["finishedAt"] = j.finishedAt.Format(time.RFC3339Nano)
 	}
 	if sp := j.spec; sp != nil {
 		// A Job read shows the environment and the secrets' names, never their values
@@ -180,6 +185,7 @@ func newFake(t *testing.T) *fakeHF {
 		"POST /api/jobs/{ns}":             f.createJob,
 		"GET /api/jobs/{ns}/{id}":         f.getJob,
 		"POST /api/jobs/{ns}/{id}/cancel": f.cancelJob,
+		authCheckRoute:                    f.authCheck,
 	} {
 		mux.HandleFunc(pattern, f.gate(pattern, h))
 	}
@@ -545,6 +551,14 @@ func carries(j *fakeJob, q url.Values) bool {
 	return true
 }
 
+// authCheckRoute answers whether the token may write Jobs in the namespace
+const authCheckRoute = "POST /api/jobs/{ns}/auth-check/write"
+
+// authCheck answers 200 with no body, as the gate already refused a wrong token or namespace
+func (f *fakeHF) authCheck(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
 // healthRoute is sbx-server's health route, reached on a Job's own host
 const healthRoute = "GET /health"
 
@@ -638,7 +652,7 @@ func (f *fakeHF) cancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 	j, status := f.jobs[i], f.cancelEnded
 	if j.stage == "SCHEDULING" || j.stage == "RUNNING" {
-		j.stage, status = "CANCELED", 0
+		j.stage, status, j.finishedAt = "CANCELED", 0, time.Now().UTC()
 	}
 	out := f.answerOf(j)
 	f.mu.Unlock()

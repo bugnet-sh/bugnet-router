@@ -63,13 +63,16 @@ type jobsClient struct {
 	// mu guards heldUntil, before which no call is sent once a 429 asked to wait
 	mu        sync.Mutex
 	heldUntil time.Time
+	// account keeps what the answers said of the account, read by the account check
+	account accountLog
+	now     func() time.Time
 }
 
 func newJobsClient(token, namespace string, perSecond int, log *slog.Logger) *jobsClient {
 	return &jobsClient{
 		token: token, namespace: namespace, log: log,
 		client: &http.Client{CheckRedirect: provider.NoRedirect},
-		ops:    limiter(perSecond),
+		ops:    limiter(perSecond), now: time.Now,
 	}
 }
 
@@ -266,6 +269,8 @@ type job struct {
 	// Timeout is in seconds
 	Timeout float64   `json:"timeout"`
 	Status  jobStatus `json:"status"`
+	// FinishedAt is when the Job ended, its shape unverified so a bad one loses only itself
+	FinishedAt json.RawMessage `json:"finishedAt"`
 }
 
 // jobStatus is a Job's stage and why it ended, Message empty while HF writes null
@@ -283,6 +288,9 @@ func (c *jobsClient) getJob(ctx context.Context, id string) (job, error) {
 	}
 	var j job
 	_, err = c.do(ctx, call{method: http.MethodGet, url: u, job: true}, &j)
+	if err == nil {
+		c.noteJob(j)
+	}
 	return j, err
 }
 
@@ -293,6 +301,9 @@ func (c *jobsClient) createJob(ctx context.Context, spec []byte, secret string) 
 		method: http.MethodPost, url: jobsURL(nil, c.namespace), body: spec, create: true,
 		secret: secret,
 	}, &j)
+	if err == nil {
+		c.noteJob(j)
+	}
 	if err == nil && !jobID.MatchString(j.ID) {
 		return job{}, &provider.Error{Code: provider.CodeOutcomeUnknown,
 			Err: fmt.Errorf("hf started a Job and named it %.40q", scrub(j.ID, secret))}
@@ -329,6 +340,9 @@ func (c *jobsClient) listJobs(
 		if err != nil {
 			return nil, err
 		}
+		for _, j := range page {
+			c.noteJob(j)
+		}
 		out = append(out, page...)
 		if next, err = nextLink(next, h); err != nil || next == "" {
 			return out, err
@@ -336,6 +350,14 @@ func (c *jobsClient) listJobs(
 	}
 	return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
 		"hf: the Jobs list ran past %d pages", maxPages)}
+}
+
+// authCheck asks whether the token may write Jobs in the namespace, nil for a 2xx
+func (c *jobsClient) authCheck(ctx context.Context) error {
+	_, err := c.do(ctx, call{
+		method: http.MethodPost, url: jobsURL(nil, c.namespace, "auth-check", "write"),
+	}, nil)
+	return err
 }
 
 // nextLink is the Link header's rel="next" read against the page that gave it, empty for none
@@ -440,6 +462,10 @@ func (c *jobsClient) classify(status int, h http.Header, raw []byte, cl call) er
 		e.Code = provider.CodeAuth
 	case status == http.StatusPaymentRequired:
 		e.Code = provider.CodeUnfunded
+		// A public call goes without the token, so its answer says nothing of the account
+		if !cl.public {
+			c.noteRefusal(cl.method+" "+routeOf(cl.url), ae)
+		}
 	case status == http.StatusForbidden && lockWords.MatchString(ae.Message):
 		e.Code = provider.CodeAbuseLock
 	case status == http.StatusForbidden:
