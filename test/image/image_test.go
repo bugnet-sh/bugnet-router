@@ -128,8 +128,8 @@ func buildImage(t *testing.T, env ...string) string {
 
 func run(t *testing.T, tag, script string) string {
 	t.Helper()
-	out, err := exec.Command("docker", "run", "--rm", "--network", "none", "--entrypoint", "sh",
-		tag, "-c", script).CombinedOutput()
+	out, err := exec.Command("docker", "run", "--rm", "--platform", platform, "--network", "none",
+		"--entrypoint", "sh", tag, "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", script, err, out)
 	}
