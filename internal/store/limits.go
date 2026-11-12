@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -149,6 +150,8 @@ const (
 func (s *Store) RecordAccount(
 	ctx context.Context, provider, block, detail string, at time.Time,
 ) (AccountChange, error) {
+	// Postgres refuses a NUL or a byte that is not UTF-8 in text, which a provider's words may hold
+	detail = strings.ReplaceAll(strings.ToValidUTF8(detail, ""), "\x00", "")
 	change := AccountSame
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		ts := s.Tx(tx)

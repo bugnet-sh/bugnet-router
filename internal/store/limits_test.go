@@ -120,6 +120,23 @@ func TestRecordAccountSignalsOnlyChanges(t *testing.T) {
 	}
 }
 
+func TestRecordAccountKeepsWordsPostgresRefuses(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	for _, detail := range []string{"lium warns\x00 runway", "lium warns\xff runway"} {
+		for _, block := range []string{"unfunded", ""} {
+			if _, err := s.RecordAccount(ctx, "lium", block, detail, time.Now()); err != nil {
+				t.Fatalf("record %q with %q: %v", block, detail, err)
+			}
+			rows, err := s.ProviderHealths(ctx)
+			if err != nil || len(rows) != 1 || rows[0].Blocked != block ||
+				rows[0].BlockedDetail != "lium warns runway" {
+				t.Fatalf("rows %+v, %v, want %q with lium's words", rows, err, block)
+			}
+		}
+	}
+}
+
 func TestBlockedSinceHoldsWhileTheBlockStays(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
