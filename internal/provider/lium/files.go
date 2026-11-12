@@ -95,7 +95,10 @@ func (p *Provider) WriteFile(
 		if _, err := t.f.Write(data); err != nil {
 			return t.fail(fmt.Errorf("write %s: %w", t.temp, err))
 		}
-		_, err = t.finish(int64(len(data)))
+		if err := t.close(int64(len(data))); err != nil {
+			return err
+		}
+		_, err = t.rename()
 		return err
 	})
 }
@@ -125,19 +128,24 @@ func createTemp(cl *sftp.Client, target string, mode fs.FileMode) (*tempFile, er
 	return t, nil
 }
 
-// finish closes the temporary file, checks it holds size bytes and renames it over the target
-func (t *tempFile) finish(size int64) (provider.FileEntry, error) {
+// close closes the temporary file and checks the pod holds size bytes in it
+func (t *tempFile) close(size int64) error {
 	if err := t.f.Close(); err != nil {
-		return provider.FileEntry{}, t.fail(fmt.Errorf("close %s: %w", t.temp, err))
+		return t.fail(fmt.Errorf("close %s: %w", t.temp, err))
 	}
 	info, err := t.cl.Lstat(t.temp)
 	if err != nil {
-		return provider.FileEntry{}, t.fail(fmt.Errorf("stat %s: %w", t.temp, err))
+		return t.fail(fmt.Errorf("stat %s: %w", t.temp, err))
 	}
 	if info.Size() != size {
-		return provider.FileEntry{}, t.fail(&provider.Error{Code: provider.CodeInternal,
+		return t.fail(&provider.Error{Code: provider.CodeInternal,
 			Err: fmt.Errorf("%s holds %d of %d bytes", t.temp, info.Size(), size)})
 	}
+	return nil
+}
+
+// rename moves the closed temporary file over the target and describes what is there now
+func (t *tempFile) rename() (provider.FileEntry, error) {
 	if err := t.cl.PosixRename(t.temp, t.target); err != nil {
 		err = fmt.Errorf("rename %s over %s: %w", t.temp, t.target, err)
 		// OpenSSH's sftp-server answers EISDIR as a bare failure
@@ -146,7 +154,7 @@ func (t *tempFile) finish(size int64) (provider.FileEntry, error) {
 		}
 		return provider.FileEntry{}, t.fail(err)
 	}
-	info, err = t.cl.Lstat(t.target)
+	info, err := t.cl.Lstat(t.target)
 	if err != nil {
 		return provider.FileEntry{}, fmt.Errorf("stat %s: %w", t.target, err)
 	}
@@ -155,11 +163,13 @@ func (t *tempFile) finish(size int64) (provider.FileEntry, error) {
 
 // fail removes the temporary file after err, reading a bare failure on a full disk as no_space
 func (t *tempFile) fail(err error) error {
-	err = spaceError(t.cl, path.Dir(t.temp), err)
+	err = spaceError(t.cl, t.dir(), err)
 	_ = t.f.Close()
 	_ = t.cl.Remove(t.temp)
 	return err
 }
+
+func (t *tempFile) dir() string { return path.Dir(t.temp) }
 
 // StatFile describes a path with Lstat, so a final symlink is the link itself
 func (p *Provider) StatFile(
