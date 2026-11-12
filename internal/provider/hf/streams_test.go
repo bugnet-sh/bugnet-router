@@ -88,9 +88,9 @@ func TestHFStreamsLargeFile(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data[5:]) {
 		t.Fatalf("read back %d bytes, %v", len(got), err)
 	}
-	// Parts go side by side, never more than partsInFlight of one stream
-	eq(t, f.peakOf(sbxReadRoute), partsInFlight)
-	eq(t, f.peakOf(sbxWriteRoute), partsInFlight)
+	// Four parts go side by side, design 4.4, never more of one stream
+	eq(t, f.peakOf(sbxReadRoute), 4)
+	eq(t, f.peakOf(sbxWriteRoute), 4)
 	// The reads cover the file from the offset in parts of partBytes, none past the size
 	var offsets []int64
 	for _, r := range f.requestsTo("GET", "/v1/files/read") {
