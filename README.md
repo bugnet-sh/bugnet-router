@@ -1548,7 +1548,8 @@ once take up to about 4 GiB. Size `maxmemory` from that with headroom, since Val
 for a stream can run up to half again over the budget's estimate.
 
 Point an uptime monitor at the worker's `GET /monitor` on `worker.listen_addr` every minute,
-expecting 200. A 503 lists one problem a line, counts only, within one 2 s timeout: Postgres or
+expecting 200. A 503 lists one problem a line within one 2 s timeout, as counts and block words,
+but an account warning carries the provider's words cut to 200 characters. It reports Postgres or
 Valkey unreachable, placements ready or terminating over 3 minutes past their deadline and stops
 still terminating after 3 minutes, which mean the worker runs but no longer ends sandboxes, stuck
 outbox events, Valkey memory at 80% of `maxmemory` or more, a `maxmemory-policy` other than

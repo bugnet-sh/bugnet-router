@@ -84,7 +84,7 @@ const (
 	poolsUnreadable
 )
 
-// monitor answers ok when nothing is wrong, else 503 with one line per problem and counts only
+// monitor answers ok when nothing is wrong, else 503 with one line per problem
 func monitor(
 	log *slog.Logger, st *store.Store, vk valkey.Client, prefix string, read vkinfo.Reader,
 	poolList string, feed feedCheck, disk diskPercent, limits limitsCheck, sourced []string,
