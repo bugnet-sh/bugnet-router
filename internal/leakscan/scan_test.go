@@ -209,6 +209,18 @@ func TestAllowedShapesAtTheirPaths(t *testing.T) {
 		For("koyeb", true))), []string(nil))
 	eq(t, rules(scan(t, build("E2B_SANDBOX_ID=ghp_"+tok), nil, For("e2b", true))),
 		[]string(nil))
+	eq(t, rules(scan(t, build("JOB_ID=hf_"+tok, "ACCELERATOR=sk-"+tok, "CPU_CORES=ghp_"+tok,
+		"MEMORY=boat_"+tok, "SBX_PORT=box_"+tok), nil, For("hf", true))), []string(nil))
+}
+
+func TestHFVariablesAllowedOnHFAlone(t *testing.T) {
+	job := func() *bytes.Reader {
+		return newFixture(t).environ(5, "JOB_ID=hf_"+strings.Repeat("c", 30)).archive()
+	}
+	eq(t, rules(scan(t, job(), nil, For("hf", false))), []string(nil))
+	// Lium's injected variables are unknown until a live pod shows them
+	eq(t, rules(scan(t, job(), nil, For("lium", false))),
+		[]string{"shape hugging-face proc/5/environ"})
 }
 
 func TestAllowedShapesNeedTheirPlace(t *testing.T) {

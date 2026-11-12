@@ -90,12 +90,13 @@ func Base(secrets bool) Allowlist {
 	return a
 }
 
-// providerEnv lists the variables each provider always injects, UNVERIFIED for E2B
+// providerEnv lists the variables each provider always injects, E2B's UNVERIFIED, Lium's unknown
 var providerEnv = map[string][]string{
 	"boat":  {"ASCII_TOKEN", "BOAT_ID"},
 	"koyeb": {"SANDBOX_SECRET", "BUGNET_LABELS"},
 	"e2b": {"E2B_SANDBOX_ID", "E2B_TEAM_ID", "E2B_TEMPLATE_ID", "E2B_SANDBOX_DOMAIN",
 		"E2B_ENVD_ACCESS_TOKEN", "ENVD_ACCESS_TOKEN"},
+	"hf": {"JOB_ID", "ACCELERATOR", "CPU_CORES", "MEMORY", "SBX_PORT"},
 }
 
 // For is Base plus the variables provider always injects
