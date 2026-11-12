@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/contract"
 )
 
 const (
@@ -307,6 +308,42 @@ func TestLiumRefusesRedirects(t *testing.T) {
 	case <-done:
 		t.Fatal("the client followed a redirect")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestLiumRedirector points the API client, Lium's one HTTP client, at a server that redirects
+func TestLiumRedirector(t *testing.T) {
+	agent, reached := contract.Redirector(t)
+	opts := testOptions()
+	opts.BaseURL = agent
+	p, err := newProvider(opts, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	ctx := context.Background()
+	ref := provider.Ref{Provider: "lium", ID: "00000000-0000-4000-8000-000000000001"}
+	if err := p.nodes.refresh(ctx); err == nil {
+		t.Error("the node listing took a redirect as an answer")
+	}
+	if _, err := p.Inspect(ctx, ref); err == nil {
+		t.Error("Inspect took a redirect as an answer")
+	}
+	if _, err := p.ListOwned(ctx, placementLabels()); err == nil {
+		t.Error("ListOwned took a redirect as an answer")
+	}
+	if err := p.SetLifetime(ctx, ref, time.Now().Add(time.Minute)); err == nil {
+		t.Error("SetLifetime took a redirect as an answer")
+	}
+	if err := p.Destroy(ctx, ref); err == nil {
+		t.Error("Destroy took a redirect as an answer")
+	}
+	// A file call reads the pod's address from the API, then reaches it over SSH alone
+	if _, _, err := p.ReadFile(ctx, ref, "/etc/hostname", 0, 64); err == nil {
+		t.Error("ReadFile took a redirect as an answer")
+	}
+	if reached.Load() {
+		t.Fatal("the adapter followed a redirect")
 	}
 }
 
