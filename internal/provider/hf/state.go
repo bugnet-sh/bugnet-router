@@ -87,7 +87,7 @@ func (p *Provider) statusOf(j job) (provider.Status, error) {
 		st.State = provider.StateGone
 	default:
 		return provider.Status{}, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s has stage %.40q", j.ID, s)}
+			Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID), s)}
 	}
 	return st, nil
 }
@@ -183,7 +183,7 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 		return err
 	case !liveStage(j.Status.Stage):
 		return &provider.Error{Code: provider.CodeNotFound,
-			Err: fmt.Errorf("hf Job %s ended as %.40s", id, j.Status.Stage)}
+			Err: fmt.Errorf("hf Job %s ended as %.40s", p.jobs.jobName(id), j.Status.Stage)}
 	case known:
 		return nil
 	}

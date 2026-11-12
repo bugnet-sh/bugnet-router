@@ -57,7 +57,8 @@ func (p *Provider) resend(
 		again := err != nil || retryStatus(resp.StatusCode)
 		if err != nil {
 			err = p.lost(ctx, sb, &provider.Error{Code: provider.CodeInternal,
-				Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.id, routeName(req), err)})
+				Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.name, routeName(req),
+					bareCause(err))})
 		} else {
 			err = p.answerError(ctx, sb, req, resp)
 			drainClose(resp)
@@ -245,7 +246,7 @@ func (u *upload) finish(ctx context.Context, sum []byte) error {
 		}
 		if !bytes.Equal(got, sum) {
 			return &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-				"hf Job %s holds %s with SHA-256 %x, not %x", u.sb.id, u.temp, got, sum)}
+				"hf Job %s holds %s with SHA-256 %x, not %x", u.sb.name, u.temp, got, sum)}
 		}
 	}
 	return u.p.replace(ctx, u.sb, u.temp, u.target)
@@ -453,7 +454,7 @@ func (r *rangeReader) get(offset int64, buf []byte) (int, bool, error) {
 	resp, err := r.p.sbx.client.Do(req)
 	if err != nil {
 		lost := r.p.lost(r.ctx, r.sb, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s read of %s: %w", r.sb.id, r.name, err)})
+			Err: fmt.Errorf("hf Job %s read of %s: %w", r.sb.name, r.name, bareCause(err))})
 		return 0, !isCode(lost, provider.CodeNotFound), lost
 	}
 	defer drainClose(resp)
@@ -468,7 +469,7 @@ func (r *rangeReader) get(offset int64, buf []byte) (int, bool, error) {
 	got, err := io.ReadFull(resp.Body, buf)
 	if err != nil {
 		return got, true, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s read of %s ended early: %w", r.sb.id, r.name, err)}
+			Err: fmt.Errorf("hf Job %s read of %s ended early: %w", r.sb.name, r.name, err)}
 	}
 	if resp.ContentLength < 0 {
 		if extra, _ := resp.Body.Read(make([]byte, 1)); extra > 0 {

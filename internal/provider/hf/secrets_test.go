@@ -137,6 +137,32 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 		f.inject(authCheckRoute, fault{status: 403, message: "Org suspended", echo: true,
 			times: 1})
 	}
+	// Answers naming a Job by the token, as written and in lowercase, on each path quoting it
+	answerAs := func(id string, status map[string]any) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.show = func(job map[string]any) {
+			job["id"] = id
+			if status != nil {
+				job["status"] = status
+			}
+		}
+	}
+	for _, id := range []string{fakeToken, strings.ToLower(fakeToken)} {
+		answerAs(id, nil)
+		keep(p.WaitReady(ctx, refTo(j)))
+		_, err = p.StatFile(ctx, provider.Ref{Provider: "hf", ID: j.id}, "/tmp/a")
+		keep(err)
+		answerAs(id, map[string]any{"stage": "PAUSED"})
+		_, err = p.Inspect(ctx, refTo(j))
+		keep(err)
+		answerAs(id+"/x", nil)
+		_, err = p.Create(ctx, keyed())
+		keep(err)
+	}
+	f.mu.Lock()
+	f.show = nil
+	f.mu.Unlock()
 	// Calls the client refuses before sending
 	_, err = p.jobs.do(ctx, call{method: http.MethodGet, url: "https://evil.example/api/jobs"}, nil)
 	keep(err)
@@ -191,7 +217,7 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 			}
 		}
 	}
-	if len(errs) < 11 {
+	if len(errs) < 19 {
 		t.Fatalf("only %d calls failed, the refused ones did not run", len(errs))
 	}
 	for _, d := range details {
@@ -203,6 +229,91 @@ func TestHFJobsTokenOnlyToHub(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "status=418") {
 		t.Fatal("the status the table lacks was not logged")
+	}
+	for _, w := range tokenWords() {
+		if strings.Contains(logs.String(), w) {
+			t.Errorf("the log carries the token: %s", logs.String())
+		}
+	}
+}
+
+// TestHFJobNamedByTheTokenStaysOutOfErrors keeps the token out of every error and log naming a
+// ref's Job, since HF answered the id the ref holds
+func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
+	ctx := context.Background()
+	f := newFake(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	p := f.provider(t, opts)
+	var errs []error
+	keep := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	waitBriefly := func(ref provider.Ref) {
+		wctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		keep(p.WaitReady(wctx, ref))
+	}
+	for i, id := range []string{fakeToken, strings.ToLower(fakeToken)} {
+		j := f.addJob("SCHEDULING", nil)
+		f.set(j, func(j *fakeJob) { j.id, j.token = id, testKeyToken })
+		ref := refTo(j)
+		waitBriefly(ref)
+		// Health reads that fail, answer no protocol, or come from a server too old
+		f.set(j, func(j *fakeJob) { j.stage = "RUNNING" })
+		f.inject(healthRoute, fault{status: 500, message: "down"})
+		waitBriefly(ref)
+		f.clear(healthRoute)
+		f.set(j, func(j *fakeJob) { j.health = `{"status":"ok"}` })
+		waitBriefly(ref)
+		f.set(j, func(j *fakeJob) { j.health = `{"status":"ok","protocol":2}` })
+		keep(p.WaitReady(ctx, ref))
+		f.set(j, func(j *fakeJob) { j.health = "" })
+		// Sandbox calls the server refuses or the network drops, a dropped exec's kill too
+		f.inject(sbxStatRoute, fault{status: 502, times: 1})
+		_, err := p.StatFile(ctx, ref, "/tmp/a")
+		keep(err)
+		f.inject(sbxStatRoute, fault{drop: true, times: 1})
+		_, err = p.StatFile(ctx, ref, "/tmp/a")
+		keep(err)
+		f.inject(sbxExecRoute, fault{drop: true, times: 2})
+		_, err = p.Exec(ctx, ref, sh("true"))
+		keep(err)
+		within(t, 5*time.Second, "the failed kill's log", func() bool {
+			return strings.Count(logs.String(), "was not killed") == i+1
+		})
+		f.clear(sbxExecRoute)
+		// A ref with no token for a Job with no key to derive one from
+		_, err = p.StatFile(ctx, provider.Ref{Provider: "hf", ID: id}, "/tmp/a")
+		keep(err)
+		// A stage the adapter does not know, then a Job HF ended
+		f.set(j, func(j *fakeJob) { j.stage = "PAUSED" })
+		_, err = p.Inspect(ctx, ref)
+		keep(err)
+		f.set(j, func(j *fakeJob) { j.stage = "COMPLETED" })
+		keep(p.SetLifetime(ctx, provider.Ref{Provider: "hf", ID: id}, time.Now().Add(time.Hour)))
+		// Ids that are not one plain segment
+		_, err = p.GateRoute(provider.Ref{Provider: "hf", ID: id + ".x"},
+			provider.DefaultGatePort)
+		keep(err)
+		_, err = p.Inspect(ctx, provider.Ref{Provider: "hf", ID: id + "/x"})
+		keep(err)
+	}
+	if len(errs) < 24 {
+		t.Fatalf("only %d calls failed, the failing paths did not run", len(errs))
+	}
+	for _, err := range errs {
+		if _, ok := provider.AsError(err); !ok {
+			t.Errorf("%v is not a provider error", err)
+		}
+		for _, w := range tokenWords() {
+			if strings.Contains(err.Error(), w) {
+				t.Errorf("the error %q carries the token", err)
+			}
+		}
 	}
 	for _, w := range tokenWords() {
 		if strings.Contains(logs.String(), w) {
@@ -299,7 +410,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	keep(p.WaitReady(ctx, refs[0]))
 	// An sbx-server the Job's root replaced may echo the token it got
 	f.inject(healthRoute, fault{status: 500, raw: "got " + refs[0].Meta["secret"], times: 1})
-	_, err = p.sbx.health(ctx, refs[0].ID, refs[0].Meta["secret"])
+	_, err = p.sbx.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
 	keep(err)
 	f.inject(healthRoute, fault{status: 200, times: 1, raw: `{"status":"ok","protocol":3,` +
 		`"mode":"` + refs[0].Meta["secret"] + `","auth":"required"}`})
@@ -310,7 +421,7 @@ func TestHFSandboxSecretsStayInPlace(t *testing.T) {
 	keep(p.WaitReady(ctx, refs[0]))
 	f.inject(healthRoute, fault{status: 500, times: 1,
 		raw: "got " + strings.ToUpper(refs[0].Meta["secret"])})
-	_, err = p.sbx.health(ctx, refs[0].ID, refs[0].Meta["secret"])
+	_, err = p.sbx.health(ctx, sandboxOf(refs[0].ID, refs[0].Meta["secret"]))
 	keep(err)
 	_, err = p.Inspect(ctx, ref)
 	keep(err)

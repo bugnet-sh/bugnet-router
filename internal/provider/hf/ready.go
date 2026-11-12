@@ -43,7 +43,7 @@ func (p *Provider) WaitReady(ctx context.Context, ref provider.Ref) error {
 			last = err
 		}
 		if err := sleep(ctx, p.pollEvery); err != nil {
-			return notReady(id, stage, err, last)
+			return notReady(p.jobs.jobName(id), stage, err, last)
 		}
 	}
 }
@@ -54,7 +54,8 @@ func (p *Provider) readyStep(ctx context.Context, ref provider.Ref, j job) (wait
 	case j.ID != ref.ID:
 		// A read of another Job would send it this token, or derive a token from its labels
 		return nil, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf answered Job %.40q for Job %s", j.ID, ref.ID)}
+			Err: fmt.Errorf("hf answered Job %.40q for Job %s", p.jobs.jobName(j.ID),
+				p.jobs.jobName(ref.ID))}
 	case s == stageScheduling:
 		return errors.New("stage SCHEDULING"), nil
 	case s == stageRunning:
@@ -63,7 +64,7 @@ func (p *Provider) readyStep(ctx context.Context, ref provider.Ref, j job) (wait
 		return nil, p.startEnded(j)
 	}
 	return nil, &provider.Error{Code: provider.CodeInternal,
-		Err: fmt.Errorf("hf Job %s has stage %.40q", j.ID, j.Status.Stage)}
+		Err: fmt.Errorf("hf Job %s has stage %.40q", p.jobs.jobName(j.ID), j.Status.Stage)}
 }
 
 // checkHealth asks the Job's sbx-server for its health with the sandbox's token
@@ -75,9 +76,10 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 			return nil, err
 		}
 	}
+	sb := sandbox{id: ref.ID, name: p.jobs.jobName(ref.ID), token: token}
 	hctx, cancel := context.WithTimeout(ctx, p.healthWait)
 	defer cancel()
-	h, err := p.sbx.health(hctx, ref.ID, token)
+	h, err := p.sbx.health(hctx, sb)
 	switch {
 	case isCode(err, provider.CodeInvalid):
 		return nil, err
@@ -85,32 +87,32 @@ func (p *Provider) checkHealth(ctx context.Context, ref provider.Ref, j job) (wa
 		return err, nil
 	case h.Protocol == nil:
 		// Only the server's own answer names a protocol, a proxy page never does
-		return fmt.Errorf("hf Job %s answered a health with no protocol", ref.ID), nil
+		return fmt.Errorf("hf Job %s answered a health with no protocol", sb.name), nil
 	case *h.Protocol < minProtocol:
-		return nil, refusedServer(ref.ID, fmt.Errorf("sbx-server speaks protocol %d, %d or more "+
+		return nil, refusedServer(sb.name, fmt.Errorf("sbx-server speaks protocol %d, %d or more "+
 			"is needed", *h.Protocol, minProtocol))
 	case h.Mode == "" && h.Auth == "":
 		// sbx-server shows its mode and auth only to its own token
-		return nil, refusedServer(ref.ID, errors.New(
+		return nil, refusedServer(sb.name, errors.New(
 			"hf_token_refused, sbx-server does not take the sandbox's token"))
 	case h.Mode != "dedicated" || h.Auth != "required":
-		return nil, refusedServer(ref.ID, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
+		return nil, refusedServer(sb.name, fmt.Errorf("sbx-server runs with mode %.20q and auth "+
 			"%.20q, dedicated and required are needed", scrubToken(h.Mode, token),
 			scrubToken(h.Auth, token)))
 	}
 	return nil, nil
 }
 
-// refusedServer is the error of a Job whose sbx-server can never serve this sandbox
-func refusedServer(id string, err error) error {
+// refusedServer is the error of the Job named name whose sbx-server can never serve this sandbox
+func refusedServer(name string, err error) error {
 	return &provider.Error{Code: provider.CodeInternal, CanFailOver: true,
-		Err: fmt.Errorf("hf Job %s: %w", id, err)}
+		Err: fmt.Errorf("hf Job %s: %w", name, err)}
 }
 
 // startEnded is the error of a Job that ended before it was ready, design 4.13
 func (p *Provider) startEnded(j job) error {
-	why := fmt.Errorf("hf Job %s ended its start as %s: %s", j.ID, j.Status.Stage,
-		scrub(j.Status.Message, p.jobs.token))
+	why := fmt.Errorf("hf Job %s ended its start as %s: %s", p.jobs.jobName(j.ID),
+		j.Status.Stage, scrub(j.Status.Message, p.jobs.token))
 	switch r := cancelReason(j); {
 	case r == gpustatus.HFNoCredits || r == gpustatus.HFNoSubscription:
 		return provider.Named(&provider.Error{
@@ -131,9 +133,9 @@ func stopsTheWait(err error) bool {
 	return ok && e.Code != provider.CodeInternal && e.Code != provider.CodeRateLimited
 }
 
-// notReady is a wait its context ended, capacity while HF still had the Job scheduling
-func notReady(id, stage string, err, last error) error {
-	cause := fmt.Errorf("hf Job %s not ready: %w, last %w", id, err, last)
+// notReady is a wait on the Job named name its context ended, capacity while HF still scheduled it
+func notReady(name, stage string, err, last error) error {
+	cause := fmt.Errorf("hf Job %s not ready: %w, last %w", name, err, last)
 	if stage == stageScheduling {
 		return &provider.Error{Code: provider.CodeCapacity, CanFailOver: true, Err: cause}
 	}

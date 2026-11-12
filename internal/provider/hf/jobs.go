@@ -115,9 +115,8 @@ func jobsURL(query url.Values, segments ...string) string {
 // jobURL is a route on one Job of the namespace, refusing an id that is not one plain segment
 func (c *jobsClient) jobURL(id string, rest ...string) (string, error) {
 	if !jobID.MatchString(id) {
-		return "", &provider.Error{
-			Code: provider.CodeInvalid, Err: fmt.Errorf("hf: %.40q is not a Job id", id),
-		}
+		return "", &provider.Error{Code: provider.CodeInvalid,
+			Err: fmt.Errorf("hf: %.40q is not a Job id", c.jobName(id))}
 	}
 	return jobsURL(nil, append([]string{c.namespace, id}, rest...)...), nil
 }
@@ -169,12 +168,8 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		// The client's error repeats the whole URL, whose path and query a Link of HF's may name
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return nil, transportError(fmt.Errorf("hf %s: %w", route, err), sent.Load(), cl.create)
+		return nil, transportError(fmt.Errorf("hf %s: %w", route, bareCause(err)), sent.Load(),
+			cl.create)
 	}
 	defer drainClose(resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -188,6 +183,20 @@ func (c *jobsClient) do(ctx context.Context, cl call, out any) (http.Header, err
 		return resp.Header, unreadable(fmt.Errorf("hf %s reply: %w", route, err), cl.create)
 	}
 	return resp.Header, nil
+}
+
+// bareCause unwraps the client's *url.Error, whose text repeats the URL with its query and host
+func bareCause(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
+// jobName is a Job id HF answered as errors and logs name it, cut and free of the token
+func (c *jobsClient) jobName(id string, secrets ...string) string {
+	return scrub(id, append([]string{c.token, strings.ToLower(c.token)}, secrets...)...)
 }
 
 // routeOf is a call's method and path as errors name it, cut and free of the query and the token
@@ -312,7 +321,7 @@ func (c *jobsClient) createJob(ctx context.Context, spec []byte, secret string) 
 	}
 	if err == nil && !jobID.MatchString(j.ID) {
 		return job{}, &provider.Error{Code: provider.CodeOutcomeUnknown,
-			Err: fmt.Errorf("hf started a Job and named it %.40q", scrub(j.ID, secret))}
+			Err: fmt.Errorf("hf started a Job and named it %.40q", c.jobName(j.ID, secret))}
 	}
 	return j, err
 }

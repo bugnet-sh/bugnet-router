@@ -51,6 +51,8 @@ func newSBXClient() *sbxClient {
 // sandbox is how the router reaches one Job's sbx-server
 type sandbox struct {
 	id, token string
+	// name is the id as errors and logs name it, cut and free of the token
+	name string
 	// end is when HF stops the Job, zero when the ref does not say
 	end time.Time
 }
@@ -61,7 +63,7 @@ func (p *Provider) sandbox(ctx context.Context, ref provider.Ref) (sandbox, erro
 	if !ok {
 		return sandbox{}, notHF(ref)
 	}
-	sb := sandbox{id: id, token: ref.Meta[metaSecret]}
+	sb := sandbox{id: id, name: p.jobs.jobName(id), token: ref.Meta[metaSecret]}
 	sb.end, _ = jobEnd(ref)
 	if sb.token == "" {
 		j, err := p.jobs.getJob(ctx, id)
@@ -71,7 +73,8 @@ func (p *Provider) sandbox(ctx context.Context, ref provider.Ref) (sandbox, erro
 		if j.ID != id {
 			// A token derived from another Job's labels would open that Job
 			return sandbox{}, &provider.Error{Code: provider.CodeInternal,
-				Err: fmt.Errorf("hf answered Job %.40q for Job %s", j.ID, id)}
+				Err: fmt.Errorf("hf answered Job %.40q for Job %s", p.jobs.jobName(j.ID),
+					sb.name)}
 		}
 		if sb.token, err = p.tokenOf(j); err != nil {
 			return sandbox{}, err
@@ -79,7 +82,7 @@ func (p *Provider) sandbox(ctx context.Context, ref provider.Ref) (sandbox, erro
 	}
 	if !sha256Hex.MatchString(sb.token) {
 		return sandbox{}, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s has a sandbox token that is not 64 lowercase hex", id)}
+			"hf Job %s has a sandbox token that is not 64 lowercase hex", sb.name)}
 	}
 	return sb, nil
 }
@@ -89,7 +92,8 @@ func (p *Provider) tokenOf(j job) (string, error) {
 	key := j.Labels[labelKey]
 	if !keyHex.MatchString(key) {
 		return "", &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s has no token in its ref and no key to derive one from", j.ID)}
+			"hf Job %s has no token in its ref and no key to derive one from",
+			p.jobs.jobName(j.ID))}
 	}
 	return p.sandboxToken(key), nil
 }
@@ -98,7 +102,7 @@ func (p *Provider) tokenOf(j job) (string, error) {
 func (c *sbxClient) request(
 	ctx context.Context, sb sandbox, method, route string, q url.Values, body []byte,
 ) (*http.Request, error) {
-	u, err := sbxURL(sb.id, sbxPort, route)
+	u, err := sbxURL(sb, sbxPort, route)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +130,8 @@ func (p *Provider) do(ctx context.Context, sb sandbox, req *http.Request) (*http
 	resp, err := p.sbx.client.Do(req)
 	if err != nil {
 		return nil, p.lost(ctx, sb, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.id, routeName(req), err)})
+			Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.name, routeName(req),
+				bareCause(err))})
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
@@ -152,7 +157,7 @@ func (p *Provider) answerError(
 		http.StatusText(resp.StatusCode)), sb.token)
 	status := resp.StatusCode
 	e := &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-		"hf Job %s sbx-server %s answered %d: %s", sb.id, routeName(req), status, msg)}
+		"hf Job %s sbx-server %s answered %d: %s", sb.name, routeName(req), status, msg)}
 	switch {
 	case status == http.StatusBadRequest || status == http.StatusConflict ||
 		status == http.StatusRequestEntityTooLarge:
@@ -202,13 +207,13 @@ type health struct {
 }
 
 // sbxURL is a route on one port of a Job, refusing an id that is not one plain host label part
-func sbxURL(id string, port int, route string) (string, error) {
-	if !jobID.MatchString(id) {
+func sbxURL(sb sandbox, port int, route string) (string, error) {
+	if !jobID.MatchString(sb.id) {
 		return "", &provider.Error{
-			Code: provider.CodeInvalid, Err: fmt.Errorf("hf: %.40q is not a Job id", id),
+			Code: provider.CodeInvalid, Err: fmt.Errorf("hf: %.40q is not a Job id", sb.name),
 		}
 	}
-	return "https://" + id + "--" + strconv.Itoa(port) + sbxDomain + route, nil
+	return "https://" + sb.id + "--" + strconv.Itoa(port) + sbxDomain + route, nil
 }
 
 // checkSBXURL refuses any URL outside *.hf.jobs, so the sandbox token never goes anywhere else
@@ -227,8 +232,8 @@ func checkSBXURL(raw string) error {
 }
 
 // health reads the Job's sbx-server health with its token, an error for any answer but a 200
-func (c *sbxClient) health(ctx context.Context, id, token string) (health, error) {
-	u, err := sbxURL(id, sbxPort, "/health")
+func (c *sbxClient) health(ctx context.Context, sb sandbox) (health, error) {
+	u, err := sbxURL(sb, sbxPort, "/health")
 	if err != nil {
 		return health{}, err
 	}
@@ -239,26 +244,26 @@ func (c *sbxClient) health(ctx context.Context, id, token string) (health, error
 	if err != nil {
 		return health{}, &provider.Error{Code: provider.CodeInternal, Err: err}
 	}
-	req.Header.Set("X-Sandbox-Token", token)
+	req.Header.Set("X-Sandbox-Token", sb.token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "bugnet-router")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return health{}, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s sbx-server health: %w", id, err)}
+			Err: fmt.Errorf("hf Job %s sbx-server health: %w", sb.name, bareCause(err))}
 	}
 	defer drainClose(resp)
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes))
 		// The Job's root may answer for sbx-server and echo the token it got
 		return health{}, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s sbx-server health answered %d: %.200q", id, resp.StatusCode,
-			scrubToken(string(raw), token))}
+			"hf Job %s sbx-server health answered %d: %.200q", sb.name, resp.StatusCode,
+			scrubToken(string(raw), sb.token))}
 	}
 	var h health
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHealthBytes)).Decode(&h); err != nil {
 		return health{}, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s sbx-server health: %w", id, err)}
+			Err: fmt.Errorf("hf Job %s sbx-server health: %w", sb.name, err)}
 	}
 	return h, nil
 }

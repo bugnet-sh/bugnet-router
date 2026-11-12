@@ -33,7 +33,7 @@ func (p *Provider) GateRoute(ref provider.Ref, port int) (provider.GateRoute, er
 		return provider.GateRoute{}, invalid(fmt.Errorf("hf Jobs expose the gate on port %d, "+
 			"not %d", provider.DefaultGatePort, port), false)
 	}
-	base, err := sbxURL(id, port, "")
+	base, err := sbxURL(sandbox{id: id, name: p.jobs.jobName(id)}, port, "")
 	if err != nil {
 		return provider.GateRoute{}, err
 	}

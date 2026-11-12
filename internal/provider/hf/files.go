@@ -128,7 +128,7 @@ func (p *Provider) stat(
 	var e fileJSON
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxStatBytes)).Decode(&e); err != nil {
 		return provider.FileEntry{}, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s stat of %s: %w", sb.id, clean, err)}
+			Err: fmt.Errorf("hf Job %s stat of %s: %w", sb.name, clean, err)}
 	}
 	return e.entry(clean), nil
 }
@@ -190,17 +190,17 @@ func (p *Provider) readRange(
 	defer drainClose(resp)
 	if resp.ContentLength > n {
 		return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s answered %d bytes of %s for a read of %d", sb.id, resp.ContentLength,
+			"hf Job %s answered %d bytes of %s for a read of %d", sb.name, resp.ContentLength,
 			clean, n)}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, n+1))
 	switch {
 	case err != nil:
 		return nil, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s read of %s: %w", sb.id, clean, err)}
+			Err: fmt.Errorf("hf Job %s read of %s: %w", sb.name, clean, err)}
 	case int64(len(data)) > n:
 		return nil, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s answered more of %s than the %d bytes asked", sb.id, clean, n)}
+			"hf Job %s answered more of %s than the %d bytes asked", sb.name, clean, n)}
 	}
 	return data, nil
 }
@@ -252,7 +252,7 @@ func (p *Provider) replace(ctx context.Context, sb sandbox, temp, target string)
 		return err
 	}
 	if code != 0 {
-		return invalid(fmt.Errorf("hf Job %s could not move %s over %s, mv exited %d", sb.id,
+		return invalid(fmt.Errorf("hf Job %s could not move %s over %s, mv exited %d", sb.name,
 			temp, target, code), false)
 	}
 	return nil
@@ -268,7 +268,7 @@ func (p *Provider) digest(ctx context.Context, sb sandbox, name string) ([]byte,
 	sum, herr := hex.DecodeString(field)
 	if code != 0 || herr != nil || len(sum) != sha256.Size {
 		return nil, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("sha256sum of %s in hf Job %s exited %d", name, sb.id, code)}
+			Err: fmt.Errorf("sha256sum of %s in hf Job %s exited %d", name, sb.name, code)}
 	}
 	return sum, nil
 }
@@ -431,7 +431,7 @@ func (p *Provider) listPage(
 			return listAnswer{}, true, nil
 		}
 		return listAnswer{}, false, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s list of %s: %w", sb.id, q.Get("path"), err)}
+			Err: fmt.Errorf("hf Job %s list of %s: %w", sb.name, q.Get("path"), err)}
 	}
 	return page, false, nil
 }

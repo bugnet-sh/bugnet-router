@@ -98,8 +98,7 @@ func (c *jobsClient) noteJob(j job) {
 	if end, ok := endTime(j.FinishedAt); ok && end.Before(now) {
 		at = end
 	}
-	// The id is a part of HF's answer, so it is cut and kept free of the token as the others are
-	id := scrub(j.ID, c.token, strings.ToLower(c.token))
+	id := c.jobName(j.ID)
 	c.account.add("job "+id, sighting{
 		what: fmt.Sprintf("hf ended Job %.40q for %s", id, r), unfunded: unfundedKills[r],
 		at: at, seen: now,

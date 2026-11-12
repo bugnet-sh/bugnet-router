@@ -219,7 +219,8 @@ func (p *Provider) startExec(
 			go p.killLate(sb, call)
 		}
 		return nil, p.lost(ctx, sb, &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.id, routeName(req), err)})
+			Err: fmt.Errorf("hf Job %s sbx-server %s: %w", sb.name, routeName(req),
+				bareCause(err))})
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer drainClose(resp)
@@ -241,7 +242,7 @@ func (p *Provider) killLate(sb sandbox, call string) {
 	defer cancel()
 	// A Job gone has nothing left to kill
 	if err := p.killGroup(ctx, sb, call); err != nil && !isCode(err, provider.CodeNotFound) {
-		p.log.Warn("hf: the group of a command given up on was not killed", "job", sb.id,
+		p.log.Warn("hf: the group of a command given up on was not killed", "job", sb.name,
 			"err", err)
 	}
 }
@@ -260,7 +261,7 @@ func (p *Provider) killGroup(ctx context.Context, sb sandbox, call string) error
 	code, err := s.Wait()
 	if err == nil && code != 0 {
 		err = &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("the kill of a group in hf Job %s exited %d", sb.id, code)}
+			Err: fmt.Errorf("the kill of a group in hf Job %s exited %d", sb.name, code)}
 	}
 	return err
 }
@@ -353,14 +354,14 @@ func (s *execStream) exit(ev event) {
 	switch {
 	case ev.TimedOut:
 		s.finish(-1, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s stopped a command at its timeout", s.sb.id)})
+			"hf Job %s stopped a command at its timeout", s.sb.name)})
 	case ev.Signal != nil && *ev.Signal > 0 && *ev.Signal <= maxSignal:
 		s.finish(128+*ev.Signal, nil)
 	case ev.Signal == nil && ev.ExitCode != nil && *ev.ExitCode >= 0 && *ev.ExitCode < 256:
 		s.finish(*ev.ExitCode, nil)
 	default:
 		s.finish(-1, &provider.Error{Code: provider.CodeInternal, Err: fmt.Errorf(
-			"hf Job %s ended a command with no exit status it could read", s.sb.id)})
+			"hf Job %s ended a command with no exit status it could read", s.sb.name)})
 	}
 }
 
@@ -375,7 +376,7 @@ func (s *execStream) lostEnd(cause error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), lostTimeout)
 	defer cancel()
 	s.finish(-1, s.p.lost(ctx, s.sb, &provider.Error{Code: provider.CodeOutcomeUnknown,
-		Err: fmt.Errorf("hf Job %s ended a command's stream before its exit: %w", s.sb.id,
+		Err: fmt.Errorf("hf Job %s ended a command's stream before its exit: %w", s.sb.name,
 			cause)}))
 }
 
@@ -402,7 +403,7 @@ func (s *execStream) stop(why error) {
 		}
 		s.mu.Lock()
 		s.abort = &provider.Error{Code: provider.CodeInternal,
-			Err: fmt.Errorf("hf command in Job %s ended early: %w", s.sb.id, why)}
+			Err: fmt.Errorf("hf command in Job %s ended early: %w", s.sb.name, why)}
 		s.mu.Unlock()
 		s.cancel()
 		_ = s.body.Close()
