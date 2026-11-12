@@ -302,3 +302,55 @@ func TestExecCancelKillsGroup(t *testing.T) {
 		eq(t, len(f.execLines()), before+1)
 	})
 }
+
+func TestLiumExecDeadline(t *testing.T) {
+	t.Run("an sshd that never answers a session open", func(t *testing.T) {
+		f, p := liveFake(t)
+		p.ssh.stall = 2 * time.Second
+		ref, pod := readyRef(t, f, p)
+		f.sshd(pod.id).setHoldOpens(true)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, err := p.Exec(ctx, ref, sh("true"))
+		took := time.Since(start)
+		wantCode(t, err, provider.CodeInternal, false)
+		if took > time.Second {
+			t.Fatalf("Exec with a 300ms deadline returned after %v", took)
+		}
+		// The stalled connection drops a stall period later
+		within(t, 5*time.Second, "the drop", func() bool {
+			return p.poolOf(pod.id).connCount() == 0
+		})
+	})
+	t.Run("an sshd that answers the exec late", func(t *testing.T) {
+		f, p := liveFake(t)
+		p.ssh.stall = 2 * time.Second
+		ref, pod := readyRef(t, f, p)
+		gate := make(chan struct{})
+		defer close(gate)
+		f.sshd(pod.id).holdExecs(gate)
+		file := filepath.Join(t.TempDir(), "pgid")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		start := time.Now()
+		_, err := p.Exec(ctx, ref, sh("ps -o pgid= -p $$ >"+file+".new && mv "+file+".new "+
+			file+"; exec sleep 60"))
+		took := time.Since(start)
+		wantCode(t, err, provider.CodeInternal, false)
+		if took > time.Second+700*time.Millisecond {
+			t.Fatalf("Exec with a 1s deadline returned after %v", took)
+		}
+		// The command started before the deadline, and the kill of a start given up on ends it
+		var raw []byte
+		within(t, 5*time.Second, "the command's start", func() bool {
+			raw, err = os.ReadFile(file)
+			return err == nil
+		})
+		pgid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitGroupGone(t, f, pgid)
+	})
+}

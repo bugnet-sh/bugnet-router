@@ -124,7 +124,13 @@ type fakeSSHD struct {
 	silent bool
 	// maxSessions is the sessions one connection takes, MaxSessions in sshd_config
 	maxSessions int
-	closed      bool
+	// holdOpens leaves every session open unanswered, as a hostile sshd may
+	holdOpens bool
+	// execGate holds each exec reply until it closes, the command already started
+	execGate chan struct{}
+	// done closes when the sshd closes
+	done   chan struct{}
+	closed bool
 }
 
 func newHostKey(t *testing.T) ssh.Signer {
@@ -152,7 +158,7 @@ func (f *fakeLium) sshdLocked(pod string) *fakeSSHD {
 	s := &fakeSSHD{
 		f: f, pod: pod, ln: ln, hostKey: newHostKey(f.t), conns: map[*ssh.ServerConn]int{},
 		running: map[*ssh.ServerConn]int{}, shells: map[*os.Process]bool{},
-		maxSessions: fakeMaxSessions,
+		maxSessions: fakeMaxSessions, done: make(chan struct{}),
 	}
 	f.sshds[pod] = s
 	go s.serve()
@@ -291,6 +297,30 @@ func (s *fakeSSHD) setMaxSessions(n int) {
 	s.maxSessions = n
 }
 
+func (s *fakeSSHD) setHoldOpens(hold bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holdOpens = hold
+}
+
+// holdExecs holds the exec replies until gate closes
+func (s *fakeSSHD) holdExecs(gate chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.execGate = gate
+}
+
+// loginShells are the pids of the login shells running commands now
+func (s *fakeSSHD) loginShells() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pids []int
+	for p := range s.shells {
+		pids = append(pids, p.Pid)
+	}
+	return pids
+}
+
 func (s *fakeSSHD) setSilent(silent bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -306,6 +336,9 @@ func (s *fakeSSHD) stats() (accepted, open, peak int) {
 
 func (s *fakeSSHD) close() {
 	s.mu.Lock()
+	if !s.closed {
+		close(s.done)
+	}
 	s.closed = true
 	shells := make([]*os.Process, 0, len(s.shells))
 	for p := range s.shells {
@@ -358,6 +391,12 @@ func (s *fakeSSHD) handle(c net.Conn) {
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
 			_ = nc.Reject(ssh.UnknownChannelType, "only sessions")
+			continue
+		}
+		s.mu.Lock()
+		hold := s.holdOpens
+		s.mu.Unlock()
+		if hold {
 			continue
 		}
 		if !s.openSession(sc) {
@@ -446,6 +485,15 @@ func (s *fakeSSHD) session(sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.
 			}
 			shell = cmd.Process
 			s.started(sc, shell)
+			s.mu.Lock()
+			gate := s.execGate
+			s.mu.Unlock()
+			if gate != nil {
+				select {
+				case <-gate:
+				case <-s.done:
+				}
+			}
 			_ = r.Reply(true, nil)
 			go s.exit(sc, ch, cmd)
 		case "signal":

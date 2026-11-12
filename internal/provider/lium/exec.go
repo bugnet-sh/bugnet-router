@@ -74,13 +74,16 @@ func (p *Provider) exec(
 	}
 	stdout, err := sess.StdoutPipe()
 	if err == nil {
-		stop := pl.guard(sctx, c)
-		err = sess.Start(line)
+		var left bool
+		left, err = pl.await(sctx, c, func() error { return sess.Start(line) }, func(error) {
+			_ = sess.Close()
+			pl.release(c)
+		})
 		switch {
-		case !stop():
+		case left:
 			// The exec request may have reached the pod, so its group is killed as on a cancel
 			go p.killLate(pl, id, call)
-			err = context.Cause(sctx)
+			return nil, p.sshError(ctx, id, fmt.Errorf("start a command: %w", err))
 		case err != nil:
 			// x/crypto's error quotes the whole command line, which may hold the user's values
 			err = errors.New("the pod's sshd refused the command")

@@ -466,16 +466,20 @@ func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		stop := pl.guard(ctx, c)
-		sess, err := c.client.NewSession()
-		if !stop() {
+		var sess *ssh.Session
+		left, err := pl.await(ctx, c, func() (err error) {
+			sess, err = c.client.NewSession()
+			return err
+		}, func(err error) {
 			if err == nil {
 				_ = sess.Close()
 			}
 			pl.release(c)
-			return nil, nil, fmt.Errorf("open an SSH session: %w", context.Cause(ctx))
-		}
-		if err == nil {
+		})
+		switch {
+		case left:
+			return nil, nil, fmt.Errorf("open an SSH session: %w", err)
+		case err == nil:
 			return sess, c, nil
 		}
 		last = fmt.Errorf("open an SSH session: %w", err)
@@ -494,6 +498,32 @@ func (pl *sshPool) session(ctx context.Context) (*ssh.Session, *sshConn, error) 
 		redialled = true
 	}
 	return nil, nil, last
+}
+
+// await waits for call until ctx ends, then hands call's error to late, dropping c after a stall
+func (pl *sshPool) await(
+	ctx context.Context, c *sshConn, call func() error, late func(error),
+) (left bool, err error) {
+	ret := make(chan error, 1)
+	go func() { ret <- call() }()
+	select {
+	case err := <-ret:
+		return false, err
+	case <-ctx.Done():
+	}
+	go func() {
+		t := time.NewTimer(pl.p.ssh.stall)
+		defer t.Stop()
+		select {
+		case err := <-ret:
+			late(err)
+			return
+		case <-t.C:
+		}
+		pl.drop(c)
+		late(<-ret)
+	}()
+	return true, context.Cause(ctx)
 }
 
 // guard drops c when ctx ends while the call it covers still waits a stall period later
