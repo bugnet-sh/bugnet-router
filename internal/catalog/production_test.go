@@ -29,8 +29,7 @@ func liveProviders(t *testing.T) []provider.Provider {
 	return reg.Ordered()
 }
 
-// TestProductionCatalog holds config/packages.json to production's providers, so every package
-// loads, fits a size they sell and keeps the 50% margin floor at the cheapest adapter's rate
+// TestProductionCatalog holds each package to a production size that costs half its price or less
 func TestProductionCatalog(t *testing.T) {
 	c, err := Load("../../config/packages.json")
 	if err != nil {
