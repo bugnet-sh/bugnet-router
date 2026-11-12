@@ -67,7 +67,8 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 		if _, err := newProvider(opts); err != nil {
 			t.Errorf("namespace %q: %v", ns, err)
 		}
-	} // No image is fine, as every create may name its own
+	}
+	// No image, no room and no margin are allowed, as every create may name its own image
 	opts := testOptions()
 	opts.Image, opts.ExtendRoom, opts.TimeoutMargin = "", 0, 0
 	if _, err := newProvider(opts); err != nil {
