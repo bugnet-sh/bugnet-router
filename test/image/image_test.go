@@ -181,7 +181,8 @@ func TestImageBuildsAndPassesItsScan(t *testing.T) {
 		"/etc/systemd/system/sockets.target.wants/ssh.socket 2>/dev/null | wc -l"), "0")
 	eq(t, run(t, tag, nftCheck(t)+" && hf version >/dev/null && "+
 		"pnpm --version >/dev/null && python3 --version >/dev/null && echo ok"), "ok")
-	eq(t, run(t, tag, "find /root /tmp -type f | wc -l"), "0")
+	// The base image ships /root/.bashrc and /root/.profile, so only files the build wrote count
+	eq(t, run(t, tag, "find /root /tmp -type f ! -path /root/.bashrc ! -path /root/.profile"), "")
 	eq(t, run(t, tag, "ls /var/lib/apt/lists | wc -l"), "0")
 	eq(t, run(t, tag, `. /etc/bugnet/image.env; export LANG LC_ALL; `+
 		`printf 'é\n' | column -t >/dev/null && echo ok`), "ok")
