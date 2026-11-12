@@ -225,6 +225,7 @@ func (f *fakeHF) provider(t *testing.T, opts Options) *Provider {
 	p.sbx.client.Transport = f.transport()
 	p.execDir, p.setsid, p.mv = f.sbx.execDir, filepath.Join(f.sbx.bin, "setsid"),
 		filepath.Join(f.sbx.bin, "mv")
+	p.retryWait = 10 * time.Millisecond
 	return p
 }
 

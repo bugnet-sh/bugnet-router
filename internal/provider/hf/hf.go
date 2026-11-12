@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
@@ -85,7 +87,12 @@ type Provider struct {
 	sbx               *sbxClient
 	// execDir holds each command's pid file in the Job, setsid and mv name the Job's own tools
 	execDir, setsid, mv string
-	now                 func() time.Time
+	// partBytes is each ranged part of a stream, buffers bounds the parts every stream holds
+	partBytes int64
+	buffers   *semaphore.Weighted
+	// retryWait spaces reissued reads and is the first pause between attempts of a part
+	retryWait time.Duration
+	now       func() time.Time
 	// kmu guards kept, the Job each key got in this process, and creating, each key's create
 	kmu      sync.Mutex
 	kept     map[string]keptJob
@@ -180,6 +187,9 @@ func newProvider(opts Options) (*Provider, error) {
 		execDir:     defaultExecDir,
 		setsid:      jobSetsid,
 		mv:          jobMv,
+		partBytes:   defaultPartBytes,
+		buffers:     semaphore.NewWeighted(bufferTotal),
+		retryWait:   defaultRetryWait,
 		now:         time.Now,
 		kept:        map[string]keptJob{},
 		creating:    map[string]chan struct{}{},
