@@ -1,0 +1,9 @@
+{"v": 1, "version": "2026.11.4", "channel": "prod", "target": "oci", "os": "ubuntu-24.04",
+ "inputs_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "built_at": "2026-11-20T10:00:00Z",
+ "runner_sha256": {"amd64": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+ "sbx_server_sha256": {"amd64": "eb2b04f79fbe765195300aaf1582be2a2a9ea698ff067d0cab428171d5584932"},
+ "ca": [{"version": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+ "tools": {"git": "2.43", "tar": "1.35", "python3": "3.12", "node": "24.22", "docker": "none",
+           "pnpm": "12.18", "uv": "0.13", "hf": "2.4", "gcc": "13.3", "make": "4.3",
+           "sshd": "9.6", "nft": "1.0", "curl": "8.5"},
+ "disk_bytes": 812000000}

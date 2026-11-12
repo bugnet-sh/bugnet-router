@@ -11,6 +11,8 @@ import (
 	"io"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -25,6 +27,12 @@ const RunnerPath = "/usr/local/lib/bugnet/bugnet-run"
 // UploadedRunnerPath is where the router uploads bugnet-run when the image has none to use
 const UploadedRunnerPath = "/tmp/bugnet/bin/bugnet-run"
 
+// SBXServerPath is where every base image build from SBXServerSince on installs sbx-server
+const SBXServerPath = "/usr/local/lib/bugnet/sbx-server"
+
+// SBXServerSince is the first image version that holds sbx-server, which hf's baked mode runs
+const SBXServerSince = "2026.11.4"
+
 // MaxManifestBytes bounds the manifest a sandbox may hold
 const MaxManifestBytes = 4 << 10
 
@@ -36,6 +44,29 @@ var Tools = []string{
 
 // VersionPattern is what an image version looks like, such as 2026.11.1
 var VersionPattern = regexp.MustCompile(`^\d{4}\.\d{2}\.\d+$`)
+
+// VersionAtLeast reports whether image version v is floor or newer, false when either is malformed
+func VersionAtLeast(v, floor string) bool {
+	have, ok := versionParts(v)
+	want, wantOK := versionParts(floor)
+	return ok && wantOK && slices.Compare(have, want) >= 0
+}
+
+// versionParts is a version's year, month and build number
+func versionParts(v string) ([]int, bool) {
+	if !VersionPattern.MatchString(v) {
+		return nil, false
+	}
+	var out []int
+	for part := range strings.SplitSeq(v, ".") {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
+}
 
 var (
 	osPattern   = regexp.MustCompile(`^[a-z]+-\d{1,2}\.\d{2}$`)
@@ -61,9 +92,11 @@ type Manifest struct {
 	InputsSHA256 string            `json:"inputs_sha256"`
 	BuiltAt      time.Time         `json:"built_at"`
 	RunnerSHA256 map[string]string `json:"runner_sha256"`
-	CAs          []CA              `json:"ca"`
-	Tools        map[string]string `json:"tools"`
-	DiskBytes    int64             `json:"disk_bytes"`
+	// SBXServerSHA256 is empty on an image older than SBXServerSince
+	SBXServerSHA256 map[string]string `json:"sbx_server_sha256,omitempty"`
+	CAs             []CA              `json:"ca"`
+	Tools           map[string]string `json:"tools"`
+	DiskBytes       int64             `json:"disk_bytes"`
 }
 
 // ErrManifest wraps every refusal of a manifest's content
@@ -117,6 +150,11 @@ func (m Manifest) validate() error {
 	for arch, sum := range m.RunnerSHA256 {
 		if !slices.Contains(arches, arch) || !hexPattern.MatchString(sum) {
 			return errors.New("manifest runner_sha256 is malformed")
+		}
+	}
+	for arch, sum := range m.SBXServerSHA256 {
+		if !slices.Contains(arches, arch) || !hexPattern.MatchString(sum) {
+			return errors.New("manifest sbx_server_sha256 is malformed")
 		}
 	}
 	for _, c := range m.CAs {
