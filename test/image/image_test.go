@@ -25,7 +25,7 @@ import (
 // platform is the one build.sh builds for and the payload runner runs on
 const platform = "linux/amd64"
 
-// base2204 is ubuntu:22.04 of 2026-10-20, no newer than APT_SNAPSHOT as apt needs
+// base2204 is the Ubuntu 22.04 image of 2026-10-20, no newer than APT_SNAPSHOT as apt needs
 const base2204 = "ubuntu:22.04@sha256:" +
 	"076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11"
 
