@@ -210,6 +210,7 @@ func (f *fakeLium) provider(t *testing.T, opts Options, now func() time.Time) *P
 	p.api.client.Transport = &http.Transport{DisableKeepAlives: true}
 	p.relistEvery = time.Millisecond
 	p.dial, p.execDir, p.setsid = f.dialSSH, f.sh.execDir, f.sh.setsid
+	p.authorizedKeys = authorizedKeys(f)
 	t.Cleanup(func() { _ = p.Close() })
 	return p
 }

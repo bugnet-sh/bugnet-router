@@ -140,6 +140,8 @@ type Provider struct {
 	closed bool
 	// execDir holds the pid file of each command's group in the pod, setsid is the pod's setsid
 	execDir, setsid string
+	// authorizedKeys is the pod's key file the gateway's key goes into
+	authorizedKeys string
 }
 
 // New checks the options and starts the listing loop, which Close stops
@@ -235,6 +237,7 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		pools:          map[string]*sshPool{},
 		execDir:        defaultExecDir,
 		setsid:         podSetsid,
+		authorizedKeys: podAuthorizedKeys,
 	}
 	p.hostKey = p.pinHostKey
 	return p, nil

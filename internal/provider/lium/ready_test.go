@@ -2,6 +2,7 @@ package lium
 
 import (
 	"context"
+	"maps"
 	"strconv"
 	"testing"
 	"time"
@@ -241,4 +242,24 @@ func TestLiumNetguard(t *testing.T) {
 		}
 		eq(t, meta["ssh_host"], "2001:db9::7")
 	})
+	for _, addr := range []string{
+		"10.0.0.5", "127.0.0.1", "169.254.10.1", "192.168.1.9", "::1", "fd00::1", "fe80::1",
+		"::ffff:10.0.0.5",
+	} {
+		t.Run("AuthorizeNativeSSH at "+addr, func(t *testing.T) {
+			f, p := liveFake(t)
+			ref, pod := readyRef(t, f, p)
+			// Lium now reports the pod at a refused address
+			f.setPod(pod.id, func(fp *fakePod) { fp.ip = addr })
+			_, err := p.AuthorizeNativeSSH(context.Background(), ref, gatewayKey(t))
+			wantCode(t, err, provider.CodeInternal, false)
+			// The ref keeps a refused address while Lium reports a public one
+			f.setPod(pod.id, func(fp *fakePod) { fp.ip = "203.0.113.7" })
+			bad := provider.Ref{Provider: ref.Provider, ID: ref.ID, Meta: maps.Clone(ref.Meta)}
+			bad.Meta["ssh_host"] = addr
+			_, err = p.AuthorizeNativeSSH(context.Background(), bad, gatewayKey(t))
+			wantCode(t, err, provider.CodeInternal, false)
+			wantNoKeys(t, f)
+		})
+	}
 }
