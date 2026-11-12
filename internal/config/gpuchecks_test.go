@@ -277,3 +277,21 @@ func TestConfigHFPace(t *testing.T) {
 		"11 pro unpaced":  {pace("pro", 1), pace("pro", 0), pro},
 	})
 }
+
+// TestConfigHFGatePort refuses a gate port but 29417 while hf serves previews, the one HF exposes
+func TestConfigHFGatePort(t *testing.T) {
+	previews := func(port int, providers ...string) string {
+		return fmt.Sprintf("[previews]\ngate_port = %d\nproviders = [%s]\n", port,
+			strings.Join(providers, ", "))
+	}
+	want := "previews.gate_port must be 29417 while previews.providers lists hf, the one " +
+		"gate port every HF Job exposes"
+	runGPUChecks(t, map[string]gpuCheck{
+		"hf on the gate port": {previews(29417, `"hf"`), previews(29418, `"hf"`), want},
+		"hf beside another":   {previews(29418, `"e2b"`), previews(8080, `"e2b"`, `"hf"`), want},
+		"hf off previews":     {previews(8080), previews(1, `"hf"`), want},
+		"hf with the default": {"[previews]\nproviders = [\"hf\"]\n", previews(443, `"hf"`), want},
+		"hf among the providers": {"providers = [\"hf\"]\n[hf]\nnamespace = \"bugnet-test\"\n" +
+			previews(8080), previews(65535, `"hf"`), want},
+	})
+}

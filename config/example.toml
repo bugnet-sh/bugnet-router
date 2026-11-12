@@ -60,7 +60,7 @@ egress_requests_in_flight = 32         # per placement
 
 [previews]
 providers = []                         # providers whose gate route passed the live test
-gate_port = 29417                      # the bugnet-run gate inside every sandbox
+gate_port = 29417                      # the bugnet-run gate in every sandbox, 29417 to list hf
 max_per_placement = 8
 interstitial = true
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // gpuProviders are the providers that sell only GPU sandboxes
@@ -213,6 +214,11 @@ func (c *Config) checkGPU() error {
 	}
 	if slices.Contains(c.Previews.Providers, "lium") {
 		return errors.New("previews.providers may not list lium, whose pods run no gate")
+	}
+	if gate := provider.DefaultGatePort; slices.Contains(c.Previews.Providers, "hf") &&
+		c.Previews.GatePort != gate {
+		return fmt.Errorf("previews.gate_port must be %d while previews.providers lists hf, the "+
+			"one gate port every HF Job exposes", gate)
 	}
 	if slices.Contains(c.SSH.Providers, "lium") && c.Lium.SSHPath != "native" {
 		return errors.New(`ssh.providers may list lium only while lium.ssh_path is "native", ` +

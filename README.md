@@ -1910,6 +1910,8 @@ Both routers also refuse to start when:
   key's budget.
 - `hf.ops_per_second` is 0, or over 3 with `hf.token_plan = "free"` or over 8 with `"pro"`, the
   token user's Hub rate limit.
+- `previews.providers` lists `hf` while `previews.gate_port` is not 29417, the one gate port every
+  HF Job exposes.
 
 `router-api` refuses to start when a GPU package's price misses `margin_floor` on a `gpu_order`
 provider with a size for it, estimated from `Sizes`, the size's hourly cost (Lium's cap) over the
@@ -1980,6 +1982,7 @@ from the ref alone and never calls the provider. The router adds the gate key it
 | Koyeb | `bind_port`, with `unbind_port` and a second bind on 409 | The public URL, `/koyeb-sandbox/` blocked | `X-Routing-Key` in pool mode | `executor_url`, `routing_key` |
 | Boat | `POST /host` | `https://<sub>-<port>.on.boat.dev` | `_port_auth` cookie | `gate_host`, `_token` |
 | local | None, the ports come from `Create` | `http://127.0.0.1:<gate_port>` | None | `gate_port`, `sshd_port` |
+| HF | None, the create exposes port 29417 publicly | `https://<job id>--29417.hf.jobs` | None | None |
 
 E2B's create keeps `traffic_token`, since every sandbox is created closed to public traffic.
 Boat's hosted URL is split into its host and token and never stored or logged whole. A local
