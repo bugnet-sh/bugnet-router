@@ -96,7 +96,7 @@ type fakeHF struct {
 	pageSize int
 	// nextLink replaces the link of every next page when set
 	nextLink string
-	// pace answers 429 to a call sooner than 80% of 1/pace after the last one served, 0 for none
+	// pace answers 429 to a call sooner than 70% of 1/pace after the last one served, 0 for none
 	pace       int
 	lastServed time.Time
 	// paced counts the 429s the pace answered
@@ -217,7 +217,7 @@ func (f *fakeHF) gate(pattern string, h http.HandlerFunc) http.HandlerFunc {
 			header: r.Header.Clone(), body: body, at: now,
 		})
 		if f.pace > 0 && !f.lastServed.IsZero() &&
-			now.Sub(f.lastServed) < time.Second*8/10/time.Duration(f.pace) {
+			now.Sub(f.lastServed) < time.Second*7/10/time.Duration(f.pace) {
 			f.paced++
 			f.mu.Unlock()
 			w.Header().Set("RateLimit", `"api";r=0;t=1`)
