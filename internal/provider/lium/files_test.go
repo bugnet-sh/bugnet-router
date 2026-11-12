@@ -219,3 +219,27 @@ func TestLiumListFiles(t *testing.T) {
 	err = p.ListFiles(ctx, ref, dir, 0, provider.NewListing(10))
 	wantCode(t, err, provider.CodeInvalid, false)
 }
+
+// TestLiumFilesLostSession reads the pod after a failed session, not_found once Lium deletes it
+func TestLiumFilesLostSession(t *testing.T) {
+	f, p := liveFake(t)
+	ref, pod := readyRef(t, f, p)
+	ctx := context.Background()
+	name := t.TempDir() + "/f"
+	f.mu.Lock()
+	f.sshDown = true
+	f.mu.Unlock()
+	f.sshd(pod.id).dropConns()
+	_, err := p.StatFile(ctx, ref, name)
+	wantCode(t, err, provider.CodeInternal, false)
+
+	f.setPod(pod.id, func(fp *fakePod) { fp.status = "DELETING" })
+	_, err = p.StatFile(ctx, ref, name)
+	wantCode(t, err, provider.CodeNotFound, false)
+	err = p.ListFiles(ctx, ref, "/", 1, provider.NewListing(10))
+	wantCode(t, err, provider.CodeNotFound, false)
+	_, err = p.OpenWriter(ctx, ref, name, provider.WriteSpec{Size: 1, Mode: 0o644})
+	wantCode(t, err, provider.CodeNotFound, false)
+	_, err = p.OpenReader(ctx, ref, name, 0)
+	wantCode(t, err, provider.CodeNotFound, false)
+}

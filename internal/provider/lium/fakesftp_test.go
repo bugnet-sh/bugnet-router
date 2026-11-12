@@ -203,6 +203,8 @@ const (
 	hostileNoSpace = "/nospace"
 	// hostileFull is a directory on a full disk where writes fail with OpenSSH's bare Failure
 	hostileFull = "/full"
+	// hostileStallWrite is a directory where writes never answer
+	hostileStallWrite = "/stallwrite"
 )
 
 func (h *hostileFS) handlers() sftp.Handlers {
@@ -228,7 +230,7 @@ func (h *hostileFS) info(name string) (fakeInfo, bool) {
 	dir := fakeInfo{name: path.Base(name), mode: fs.ModeDir | 0o755}
 	switch name {
 	case "/", hostileEndless, hostileDots, hostileLongName, hostileStallDir, hostileNoSpace,
-		hostileFull:
+		hostileFull, hostileStallWrite:
 		return dir, true
 	case hostileHuge:
 		return fakeInfo{name: path.Base(name), size: 1 << 62, mode: 0o644}, true
@@ -277,13 +279,15 @@ func (h *hostileFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	return nil, os.ErrNotExist
 }
 
-// Filewrite takes files only on the two full disks, where every write fails
+// Filewrite takes files only on the two full disks, where every write fails, and the stalled one
 func (h *hostileFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	switch path.Dir(r.Filepath) {
 	case hostileNoSpace:
 		return failWriter{&os.PathError{Op: "write", Path: r.Filepath, Err: syscall.ENOSPC}}, nil
 	case hostileFull:
 		return failWriter{errors.New("failure")}, nil
+	case hostileStallWrite:
+		return stalledWriter(h.release), nil
 	}
 	return nil, os.ErrPermission
 }
@@ -348,6 +352,14 @@ type zeros struct{}
 
 func (zeros) ReadAt(b []byte, _ int64) (int, error) {
 	clear(b)
+	return len(b), nil
+}
+
+// stalledWriter answers no write until the channel closes
+type stalledWriter chan struct{}
+
+func (s stalledWriter) WriteAt(b []byte, _ int64) (int, error) {
+	<-s
 	return len(b), nil
 }
 

@@ -110,21 +110,61 @@ func TestLiumSFTPHostile(t *testing.T) {
 			t.Fatal("a stalled read ended with no error")
 		}
 	})
-	t.Run("StalledReadWithNoDeadline", func(t *testing.T) {
-		// The operation limit bounds each read of a caller that set no deadline
+	t.Run("StalledWrite", func(t *testing.T) {
+		_, p, ref, _ := hostilePod(t)
+		err := underDeadline(t, 300*time.Millisecond, func(ctx context.Context) error {
+			w, err := p.OpenWriter(ctx, ref, hostileStallWrite+"/f",
+				provider.WriteSpec{Size: 4, Mode: 0o644})
+			if err != nil {
+				t.Fatalf("OpenWriter in a directory whose writes stall: %v", err)
+			}
+			defer func() { _ = w.Abort() }()
+			_, err = w.Write([]byte("data"))
+			return err
+		})
+		if err == nil {
+			t.Fatal("a stalled write ended with no error")
+		}
+	})
+	t.Run("StalledCallsWithNoDeadline", func(t *testing.T) {
+		// The operation limit bounds a call, and each read or write of a stream, with no deadline
 		_, p, ref, _ := hostilePod(t)
 		p.ssh.op = 300 * time.Millisecond
-		r, err := p.OpenReader(context.Background(), ref, hostileStall, 0)
+		ctx := context.Background()
+		bounded := func(what string, call func() error) {
+			t.Helper()
+			start := time.Now()
+			wantCode(t, call(), provider.CodeInternal, false)
+			if took := time.Since(start); took > p.ssh.op+time.Second {
+				t.Fatalf("%s took %v under a limit of %v", what, took, p.ssh.op)
+			}
+		}
+		bounded("ReadFile", func() error {
+			_, _, err := p.ReadFile(ctx, ref, hostileStall, 0, 10)
+			return err
+		})
+		bounded("ListFiles", func() error {
+			return p.ListFiles(ctx, ref, hostileStallDir, 1, provider.NewListing(10))
+		})
+		r, err := p.OpenReader(ctx, ref, hostileStall, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = r.Close() }()
-		start := time.Now()
-		_, err = r.Read(make([]byte, 10))
-		wantCode(t, err, provider.CodeInternal, false)
-		if took := time.Since(start); took > p.ssh.op+time.Second {
-			t.Fatalf("the read took %v under a limit of %v", took, p.ssh.op)
+		bounded("a stream's Read", func() error {
+			_, err := r.Read(make([]byte, 10))
+			return err
+		})
+		w, err := p.OpenWriter(ctx, ref, hostileStallWrite+"/f",
+			provider.WriteSpec{Size: 4, Mode: 0o644})
+		if err != nil {
+			t.Fatal(err)
 		}
+		defer func() { _ = w.Abort() }()
+		bounded("a stream's Write", func() error {
+			_, err := w.Write([]byte("data"))
+			return err
+		})
 	})
 	t.Run("NoSpace", func(t *testing.T) {
 		// ENOSPC in the status's words, and OpenSSH's bare failure on a full disk
