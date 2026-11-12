@@ -205,6 +205,22 @@ func TestLiumSFTPHostile(t *testing.T) {
 			_ = w.Abort()
 		}
 	})
+	t.Run("PathWordsNameNoCode", func(t *testing.T) {
+		// A user's path that reads like a status leaves a bare failure on a roomy disk internal
+		_, p, ref, _ := hostilePod(t)
+		ctx := context.Background()
+		err := p.WriteFile(ctx, ref, hostileQuotaName+"/no space left", []byte("data"), 0o644)
+		wantCode(t, err, provider.CodeInternal, false)
+		w, err := p.OpenWriter(ctx, ref, hostileQuotaName+"/g", provider.WriteSpec{
+			Size: 4, Mode: 0o644,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = w.Write([]byte("data"))
+		wantCode(t, err, provider.CodeInternal, false)
+		_ = w.Abort()
+	})
 }
 
 // TestLiumSFTPBrokenAnswers feeds pkg/sftp's client answers cut short, which it reads unchecked

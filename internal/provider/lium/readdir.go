@@ -356,9 +356,19 @@ func statusErr(body []byte) error {
 	case fxPermissionDenied:
 		return os.ErrPermission
 	}
-	text := string(msg[:min(len(msg), maxStatusText)])
-	return fmt.Errorf("%w: %q", &sftp.StatusError{Code: code}, text)
+	return &serverStatus{StatusError: &sftp.StatusError{Code: code},
+		text: string(msg[:min(len(msg), maxStatusText)])}
 }
+
+// serverStatus is a status the raw lister read, its words apart from the paths a caller adds
+type serverStatus struct {
+	*sftp.StatusError
+	text string
+}
+
+func (s *serverStatus) Error() string { return fmt.Sprintf("%v: %q", s.StatusError, s.text) }
+
+func (s *serverStatus) Unwrap() error { return s.StatusError }
 
 // malformed is the error of an answer the protocol does not allow
 func malformed(what string) error {

@@ -272,6 +272,8 @@ const (
 	hostileStallWrite = "/stallwrite"
 	// hostileStallVFS is a directory where writes fail bare and statvfs never answers
 	hostileStallVFS = "/stallvfs"
+	// hostileQuotaName is a roomy directory whose name holds a no-space status's words
+	hostileQuotaName = "/quota exceeded"
 )
 
 func (h *hostileFS) handlers() sftp.Handlers {
@@ -297,7 +299,7 @@ func (h *hostileFS) info(name string) (fakeInfo, bool) {
 	dir := fakeInfo{name: path.Base(name), mode: fs.ModeDir | 0o755}
 	switch name {
 	case "/", hostileEndless, hostileDots, hostileLongName, hostileStallDir, hostileNoSpace,
-		hostileFull, hostileStallWrite, hostileStallVFS:
+		hostileFull, hostileStallWrite, hostileStallVFS, hostileQuotaName:
 		return dir, true
 	case hostileHuge:
 		return fakeInfo{name: path.Base(name), size: 1 << 62, mode: 0o644}, true
@@ -351,7 +353,7 @@ func (h *hostileFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	switch path.Dir(r.Filepath) {
 	case hostileNoSpace:
 		return failWriter{&os.PathError{Op: "write", Path: r.Filepath, Err: syscall.ENOSPC}}, nil
-	case hostileFull, hostileStallVFS:
+	case hostileFull, hostileStallVFS, hostileQuotaName:
 		return failWriter{errors.New("failure")}, nil
 	case hostileStallWrite:
 		return stalledWriter(h.release), nil

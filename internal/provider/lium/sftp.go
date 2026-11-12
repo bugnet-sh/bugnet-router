@@ -332,9 +332,13 @@ func (p *Provider) sftpError(ctx context.Context, id string, err error) error {
 	return p.sshError(ctx, id, err)
 }
 
-// statusCode reads the status in err by its words, where they name ENOSPC or EISDIR
+// statusCode reads the server's words in a status, never the paths around it, for ENOSPC or EISDIR
 func statusCode(err error, st *sftp.StatusError) provider.Code {
-	text := strings.ToLower(err.Error())
+	words := st.Error()
+	if s := (*serverStatus)(nil); errors.As(err, &s) {
+		words = s.Error()
+	}
+	text := strings.ToLower(words)
 	switch {
 	case strings.Contains(text, "no space left"), strings.Contains(text, "quota exceeded"):
 		return provider.CodeNoSpace
