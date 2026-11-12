@@ -82,6 +82,8 @@ func testOptions() Options {
 		BlockedCountries: slices.Clone(sanctioned),
 		MaxLifetime:      2 * time.Hour,
 		StartBilled:      7 * time.Minute,
+		MaxConcurrent:    10,
+		AccountEvery:     5 * time.Minute,
 	}
 }
 

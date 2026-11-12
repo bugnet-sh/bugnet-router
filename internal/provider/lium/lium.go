@@ -85,6 +85,10 @@ type Options struct {
 	TemplateVolume string
 	// Termination sets termination_hours from max_lifetime, the default, or the lifetime asked
 	Termination string
+	// MaxConcurrent is lium.max_concurrent, the pods the balance headroom keeps room for
+	MaxConcurrent int
+	// AccountEvery is limits_poll.account_every, 5 minutes when 0
+	AccountEvery time.Duration
 }
 
 // size is one size sold and the resources it guarantees
@@ -101,8 +105,11 @@ type Provider struct {
 	sizes       []size // lowest cap first
 	maxLifetime time.Duration
 	startBilled time.Duration
-	nodes       *nodeCache
-	nodesEvery  time.Duration
+	// slots and accountEvery size the balance headroom of the account check
+	slots        int
+	accountEvery time.Duration
+	nodes        *nodeCache
+	nodesEvery   time.Duration
 	// countries are tried first, blocked never, others only while otherCountries is set
 	countries, blocked map[string]bool
 	otherCountries     bool
@@ -186,6 +193,11 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 	case opts.Termination != "" && opts.Termination != terminationMaxLifetime &&
 		opts.Termination != terminationLifetime:
 		return nil, errors.New("lium: termination must be max_lifetime or lifetime")
+	case opts.MaxConcurrent < 1:
+		return nil, errors.New("lium: max concurrent must be 1 or more, the pods the balance " +
+			"headroom keeps room for")
+	case opts.AccountEvery < 0:
+		return nil, errors.New("lium: the account interval must not be negative")
 	}
 	if opts.Image != "" {
 		if _, err := parseImageRef(opts.Image); err != nil {
@@ -216,6 +228,8 @@ func newProvider(opts Options, now func() time.Time) (*Provider, error) {
 		sizes:          sizes,
 		maxLifetime:    cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled:    opts.StartBilled,
+		slots:          opts.MaxConcurrent,
+		accountEvery:   cmp.Or(opts.AccountEvery, defaultAccountEvery),
 		nodes:          newNodeCache(a, log, now, opts.MinDownloadMbps),
 		nodesEvery:     every,
 		countries:      countrySet(opts.Countries),

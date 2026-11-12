@@ -42,6 +42,10 @@ func TestLiumNewRefusesBadOptions(t *testing.T) {
 			"not named by digest"},
 		"relative volume": {func(o *Options) { o.TemplateVolume = "workspace" },
 			"template volume must be an absolute path"},
+		"no slots": {func(o *Options) { o.MaxConcurrent = 0 },
+			"max concurrent must be 1 or more"},
+		"negative account interval": {func(o *Options) { o.AccountEvery = -time.Second },
+			"account interval must not be negative"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -28,6 +28,8 @@ type fakePod struct {
 	terminationHours          int
 	nodeOffline, outage       bool
 	billingPaused, diskPaused bool
+	// unpriced writes price as null
+	unpriced bool
 	// keys are the pod's authorized_keys lines, the rent's user_public_key
 	keys []string
 }
@@ -52,8 +54,12 @@ func (p *fakePod) json() map[string]any {
 		ports["22"] = p.sshPort
 	}
 	var removal, outage any
+	var price any = p.price
 	if p.removal != "" {
 		removal = p.removal
+	}
+	if p.unpriced {
+		price = nil
 	}
 	if p.outage {
 		outage = map[string]any{
@@ -71,7 +77,7 @@ func (p *fakePod) json() map[string]any {
 		"created_at": created, "removal_scheduled_at": removal,
 		"termination_hours": p.terminationHours, "jupyter_installation_status": nil,
 		"jupyter_url": nil, "enable_jupyter": false, "enable_volume_encryption": false,
-		"volume_encryption_status": nil, "price": p.price, "pending_price": nil,
+		"volume_encryption_status": nil, "price": price, "pending_price": nil,
 		"template": map[string]any{"id": p.template, "name": "bugnet-base"},
 		"executor": map[string]any{
 			"id": p.node, "machine_name": p.machine,
@@ -404,12 +410,24 @@ func (f *fakeLium) checkTemplate(w http.ResponseWriter, _ *http.Request) {
 
 func (f *fakeLium) me(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
-	out := map[string]any{"email": "dev@bugnet.org", "balance": 42.5, "balance_warning": nil}
+	out := map[string]any{
+		"email": "dev@bugnet.org", "balance": f.balance, "balance_warning": f.warning,
+	}
+	if f.balance == nil {
+		delete(out, "balance")
+	}
 	if f.userID != "" {
 		out["id"] = f.userID
 	}
 	f.mu.Unlock()
 	writeJSON(w, http.StatusOK, out)
+}
+
+// setAccount sets what GET /users/me answers
+func (f *fakeLium) setAccount(balance, warning any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.balance, f.warning = balance, warning
 }
 
 func readBody(r *http.Request) []byte {

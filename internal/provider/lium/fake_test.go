@@ -146,6 +146,8 @@ type fakeLium struct {
 	checkIssues []map[string]any
 	// userID is the id GET /users/me answers, none when empty
 	userID string
+	// balance and warning are what GET /users/me answers, no balance field when balance is nil
+	balance, warning any
 	// startStatus is the status a rented pod starts in
 	startStatus string
 	// podIP is the executor address of every pod rented
@@ -169,7 +171,7 @@ func newFake(t *testing.T) *fakeLium {
 	f := &fakeLium{
 		t: t, faults: map[string]*fault{}, pods: map[string]*fakePod{},
 		events: map[string][]fakeEvent{}, rentFaults: map[string]*fault{},
-		idem: map[string]idemRecord{}, userID: fakeUserID, startStatus: "PENDING",
+		idem: map[string]idemRecord{}, userID: fakeUserID, startStatus: "PENDING", balance: 42.5,
 		podIP: "203.0.113.7", sh: newFakeShell(t), sshds: map[string]*fakeSSHD{},
 	}
 	mux := http.NewServeMux()
