@@ -128,3 +128,16 @@ func TestLocalInternetAnswersEveryHost(t *testing.T) {
 		t.Fatal("the default transport was not put back")
 	}
 }
+
+func TestGoroutinesGone(t *testing.T) {
+	const fn = "github.com/bugnet-sh/bugnet-router/internal/testenv_test.TestGoroutinesGone"
+	stop := make(chan struct{})
+	go func() { <-stop }()
+	if testenv.GoroutinesGone(fn) {
+		t.Fatal("a goroutine still waiting counted as gone")
+	}
+	close(stop)
+	if !testenv.GoroutinesGone(fn) {
+		t.Fatal("a goroutine that ended counted as running")
+	}
+}
