@@ -134,9 +134,10 @@ type Provider struct {
 	// dial reaches a pod's sshd, only through netguard outside tests
 	dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	ssh  sshLimits
-	// smu guards pools, each pod's SSH connections by pod id
-	smu   sync.Mutex
-	pools map[string]*sshPool
+	// smu guards pools, each pod's SSH connections by pod id, and closed, set once Close ran
+	smu    sync.Mutex
+	pools  map[string]*sshPool
+	closed bool
 	// execDir holds the pid file of each command's group in the pod, setsid is the pod's setsid
 	execDir, setsid string
 }

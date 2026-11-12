@@ -504,6 +504,27 @@ func TestLiumSSHPool(t *testing.T) {
 		}
 		eq(t, f.dials(), dials+1)
 	})
+	t.Run("no connection stays open after Close", func(t *testing.T) {
+		f, p := liveFake(t)
+		ref, pod := readyRef(t, f, p)
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+		dials := f.dials()
+		_, _, err := run(t, p, ref, sh("true"))
+		wantCode(t, err, provider.CodeInternal, false)
+		eq(t, f.dials(), dials)
+		if _, err := p.ReadyMeta(context.Background(), ref); err == nil {
+			t.Fatal("ReadyMeta after Close gave no error")
+		}
+		if p.poolOf(pod.id) != nil {
+			t.Fatal("a pool opened after Close")
+		}
+		within(t, 5*time.Second, "the close of every connection", func() bool {
+			_, open, _ := f.sshd(pod.id).stats()
+			return open == 0
+		})
+	})
 	t.Run("an idle connection closes", func(t *testing.T) {
 		f, p := liveFake(t)
 		p.ssh.idle = 50 * time.Millisecond

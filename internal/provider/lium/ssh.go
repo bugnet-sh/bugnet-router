@@ -371,6 +371,9 @@ func (p *Provider) pool(id, name, addr string, pin ssh.PublicKey) (*sshPool, err
 	p.smu.Lock()
 	old := p.pools[id]
 	switch {
+	case p.closed:
+		p.smu.Unlock()
+		return nil, errPoolClosed
 	case old != nil && old.serves(name, addr, pin):
 		p.smu.Unlock()
 		return old, nil
@@ -416,11 +419,11 @@ func (p *Provider) dropPool(id string) {
 	}
 }
 
-// closePools closes every pod's connections
+// closePools closes every pod's connections and refuses new ones
 func (p *Provider) closePools() {
 	p.smu.Lock()
 	pools := p.pools
-	p.pools = map[string]*sshPool{}
+	p.pools, p.closed = map[string]*sshPool{}, true
 	p.smu.Unlock()
 	for _, pl := range pools {
 		pl.close()
