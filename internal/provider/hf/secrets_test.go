@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -346,7 +347,7 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		}
 	}
 	waitBriefly := func(ref provider.Ref) {
-		wctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		wctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
 		keep(p.WaitReady(wctx, ref))
 	}
@@ -355,9 +356,11 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		f.set(j, func(j *fakeJob) { j.id, j.token = id, testKeyToken })
 		ref := refTo(j)
 		waitBriefly(ref)
-		// Health reads that fail, answer no protocol, or come from a server too old
+		// Health reads that fail, drop, answer no protocol, or come from a server too old
 		f.set(j, func(j *fakeJob) { j.stage = "RUNNING" })
 		f.inject(healthRoute, fault{status: 500, message: "down"})
+		waitBriefly(ref)
+		f.inject(healthRoute, fault{drop: true})
 		waitBriefly(ref)
 		f.clear(healthRoute)
 		f.set(j, func(j *fakeJob) { j.health = `{"status":"ok"}` })
@@ -365,13 +368,49 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		f.set(j, func(j *fakeJob) { j.health = `{"status":"ok","protocol":2}` })
 		keep(p.WaitReady(ctx, ref))
 		f.set(j, func(j *fakeJob) { j.health = "" })
-		// Sandbox calls the server refuses or the network drops, a dropped exec's kill too
+		// Sandbox calls the server refuses or the network drops on every try
 		f.inject(sbxStatRoute, fault{status: 502, times: 1})
 		_, err := p.StatFile(ctx, ref, "/tmp/a")
 		keep(err)
-		f.inject(sbxStatRoute, fault{drop: true, times: 1})
+		f.inject(sbxStatRoute, fault{drop: true})
 		_, err = p.StatFile(ctx, ref, "/tmp/a")
 		keep(err)
+		f.clear(sbxStatRoute)
+		dir := t.TempDir()
+		f.inject(sbxWriteRoute, fault{drop: true})
+		_, err = p.OpenWriter(ctx, ref, dir+"/w", provider.WriteSpec{Size: 1, Mode: 0o644})
+		keep(err)
+		f.clear(sbxWriteRoute)
+		mustWrite(t, dir+"/r", "data", 0o644)
+		// A file reader reads a dropped read as a short file, so the read gets bytes not HTTP
+		f.inject(sbxReadRoute, fault{serve: func(w http.ResponseWriter, _ *http.Request) {
+			if conn, buf, err := w.(http.Hijacker).Hijack(); err == nil {
+				_, _ = buf.WriteString("not http\r\n\r\n")
+				_ = buf.Flush()
+				_ = conn.Close()
+			}
+		}})
+		r, err := p.OpenReader(ctx, ref, dir+"/r", 0)
+		if err == nil {
+			_, err = io.ReadAll(r)
+			_ = r.Close()
+		}
+		keep(err)
+		f.clear(sbxReadRoute)
+		// A stat answer that is not JSON, and a command sbx-server stopped at its timeout
+		f.inject(sbxStatRoute, fault{status: 200, raw: "not json", times: 1})
+		_, err = p.StatFile(ctx, ref, "/tmp/a")
+		keep(err)
+		f.inject(sbxExecRoute, fault{status: 200, times: 1, raw: ndjson(
+			`{"event":"start","pid":7}`, `{"event":"exit","exit_code":null,"timed_out":true}`)})
+		s, err := p.Exec(ctx, ref, sh("true"))
+		if err == nil {
+			_, _ = io.ReadAll(s)
+			_, err = s.Wait()
+			_ = s.Close()
+		}
+		keep(err)
+		// A dropped exec, its kill dropped too
 		f.inject(sbxExecRoute, fault{drop: true, times: 2})
 		_, err = p.Exec(ctx, ref, sh("true"))
 		keep(err)
@@ -379,8 +418,11 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 			return strings.Count(logs.String(), "was not killed") == i+1
 		})
 		f.clear(sbxExecRoute)
-		// A ref with no token for a Job with no key to derive one from
+		// A ref with no token for a Job with no key to derive one from, and one with a bad token
 		_, err = p.StatFile(ctx, provider.Ref{Provider: "hf", ID: id}, "/tmp/a")
+		keep(err)
+		_, err = p.StatFile(ctx, provider.Ref{Provider: "hf", ID: id,
+			Meta: map[string]string{metaSecret: "not-hex"}}, "/tmp/a")
 		keep(err)
 		// A stage the adapter does not know, then a Job HF ended
 		f.set(j, func(j *fakeJob) { j.stage = "PAUSED" })
@@ -395,8 +437,20 @@ func TestHFJobNamedByTheTokenStaysOutOfErrors(t *testing.T) {
 		_, err = p.Inspect(ctx, provider.Ref{Provider: "hf", ID: id + "/x"})
 		keep(err)
 	}
-	if len(errs) < 24 {
+	if len(errs) < 36 {
 		t.Fatalf("only %d calls failed, the failing paths did not run", len(errs))
+	}
+	// Each path that names the Job from a transport error or an answer ran
+	for _, path := range []string{
+		"sbx-server GET /v1/files/stat: ", "sbx-server health: ",
+		"sbx-server PUT /v1/files/write: ", "moved no bytes", "stat of /tmp/a: ",
+		"not 64 lowercase hex", "at its timeout",
+	} {
+		if !slices.ContainsFunc(errs, func(err error) bool {
+			return strings.Contains(err.Error(), path)
+		}) {
+			t.Errorf("no error came from %q, so its path did not run", path)
+		}
 	}
 	for _, err := range errs {
 		if _, ok := provider.AsError(err); !ok {
