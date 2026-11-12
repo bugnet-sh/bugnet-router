@@ -346,6 +346,37 @@ func TestHFExecEvents(t *testing.T) {
 	})
 }
 
+func TestHFExecCutStreamKillsOnce(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	ref := readyJob(t, f, p)
+	jobPath := "/api/jobs/" + testNamespace + "/" + ref.ID
+	jobReads := func() int { return len(f.requestsTo("GET", jobPath)) }
+	reads := jobReads()
+	// Every exec answer stops after its start, the kill's own answer too
+	f.inject(sbxExecRoute, fault{status: 200, raw: ndjson(`{"event":"start","pid":7}`)})
+	s, err := p.Exec(t.Context(), ref, sh("sleep 60"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, err := s.Wait(); code != -1 || !isCode(err, provider.CodeOutcomeUnknown) {
+		t.Fatalf("Wait gave %d, %v", code, err)
+	}
+	// The lost stream's group is killed with no Close
+	within(t, 5*time.Second, "the kill", func() bool { return killExecs(f) > 0 })
+	lines := f.execLines()
+	if !strings.Contains(lines[1][2], callOf(t, lines[0][2])+".pid") {
+		t.Fatalf("the kill %q is not the command's", lines[1])
+	}
+	_ = s.Close()
+	// A kill whose own answer is cut sends no kill of its own, and Close sends no second one
+	time.Sleep(300 * time.Millisecond)
+	eq(t, len(f.execLines()), 2)
+	if n := jobReads() - reads; n > 2 {
+		t.Fatalf("%d Jobs reads for one lost command and its kill", n)
+	}
+}
+
 func TestHFExecErrors(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, testOptions())

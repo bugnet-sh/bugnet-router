@@ -282,6 +282,8 @@ type execStream struct {
 	err       error
 	// exited is set once the exit event came, after which nothing is killed
 	exited atomic.Bool
+	// killed is set once the group's kill went out, so a stream sends at most one
+	killed atomic.Bool
 	mu     sync.Mutex
 	abort  error
 	once   sync.Once
@@ -369,7 +371,7 @@ func (s *execStream) lostEnd(cause error) {
 		return
 	}
 	// No one reads the command any more, so it must not run on to the Job's end
-	go s.p.killLate(s.sb, s.call)
+	s.kill()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), lostTimeout)
 	defer cancel()
 	s.finish(-1, s.p.lost(ctx, s.sb, &provider.Error{Code: provider.CodeOutcomeUnknown,
@@ -404,10 +406,15 @@ func (s *execStream) stop(why error) {
 		s.mu.Unlock()
 		s.cancel()
 		_ = s.body.Close()
-		if s.call != "" {
-			go s.p.killLate(s.sb, s.call)
-		}
+		s.kill()
 	})
+}
+
+// kill kills the command's group once, out of the caller's way, never for a kill's own exec
+func (s *execStream) kill() {
+	if s.call != "" && s.killed.CompareAndSwap(false, true) {
+		go s.p.killLate(s.sb, s.call)
+	}
 }
 
 // Wait drains stdout and returns the exit status, 128 plus the signal for a signal exit
