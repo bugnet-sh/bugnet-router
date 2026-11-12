@@ -65,9 +65,24 @@ func TestLiumSendsNoSecret(t *testing.T) {
 			t.Fatal(err)
 		}
 		sftpCalls(t, p, ref)
+		if _, err := p.AuthorizeNativeSSH(ctx, ref, gatewayKey(t)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := p.ListOwned(ctx, placementLabels()); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := p.CheckAccount(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ReadLimits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, cursor := range []string{"", "l:"} {
+		if _, err := p.ReadUsage(ctx, time.Now().Add(-time.Hour), time.Now(), refs,
+			cursor); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, ref := range refs {
 		if err := p.Destroy(ctx, ref); err != nil {
@@ -142,6 +157,13 @@ func TestLiumSendsNoSecret(t *testing.T) {
 	if len(lines) < 6 || kills < 2 {
 		t.Fatalf("only %d exec lines, %d kills", len(lines), kills)
 	}
+	keyLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "authorized_keys") {
+			keyLines++
+		}
+	}
+	eq(t, keyLines, len(refs))
 
 	// Every byte sent over SFTP and every file written that way, reassembled
 	sessions, files := f.sftpSent()
