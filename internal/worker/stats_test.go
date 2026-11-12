@@ -245,7 +245,6 @@ func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
 	})
 	loc := newLocal(t, "local")
 	e, _, _ := statsEnv(t, options{providers: []provider.Provider{dear, loc}})
-	servers := func() []stats.Server { return e.servers(t) }
 	run := int64((24*60 - 5) / 10 * 10)
 	want := []stats.Server{{
 		Provider: "local", Size: "small", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
@@ -253,14 +252,14 @@ func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
 		Available: true,
 		Packages:  []stats.ServerPackage{{ID: smallPkg, Minutes: 10, PriceMicros: smallPrice}},
 	}}
-	eq(t, servers(), want)
+	eq(t, e.servers(t), want)
 
 	// Three quick failures take local out of placements, which leaves it listed but unavailable
 	for range 3 {
 		e.tracker.RecordFailure("local")
 	}
 	want[0].Available = false
-	eq(t, servers(), want)
+	eq(t, e.servers(t), want)
 }
 
 // servers is a fresh snapshot body's servers
