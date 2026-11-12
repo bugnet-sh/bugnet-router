@@ -371,6 +371,59 @@ func TestHFHardwareKeepsWhatItCannotRead(t *testing.T) {
 	eq(t, changes.Load(), 1)
 }
 
+func TestHFHardwareRefusesOddFigures(t *testing.T) {
+	f := newFake(t)
+	p := f.provider(t, testOptions())
+	ctx := context.Background()
+	small := design45[0]
+	// edit serves the compiled list with one change to t4-small
+	edit := func(change func(e map[string]any)) {
+		f.mu.Lock()
+		f.hardware = bytes.Clone(compiledHardware)
+		f.mu.Unlock()
+		f.editHardware(t, func(e map[string]any) map[string]any {
+			if e["name"] == small.name {
+				change(e)
+			}
+			return e
+		})
+	}
+	for name, change := range map[string]func(e map[string]any){
+		"a price past $100 a minute": func(e map[string]any) {
+			e["unitCostMicroUSD"] = maxMinuteMicros + 1
+		},
+		"a price of 1e300": func(e map[string]any) { e["unitCostMicroUSD"] = 1e300 },
+		"half a GB of GPU memory": func(e map[string]any) {
+			e["accelerator"].(map[string]any)["vram"] = "0.5 GB"
+		},
+	} {
+		edit(change)
+		if err := p.loadHardware(ctx); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		sz, ok := p.SizeFor(small.size().Resources)
+		if !ok || sz != small.size() || hourlyOf(p, small.name) != small.hourly {
+			t.Errorf("%s was taken, the T4 floor got %+v at %d", name, sz,
+				hourlyOf(p, small.name))
+		}
+	}
+	// A price in part of a micro-USD is rounded up
+	edit(func(e map[string]any) { e["unitCostMicroUSD"] = 7000.2 })
+	if err := p.loadHardware(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, hourlyOf(p, small.name), 7001*60+portsHourlyMicros)
+	// A list past maxReplyBytes is refused whole, however well formed
+	edit(func(e map[string]any) {
+		e["unitCostMicroUSD"] = 7500
+		e["padding"] = strings.Repeat(" ", maxReplyBytes)
+	})
+	if err := p.loadHardware(ctx); err == nil {
+		t.Fatal("a hardware list past maxReplyBytes was taken")
+	}
+	eq(t, hourlyOf(p, small.name), 7001*60+portsHourlyMicros)
+}
+
 func TestHFHardwareLoop(t *testing.T) {
 	f := newFake(t)
 	opts := testOptions()

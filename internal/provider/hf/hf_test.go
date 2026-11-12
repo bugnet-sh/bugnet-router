@@ -25,6 +25,8 @@ func TestHFNewRefusesBadOptions(t *testing.T) {
 			"namespace must be an organization name"},
 		"namespace with dots twice": {func(o *Options) { o.Namespace = "a..b" },
 			"namespace must be an organization name"},
+		"namespace with dashes twice": {func(o *Options) { o.Namespace = "a--b" },
+			"namespace must be an organization name"},
 		"unknown flavor": {func(o *Options) { o.Flavors = []string{"t4-small", "cpu-basic"} },
 			`flavor "cpu-basic" is not an HF GPU flavor`},
 		"negative start": {func(o *Options) { o.StartBilled = -time.Second },
