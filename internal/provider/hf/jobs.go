@@ -34,7 +34,7 @@ const (
 	// maxReplyBytes bounds one reply, a page of Jobs or the hardware list
 	maxReplyBytes = 8 << 20
 	maxErrorBytes = 64 << 10
-	// maxMessageBytes bounds the part of an error answer an error carries
+	// maxMessageBytes bounds each part of an error answer an error carries
 	maxMessageBytes = 512
 	// maxPages bounds one listing, so a list that never ends cannot hold a caller
 	maxPages = 100
