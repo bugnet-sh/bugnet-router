@@ -276,7 +276,10 @@ func TestHFCreateAdoptsALiveJob(t *testing.T) {
 	for _, stage := range []string{"CANCELED", "ERROR", "COMPLETED", "DELETED"} {
 		f.addJob(stage, ours)
 	}
-	f.addJob("RUNNING", other)
+	// The oldest Job, so only its labels keep it from being adopted
+	f.set(f.addJob("RUNNING", other), func(j *fakeJob) {
+		j.createdAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	})
 	live := f.addJob("SCHEDULING", ours)
 	newer := f.addJob("RUNNING", ours)
 	f.set(live, func(j *fakeJob) {
@@ -299,6 +302,34 @@ func TestHFCreateAdoptsALiveJob(t *testing.T) {
 		t.Fatalf("a retry gave %+v, %v", again, err)
 	}
 	eq(t, len(f.all()), calls)
+}
+
+// TestHFCreateChecksWhatItAdopts lists against a fake that ignores every filter
+func TestHFCreateChecksWhatItAdopts(t *testing.T) {
+	f := newFake(t)
+	f.unfiltered = true
+	p := f.provider(t, testOptions())
+	req := keyed()
+	ours := maps.Clone(req.Labels)
+	ours["bugnet_key"] = testKey
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, stage := range []string{"CANCELED", "ERROR", "COMPLETED", "DELETED", "RUNNING"} {
+		f.set(f.addJob(stage, ours), func(j *fakeJob) { j.createdAt = old })
+	}
+	// The live one's id is not one plain path segment
+	f.mu.Lock()
+	f.jobs[len(f.jobs)-1].id = "6911.not-a-segment"
+	f.mu.Unlock()
+	f.addJob("RUNNING", map[string]string{"bugnet": "1", "bugnet_key": testKey})
+	ref, err := p.Create(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, len(posts(t, f)), 1)
+	f.mu.Lock()
+	id := f.jobs[len(f.jobs)-1].id
+	f.mu.Unlock()
+	eq(t, ref.ID, id)
 }
 
 // TestHFCreateAdoptsAcrossProcesses has a second router adopt the Job a first one started
