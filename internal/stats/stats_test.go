@@ -61,8 +61,18 @@ var routerLimits = map[string]int64{
 
 func TestSummaryGolden(t *testing.T) {
 	s := Merge(seededFigures(), totals(t, "testdata/totals.json"), t0.Add(-20*time.Second),
-		testCatalog(t).All(), routerLimits)
+		testCatalog(t).All(), goldenServers, routerLimits)
 	golden(t, s, "testdata/summary.json")
+}
+
+// goldenServers are a size with a lifetime limit and a GPU size without one
+var goldenServers = []Server{
+	{Provider: "boat", Size: "small", VCPU: 2, MemoryMiB: 4096, DiskGiB: 51,
+		LongestRunMinutes: ptr(int64(43190)), User: "user", Available: true,
+		Packages: []ServerPackage{{ID: "cpu-small-10m", Minutes: 10, PriceMicros: 50000}}},
+	{Provider: "koyeb", Size: "gpu-nvidia-l4", VCPU: 15, MemoryMiB: 44 << 10, DiskGiB: 100,
+		GPU: &GPU{Count: 1, MemoryGiB: 24, Model: "NVIDIA L4"}, User: "root",
+		Packages: []ServerPackage{{ID: "gpu-l4-30m", Minutes: 30, PriceMicros: 1500000}}},
 }
 
 // sessionRows are one row of each kind the page must show
@@ -101,7 +111,8 @@ func TestSessionsGolden(t *testing.T) {
 	golden(t, s.Page(sessionRows(), t0), "testdata/sessions.json")
 }
 
-// ss7 are SS 7's shapes, gpu with its model, every array holding one element of its kind
+// ss7 are SS 7's shapes and control-plane 20.6.1's servers, gpu with its model, every array
+// holding one element of its kind
 const ss7 = `{
 	"summary": {
 		"version": 1, "generatedAt": "2026-11-07T14:02:31Z",
@@ -119,6 +130,10 @@ const ss7 = `{
 		"packages": [{"id": "cpu-small-10m", "vcpu": 2, "memoryMiB": 2048, "diskGiB": 10,
 			"gpu": {"count": 1, "memoryGiB": 24, "model": "NVIDIA L4"}, "minutes": 10,
 			"priceMicros": 1}],
+		"servers": [{"provider": "boat", "size": "small", "vcpu": 2, "memoryMiB": 4096,
+			"diskGiB": 51, "gpu": {"count": 1, "memoryGiB": 24, "model": "NVIDIA L4"},
+			"longestRunMinutes": 43190, "user": "user", "available": true,
+			"packages": [{"id": "cpu-small-10m", "minutes": 10, "priceMicros": 1}]}],
 		"limits": {"wallet.max_concurrent": 5}
 	},
 	"sessions": {
@@ -137,6 +152,8 @@ var nullable = map[string]bool{
 	"gpu": true, "wallet": true, "tx": true, "endedAt": true, "endReason": true, "next": true,
 	// Spec edit while Tasks 35 and 33 are not merged
 	"spentMicros": true, "failed7d": true,
+	// A server whose provider sets no lifetime
+	"longestRunMinutes": true,
 }
 
 // conforms checks got against SS 7's shape, the same keys and kinds at every level
@@ -213,9 +230,9 @@ func TestGoldenFilesFollowSectionSeven(t *testing.T) {
 
 func TestGeneratedAtIsTheOlderPart(t *testing.T) {
 	f := store.StatsFigures{At: t0.Add(500 * time.Millisecond)}
-	s := Merge(f, PaymentsPart{}, t0.Add(-5*time.Minute), nil, nil)
+	s := Merge(f, PaymentsPart{}, t0.Add(-5*time.Minute), nil, nil, nil)
 	eq(t, time.Time(s.GeneratedAt), t0.Add(-5*time.Minute))
-	s = Merge(f, PaymentsPart{}, t0.Add(time.Minute), nil, nil)
+	s = Merge(f, PaymentsPart{}, t0.Add(time.Minute), nil, nil, nil)
 	eq(t, time.Time(s.GeneratedAt), t0)
 }
 
@@ -230,7 +247,7 @@ func TestDaysZeroFilledFromTheEarlierFirstDay(t *testing.T) {
 		// A day ahead of the router's clock leaves the daily rows
 		{Day: "2026-11-09", Money: Money{EarnedMicros: 30}},
 	}}
-	s := Merge(f, p, t0, nil, nil)
+	s := Merge(f, p, t0, nil, nil, nil)
 	var days []string
 	for _, d := range s.Daily {
 		days = append(days, d.Day)
@@ -246,12 +263,12 @@ func TestDaysZeroFilledFromTheEarlierFirstDay(t *testing.T) {
 	spent := int64(70)
 	f.SpentMicros = &spent
 	f.Days[0].SpentMicros, f.Days[1].SpentMicros = ptr(int64(30)), ptr(int64(40))
-	s = Merge(f, p, t0, nil, nil)
+	s = Merge(f, p, t0, nil, nil, nil)
 	eq(t, *s.Daily[0].SpentMicros, int64(0))
 	eq(t, *s.Daily[3].SpentMicros, int64(30))
 	eq(t, *s.Totals.SpentMicros, int64(70))
 
-	s = Merge(store.StatsFigures{At: t0}, PaymentsPart{}, t0, nil, nil)
+	s = Merge(store.StatsFigures{At: t0}, PaymentsPart{}, t0, nil, nil, nil)
 	eq(t, s.Daily, []Day{})
 }
 
@@ -277,7 +294,7 @@ func TestPaymentsDaysBeforeTheFloorDropped(t *testing.T) {
 	kept, dropped := p.From(PaymentsFloor(f))
 	eq(t, dropped, 3)
 	eq(t, len(p.Daily), 5)
-	s := Merge(f, kept, t0, nil, nil)
+	s := Merge(f, kept, t0, nil, nil, nil)
 	var days []string
 	for _, d := range s.Daily {
 		days = append(days, d.Day)
@@ -296,7 +313,7 @@ func TestPaymentsDaysBeforeTheFloorDropped(t *testing.T) {
 }
 
 func TestUnknownSourcesGoOutNull(t *testing.T) {
-	s := Merge(seededFigures(), PaymentsPart{}, t0, nil, nil)
+	s := Merge(seededFigures(), PaymentsPart{}, t0, nil, nil, nil)
 	body, err := Encode(s)
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +325,7 @@ func TestUnknownSourcesGoOutNull(t *testing.T) {
 		}
 	}
 	for _, empty := range []string{`"byKind":[]`, `"byMethod":[]`, `"packages":[]`,
-		`"limits":{}`} {
+		`"servers":[]`, `"limits":{}`} {
 		if !bytes.Contains(body, []byte(empty)) {
 			t.Errorf("summary lacks %s", empty)
 		}
@@ -502,7 +519,7 @@ func TestUnknownPaymentsLimitKeyDropped(t *testing.T) {
 		"order.max_micros": 100000000, "x402.max_allowance_micros": 5000000,
 		"x402.max_price_per_call_micros": 500000,
 	})
-	s := Merge(store.StatsFigures{At: t0}, p, t0, nil, map[string]int64{"wallet.x": 1})
+	s := Merge(store.StatsFigures{At: t0}, p, t0, nil, nil, map[string]int64{"wallet.x": 1})
 	_, ok := s.Limits["gateway.quotes_per_minute"]
 	eq(t, ok, false)
 	eq(t, s.Limits["wallet.x"], int64(1))
