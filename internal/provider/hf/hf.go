@@ -3,6 +3,7 @@ package hf
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,7 +42,9 @@ type Options struct {
 	OpsPerSecond int
 	// HardwareEvery spaces the hardware list reads, an hour when 0
 	HardwareEvery time.Duration
-	Log           *slog.Logger // slog.Default when nil
+	// OnChange runs after a hardware read changed a price or the flavors sold, for a margin check
+	OnChange func()
+	Log      *slog.Logger // slog.Default when nil
 }
 
 // Provider sells HF Jobs, answering sizes and prices from memory
@@ -51,6 +54,41 @@ type Provider struct {
 	hw          *hardware
 	maxLifetime time.Duration
 	startBilled time.Duration
+	// hwEvery spaces the hardware reads, hwRetry the read after one that failed
+	hwEvery, hwRetry time.Duration
+	onChange         func()
+	// stop ends the hardware reads New starts, which close done
+	stop context.CancelFunc
+	done chan struct{}
+}
+
+// New checks the options and starts the hardware reads, which Close stops
+func New(opts Options) (*Provider, error) {
+	p, err := newProvider(opts)
+	if err != nil {
+		return nil, err
+	}
+	p.start()
+	return p, nil
+}
+
+// start begins the hardware reads
+func (p *Provider) start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.stop, p.done = cancel, make(chan struct{})
+	go func() {
+		defer close(p.done)
+		p.readHardware(ctx)
+	}()
+}
+
+// Close stops the hardware reads and waits for them to end
+func (p *Provider) Close() error {
+	if p.stop != nil {
+		p.stop()
+		<-p.done
+	}
+	return nil
 }
 
 // newProvider checks the options and builds the adapter
@@ -86,6 +124,9 @@ func newProvider(opts Options) (*Provider, error) {
 		hw:          newHardware(opts.Flavors),
 		maxLifetime: cmp.Or(opts.MaxLifetime, defaultMaxLifetime),
 		startBilled: opts.StartBilled,
+		hwEvery:     cmp.Or(opts.HardwareEvery, hardwareEvery),
+		hwRetry:     hardwareRetry,
+		onChange:    opts.OnChange,
 	}, nil
 }
 

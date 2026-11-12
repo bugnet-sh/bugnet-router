@@ -2,15 +2,20 @@ package hf
 
 import (
 	"cmp"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
 	"math"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
@@ -25,6 +30,11 @@ const (
 	maxAmount = 10_000_000
 	mib       = 1 << 20
 	gib       = 1 << 30
+	// hardwareEvery spaces the hardware list reads, which HF's prices rarely outpace
+	hardwareEvery = time.Hour
+	// hardwareRetry spaces the reads after one that failed
+	hardwareRetry   = 5 * time.Minute
+	hardwareTimeout = 20 * time.Second
 )
 
 // compiledHardware is GET /api/jobs/hardware as read on 2026-11-12, design 4.5's table
@@ -166,6 +176,8 @@ type hardware struct {
 	mu sync.RWMutex
 	// flavors are the configured flavors of the newest list, cheapest first, replaced whole
 	flavors []flavor
+	// known holds each configured flavor's last readable entry, the compiled one at first
+	known map[string]flavor
 }
 
 // newHardware sells the named flavors, every GPU flavor when none, at the compiled prices
@@ -173,12 +185,116 @@ func newHardware(names []string) *hardware {
 	if len(names) == 0 {
 		names = gpu.HFFlavors()
 	}
-	h := &hardware{sells: map[string]bool{}}
+	h := &hardware{sells: map[string]bool{}, known: maps.Clone(compiled)}
 	for _, n := range names {
 		h.sells[n] = true
 	}
 	h.flavors = h.ordered(compiled)
 	return h
+}
+
+// update reads a hardware list, keeping an unreadable flavor's last reading, and reports a change
+func (h *hardware) update(entries []json.RawMessage, log *slog.Logger) (bool, error) {
+	read, gpus := map[string]flavor{}, 0
+	for _, raw := range entries {
+		var e hwEntry
+		err := json.Unmarshal(raw, &e)
+		if !gpu.HFFlavor(e.Name) {
+			continue
+		}
+		gpus++
+		if !h.sells[e.Name] {
+			continue
+		}
+		var f flavor
+		if err == nil {
+			f, err = e.flavor()
+		}
+		if err != nil {
+			log.Error("hf: a flavor of the hardware list is unreadable, its last reading stays",
+				"flavor", e.Name, "err", err)
+			f = h.last(e.Name)
+		}
+		read[e.Name] = f
+	}
+	// A list that names no GPU flavor is taken as a broken answer, never as none sold
+	if gpus == 0 {
+		return false, errors.New("hf: the hardware list names no GPU flavor, the last " +
+			"prices stay")
+	}
+	next := h.ordered(read)
+	h.mu.Lock()
+	prev := h.flavors
+	h.flavors = next
+	maps.Copy(h.known, read)
+	h.mu.Unlock()
+	logChanges(prev, next, log)
+	return !slices.Equal(prev, next), nil
+}
+
+// last is the named flavor's last readable entry
+func (h *hardware) last(name string) flavor {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.known[name]
+}
+
+// logChanges logs each flavor that left the list, came back, or changed its price or resources
+func logChanges(prev, next []flavor, log *slog.Logger) {
+	for _, p := range prev {
+		if !slices.ContainsFunc(next, func(n flavor) bool { return n.name == p.name }) {
+			log.Warn("hf: a flavor left the hardware list and is not sold", "flavor", p.name)
+		}
+	}
+	for _, n := range next {
+		i := slices.IndexFunc(prev, func(p flavor) bool { return p.name == n.name })
+		switch {
+		case i < 0:
+			log.Info("hf: a flavor is back on the hardware list and sold", "flavor", n.name)
+		case prev[i].minuteMicros != n.minuteMicros:
+			log.Info("hf: a flavor's price changed", "flavor", n.name,
+				"hourly_micros_was", prev[i].hourlyMicros(), "hourly_micros", n.hourlyMicros())
+		case prev[i].resources != n.resources:
+			log.Info("hf: a flavor's resources changed", "flavor", n.name,
+				"was", prev[i].resources, "now", n.resources)
+		}
+	}
+}
+
+// readHardware loads the hardware list at once and then every hwEvery, sooner after a failure
+func (p *Provider) readHardware(ctx context.Context) {
+	for {
+		next := p.hwEvery
+		rctx, cancel := context.WithTimeout(ctx, hardwareTimeout)
+		err := p.loadHardware(rctx)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			p.log.Warn("hf: the hardware list was not read, the last prices stay", "err", err)
+			next = min(next, p.hwRetry)
+		}
+		if sleep(ctx, next) != nil {
+			return
+		}
+	}
+}
+
+// loadHardware reads GET /api/jobs/hardware into the flavors sold
+func (p *Provider) loadHardware(ctx context.Context) error {
+	var entries []json.RawMessage
+	_, err := p.jobs.do(ctx, call{
+		method: http.MethodGet, url: jobsURL(nil, "hardware"), public: true,
+	}, &entries)
+	if err != nil {
+		return err
+	}
+	changed, err := p.hw.update(entries, p.log)
+	if err == nil && changed && p.onChange != nil {
+		p.onChange()
+	}
+	return err
 }
 
 // ordered keeps the configured flavors of read, cheapest first, equal prices in HF's list order

@@ -1,8 +1,15 @@
 package hf
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,5 +194,213 @@ func TestHFCosts(t *testing.T) {
 		if !ok || got != tc.want {
 			t.Errorf("start billed %s costs %d, %v, want %d", tc.billed, got, ok, tc.want)
 		}
+	}
+}
+
+// syncBuffer is a log sink the loop and the test may share
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// editHardware changes the fake's hardware list, entry by entry, nil dropping one
+func (f *fakeHF) editHardware(t *testing.T, edit func(e map[string]any) map[string]any) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var entries []map[string]any
+	if err := json.Unmarshal(f.hardware, &entries); err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	for _, e := range entries {
+		if e = edit(e); e != nil {
+			out = append(out, e)
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.hardware = raw
+}
+
+// hourlyOf is a sold flavor's hourly cost, 0 when it is not sold
+func hourlyOf(p *Provider, name string) int64 {
+	return p.HourlyCostMicros(provider.Size{Name: name})
+}
+
+func TestHFHardwareLoadsTheLiveList(t *testing.T) {
+	f := newFake(t)
+	var changes atomic.Int32
+	opts := testOptions()
+	opts.OnChange = func() { changes.Add(1) }
+	p := f.provider(t, opts)
+	ctx := context.Background()
+	// The list as compiled changes nothing
+	if err := p.loadHardware(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, changes.Load(), 0)
+	f.editHardware(t, func(e map[string]any) map[string]any {
+		switch e["name"] {
+		case "t4-small":
+			e["unitCostMicroUSD"] = 7000
+		case "a100x8":
+			return nil
+		case "h200":
+			e["ram"] = "300 GB"
+		}
+		return e
+	})
+	f.mu.Lock()
+	var entries []map[string]any
+	_ = json.Unmarshal(f.hardware, &entries)
+	entries = append(entries, map[string]any{
+		"name": "b200x1", "prettyName": "Nvidia B200", "cpu": "30 vCPU", "ram": "300 GB",
+		"ephemeralStorage": "3000 GB", "accelerator": map[string]any{
+			"type": "gpu", "model": "B200", "quantity": "1", "vram": "180 GB",
+			"manufacturer": "Nvidia",
+		}, "unitCostMicroUSD": 90000, "unitCostUSD": 0.09, "unitLabel": "minute",
+	})
+	f.hardware, _ = json.Marshal(entries)
+	f.mu.Unlock()
+	if err := p.loadHardware(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, changes.Load(), 1)
+	eq(t, hourlyOf(p, "t4-small"), 430_000)
+	eq(t, hourlyOf(p, "a100x8"), 0)
+	eq(t, hourlyOf(p, "b200x1"), 0)
+	sz, ok := p.SizeFor(provider.Resources{GPUCount: 1, GPUModel: gpu.H200})
+	if !ok || sz.Name != "h200" || sz.Resources.MemoryMiB != 286_102 {
+		t.Fatalf("the H200 size is %+v, %v, want h200 with 286102 MiB", sz, ok)
+	}
+	if _, ok := p.SizeFor(provider.Resources{GPUCount: 8, GPUModel: gpu.A100}); ok {
+		t.Fatal("a flavor missing from the list is still sold")
+	}
+	eq(t, len(p.Sizes()), 21)
+	// The same list again changes nothing
+	if err := p.loadHardware(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, changes.Load(), 1)
+	// The list is public, so it is read without the token
+	for _, r := range f.requestsTo("GET", "/api/jobs/hardware") {
+		if r.header.Get("Authorization") != "" {
+			t.Fatal("the hardware list was read with the token")
+		}
+	}
+}
+
+func TestHFHardwareKeepsWhatItCannotRead(t *testing.T) {
+	f := newFake(t)
+	logs := &syncBuffer{}
+	opts := testOptions()
+	opts.Log = slog.New(slog.NewTextHandler(logs, nil))
+	var changes atomic.Int32
+	opts.OnChange = func() { changes.Add(1) }
+	p := f.provider(t, opts)
+	ctx := context.Background()
+	want := p.Sizes()
+
+	// An entry it cannot read keeps its last reading, the others are read
+	f.editHardware(t, func(e map[string]any) map[string]any {
+		switch e["name"] {
+		case "l4x1":
+			e["ram"] = "lots"
+		case "l40sx1":
+			e["accelerator"].(map[string]any)["model"] = "L40S-NEXT"
+		case "a10g-small":
+			e["unitLabel"] = "hour"
+		case "a10g-large":
+			e["unitCostMicroUSD"] = 0
+		case "t4-medium":
+			e["cpu"] = 8
+		case "t4-small":
+			e["unitCostMicroUSD"] = 7000
+		}
+		return e
+	})
+	if err := p.loadHardware(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"l4x1", "l40sx1", "a10g-small", "a10g-large", "t4-medium"} {
+		i := slices.IndexFunc(want, func(s provider.Size) bool { return s.Name == name })
+		sz, ok := p.SizeFor(want[i].Resources)
+		if !ok || sz != want[i] || hourlyOf(p, name) != design45[i].hourly {
+			t.Errorf("%s, unreadable, is %+v at %d, want its compiled reading", name, sz,
+				hourlyOf(p, name))
+		}
+		if !strings.Contains(logs.String(), "flavor="+name) {
+			t.Errorf("no log names the unreadable %s", name)
+		}
+	}
+	eq(t, hourlyOf(p, "t4-small"), 430_000)
+	eq(t, changes.Load(), 1)
+
+	// A list that is not one, or names no GPU flavor, changes nothing
+	before := p.Sizes()
+	for _, body := range []string{`[]`, `{"error": "maintenance"}`, `[{"name": "cpu-basic"}]`,
+		`not json`} {
+		f.mu.Lock()
+		f.hardware = []byte(body)
+		f.mu.Unlock()
+		if err := p.loadHardware(ctx); err == nil {
+			t.Errorf("the list %s was taken", body)
+		}
+		eq(t, p.Sizes(), before)
+	}
+	f.inject("GET /api/jobs/hardware", fault{status: 500, message: "down", times: 1})
+	if err := p.loadHardware(ctx); err == nil {
+		t.Error("a 500 was taken as the list")
+	}
+	eq(t, p.Sizes(), before)
+	eq(t, changes.Load(), 1)
+}
+
+func TestHFHardwareLoop(t *testing.T) {
+	f := newFake(t)
+	opts := testOptions()
+	opts.HardwareEvery = time.Hour
+	p := f.provider(t, opts)
+	p.hwRetry = 20 * time.Millisecond
+	// The first read fails, so the next comes after the retry and not the hour
+	f.inject("GET /api/jobs/hardware", fault{status: 503, message: "down", times: 1})
+	f.editHardware(t, func(e map[string]any) map[string]any {
+		if e["name"] == "t4-small" {
+			e["unitCostMicroUSD"] = 7000
+		}
+		return e
+	})
+	p.start()
+	deadline := time.Now().Add(5 * time.Second)
+	for hourlyOf(p, "t4-small") != 430_000 {
+		if time.Now().After(deadline) {
+			t.Fatal("the loop never read the list after its first read failed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n := len(f.requestsTo("GET", "/api/jobs/hardware"))
+	eq(t, n, 2)
+	time.Sleep(60 * time.Millisecond)
+	eq(t, len(f.requestsTo("GET", "/api/jobs/hardware")), n)
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
