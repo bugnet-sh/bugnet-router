@@ -771,6 +771,9 @@ A capable provider can still refuse a package for its health, its sizes, the mar
 maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
 `feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
 
+At start `router-api` logs an error naming each start package that no configured provider can
+place under `margin_floor` and `images.accept`, health aside, and still starts.
+
 `CreatePlacement` and `ExtendPlacement` check that the order's `amount_micros`, less its x402
 allowance and fee, covers the package's price now. One that pays less answers
 `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`,
@@ -1409,7 +1412,14 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   25 s timeout and one attempt. It reads the router's figures in one read-only repeatable-read
   transaction, calls Payments' `GET /internal/v1/stats/totals` with
   `BUGNET_PAYMENTS_ROUTER_TOKEN`, checks the answer, merges both with the catalog's start
-  packages and the limits, and writes the one row of `stats_snapshot`.
+  packages, the servers and the limits, and writes the one row of `stats_snapshot`.
+- `servers` lists each provider size a start package lands on (control-plane 20.6.5), from the
+  saga's placement engine with `margin_floor` and `images.accept`: the adapter's size, its
+  resources and GPU, the longest run with extensions (`null` without a lifetime limit), the exec
+  user, `available` while the provider is neither blocked nor down and takes the start now, and
+  each landing package's `id`, `minutes` and `priceMicros`. Providers keep the `providers` order
+  and sizes the adapter's order. A package `margin_floor` refuses on a size, and a size no package
+  lands on, are left out. No rate, fee, cost or margin goes out.
 - A failed Payments call keeps the last good Payments part and its time, so `generatedAt` shows
   how old the money is. Without any Payments part the row holds no body.
 - `daily` leaves out Payments' days over a day before the router's first order, or over 90 days
