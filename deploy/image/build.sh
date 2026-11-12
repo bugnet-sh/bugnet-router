@@ -76,7 +76,8 @@ tar -C "$PAYLOAD" -czf "$DIST/payload-$CHANNEL-$VERSION.tar.gz" .
 
 (cd "$ROOT" && go run ./cmd/bugnet-dev image scan --dir "$PAYLOAD")
 
-TAG="bugnet-base:$VERSION-$CHANNEL"
+# BUGNET_LOCAL_TAG replaces the local tag, so container test runs on one Docker never share it
+TAG="${BUGNET_LOCAL_TAG:-bugnet-base:$VERSION-$CHANNEL}"
 (cd "$HERE" && docker buildx build --platform linux/amd64 --provenance=false --load \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" --build-arg "CHANNEL=$CHANNEL" \
     --build-arg "INPUTS=$INPUTS" -t "$TAG" -f Dockerfile .)

@@ -106,6 +106,16 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+// localTag is a tag of this build alone, removed when the test ends, so runs at once never share
+func localTag(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	tag := "bugnet-base-test:" + hex.EncodeToString(b)
+	t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", tag).Run() })
+	return tag
+}
+
 // build runs build.sh with --no-push and returns the local tag and the combined output
 func build(t *testing.T, extra string, env ...string) (string, string, error) {
 	t.Helper()
@@ -113,7 +123,8 @@ func build(t *testing.T, extra string, env ...string) (string, string, error) {
 	cmd := exec.Command(filepath.Join(repoRoot(t), "deploy/image/build.sh"),
 		"--channel", "dev", "--ca", ca, "--no-push")
 	cmd.Dir = repoRoot(t)
-	cmd.Env = append(os.Environ(), append([]string{"CA_SHA256_DEV_V1=" + sum}, env...)...)
+	own := []string{"CA_SHA256_DEV_V1=" + sum, "BUGNET_LOCAL_TAG=" + localTag(t)}
+	cmd.Env = append(os.Environ(), append(own, env...)...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
