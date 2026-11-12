@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -130,6 +131,10 @@ type fakeSSHD struct {
 	holdOpens bool
 	// execGate holds each exec reply until it closes, the command already started
 	execGate chan struct{}
+	// hostile serves SFTP as a hostile pod would, the host's files when nil
+	hostile *hostileFS
+	// sftpOut counts the bytes every SFTP session sent the adapter
+	sftpOut atomic.Int64
 	// done closes when the sshd closes
 	done   chan struct{}
 	closed bool
@@ -473,14 +478,25 @@ func (s *fakeSSHD) endSession(sc *ssh.ServerConn) {
 	}
 }
 
-// session runs one exec request through the login shell and signals its group as OpenSSH does
+// session runs one exec request through the login shell, or serves SFTP, as OpenSSH does
 func (s *fakeSSHD) session(sc *ssh.ServerConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	var shell *os.Process
+	sftpOn := false
 	for r := range reqs {
 		switch r.Type {
+		case "subsystem":
+			var req struct{ Name string }
+			if shell != nil || sftpOn || ssh.Unmarshal(r.Payload, &req) != nil ||
+				req.Name != "sftp" {
+				_ = r.Reply(false, nil)
+				continue
+			}
+			sftpOn = true
+			_ = r.Reply(true, nil)
+			go s.serveSFTP(ch)
 		case "exec":
 			var req struct{ Command string }
-			if shell != nil || ssh.Unmarshal(r.Payload, &req) != nil {
+			if shell != nil || sftpOn || ssh.Unmarshal(r.Payload, &req) != nil {
 				_ = r.Reply(false, nil)
 				continue
 			}

@@ -158,6 +158,8 @@ type fakeLium struct {
 	dialed, execs []string
 	// signals are the signal requests the pods got
 	signals []string
+	// sftpIn holds every byte the adapter sent each SFTP session, one log a session
+	sftpIn []*sftpLog
 	// sshDown refuses every SSH dial, as a pod whose sshd died would
 	sshDown bool
 }
