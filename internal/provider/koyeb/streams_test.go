@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -485,6 +486,26 @@ func TestKoyebReaderSeesATruncatedFile(t *testing.T) {
 		t.Fatalf("a reissue past the end of a truncated file gave %v, want a changed file", err)
 	}
 	eq(t, len(f.downloadHeaders()), 2)
+}
+
+func TestKoyebReaderNamesADroppedConnection(t *testing.T) {
+	f, p, ref, name := readerFile(t, "key-dropped", bytes.Repeat([]byte("x"), 2<<20))
+	f.failFiles("GET /files", fileFault{cut: 1 << 20, times: 1})
+	f.failFiles("GET /files", fileFault{drop: true})
+	r, err := p.OpenReader(t.Context(), ref, name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	_ = r.Close()
+	// three reissues met a closed connection, which says nothing of the file's length
+	var lost *url.Error
+	if len(got) != 1<<20 || !errors.As(err, &lost) || errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("reissues on dropped connections gave %d bytes, %v, want 1 MiB and the "+
+			"failed GET", len(got), err)
+	}
+	eq(t, isCode(err, provider.CodeInternal), true)
+	eq(t, len(f.downloadHeaders()), 4)
 }
 
 func TestKoyebReaderSkipsTheOffsetOn200(t *testing.T) {

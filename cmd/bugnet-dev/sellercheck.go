@@ -27,7 +27,6 @@ const (
 	uploadChunk   = 64 << 10
 	parallelConns = 32
 	burstRequests = 300
-	burstWithin   = 60
 	burstWorkers  = 16
 	// sseTotal is a stream's whole length, 36 events 5 s apart with a margin
 	sseTotal = 200
@@ -43,11 +42,13 @@ var tailnetRange = netip.MustParsePrefix("100.64.0.0/10")
 type sellerCheck struct {
 	// second is the unit of every wait, one second in a real check
 	second time.Duration
+	// minute is how long check 5's 300 requests may take, one minute in a real check
+	minute time.Duration
 	// lookup resolves a name through public resolvers
 	lookup func(ctx context.Context, host string) ([]netip.Addr, error)
 	// addrOf is where to dial an address of host, port 443 in a real check
 	addrOf func(host string, ip netip.Addr) string
-	// slack is added to the longest gap between events, none in a real check
+	// slack is added to each gap between events and to the stream's length, none in a real check
 	slack time.Duration
 	// roots verifies certificates, the system roots when nil
 	roots *x509.CertPool
@@ -83,7 +84,8 @@ func (c *cli) x402SellerCheck(args []string) error {
 	sc := c.seller
 	if sc == nil {
 		sc = &sellerCheck{
-			second: time.Second, lookup: publicLookup(strings.Split(*resolvers, ",")),
+			second: time.Second, minute: time.Minute,
+			lookup: publicLookup(strings.Split(*resolvers, ",")),
 			addrOf: func(_ string, ip netip.Addr) string {
 				return net.JoinHostPort(ip.String(), "443")
 			},
@@ -291,7 +293,7 @@ func (s *sellerCheck) hold(ctx context.Context, name string) *checkFailure {
 // stream is check 3, 36 server-sent events, each within 7 s of the one before
 func (s *sellerCheck) stream(ctx context.Context, name string) *checkFailure {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, s.d(sseTotal))
+	ctx, cancel := context.WithTimeout(ctx, s.d(sseTotal)+s.slack)
 	defer cancel()
 	res, done, err := s.get(ctx, name, "/sse/")
 	if err != nil {
@@ -318,6 +320,9 @@ func (s *sellerCheck) stream(ctx context.Context, name string) *checkFailure {
 	}
 	if events < sseEvents {
 		reason := fmt.Sprintf("only %d of %d events", events, sseEvents)
+		if err := sc.Err(); err != nil {
+			reason += ": " + err.Error()
+		}
 		return &checkFailure{3, "event stream", reason}
 	}
 	s.pass(3, "event stream", fmt.Sprintf("%d events in time", events), start)
@@ -399,7 +404,7 @@ func (s *sellerCheck) burst(ctx context.Context, a, b string) *checkFailure {
 	}
 	tr := s.transport()
 	defer tr.CloseIdleConnections()
-	ctx300, cancel := context.WithTimeout(ctx, s.d(burstWithin))
+	ctx300, cancel := context.WithTimeout(ctx, s.minute)
 	defer cancel()
 	var next atomic.Int64
 	failed := make(chan error, burstWorkers)

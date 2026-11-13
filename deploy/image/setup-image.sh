@@ -34,7 +34,8 @@ tools_json() {
         --arg git "$(ver git --version)" --arg tar "$(ver tar --version)" \
         --arg python3 "$(ver python3 --version)" --arg node "$(ver node --version)" \
         --arg docker "$(ver docker --version)" --arg pnpm "$(ver pnpm --version)" \
-        --arg uv "$(ver uv --version)" --arg hf "$(ver hf version)" \
+        --arg uv "$(ver uv --version)" \
+        --arg hf "$(HF_HUB_DISABLE_UPDATE_CHECK=1 ver hf version)" \
         --arg gcc "$(ver gcc --version)" --arg make "$(ver make --version)" \
         --arg sshd "$(ver ssh -V)" --arg nft "$(ver nft --version)" \
         --arg curl "$(ver curl --version)" \
@@ -224,7 +225,11 @@ step12_check() {
 }
 
 step13_manifest() {
-    local target="$1" runner cas used disk
+    local target="$1" runner cas used disk home tools
+    # The tools run in a throwaway home, since hf writes its update markers there
+    home="$(mktemp -d)"
+    tools="$(cd "$home" && HOME="$home" HF_HOME="$home" tools_json)"
+    rm -rf "$home"
     runner="$(sha256sum "$LIB/bugnet-run" | cut -d' ' -f1)"
     cas="$(for f in /usr/local/share/ca-certificates/bugnet-egress-v*.crt; do
         [ -e "$f" ] || continue
@@ -241,7 +246,7 @@ step13_manifest() {
     jq -n --arg version "$(tr -d '[:space:]' <"$LIB/VERSION")" --arg channel "$CHANNEL" \
         --arg target "$target" --arg os "ubuntu-${VERSION_ID}" --arg inputs "$INPUTS" \
         --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg runner "$runner" \
-        --argjson cas "$cas" --argjson tools "$(tools_json)" --argjson disk "$disk" \
+        --argjson cas "$cas" --argjson tools "$tools" --argjson disk "$disk" \
         '{v:1,version:$version,channel:$channel,target:$target,os:$os,inputs_sha256:$inputs,
           built_at:$built,runner_sha256:{amd64:$runner},ca:$cas,tools:$tools,disk_bytes:$disk}' \
         >/etc/bugnet/image.json

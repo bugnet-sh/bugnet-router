@@ -415,6 +415,28 @@ func (e *env) finished(t *testing.T, kind string, ids ...int64) {
 	}
 }
 
+// finishedEach waits for one job of each kind to complete, in whatever order they end
+func (e *env) finishedEach(t *testing.T, kinds ...string) {
+	t.Helper()
+	left := slices.Clone(kinds)
+	timeout := time.After(20 * time.Second)
+	for len(left) > 0 {
+		select {
+		case ev := <-e.events:
+			i := slices.Index(left, ev.Job.Kind)
+			if i < 0 {
+				continue
+			}
+			if ev.Kind != river.EventKindJobCompleted {
+				t.Fatalf("%s job %d ended %s: %+v", ev.Job.Kind, ev.Job.ID, ev.Kind, ev.Job.Errors)
+			}
+			left = slices.Delete(left, i, i+1)
+		case <-timeout:
+			t.Fatalf("%v jobs did not complete", left)
+		}
+	}
+}
+
 // next returns the next event of a job of kind
 func (e *env) next(t *testing.T, kind string) *river.Event {
 	t.Helper()
@@ -776,8 +798,8 @@ func TestSweepDestroysExpiredAfterDowntime(t *testing.T) {
 	late, lateRef := e.readyPlacement(t, e.local, now.Add(-10*time.Minute),
 		now.Add(-10*time.Second))
 	e.start(t)
-	e.finished(t, "sweep")
-	e.finished(t, "watch")
+	// Both run at start side by side, so either may end first
+	e.finishedEach(t, "sweep", "watch")
 
 	for _, id := range []uuid.UUID{p.ID, late.ID} {
 		if got := e.reload(t, id); got.State != store.PlacementTerminated {

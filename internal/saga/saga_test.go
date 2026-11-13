@@ -1492,7 +1492,8 @@ func TestFailStuckRacingPlacingReleasesOneSlot(t *testing.T) {
 }
 
 func TestStuckDestroyDoesNotHangPlacing(t *testing.T) {
-	saga.SetCleanupTimeout(t, 200*time.Millisecond)
+	// Only the destroy is cut short, as the store calls keep their own bound
+	saga.SetDestroyTimeout(t, 200*time.Millisecond)
 	a := stuckDestroy{newLocal(t, local.Options{Name: "a"}), make(chan struct{})}
 	e := newEnv(t, a)
 	t.Cleanup(func() { close(a.unblock) })

@@ -695,15 +695,20 @@ func TestShutdownHandsJobsOver(t *testing.T) {
 func TestScannerAdoptsJobsWithoutOwner(t *testing.T) {
 	e := newEnv(t)
 	first := e.service(t, "replica-1")
-	res := e.exec(t, first, slowLines(20, "0.1"), "", 300*time.Millisecond, jobs.Until{})
+	// Exec returns at line 1, so the job runs in the sandbox before Valkey loses its keys
+	lineOne := jobs.Until{Pattern: regexp.MustCompile("line 1\n")}
+	res := e.exec(t, first, slowLines(20, "0.1"), "", 10*time.Second, lineOne)
+	if !strings.Contains(string(res.StdoutTail), "line 1\n") {
+		t.Fatalf("exec returned %+v before line 1", res)
+	}
 
 	// Valkey losing every key of the job leaves only the store's running row
 	ctx := t.Context()
-	for _, key := range []string{"s", "owner", "epoch"} {
-		del := e.vk.B().Del().Key(e.prefix + "job:" + res.JobID + ":" + key).Build()
-		if err := e.vk.Do(ctx, del).Error(); err != nil {
-			t.Fatal(err)
-		}
+	key := e.prefix + "job:" + res.JobID + ":"
+	// One DEL, as the live owner would refill a stream deleted before its owner key
+	del := e.vk.B().Del().Key(key+"s", key+"owner", key+"epoch").Build()
+	if err := e.vk.Do(ctx, del).Error(); err != nil {
+		t.Fatal(err)
 	}
 	zrem := e.vk.B().Zrem().Key(e.prefix + "jobs:leases").Member(res.JobID).Build()
 	if err := e.vk.Do(ctx, zrem).Error(); err != nil {
@@ -713,6 +718,9 @@ func TestScannerAdoptsJobsWithoutOwner(t *testing.T) {
 		if time.Since(start) > 5*time.Second {
 			t.Fatal("the first replica kept owning a job whose lease vanished")
 		}
+	}
+	if left := e.streamed(t, res.JobID); len(left) != 0 {
+		t.Fatalf("the lost stream came back with %+v", left)
 	}
 
 	second := e.service(t, "replica-2")

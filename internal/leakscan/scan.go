@@ -122,7 +122,8 @@ func read(archive io.Reader) ([]entry, error) {
 	for {
 		h, err := tr.Next()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			// Only a bare io.EOF ends the archive, a wrapped one is a failed read
+			if err != io.EOF {
 				rerr = err
 			}
 			break
