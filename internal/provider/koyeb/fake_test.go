@@ -220,6 +220,8 @@ type fakeKoyeb struct {
 	pools *poolState
 	// missingImages are the images a create is refused for, as Koyeb refuses a missing one
 	missingImages map[string]bool
+	// bodies are the service bodies createService accepted, oldest first
+	bodies []map[string]any
 }
 
 func newFake(t *testing.T) *fakeKoyeb {
@@ -605,6 +607,7 @@ func (f *fakeKoyeb) createService(w http.ResponseWriter, r *http.Request) {
 	s.deployment = d.id
 	f.services[s.id] = s
 	f.deployments[d.id] = d
+	f.bodies = append(f.bodies, body)
 	a.status = "HEALTHY"
 	writeJSON(w, http.StatusOK, map[string]any{"service": f.serviceJSON(s)})
 }
@@ -852,14 +855,11 @@ func (f *fakeKoyeb) counts() (apps, services int) {
 	return apps, services
 }
 
+// serviceBodies are the service bodies createService accepted, in the order they arrived
 func (f *fakeKoyeb) serviceBodies() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []map[string]any
-	for _, s := range f.services {
-		out = append(out, s.body)
-	}
-	return out
+	return slices.Clone(f.bodies)
 }
 
 func fakeEnv(d *fakeDeployment) map[string]string { return definitionEnv(d.definition) }
