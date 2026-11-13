@@ -92,6 +92,12 @@ func (f *fakeSeller) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 				return
 			}
+			if f.mode == "resetSSE" && i == 11 {
+				if conn, _, err := rc.Hijack(); err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
 			_, _ = io.WriteString(w, "data: "+strconv.Itoa(i)+"\n\n")
 			if f.mode != "bufferedSSE" {
 				_ = rc.Flush()
@@ -179,6 +185,7 @@ func TestSellerCheckFails(t *testing.T) {
 	}{
 		{"cut140", "seller check 2 "},
 		{"bufferedSSE", "seller check 3 "},
+		{"resetSSE", "only 10 of 36 events: unexpected EOF"},
 		{"late402", "seller check 4 "},
 		{"refused32nd", "seller check 5 "},
 	}

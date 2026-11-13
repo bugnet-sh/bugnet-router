@@ -320,6 +320,9 @@ func (s *sellerCheck) stream(ctx context.Context, name string) *checkFailure {
 	}
 	if events < sseEvents {
 		reason := fmt.Sprintf("only %d of %d events", events, sseEvents)
+		if err := sc.Err(); err != nil {
+			reason += ": " + err.Error()
+		}
 		return &checkFailure{3, "event stream", reason}
 	}
 	s.pass(3, "event stream", fmt.Sprintf("%d events in time", events), start)
