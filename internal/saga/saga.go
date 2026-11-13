@@ -151,6 +151,9 @@ const EndTimeout = terminateTimeout
 // cleanupTimeout bounds each store or provider call of placing so Wait cannot hang on one
 var cleanupTimeout = 30 * time.Second
 
+// destroyTimeout bounds each sandbox destroy of placing separately from its store calls
+var destroyTimeout = cleanupTimeout
+
 // Delays before each retry of a create whose outcome is unknown
 var unknownBackoff = []time.Duration{
 	200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond,
@@ -1809,7 +1812,7 @@ func destroyRef(ctx context.Context, prov provider.Provider, ref provider.Ref) e
 }
 
 func (s *Saga) destroy(ctx context.Context, prov provider.Provider, ref provider.Ref) {
-	ctx, cancel := step(ctx)
+	ctx, cancel := context.WithTimeout(ctx, destroyTimeout)
 	defer cancel()
 	if err := destroyRef(ctx, prov, ref); err != nil {
 		s.d.Log.Error("destroy sandbox", "provider", prov.Name(), "sandbox", ref.ID, "err", err)
