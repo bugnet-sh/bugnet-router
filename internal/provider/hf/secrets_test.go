@@ -314,7 +314,7 @@ func TestHFSightingsKeepTheTokenOutOfValkey(t *testing.T) {
 		} {
 			// Each key answers one of the two, the other a wrong type error
 			if all, err := vk.Do(ctx, cmd).ToAny(); err == nil {
-				kept.WriteString(fmt.Sprintf("%v\n", all))
+				fmt.Fprintf(&kept, "%v\n", all)
 			}
 		}
 	}
@@ -788,8 +788,8 @@ func TestHFSandboxCallsCarryTheSandboxTokenAlone(t *testing.T) {
 		for k, vs := range rest {
 			other.WriteString(k + ": " + strings.Join(vs, ",") + "\n")
 		}
-		switch {
-		case r.host == ref.ID+"--49983.hf.jobs":
+		switch r.host {
+		case ref.ID + "--49983.hf.jobs":
 			sandbox++
 			for _, name := range []string{"Authorization", "Cookie", "Proxy-Authorization"} {
 				if v := r.header.Get(name); v != "" {
@@ -804,7 +804,7 @@ func TestHFSandboxCallsCarryTheSandboxTokenAlone(t *testing.T) {
 			}) {
 				t.Errorf("%s carried a token outside its header", where)
 			}
-		case r.host == jobsHost:
+		case jobsHost:
 			hub++
 			if got != "" || strings.Contains(other.String(), token) {
 				t.Errorf("%s carried the sandbox token", where)

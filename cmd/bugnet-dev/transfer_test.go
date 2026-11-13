@@ -148,7 +148,7 @@ max_hourly_micros = 350000
 
 func TestOwnedReadsTheProviderSeed(t *testing.T) {
 	// Lium answers no pods and no nodes
-	testenv.LocalInternet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	testenv.LocalInternet(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "[]")
 	}))
 	settings := writeSettings(t, liumSizes)

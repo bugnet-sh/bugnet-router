@@ -119,7 +119,7 @@ func TestHFCheckAccount(t *testing.T) {
 
 		// A Job HF names oddly still speaks for the account, its name quoted and cut
 		f, p, _ = accountFake(t)
-		j = endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
+		endedJob(f, "CANCELED", "NO_CREDITS", time.Time{})
 		f.show = func(job map[string]any) { job["id"] = strings.Repeat("a\nb", 100) }
 		f.unfiltered = true
 		if _, err := p.ListOwned(ctx, nil); err != nil {
