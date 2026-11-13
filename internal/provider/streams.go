@@ -96,7 +96,8 @@ func (r *fileReader) Read(p []byte) (int, error) {
 		return n, nil
 	case r.ctx.Err() != nil:
 		return n, r.ctx.Err()
-	case errors.Is(err, io.EOF):
+	// Only a bare io.EOF ends the body, a wrapped one is a failure such as a dropped connection
+	case err == io.EOF:
 		return n, &Error{Code: CodeInternal, Err: fmt.Errorf(
 			"file ended %d bytes before its size of %d: %w", r.left, r.info.Size,
 			io.ErrUnexpectedEOF)}

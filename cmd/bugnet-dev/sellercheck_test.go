@@ -84,9 +84,11 @@ func (f *fakeSeller) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_ = rc.Flush()
 		}
+		tick := time.NewTicker(5 * testSecond)
+		defer tick.Stop()
 		for i := 1; i <= 36; i++ {
 			select {
-			case <-time.After(5 * testSecond):
+			case <-tick.C:
 			case <-r.Context().Done():
 				return
 			}
@@ -139,7 +141,9 @@ func runCheck(t *testing.T, addr string, roots *x509.CertPool, ip string) (strin
 	c := &cli{
 		ctx: context.Background(), stdout: &out, stderr: io.Discard,
 		seller: &sellerCheck{
-			second: testSecond, slack: 100 * time.Millisecond, roots: roots,
+			// minute and slack cover TLS work under -race, which does not shrink with testSecond
+			second: testSecond, minute: 10 * time.Second, slack: 400 * time.Millisecond,
+			roots: roots,
 			lookup: func(context.Context, string) ([]netip.Addr, error) {
 				return []netip.Addr{netip.MustParseAddr(ip)}, nil
 			},

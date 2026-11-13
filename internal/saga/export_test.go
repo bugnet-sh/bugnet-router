@@ -16,11 +16,11 @@ func SetPlacingBudget(t testing.TB, d time.Duration) {
 	t.Cleanup(func() { placingBudget = old })
 }
 
-// SetCleanupTimeout shortens the bound on each cleanup call for one test
-func SetCleanupTimeout(t testing.TB, d time.Duration) {
-	old := cleanupTimeout
-	cleanupTimeout = d
-	t.Cleanup(func() { cleanupTimeout = old })
+// SetDestroyTimeout shortens the bound on each destroy of placing for one test
+func SetDestroyTimeout(t testing.TB, d time.Duration) {
+	old := destroyTimeout
+	destroyTimeout = d
+	t.Cleanup(func() { destroyTimeout = old })
 }
 
 // ByListing is the order ListExtensions sorts its extensions in

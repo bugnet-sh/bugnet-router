@@ -309,6 +309,39 @@ func TestArchiveAtTheLimitFails(t *testing.T) {
 	}
 }
 
+// failOnce fails one read at offset at with err and serves the rest of r after it
+type failOnce struct {
+	r      *bytes.Reader
+	at     int64
+	err    error
+	failed bool
+}
+
+func (f *failOnce) Read(p []byte) (int, error) {
+	pos := f.r.Size() - int64(f.r.Len())
+	if !f.failed && pos == f.at {
+		f.failed = true
+		return 0, f.err
+	}
+	if !f.failed {
+		p = p[:min(int64(len(p)), f.at-pos)]
+	}
+	return f.r.Read(p)
+}
+
+func TestAFailedReadThatWrapsEOFFails(t *testing.T) {
+	// a provider read whose connection closed before any answer wraps io.EOF
+	lost := fmt.Errorf("read of the archive: %w", io.EOF)
+	archive := newFixture(t).file("etc/first", "x").file("etc/stray", gateKey).archive()
+	// The second header starts after the first header and its file's padded block
+	r := &failOnce{r: archive, at: 2 * 512, err: lost}
+	f, err := Scan(r, Needles{{"gate key", []byte(gateKey)}}, Base(false))
+	if !errors.Is(err, lost) {
+		t.Fatalf("a read failing at a header with %v gave %v, %v, want that failure", lost, f,
+			err)
+	}
+}
+
 func TestValuesNeverReachOutput(t *testing.T) {
 	needles := values()
 	res, err := ScanFull(fixtureWithEachNeedleInEachEncoding(t), needles, Base(false))

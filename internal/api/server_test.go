@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1105,6 +1106,7 @@ func TestExtensionPastSandboxEnd(t *testing.T) {
 func TestGetPlacementLongPollWakes(t *testing.T) {
 	e := newEnv(t, options{readyDelay: time.Second})
 	h, _ := e.create(t)
+	published := e.readyPublished(t, h)
 	start := time.Now()
 	p := e.get(t, h, routerv1.PlacementState_PLACEMENT_STATE_PLACING, 10000)
 	returned := time.Now()
@@ -1114,9 +1116,49 @@ func TestGetPlacementLongPollWakes(t *testing.T) {
 	if waited := returned.Sub(start); waited < 500*time.Millisecond {
 		t.Fatalf("long poll returned after %v, before the sandbox could be ready", waited)
 	}
-	if lag := returned.Sub(p.GetReadyAt().AsTime()); lag > 200*time.Millisecond {
-		t.Fatalf("long poll returned %v after the placement became ready", lag)
+	// ready_at is stamped before the ready writes commit, so the wake is timed from the message
+	select {
+	case at := <-published:
+		if lag := returned.Sub(at); lag > 200*time.Millisecond {
+			t.Fatalf("long poll returned %v after the ready message", lag)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ready message on the placement's channel")
 	}
+}
+
+// readyPublished subscribes to the placement's channel and sends when its ready message arrives
+func (e *env) readyPublished(t *testing.T, h string) <-chan time.Time {
+	t.Helper()
+	at := make(chan time.Time, 1)
+	subscribed := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	opened := sync.OnceFunc(func() { close(subscribed) })
+	hooked := valkey.WithOnSubscriptionHook(ctx, func(valkey.PubSubSubscription) { opened() })
+	cmd := e.vk.B().Subscribe().Channel(saga.Channel(e.prefix, e.stored(t, h).ID)).Build()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e.vk.Receive(hooked, cmd, func(m valkey.PubSubMessage) {
+			var ev saga.Event
+			if json.Unmarshal([]byte(m.Message), &ev) == nil && ev.State == store.PlacementReady {
+				select {
+				case at <- time.Now():
+				default:
+				}
+			}
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	select {
+	case <-subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no subscription to the placement's channel")
+	}
+	return at
 }
 
 func TestGetPlacementWithoutChange(t *testing.T) {
