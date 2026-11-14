@@ -250,9 +250,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
+		QuoteHold:        cfg.Pricing.QuoteHold,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
-			CreatesPerSecond: cfg.CreatesPerSecond, Rule: cfg.Pricing.Rule,
+			CreatesPerSecond: cfg.CreatesPerSecond,
 		}),
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)

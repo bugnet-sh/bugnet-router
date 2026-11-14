@@ -231,6 +231,8 @@ type Deps struct {
 	// ReserveShare is the share of a pool's target open reservations may hold, pools.reserve_share,
 	// one half when zero
 	ReserveShare float64
+	// QuoteHold is how long an estimate's quote holds for an order, none when zero
+	QuoteHold time.Duration
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
 	// Telemetry makes the saga's spans, telemetry.Off when nil
@@ -331,13 +333,16 @@ type CreateInput struct {
 	Source *store.PlacementSource
 	// QuoteID binds the quote's reservation when the order matches it, empty for none
 	QuoteID string
+	// EstimateID is the estimate whose quote the order may hold, uuid.Nil for none
+	EstimateID uuid.UUID
 }
 
 // Create records a verified start order and places it, binding a matching reservation
 //
 // A package no provider can host fails at once with ErrNoCandidate, unless the quote's ready
-// reservation matches, since a prepared sandbox then exists. An order that paid less than its
-// package's price now fails at once with an UnderpaidError.
+// reservation matches, since a prepared sandbox then exists. An order whose payment no server's
+// price fits fails at once with an UnderpaidError, unless its estimate's quote still holds a
+// server that takes it.
 func (s *Saga) Create(
 	ctx context.Context, in CreateInput,
 ) (store.Placement, string, error) {
@@ -364,17 +369,9 @@ func (s *Saga) Create(
 		PaidAt:        s.paidAt(c, arrived),
 	}
 	bind := s.bindTo(in, pkg)
-	if covers(c, pkg) {
-		_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
-	} else {
-		np.FailureReason = ReasonPriceChanged
-	}
-	switch {
-	case errors.Is(err, placement.ErrNoCandidate):
-		if !s.readyFits(ctx, bind) {
-			np.FailureReason = ReasonNoCandidate
-		}
-	case err != nil:
+	t := terms{paid: c.PackageMicros()}
+	t.prefer = s.heldServer(ctx, in.EstimateID, pkg, t.paid)
+	if np.FailureReason, err = s.startRefusal(ctx, c, pkg, req, t, bind); err != nil {
 		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
 	}
 	rec, err := s.record(ctx, c, np, bind)
@@ -399,7 +396,7 @@ func (s *Saga) Create(
 		case ReasonNoCandidate:
 			refusal = fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
 		case ReasonPriceChanged:
-			refusal = underpaid(c, pkg)
+			refusal = underpaid(c, pkg, s.startPrice(pkg, req))
 		case ReasonWalletBusy:
 			refusal = ErrWalletBusy
 		case ReasonWalletRateLimited:
@@ -427,11 +424,66 @@ func (s *Saga) Create(
 		go func() {
 			defer s.wg.Done()
 			pctx := context.WithoutCancel(ctx)
-			s.place(pctx, p, pkg, req, rec.awaiting, arrived)
+			s.place(pctx, p, pkg, req, t, rec.awaiting, arrived)
 			s.endOrderRoot(pctx, root, p.ID)
 		}()
 	}
 	return p, h, nil
+}
+
+// terms are what a start order paid for its package and the server its quote holds, nil for none
+type terms struct {
+	paid   int64
+	prefer *placement.Server
+}
+
+// heldServer is the server an estimate's quote holds pkg on when paid covers it, nil for none
+func (s *Saga) heldServer(
+	ctx context.Context, estimate uuid.UUID, pkg catalog.Package, paid int64,
+) *placement.Server {
+	if estimate == uuid.Nil || s.d.QuoteHold <= 0 {
+		return nil
+	}
+	q, ok, err := s.d.Store.QuoteFor(ctx, estimate, pkg.ID, s.d.QuoteHold)
+	if err != nil {
+		s.d.Log.Warn("read an order's quote, it starts at the price now", "estimate", estimate,
+			"package", pkg.ID, "err", err)
+		return nil
+	}
+	if !ok || paid < q.PriceMicros {
+		return nil
+	}
+	return &placement.Server{Provider: q.Provider, Size: q.SizeName}
+}
+
+// startRefusal is why a start cannot begin, empty when a candidate fits what it paid
+func (s *Saga) startRefusal(
+	ctx context.Context, c ordertoken.Claims, pkg catalog.Package, req placement.Requirements,
+	t terms, bind *bindRequest,
+) (string, error) {
+	in, ok := s.within(pkg, req, nil, t.paid)
+	if !ok || !covers(c, pkg) {
+		return ReasonPriceChanged, nil
+	}
+	// The quoted server is exempt from the budget, so the price the order was quoted starts there
+	in.Prefer = t.prefer
+	_, err := s.d.Engine.Candidates(in)
+	switch {
+	case err == nil:
+		return "", nil
+	case !errors.Is(err, placement.ErrNoCandidate):
+		return "", err
+	}
+	if !pkg.FixedPrice {
+		// A server takes the start at its price now, so the payment is what fell short
+		if _, ok := s.d.Engine.Quote(s.quoteInputs(pkg, req)); ok {
+			return ReasonPriceChanged, nil
+		}
+	}
+	if s.readyFits(ctx, bind) {
+		return "", nil
+	}
+	return ReasonNoCandidate, nil
 }
 
 // paidAt is when the order was paid as the 5 s target measures it, logging a claim it cannot use
@@ -554,6 +606,36 @@ func (s *Saga) inputs(
 	}
 }
 
+// within asks for an attempt that fits left of the payment, false when a live package has none
+func (s *Saga) within(
+	pkg catalog.Package, req placement.Requirements, tried map[string]bool, left int64,
+) (placement.Inputs, bool) {
+	in := s.inputs(pkg, req, tried)
+	// A fixed price is the same on every server and its fit holds the server's cost under it
+	if pkg.FixedPrice {
+		return in, true
+	}
+	// A budget of 0 reads as none, so nothing left asks for nothing
+	in.BudgetMicros = left
+	return in, left > 0
+}
+
+// quoteInputs ask for pkg as Estimate and PricePackage quote it
+func (s *Saga) quoteInputs(pkg catalog.Package, req placement.Requirements) placement.Inputs {
+	return placement.Inputs{
+		Package: pkg, Requirements: req, Rule: s.d.Rule, ImageAccept: s.d.ImageAccept,
+	}
+}
+
+// startPrice is what a start of pkg costs now, its fixed price or the live quote's
+func (s *Saga) startPrice(pkg catalog.Package, req placement.Requirements) int64 {
+	if pkg.FixedPrice {
+		return pkg.PriceMicros
+	}
+	q, _ := s.d.Engine.Quote(s.quoteInputs(pkg, req))
+	return q.PriceMicros
+}
+
 func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, error) {
 	c, err := ordertoken.Verify(s.d.OrderKey, token, s.now())
 	if err != nil {
@@ -586,11 +668,9 @@ func covers(c ordertoken.Claims, pkg catalog.Package) bool {
 	return c.PackageMicros() >= pkg.PriceMicros
 }
 
-// underpaid is the refusal of an order that paid less than pkg's price now
-func underpaid(c ordertoken.Claims, pkg catalog.Package) *UnderpaidError {
-	return &UnderpaidError{
-		PackageID: pkg.ID, PaidMicros: c.PackageMicros(), PriceMicros: pkg.PriceMicros,
-	}
+// underpaid is the refusal of an order that paid less than price, what pkg costs now
+func underpaid(c ordertoken.Claims, pkg catalog.Package, price int64) *UnderpaidError {
+	return &UnderpaidError{PackageID: pkg.ID, PaidMicros: c.PackageMicros(), PriceMicros: price}
 }
 
 // lookupPackage returns the catalog's package with this ID or ErrUnknownPackage
@@ -1370,7 +1450,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}
 		// Only the call that applies the order checks the price, so every retry answers as it did
 		if !covers(c, pkg) {
-			return underpaid(c, pkg)
+			return underpaid(c, pkg, pkg.PriceMicros)
 		}
 		if payer != "" {
 			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {

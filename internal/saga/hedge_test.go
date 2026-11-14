@@ -34,7 +34,6 @@ func newHedger(t *testing.T, h config.Hedge, tot saga.Totals, creates map[string
 	vk, prefix := testenv.Valkey(t)
 	return saga.NewHedger(saga.HedgerDeps{
 		Settings: h, Health: tot, Valkey: vk, Prefix: prefix, CreatesPerSecond: creates,
-		Rule: doubled,
 	}), prefix
 }
 
@@ -79,18 +78,26 @@ func hedgeCand(t *testing.T, name string, hourly int64) placement.Candidate {
 
 var hedgePkg = catalog.Package{ID: "p", Minutes: 10, PriceMicros: 50_000}
 
+// hedgeBudget is what an order of hedgePkg paid, all of it left
+const hedgeBudget = 50_000
+
+// allow asks h for a hedge of hedgePkg with its whole payment and 20 s of placing left
+func allow(t *testing.T, h *saga.Hedger, running, next placement.Candidate) bool {
+	t.Helper()
+	return h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second, hedgeBudget, doubled)
+}
+
 func TestHedgerAllowRefusals(t *testing.T) {
 	ctx := t.Context()
 	running := hedgeCand(t, "running", 1000)
 	next := hedgeCand(t, "next", 1000)
-	left := 20 * time.Second
 	// Every refusal comes before a token is taken, so the router-wide bucket keeps its whole burst
 	h, _ := newHedger(t, hedgeSettings(), nil, nil)
-	eq(t, h.Allow(ctx, hedgePkg, running, hedgeCand(t, "boat", 1000), 0, left), false)
-	eq(t, h.Allow(ctx, hedgePkg, running, next, 0, 5*time.Second), false)
-	eq(t, h.Allow(ctx, hedgePkg, hedgeCand(t, "dear", 400_000), next, 0, left), false)
+	eq(t, allow(t, h, running, hedgeCand(t, "boat", 1000)), false)
+	eq(t, h.Allow(ctx, hedgePkg, running, next, 0, 5*time.Second, hedgeBudget, doubled), false)
+	eq(t, allow(t, h, hedgeCand(t, "dear", 400_000), next), false)
 	for i := range 5 {
-		if !h.Allow(ctx, hedgePkg, running, next, 0, left) {
+		if !allow(t, h, running, next) {
 			t.Fatalf("hedge %d was refused, a refusal took a token", i+1)
 		}
 	}
@@ -100,34 +107,33 @@ func TestHedgerAllowOntoBoatWhenAllowed(t *testing.T) {
 	s := hedgeSettings()
 	s.OntoBoat = true
 	h, _ := newHedger(t, s, nil, nil)
-	eq(t, h.Allow(t.Context(), hedgePkg, hedgeCand(t, "running", 1000),
-		hedgeCand(t, "boat", 1000), 0, 20*time.Second), true)
+	eq(t, allow(t, h, hedgeCand(t, "running", 1000), hedgeCand(t, "boat", 1000)), true)
 }
 
 func TestHedgerAllowRefusesAPausedProvider(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	h := saga.NewHedger(saga.HedgerDeps{
-		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, Rule: doubled,
+		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix,
 	})
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), true)
+	eq(t, allow(t, h, running, next), true)
 	err := vk.Do(t.Context(), vk.B().Set().Key(prefix+"pause:next:create").Value("1").
 		PxMilliseconds(time.Minute.Milliseconds()).Build()).Error()
 	eq(t, err, nil)
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), false)
+	eq(t, allow(t, h, running, next), false)
 }
 
 func TestHedgerAllowRefusesALowCreateBucket(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	h := saga.NewHedger(saga.HedgerDeps{
-		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, Rule: doubled,
+		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix,
 		CreatesPerSecond: map[string]int{"next": 1},
 	})
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), true)
+	eq(t, allow(t, h, running, next), true)
 	// The bucket of a create a second holds one token, and the create takes it
 	emptyCreateBucket(t, vk, prefix, "next")
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), false)
+	eq(t, allow(t, h, running, next), false)
 }
 
 func TestHedgerAllowSpendsTheRouterWideBucket(t *testing.T) {
@@ -135,11 +141,11 @@ func TestHedgerAllowSpendsTheRouterWideBucket(t *testing.T) {
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
 	// The burst is 5 and refills 30 a minute
 	for i := range 5 {
-		if !h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second) {
+		if !allow(t, h, running, next) {
 			t.Fatalf("hedge %d was refused inside the burst", i+1)
 		}
 	}
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), false)
+	eq(t, allow(t, h, running, next), false)
 }
 
 func TestHedgerDisabledAndNil(t *testing.T) {
@@ -147,9 +153,22 @@ func TestHedgerDisabledAndNil(t *testing.T) {
 	off.Enabled = false
 	h, _ := newHedger(t, off, nil, nil)
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
-	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), false)
+	eq(t, allow(t, h, running, next), false)
 	var none *saga.Hedger
-	eq(t, none.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), false)
+	eq(t, allow(t, none, running, next), false)
+}
+
+func TestHedgeNeverFitsAtTenPercent(t *testing.T) {
+	h, _ := newHedger(t, hedgeSettings(), nil, nil)
+	ctx := t.Context()
+	// Two Boat small servers and a 10-minute run paid at its price under the markup
+	running, next := hedgeCand(t, "running", 18_000), hedgeCand(t, "next", 18_000)
+	paid := tenPercent.Price(3050)
+	eq(t, paid, int64(3355))
+	eq(t, h.Allow(ctx, hedgePkg, running, next, 0, 20*time.Second, paid, tenPercent), false)
+	// The run's 3000 and the loser's 90 s of 450 cost 3795 at the markup, the least that fits
+	eq(t, h.Allow(ctx, hedgePkg, running, next, 0, 20*time.Second, 3794, tenPercent), false)
+	eq(t, h.Allow(ctx, hedgePkg, running, next, 0, 20*time.Second, 3795, tenPercent), true)
 }
 
 // emptyCreateBucket takes the one token of a create a second bucket

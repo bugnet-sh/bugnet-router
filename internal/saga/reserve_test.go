@@ -506,6 +506,20 @@ func TestSpeculativeE2BExampleRefused(t *testing.T) {
 	eq(t, p.Provider, "e2b")
 }
 
+func TestReserveHoldsNothingAtTenPercent(t *testing.T) {
+	// The 150 s hold of a 10-minute run is a quarter of its cost, which the markup cannot cover
+	a := newBilled(t, "a", boatRate, 0)
+	e, _ := reserveEnv(t, reserveSettings("a"), live(t), a)
+	eq(t, e.reserve(t, "q2.t", smallPkg).Skip, saga.SkipNoWarm)
+	eq(t, e.reservationCount(t, "q2.t"), 0)
+	eq(t, len(owned(t, a)), 0)
+	// The order itself starts at the price without a hold
+	p, err := e.startPaid(t, "order-1", 3300, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "a" {
+		t.Fatalf("placement %+v %v, want ready on a", p, err)
+	}
+}
+
 func TestSpeculativePathRunsPrepareOnce(t *testing.T) {
 	a := newScripted(newLocal(t, local.Options{Name: "a"}), map[string]answer{})
 	e, _ := reserveEnv(t, reserveSettings("a"), nil, a)

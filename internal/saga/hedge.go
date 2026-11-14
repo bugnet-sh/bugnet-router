@@ -42,8 +42,6 @@ type HedgerDeps struct {
 	Prefix   string
 	// CreatesPerSecond is each provider's create rate, which sizes its create bucket
 	CreatesPerSecond map[string]int
-	// Rule prices the worst case of a hedge against the package's price
-	Rule pricing.Rule
 }
 
 // Hedger decides when a placing placement starts a second attempt beside the first
@@ -82,11 +80,12 @@ func (h *Hedger) After(provider string, path Path) (time.Duration, bool) {
 // Allow reports whether next may run beside running, taking a hedge token when it may
 //
 // pre is the time running's sandbox already ran before the order and left is what remains of the
-// placing budget. A refusal writes nothing, and a token is taken only once every other condition
-// holds, so a refused hedge costs the bucket nothing.
+// placing budget. budget is what the earlier attempts left of the payment, which the worst case of
+// both attempts must fit at r's markup. A refusal writes nothing, and a token is taken only once
+// every other condition holds, so a refused hedge costs the bucket nothing.
 func (h *Hedger) Allow(
 	ctx context.Context, pkg catalog.Package, running, next placement.Candidate,
-	pre, left time.Duration,
+	pre, left time.Duration, budget int64, r pricing.Rule,
 ) bool {
 	if h == nil || !h.d.Settings.Enabled {
 		return false
@@ -102,7 +101,7 @@ func (h *Hedger) Allow(
 	case !h.bucketFull(ctx, name):
 		return false
 	case !placement.HedgeFits(running, next, time.Duration(pkg.Minutes)*time.Minute, pre,
-		h.d.Settings.LoserLife, pkg.PriceMicros, h.d.Rule):
+		h.d.Settings.LoserLife, budget, r):
 		return false
 	}
 	ok, _, err := h.limits.TakeKey(ctx, ratelimit.Bucket{

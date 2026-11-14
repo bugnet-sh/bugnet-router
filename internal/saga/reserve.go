@@ -130,7 +130,9 @@ func fits(r store.Reservation, pkg catalog.Package, req placement.Requirements) 
 // Reserve holds a prepared sandbox for a quote's order and never fails for want of one
 //
 // It costs one Valkey call and one short transaction. The preparation runs after the answer, in a
-// goroutine of the saga's wait group, as placing does.
+// goroutine of the saga's wait group, as placing does. A candidate's price with the hold must fit
+// the package's quoted price without it, and a hold only adds to a server's cost, so at the 10%
+// markup a live package holds nothing.
 func (s *Saga) Reserve(ctx context.Context, in ReserveInput) (Outcome, error) {
 	if !validQuote(in.QuoteID) {
 		return Outcome{}, ErrQuoteInvalid
@@ -212,8 +214,8 @@ func (s *Saga) reserveTx(
 	hold := cfg.Hold + cfg.LapseGrace
 	cands, candErr := s.d.Engine.Candidates(placement.Inputs{
 		Package: pkg, Requirements: in.Requirements, Rule: s.d.Rule,
-		WarmFirst: s.d.WarmFirst, Hold: hold, HoldMax: cfg.MaxHold + cfg.LapseGrace,
-		ImageAccept: s.d.ImageAccept,
+		BudgetMicros: s.holdBudget(pkg, in.Requirements), WarmFirst: s.d.WarmFirst, Hold: hold,
+		HoldMax: cfg.MaxHold + cfg.LapseGrace, ImageAccept: s.d.ImageAccept,
 	})
 	if candErr != nil && !errors.Is(candErr, placement.ErrNoCandidate) {
 		return reserved{}, fmt.Errorf("find candidates: %w", candErr)
@@ -274,6 +276,11 @@ func (s *Saga) reserveTx(
 		return reserved{}, err
 	}
 	return out, nil
+}
+
+// holdBudget is the price of pkg without a hold, at least 1 since a budget of 0 reads as none
+func (s *Saga) holdBudget(pkg catalog.Package, req placement.Requirements) int64 {
+	return max(s.startPrice(pkg, req), 1)
 }
 
 // noStart is the skip when no pool member and no start before payment fits
@@ -337,7 +344,7 @@ func (s *Saga) renew(
 		return Outcome{}, err
 	}
 	cands, err := s.d.Engine.Candidates(placement.Inputs{
-		Package: pkg, Requirements: req, Rule: s.d.Rule,
+		Package: pkg, Requirements: req, Rule: s.d.Rule, BudgetMicros: s.holdBudget(pkg, req),
 		WarmFirst: s.d.WarmFirst, Hold: next.Sub(cur.CreatedAt) + cfg.LapseGrace,
 		HoldMax: cfg.MaxHold + cfg.LapseGrace, ImageAccept: s.d.ImageAccept,
 	})

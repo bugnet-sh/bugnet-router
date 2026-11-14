@@ -1030,6 +1030,205 @@ func TestCreateWithoutCandidateFailsRefundable(t *testing.T) {
 	}
 }
 
+/* Paid starts under the markup */
+
+// tenPercent is the production markup with each provider's measured overhead
+var tenPercent = pricing.Rule{MarkupBP: 1000, Overhead: map[string]time.Duration{
+	"boat": 10 * time.Second, "boxd": 10 * time.Second, "e2b": 15 * time.Second,
+}}
+
+// liveCatalogJSON lists small-10m quoted live, as production lists it
+const liveCatalogJSON = `{"packages": [
+	{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10}
+]}`
+
+// Boat small's and E2B's hourly rates for the small size, both billed by the second
+const (
+	boatRate = 18_000
+	e2bRate  = 133_200
+)
+
+// billed is a local provider at its own hourly rate with a start fee a test may move
+type billed struct {
+	*local.Provider
+	hourly int64
+	fee    *atomic.Int64
+}
+
+// newBilled is a billed local provider named name, its start fee at fee
+func newBilled(t *testing.T, name string, hourly, fee int64) billed {
+	t.Helper()
+	b := billed{Provider: newLocal(t, local.Options{Name: name}), hourly: hourly,
+		fee: &atomic.Int64{}}
+	b.fee.Store(fee)
+	return b
+}
+
+func (b billed) HourlyCostMicros(provider.Size) int64 { return b.hourly }
+
+func (b billed) StartCostMicros(provider.Size) (int64, bool) { return b.fee.Load(), true }
+
+// unbootable is a billed provider whose sandboxes never become ready
+type unbootable struct{ billed }
+
+func (unbootable) WaitReady(context.Context, provider.Ref) error {
+	return &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
+}
+
+// live gives the saga the live catalog at the production markup, a quote holding 45 minutes
+func live(t *testing.T) func(*saga.Deps) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "live-packages.json")
+	if err := os.WriteFile(path, []byte(liveCatalogJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func(d *saga.Deps) {
+		d.Catalog, d.Rule, d.QuoteHold = cat, tenPercent, 45*time.Minute
+	}
+}
+
+// hold stores a new estimate's quote of small-10m on server and returns the estimate's id
+func (e *env) hold(t *testing.T, server string, cost, price int64) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	err := e.store.PutQuotes(t.Context(), id, []store.Quote{{
+		PackageID: smallPkg, Provider: server, SizeName: small.Name, CostMicros: cost,
+		PriceMicros: price,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// startPaid orders small-10m for amount under the estimate, waiting for its placing to end
+func (e *env) startPaid(
+	t *testing.T, order string, amount int64, estimate uuid.UUID, req placement.Requirements,
+) (store.Placement, error) {
+	t.Helper()
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.token(t, ordertoken.Claims{
+			OrderID: order, Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: amount,
+		}),
+		Requirements: req, EstimateID: estimate,
+	})
+	e.saga.Wait()
+	if p.ID == uuid.Nil {
+		t.Fatalf("create %s recorded nothing: %v", order, err)
+	}
+	return e.reload(t, p.ID), err
+}
+
+// priceChanged checks a start refused for its price, refundable, with the price it now costs
+func priceChanged(t *testing.T, p store.Placement, err error, paid, price int64) {
+	t.Helper()
+	var ue *saga.UnderpaidError
+	if !errors.As(err, &ue) || ue.PackageID != smallPkg || ue.PaidMicros != paid ||
+		ue.PriceMicros != price {
+		t.Fatalf("err %v, want an UnderpaidError of %d against %d", err, paid, price)
+	}
+	if p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != saga.ReasonPriceChanged {
+		t.Fatalf("placement %+v, want failed refundable for %s", p, saga.ReasonPriceChanged)
+	}
+}
+
+func TestCreateHonorsTheLockedQuote(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e2b := newBilled(t, "e2b", e2bRate, 0)
+	var in placement.Inputs
+	var engine *placement.Engine
+	e := newEnvWith(t, func(d *saga.Deps) {
+		live(t)(d)
+		in.Package, _ = d.Catalog.Get(smallPkg)
+		in.Rule, engine = d.Rule, d.Engine
+	}, boat, e2b)
+	q, ok := engine.Quote(in)
+	eq(t, ok && q.Provider.Name() == "boat" && q.CostMicros == 3050, true)
+	eq(t, q.PriceMicros, int64(3355))
+	est := e.hold(t, "boat", 3050, 3355)
+	// Boat moves to its $0.03 bracket after the quote, which puts E2B first at 25031
+	boat.fee.Store(30_000)
+
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "boat" {
+		t.Fatalf("placement %+v %v, want ready on boat", p, err)
+	}
+	// The same payment without the quote is short of every server now
+	p, err = e.startPaid(t, "order-2", 3355, uuid.Nil, placement.Requirements{})
+	priceChanged(t, p, err, 3355, 25031)
+	eq(t, len(owned(t, e2b)), 0)
+}
+
+func TestCreateUnderpaidQuotesLive(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e := newEnvWith(t, live(t), boat)
+	p, err := e.startPaid(t, "order-1", 3354, uuid.Nil, placement.Requirements{})
+	priceChanged(t, p, err, 3354, 3355)
+	ev := e.oneEvent(t, saga.EventFailed)
+	eq(t, ev.Refundable && ev.Reason == saga.ReasonPriceChanged && ev.BilledSeconds == 0, true)
+	eq(t, len(e.attempts(t, p.ID)), 0)
+	eq(t, len(owned(t, boat)), 0)
+	// A retry is told the price again and records nothing more
+	_, _, err = e.saga.Create(t.Context(), saga.CreateInput{Token: e.token(t, ordertoken.Claims{
+		OrderID: "order-1", Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: 3354,
+	})})
+	var ue *saga.UnderpaidError
+	eq(t, errors.As(err, &ue) && ue.PriceMicros == 3355, true)
+	eq(t, e.placementCount(t), 1)
+
+	p, err = e.startPaid(t, "order-2", 3355, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "boat" {
+		t.Fatalf("placement %+v %v, want ready on boat", p, err)
+	}
+}
+
+func TestCreateCoveredByACheaperServer(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	// b bills a little more an hour and nothing beyond the run, so it is 3355 as Boat was
+	b := newBilled(t, "b", 18_300, 0)
+	e := newEnvWith(t, live(t), boat, b)
+	e.hold(t, "boat", 3050, 3355)
+	boat.fee.Store(30_000)
+	// The order names no estimate, so Boat is held to the budget like any other server
+	p, err := e.startPaid(t, "order-1", 3355, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "b" {
+		t.Fatalf("placement %+v %v, want ready on b", p, err)
+	}
+	eq(t, len(owned(t, boat)), 0)
+}
+
+func TestCreateNeverForcesAHeldServerThatCannotServe(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e2b := newBilled(t, "e2b", e2bRate, 0)
+	e := newEnvFeatures(t, live(t), provider.Features{Secrets: []string{"e2b"}}, boat, e2b)
+	est := e.hold(t, "boat", 3050, 3355)
+	// The quote held Boat, which keeps no secrets, so only E2B can take the order at its price
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{Secrets: true})
+	priceChanged(t, p, err, 3355, 25031)
+	eq(t, len(owned(t, boat)), 0)
+	eq(t, len(owned(t, e2b)), 0)
+}
+
+func TestCreateLapsedQuoteHoldsNothing(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e := newEnvWith(t, func(d *saga.Deps) {
+		live(t)(d)
+		d.QuoteHold = time.Millisecond
+	}, boat)
+	est := e.hold(t, "boat", 3050, 3355)
+	boat.fee.Store(30_000)
+	// The quote is past its hold by the time the order arrives, so Boat's price now applies
+	time.Sleep(20 * time.Millisecond)
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	priceChanged(t, p, err, 3355, 36355)
+}
+
 func TestCreateStoresNeedsSecrets(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a"})
 	e := newEnvWith(t, func(d *saga.Deps) {
@@ -1249,6 +1448,36 @@ func TestSagaAllFailRefundable(t *testing.T) {
 	}
 	if jobs := e.deadlineJobs(t); len(jobs) != 0 {
 		t.Fatalf("deadline jobs %+v", jobs)
+	}
+}
+
+func TestFailoverFitsWhatIsLeft(t *testing.T) {
+	// a's attempt spends its start fee of 10 and its seconds before its boot fails
+	a := unbootable{newBilled(t, "a", boatRate, 10)}
+	// b's price is 3410, which a payment of 3410 no longer covers once a spent part of it
+	b := newBilled(t, "b", 18_600, 0)
+	e := newEnvWith(t, live(t), a, b)
+	p, err := e.startPaid(t, "order-1", 3410, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != "boot_failed" {
+		t.Fatalf("placement %+v %v, want failed refundable for boot_failed", p, err)
+	}
+	ev := e.oneEvent(t, saga.EventFailed)
+	eq(t, ev.Refundable && ev.BilledSeconds == 0 && ev.Reason == "boot_failed", true)
+	got := e.attempts(t, p.ID)
+	if len(got) != 1 || got[0].provider != "a" || got[0].state != "failed" {
+		t.Fatalf("attempts %+v, want a's alone", got)
+	}
+	eq(t, len(owned(t, b)), 0)
+
+	// With room for b beside what a spent, the order fails over to b
+	p, err = e.startPaid(t, "order-2", 3510, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "b" {
+		t.Fatalf("placement %+v %v, want ready on b", p, err)
+	}
+	got = e.attempts(t, p.ID)
+	if len(got) != 2 || got[0].provider != "a" || got[1] != (attemptRow{2, "b", "ready", ""}) {
+		t.Fatalf("attempts %+v", got)
 	}
 }
 

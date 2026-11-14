@@ -570,9 +570,11 @@ func (s *Server) CreatePlacement(
 			src = &ps
 		}
 	}
+	// An estimate id that does not parse holds no quote
+	est, _ := uuid.Parse(req.Msg.GetEstimateId())
 	p, h, err := s.d.Saga.Create(ctx, saga.CreateInput{
 		Token: req.Msg.GetOrderToken(), Requirements: requirements(req.Msg.GetRequirements()),
-		Source: src, QuoteID: req.Msg.GetQuoteId(),
+		Source: src, QuoteID: req.Msg.GetQuoteId(), EstimateID: est,
 	})
 	if err != nil {
 		return nil, s.status(err)

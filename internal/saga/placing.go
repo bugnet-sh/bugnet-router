@@ -12,6 +12,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/spend"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/telemetry/attr"
 )
@@ -44,6 +45,11 @@ type placing struct {
 	arrived time.Time
 	race    *race
 	results chan attemptResult
+	// paid is what the order paid for its package, and prefer the server its quote holds
+	paid   int64
+	prefer *placement.Server
+	// ran are the attempts that ended having tried a provider, which spend the payment
+	ran []*run
 
 	tried     map[string]bool
 	attempted []provider.Provider
@@ -68,10 +74,10 @@ type placing struct {
 }
 
 // place binds the reservation the order awaits, else tries candidates until one is ready or the
-// attempt or time budget runs out, starting a second attempt beside one that runs long
+// attempt, time or payment budget runs out, starting a second attempt beside one that runs long
 func (s *Saga) place(
 	ctx context.Context, p store.Placement, pkg catalog.Package, req placement.Requirements,
-	awaiting *store.Reservation, arrived time.Time,
+	t terms, awaiting *store.Reservation, arrived time.Time,
 ) {
 	stopHeartbeat := s.heartbeat(ctx, p.ID)
 	defer stopHeartbeat()
@@ -79,8 +85,8 @@ func (s *Saga) place(
 	defer cancel()
 	pl := &placing{
 		s: s, ctx: ctx, budget: budget, p: p, pkg: pkg, req: req, arrived: arrived,
-		race: &race{}, results: make(chan attemptResult, maxAttempts+2),
-		tried: map[string]bool{}, reason: reasonExhausted, waiting: awaiting,
+		race: &race{}, results: make(chan attemptResult, maxAttempts+2), paid: t.paid,
+		prefer: t.prefer, tried: map[string]bool{}, reason: reasonExhausted, waiting: awaiting,
 	}
 	pl.run()
 }
@@ -134,11 +140,19 @@ func (pl *placing) finish() {
 	s.fail(pl.ctx, pl.p, pl.reason, pl.detail, pl.attempted)
 }
 
-// next picks the cheapest candidate not yet tried that can start now, nil when none can
+// next picks the cheapest untried candidate that fits what is left and can start now, nil for none
 func (pl *placing) next() *placement.Candidate {
 	s := pl.s
 	for pl.budget.Err() == nil && pl.started < maxAttempts {
-		cands, err := s.d.Engine.Candidates(s.inputs(pl.pkg, pl.req, pl.tried))
+		in, ok := s.within(pl.pkg, pl.req, pl.tried, pl.paid-pl.spentMicros(s.now()))
+		if !ok {
+			return nil
+		}
+		// The quote holds its server for the first attempt alone
+		if pl.started == 0 {
+			in.Prefer = pl.prefer
+		}
+		cands, err := s.d.Engine.Candidates(in)
 		if err != nil {
 			if !errors.Is(err, placement.ErrNoCandidate) {
 				pl.reason, pl.detail = reasonInternal, fmt.Sprintf("find candidates: %v", err)
@@ -161,6 +175,17 @@ func (pl *placing) next() *placement.Candidate {
 		return &c
 	}
 	return nil
+}
+
+// spentMicros is what the attempts that ended cost by now, each billed from its start
+func (pl *placing) spentMicros(now time.Time) int64 {
+	var total int64
+	for _, r := range pl.ran {
+		c := r.cand
+		total += spend.AttemptCost(r.started, now, c.Provider.BillingIncrement(), c.HourlyMicros,
+			c.StartFeeMicros)
+	}
+	return total
 }
 
 // noRunner says why a provider that needs a bugnet-run upload cannot take a sandbox, empty when it
@@ -259,6 +284,7 @@ func (pl *placing) handle(res attemptResult) {
 	}
 	if res.ran {
 		pl.attempted = append(pl.attempted, res.prov)
+		pl.ran = append(pl.ran, res.r)
 	}
 	if res.full {
 		// A provider with no slot takes no attempt number, as it never took an attempt
@@ -374,7 +400,12 @@ func (pl *placing) tryHedge() {
 	defer cancel()
 	excluded := maps.Clone(pl.tried)
 	excluded[r.cand.Provider.Name()] = true
-	cands, err := s.d.Engine.Candidates(s.inputs(pl.pkg, pl.req, excluded))
+	rest := pl.paid - pl.spentMicros(s.now())
+	in, ok := s.within(pl.pkg, pl.req, excluded, rest)
+	if !ok {
+		return
+	}
+	cands, err := s.d.Engine.Candidates(in)
 	if err != nil {
 		return
 	}
@@ -394,7 +425,7 @@ func (pl *placing) tryHedge() {
 	if r.n == 0 {
 		pre = min(max(s.now().Sub(r.started), 0), maxPre)
 	}
-	if !s.d.Hedger.Allow(ctx, pl.pkg, r.cand, next, pre, left) {
+	if !s.d.Hedger.Allow(ctx, pl.pkg, r.cand, next, pre, left, rest, s.d.Rule) {
 		return
 	}
 	pl.hedged = true
