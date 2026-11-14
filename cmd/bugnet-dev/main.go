@@ -1,10 +1,11 @@
 // Command bugnet-dev drives a Sandbox Router from the terminal during development.
 //
-// keys, pubkey, token, deploy and mtls work offline, and owned calls the provider with its key from
-// the environment. Every other command calls the API at api.listen_addr of the settings file over
-// unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the bearer. create and extend sign their own
-// order token when BUGNET_ORDER_PRIVATE_KEY is set, priced from the settings file's
-// packages_file. Only commands that need a setting read the file. exec and watch write a job's
+// keys, pubkey, deploy and mtls work offline, token does for a fixed price or --amount, and owned
+// calls the provider with its key from the environment. Every other command calls the API at
+// api.listen_addr of the settings file over unencrypted HTTP/2 with BUGNET_INTERNAL_TOKEN as the
+// bearer. create and extend sign their own order token when BUGNET_ORDER_PRIVATE_KEY is set,
+// priced from the settings file's packages_file for a fixed price and by the router for a live
+// one. Only commands that need a setting read the file. exec and watch write a job's
 // output to stdout and stderr as it arrives and exit with the job's code. transfer prints a
 // transfer URL and its curl command, preview a preview link, and ssh-key the SSH hand-off of a
 // public key, refusing a private key file before anything is sent. revoke-preview, wallet and
@@ -62,7 +63,8 @@ const usage = `usage: bugnet-dev [--config FILE] <command> [flags]
   pubkey --event                         print the public half of BUGNET_EVENT_SIGNING_KEY
   token --package P [--kind start|extend] [--handle H] [--order O] [--amount N] [--ttl D]
         [--priv K] [--payer A] [--fee-payer A] [--tx S] [--allowance-micros N]
-        [--no-issued-at]                 print a signed order token, with issued_at set to now
+        [--estimate-id ID] [--no-issued-at]
+                                         print a signed order token, with issued_at set to now
                                          unless --no-issued-at
   create --package P [--order O] [--token T] [--payer A] [--fee-payer A] [--tx S]
          [--allowance-micros N] [--estimate-id ID] [--quote Q] [--no-issued-at]
@@ -212,7 +214,8 @@ Settings
                             that call the API or price a token without --amount
   api.listen_addr           the API is at http://ADDR, with 127.0.0.1 for an empty or
                             unspecified host
-  packages_file             catalog that prices a token when --amount is not given
+  packages_file             catalog that prices a token when --amount is not given, a live
+                            package is priced by the router
 
 Environment
   BUGNET_INTERNAL_TOKEN     bearer token for the API
@@ -464,10 +467,12 @@ type order struct {
 	pkg    string
 	id     string // random when empty
 	handle string // extend tokens only
-	amount int64
-	priced bool // amount was given, so the catalog is not read
-	ttl    time.Duration
-	priv   string // BUGNET_ORDER_PRIVATE_KEY when empty
+	// estimate is the estimate id whose held price a start token pays
+	estimate string
+	amount   int64
+	priced   bool // amount was given, so the catalog is not read
+	ttl      time.Duration
+	priv     string // BUGNET_ORDER_PRIVATE_KEY when empty
 	// payer, feePayer, tx and allowance are the payment claims, each left out when empty or 0
 	payer     string
 	feePayer  string
@@ -493,6 +498,7 @@ func (c *cli) token(args []string) error {
 	fs.StringVar(&o.pkg, "package", "", "package id")
 	fs.StringVar(&o.handle, "handle", "", "handle the extend token is for")
 	fs.StringVar(&o.id, "order", "", "order id")
+	fs.StringVar(&o.estimate, "estimate-id", "", "estimate id whose held price a start token pays")
 	fs.Int64Var(&o.amount, "amount", 0, "paid micro-USD")
 	fs.DurationVar(&o.ttl, "ttl", defaultTTL, "token lifetime")
 	fs.StringVar(&o.priv, "priv", "", "base64 Ed25519 private key")
@@ -548,7 +554,7 @@ func (c *cli) sign(o order) (string, error) {
 		return "", fmt.Errorf("%w: --handle is only for extend tokens", errUsage)
 	}
 	if !o.priced {
-		price, err := c.price(o.pkg)
+		price, err := c.price(o)
 		if err != nil {
 			return "", err
 		}
@@ -583,7 +589,8 @@ func (o order) checkPayment() error {
 	return nil
 }
 
-func (c *cli) price(pkg string) (int64, error) {
+// price is the catalog price of a fixed package, otherwise the router's quote for it
+func (c *cli) price(o order) (int64, error) {
 	cfg, err := c.config()
 	if err != nil {
 		return 0, err
@@ -597,11 +604,35 @@ func (c *cli) price(pkg string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	p, ok := cat.Get(pkg)
+	p, ok := cat.Get(o.pkg)
 	if !ok {
-		return 0, fmt.Errorf("package %q is not in %s", pkg, path)
+		return 0, fmt.Errorf("package %q is not in %s", o.pkg, path)
 	}
-	return p.PriceMicros, nil
+	if p.FixedPrice {
+		return p.PriceMicros, nil
+	}
+	api, err := c.client()
+	if err != nil {
+		return 0, err
+	}
+	if o.kind == ordertoken.KindExtend {
+		res, err := api.CheckExtendPlacement(c.ctx, connect.NewRequest(
+			&routerv1.CheckExtendPlacementRequest{Handle: o.handle, PackageId: o.pkg}))
+		if err != nil {
+			return 0, fmt.Errorf("price the extension: %w", err)
+		}
+		return res.Msg.GetPackage().GetPriceMicros(), nil
+	}
+	res, err := api.PricePackage(c.ctx, connect.NewRequest(
+		&routerv1.PricePackageRequest{PackageId: o.pkg, EstimateId: o.estimate}))
+	if err != nil {
+		return 0, fmt.Errorf("price the package: %w", err)
+	}
+	if !res.Msg.GetOption().GetAvailable() {
+		_, _ = fmt.Fprintf(c.stderr, "package %s is unavailable now, the router may refuse it\n",
+			o.pkg)
+	}
+	return res.Msg.GetOption().GetPriceMicros(), nil
 }
 
 // privateKey takes a 32-byte seed, as bugnet-dev keys prints, or a full 64-byte key
@@ -643,7 +674,7 @@ func (c *cli) create(args []string) error {
 	fs.StringVar(&o.pkg, "package", "", "package id")
 	fs.StringVar(&o.id, "order", "", "order id")
 	given := fs.String("token", "", "order token")
-	estimate := fs.String("estimate-id", "", "estimate id from Estimate")
+	fs.StringVar(&o.estimate, "estimate-id", "", "estimate id from Estimate")
 	quote := fs.String("quote", "", "quote id Reserve was called with")
 	paymentFlags(fs, &o)
 	if err := parse(fs, args, false); err != nil {
@@ -658,7 +689,7 @@ func (c *cli) create(args []string) error {
 		return err
 	}
 	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
-		OrderToken: token, EstimateId: *estimate, QuoteId: *quote,
+		OrderToken: token, EstimateId: o.estimate, QuoteId: *quote,
 	}))
 	if err != nil {
 		return err
