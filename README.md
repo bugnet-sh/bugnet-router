@@ -764,16 +764,19 @@ increment at the server's hourly rate, plus any start fee. A package in the cata
 `price_micros` has a fixed price, and a server fits it when its price with the markup is at most
 that price. `price_micros: 0` is free, and a server fits it only when it costs nothing.
 
-`Estimate` lists every start package, each with `available` where a provider could host it now
-for the order's requirements. It quotes each live package as the price of its first candidate, or
-of the cheapest server it could land on when none is available, shown unavailable. It stores
-each quote by estimate id in `price_quotes` and hands the prices to the estimator. `PricePackage`
-takes one start package ID and the same requirements and answers with that package as `Estimate`
-would list it. With the `estimate_id` of an estimate it answers the price that estimate quoted,
-held for `pricing.quote_hold`, and without one the live price. The gateway asks it right before
-Payments charges a paid start. It writes nothing, spends no rate-limit token, and leaves
-`fits`, `extensions_needed` and `short_on` unset. An unknown package answers `InvalidArgument`
-with reason `PACKAGE_UNKNOWN`, and one with `extension_of` set with reason `NOT_START_PACKAGE`.
+`Estimate` lists every start package, each with `available` where a provider could host it now for
+the order's requirements. It quotes each live package as the price of its first candidate, or of the
+cheapest server it could land on when none is available, shown unavailable. It stores the quote of
+each available package by estimate id in `price_quotes` and hands the prices to the estimator. An
+estimate served again stores its quotes again, unclaimed. `PricePackage` takes one start package ID
+and the same requirements and answers with that package as `Estimate` would list it. With the
+`estimate_id` of an estimate it answers the price that estimate quoted while the quote holds, and
+otherwise the live price. A quote holds for `pricing.quote_hold`, at most 24h, while no order has
+claimed it and a start could take it now under the rules below. The gateway asks it right before
+Payments charges a paid start, and asks the user to confirm a price that changed. It writes nothing,
+spends no rate-limit token, and leaves `fits`, `extensions_needed` and `short_on` unset. An unknown
+package answers `InvalidArgument` with reason `PACKAGE_UNKNOWN`, and one with `extension_of` set
+with reason `NOT_START_PACKAGE`.
 
 An unavailable start package's `unavailable_reason` is always one of these codes, never error
 text.
@@ -791,19 +794,22 @@ budget or its maximum lifetime, which gives `no_candidate`. The capability check
 At start `router-api` logs an error naming each start package that no configured provider can
 place under `images.accept` and its fixed price, health aside, and still starts.
 
-`CreatePlacement` with the order's estimate id honors the held quote. It tries the quoted server
-first, even when that server has become dearer, when the order's `amount_micros`, less its x402
-allowance and fee, covers the held price. Otherwise the payment must cover a live candidate. An
-order that pays less answers `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata
-holds `package_id`, `paid_micros` and `price_micros`, the live price. A start is recorded as a
-failed, refundable placement with reason `price_changed` and a `placement.failed` event, so
-Payments refunds it in full. A retry answers `PRICE_CHANGED` again with the price now, which can
-be at or below `paid_micros` if the price fell since. A live order that paid 0 runs only on a
-server priced 0. `ExtendPlacement` checks that the payment, less the same allowance and fee,
-covers the extension's price on the placement's own server. One that pays less answers
-`PRICE_CHANGED`, records nothing, and the gateway abandons it as it does every refused
-extension. A retry of an extension already applied answers
-as the first call did, whatever the price now.
+`CreatePlacement` with the order's estimate id honors the held quote when the order's
+`amount_micros`, less its x402 allowance and fee, covers the held price. The first such order claims
+the quote and a retry of it keeps the claim, so a quote holds for one order. The start goes to the
+cheapest server the payment covers, as it would without a quote. When none does, the quoted server
+takes it while its cost now is at most the payment plus `pricing.quote_rise_micros`, 30000 in
+production, one Boat start fee step. That bounds what Bugnet loses on a run quoted just before a
+price change. Otherwise the payment must cover a live candidate. An order that pays less answers
+`FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`, `paid_micros`
+and `price_micros`, the live price. A start is recorded as a failed, refundable placement with
+reason `price_changed` and a `placement.failed` event, so Payments refunds it in full. A retry
+answers `PRICE_CHANGED` again with the price now, which can be at or below `paid_micros` if the
+price fell since. A live order that paid 0 runs only on a server priced 0. `ExtendPlacement` checks
+that the payment, less the same allowance and fee, covers the extension's price on the placement's
+own server. One that pays less answers `PRICE_CHANGED`, records nothing, and the gateway abandons it
+as it does every refused extension. A retry of an extension already applied answers as the first
+call did, whatever the price now.
 
 ## Estimator
 
@@ -1881,16 +1887,17 @@ a request that resolves to no placement makes no span anywhere.
 
 ## Providers
 
-Every provider has an adapter: boxd, E2B, Koyeb and Boat, beside `local` for development. Each
-reads its key from the environment and its settings from its table in the settings file, and
-`providers` lists the ones a deployment uses. A placement tries the providers that can host the
-package cheapest first by its price, the provider's official cost plus `pricing.markup`, with the
-package's minutes, the hold and `pricing.overhead` in whole billing increments plus any start
-fee. A server whose recent starts took over 10 s to get ready at the 95th percentile goes behind
-the faster ones. The order of `providers` only breaks ties in price. With a budget only
-candidates priced within it fit, and a server the order quoted is exempt. A failover goes only
-to a server whose price fits what the order paid less what the earlier attempts cost, and when
-nothing fits the start fails refundable in full.
+Every provider has an adapter: boxd, E2B, Koyeb and Boat, beside `local` for development. Each reads
+its key from the environment and its settings from its table in the settings file, and `providers`
+lists the ones a deployment uses. A placement tries the providers that can host the package cheapest
+first by its price, the provider's official cost plus `pricing.markup`, with the package's minutes,
+the hold and `pricing.overhead` in whole billing increments plus any start fee. A server whose
+recent starts took over 10 s to get ready at the 95th percentile goes behind the faster ones. The
+order of `providers` only breaks ties in price. With a budget only candidates priced within it fit.
+When none does, the server of the order's held quote takes the first attempt while its cost is at
+most the budget plus `pricing.quote_rise_micros`. A failover goes only to a server whose price fits
+what the order paid less what the earlier attempts cost, and when nothing fits the start fails
+refundable in full.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
@@ -2207,7 +2214,8 @@ termination `placements.cost_micros` sums `spend.AttemptCost` over the attempts,
 `egress_bytes` come from the budget counters, and `placement.terminated` carries all three. A cost
 more than what the orders paid is a loss, which logs at error level, and a cost over the paid
 price less its markup that is not a loss is a warning. `/monitor` counts such placements of the
-last 24 hours, and the losses as a problem. `worker.cost_alert_fraction` is 0.03 in production.
+last 24 hours, and the losses as a problem. `reconcile.cost_alert_fraction` is 0.03 in
+production.
 
 `cost_daily_tick` runs at `cost_daily_at` and queues `cost_daily{provider, day}` for the day before
 and for the last two days a provider had not finished. Each job reads one page of the provider's
