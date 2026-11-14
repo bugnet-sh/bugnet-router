@@ -107,11 +107,12 @@ func (s *servers) down(name string) {
 	}
 }
 
-// liveOptions give the API server the live catalog on s at 10%, an estimator and a 45 m hold
+// liveOptions give the API server the live catalog on s at 10%, an estimator, a 45 m hold and a
+// rise of one Boat step
 func liveOptions(s *servers) options {
 	return options{
 		apiCatalog: liveCatalog, apiEngine: s.engine, apiRule: &tenPercent,
-		quoteHold: 45 * time.Minute, estimator: true,
+		quoteHold: 45 * time.Minute, quoteRise: 30_000, estimator: true,
 	}
 }
 
@@ -455,9 +456,40 @@ func TestPricePackageLocked(t *testing.T) {
 	// 1,810 s were 9,050 priced at 9,955 and are now 18,100 priced at 19,910
 	eq(t, e.lockedPrice(t, longPkg, id).GetPriceMicros(), int64(9955))
 	eq(t, e.price(t, longPkg, nil).GetPriceMicros(), int64(19910))
-	// With boat down nothing takes the start at the locked price, as e2b's is 25,031
+	// With boat down nothing takes the start at the locked price, so the live price answers
 	s.down("boat")
-	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), false, "no_candidate"})
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(25031), true, ""})
+	eq(t, offer(e.price(t, smallPkg, nil)), []any{int64(25031), true, ""})
+}
+
+func TestPricePackageClaimedQuoteAnswersLive(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	id := q.GetEstimateId()
+	s.hourly["boat"].Store(2 * boatRate)
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), true, ""})
+	// An order claimed the quote, so the next one is told the price now
+	_, ok, err := e.store.ClaimQuote(t.Context(), uuid.MustParse(id), smallPkg, "order-1", 3355,
+		time.Hour)
+	eq(t, []any{ok, err}, []any{true, nil})
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(6710), true, ""})
+	eq(t, e.lockedPrice(t, longPkg, id).GetPriceMicros(), int64(9955))
+}
+
+func TestPricePackageHeldWithinTheRise(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	id := q.GetEstimateId()
+	// boat's 610 s now cost 30,500, which is within 30,000 of the 3,355 paid
+	s.hourly["boat"].Store(10 * boatRate)
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), true, ""})
+	// At 36,600 they are past it, so the live price answers, e2b's 25,031
+	s.hourly["boat"].Store(12 * boatRate)
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(25031), true, ""})
 	eq(t, offer(e.price(t, smallPkg, nil)), []any{int64(25031), true, ""})
 }
 
@@ -491,7 +523,9 @@ func TestPricePackageUnavailableKeepsAPrice(t *testing.T) {
 	eq(t, offer(opts[smallPkg]), []any{int64(3355), false, "no_candidate"})
 	eq(t, offer(opts[longPkg]), []any{int64(9955), false, "no_candidate"})
 	eq(t, offer(opts[gpuPkg]), []any{int64(0), false, "feature_unavailable"})
-	eq(t, e.quotes(t, q.GetEstimateId())[smallPkg].Provider, "boat")
+	// An unavailable package's price is no quote, since no server could start it
+	eq(t, len(e.quotes(t, up.GetEstimateId())), 2)
+	eq(t, e.quotes(t, q.GetEstimateId()), map[string]store.Quote{})
 	for _, id := range []string{"", up.GetEstimateId(), q.GetEstimateId()} {
 		eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), false, "no_candidate"})
 		eq(t, offer(e.lockedPrice(t, gpuPkg, id)), []any{int64(0), false, "feature_unavailable"})

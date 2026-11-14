@@ -133,6 +133,9 @@ type Deps struct {
 	Log      *slog.Logger // slog.Default when nil
 	// QuoteHold is how long an estimate's quote holds for PricePackage, none holding while zero
 	QuoteHold time.Duration
+	// QuoteRise is how far over the held price a held start's cost may be,
+	// pricing.quote_rise_micros
+	QuoteRise int64
 	// SandboxOpsPerSecond refills each placement's operation bucket, a default when zero
 	SandboxOpsPerSecond int
 	// SandboxOpsBurst is what a placement's full operation bucket holds, a default when zero
@@ -455,7 +458,7 @@ func (s *Server) prices(
 	return out
 }
 
-// putQuotes stores the server and price of each start package a server lands under the answer's id
+// putQuotes stores the server and price of each available start package under the answer's id
 func (s *Server) putQuotes(
 	ctx context.Context, estimateID string, opts []*routerv1.PackageOption,
 	quoted map[string]placement.Candidate,
@@ -467,8 +470,9 @@ func (s *Server) putQuotes(
 	}
 	var qs []store.Quote
 	for _, o := range opts {
+		// An unavailable package's price is its cheapest landing's, which no order may start at
 		q := quoted[o.GetPackageId()]
-		if q.Provider == nil {
+		if q.Provider == nil || !o.GetAvailable() {
 			continue
 		}
 		qs = append(qs, store.Quote{
@@ -502,7 +506,8 @@ func (s *Server) PricePackage(
 	return connect.NewResponse(&routerv1.PricePackageResponse{Option: opt}), nil
 }
 
-// heldOption is pkg at the price the estimate's quote holds, false when no quote of it holds
+// heldOption is pkg at the price the estimate's quote holds, false when it holds none a start
+// could take now
 func (s *Server) heldOption(
 	ctx context.Context, pkg catalog.Package, need placement.Requirements, estimateID string,
 ) (*routerv1.PackageOption, bool) {
@@ -518,13 +523,14 @@ func (s *Server) heldOption(
 	if !ok {
 		return nil, false
 	}
-	// The quoted server takes the start at the held price and any other server within it
-	quoted := &placement.Server{Provider: q.Provider, Size: q.SizeName}
-	_, err = s.d.Engine.Candidates(placement.Inputs{
-		Package: pkg, Requirements: need, Rule: s.d.Rule, BudgetMicros: q.PriceMicros,
-		Prefer: quoted, ImageAccept: s.d.ImageAccept,
-	})
-	return packageOption(pkg, q.PriceMicros, err == nil, s.candidateReason(pkg, err)), true
+	// A quote an order claimed holds nothing for the next one, which pays the live price
+	in := placement.Inputs{
+		Package: pkg, Requirements: need, Rule: s.d.Rule, ImageAccept: s.d.ImageAccept,
+	}
+	if saga.HeldServer(s.d.Engine, in, q, "", q.PriceMicros, s.d.QuoteRise) == nil {
+		return nil, false
+	}
+	return packageOption(pkg, q.PriceMicros, true, ""), true
 }
 
 // startOption prices a start package on its quoted server and says whether one can host it now

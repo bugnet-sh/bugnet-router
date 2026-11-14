@@ -250,6 +250,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
 		QuoteHold:        cfg.Pricing.QuoteHold,
+		QuoteRise:        cfg.Pricing.QuoteRiseMicros,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
 			CreatesPerSecond: cfg.CreatesPerSecond,
@@ -278,6 +279,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Prefix:              cfg.ValkeyPrefix,
 		Rule:                cfg.Pricing.Rule,
 		QuoteHold:           cfg.Pricing.QuoteHold,
+		QuoteRise:           cfg.Pricing.QuoteRiseMicros,
 		Log:                 log,
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,

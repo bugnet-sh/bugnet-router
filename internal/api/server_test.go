@@ -209,6 +209,8 @@ type options struct {
 	apiRule *pricing.Rule
 	// quoteHold is how long an estimate's quote holds for PricePackage, none when zero
 	quoteHold time.Duration
+	// quoteRise is how far over the held price a held start's cost may be
+	quoteRise int64
 	// wrap replaces the faulty local provider in the registry, given the local provider's root
 	wrap      func(l *local.Provider, root string) provider.Provider
 	transfers config.Transfers // the transfer settings, each zero field at its default
@@ -451,7 +453,8 @@ func newEnv(t *testing.T, opts options) *env {
 		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
-		Valkey: apiVK, Prefix: prefix, Rule: rule, QuoteHold: opts.quoteHold, Log: log,
+		Valkey: apiVK, Prefix: prefix, Rule: rule, QuoteHold: opts.quoteHold,
+		QuoteRise: opts.quoteRise, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
