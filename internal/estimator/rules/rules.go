@@ -12,7 +12,7 @@ import (
 )
 
 // Version names the rule set, any change to a rule or a constant bumps it
-const Version = "est-2026.11.4"
+const Version = "est-2026.11.5"
 
 const (
 	mib = int64(1) << 20

@@ -104,7 +104,7 @@ func TestServersListEachSizeAPackageLandsOn(t *testing.T) {
 	// c costs 40,000 for 10 minutes, so only packages at 80,000 or more keep half their price
 	c := newShaped(t, "c", 240000, provider.Capabilities{GPU: true, ExecUser: "boxd"},
 		size("1x4", 1, 4, 100), size("2x8", 2, 8, 100), gpu)
-	// d lists no sizes, so its sizes follow the order packages land on them
+	// d lists no sizes, so its sizes follow the order packages land on them, smallest package first
 	d := unsized{newShaped(t, "d", 1000, provider.Capabilities{
 		MaxLifetime: 2 * time.Hour, ExecUser: "dev",
 	}, size("small", 2, 2, 10), size("big", 8, 16, 100))}
@@ -133,12 +133,12 @@ func TestServersListEachSizeAPackageLandsOn(t *testing.T) {
 		{Provider: "c", Size: "g1", VCPU: 8, MemoryMiB: 32768, DiskGiB: 100,
 			GPU: &GPU{Count: 1, MemoryGiB: 24, Model: "NVIDIA L4"}, User: "boxd",
 			Available: true, Packages: []ServerPackage{gpuPkg}},
-		{Provider: "d", Size: "big", VCPU: 8, MemoryMiB: 16384, DiskGiB: 100,
-			LongestRunMinutes: twoHours, User: "dev", Available: true,
-			Packages: []ServerPackage{xl, medium}},
 		{Provider: "d", Size: "small", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
 			LongestRunMinutes: twoHours, User: "dev", Available: true,
 			Packages: []ServerPackage{small}},
+		{Provider: "d", Size: "big", VCPU: 8, MemoryMiB: 16384, DiskGiB: 100,
+			LongestRunMinutes: twoHours, User: "dev", Available: true,
+			Packages: []ServerPackage{medium, xl}},
 	})
 
 	// The servers carry no cost, margin or rate of any provider

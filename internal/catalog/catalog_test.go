@@ -3,6 +3,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ func TestCatalogLoad(t *testing.T) {
 		t.Fatalf("got %d packages", len(all))
 	}
 	if all[0].ID != "cpu-small-10m" || all[2].ID != "gpu-small-30m" {
-		t.Fatalf("not sorted by price: %+v", all)
+		t.Fatalf("not sorted by resources: %+v", all)
 	}
 	g, ok := c.Get("gpu-small-30m")
 	want := provider.Resources{
@@ -110,8 +111,8 @@ func TestCatalogExtension(t *testing.T) {
 	if e, _ := c.Get("a-ext"); e.ExtensionOf != "a" {
 		t.Fatalf("%+v", e)
 	}
-	if c.All()[0].ID != "a-ext" {
-		t.Fatal("expected price ordering")
+	if c.All()[0].ID != "a" {
+		t.Fatal("expected the same resources and minutes to order by id")
 	}
 }
 
@@ -134,5 +135,77 @@ func TestCatalogGPUModel(t *testing.T) {
 		if g, _ := c.Get(id); g.GPUModel != "NVIDIA L4" || g.Resources.GPUCount != 2 {
 			t.Fatalf("%s: %+v", id, g)
 		}
+	}
+}
+
+func writeCatalog(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "p.json")
+	if err := os.WriteFile(p, []byte(`{"packages":[`+body+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+const smallRes = `"resources":{"vcpu":1,"memory_mib":512,"disk_gib":1}`
+
+func TestLivePackageHasNoPrice(t *testing.T) {
+	c, err := Load(writeCatalog(t, `{"id":"a",`+smallRes+`,"minutes":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := c.Get("a"); p.FixedPrice || p.PriceMicros != 0 {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestFixedZeroIsFree(t *testing.T) {
+	c, err := Load(writeCatalog(t, `{"id":"a",`+smallRes+`,"minutes":5,"price_micros":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := c.Get("a"); !p.FixedPrice || p.PriceMicros != 0 {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestMixedExtensionRefused(t *testing.T) {
+	live := `{"id":"a",` + smallRes + `,"minutes":5}`
+	fixed := `{"id":"a",` + smallRes + `,"minutes":5,"price_micros":10}`
+	liveExt := `{"id":"b",` + smallRes + `,"minutes":5,"extension_of":"a"}`
+	fixedExt := `{"id":"b",` + smallRes + `,"minutes":5,"price_micros":10,"extension_of":"a"}`
+	for name, body := range map[string]string{
+		"live start fixed extension": live + "," + fixedExt,
+		"fixed start live extension": fixed + "," + liveExt,
+	} {
+		if _, err := Load(writeCatalog(t, body)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+	for name, body := range map[string]string{
+		"live": live + "," + liveExt, "fixed": fixed + "," + fixedExt,
+	} {
+		if _, err := Load(writeCatalog(t, body)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestAllOrderIgnoresPrice(t *testing.T) {
+	big := `{"id":"a","resources":{"vcpu":4,"memory_mib":512,"disk_gib":1},` +
+		`"minutes":5,"price_micros":1}`
+	smallLong := `{"id":"b",` + smallRes + `,"minutes":20,"price_micros":1}`
+	smallShort := `{"id":"c",` + smallRes + `,"minutes":5,"price_micros":900}`
+	smallShortB := `{"id":"d",` + smallRes + `,"minutes":5,"price_micros":10}`
+	c, err := Load(writeCatalog(t, big+","+smallLong+","+smallShort+","+smallShortB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range c.All() {
+		got = append(got, p.ID)
+	}
+	if want := []string{"c", "d", "b", "a"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

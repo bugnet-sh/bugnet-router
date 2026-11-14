@@ -60,7 +60,7 @@ func newLocal(
 func pkg(minutes int, price int64) catalog.Package {
 	return catalog.Package{
 		ID: "p", Resources: provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5},
-		Minutes: minutes, PriceMicros: price,
+		Minutes: minutes, PriceMicros: price, FixedPrice: true,
 	}
 }
 
@@ -270,6 +270,19 @@ func TestCandidatesCountTheStartFee(t *testing.T) {
 	if err != nil || !slices.Equal(names(got), []string{"free", "fee"}) ||
 		got[1].CostMicros != 33000 {
 		t.Fatalf("got %v, %v, want free then fee at 33000", got, err)
+	}
+}
+
+func TestCandidatesLivePackageSkipsTheFloor(t *testing.T) {
+	dear := newLocal(t, "dear", 100000, time.Hour)
+	live := pkg(60, 0)
+	live.FixedPrice = false
+	got, err := engine(fakeHealth{}, dear).Candidates(Inputs{Package: live, MarginFloor: 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names(got), []string{"dear"}) || got[0].CostMicros != 100000 {
+		t.Fatalf("got %v", names(got))
 	}
 }
 

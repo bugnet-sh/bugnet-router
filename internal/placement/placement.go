@@ -183,11 +183,14 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 		cost += fee
 	}
 	margin := 0.0
-	if pk.PriceMicros == 0 {
+	switch {
+	case !pk.FixedPrice:
+		// A live package is quoted from the cost, so no price is held to a floor
+	case pk.PriceMicros == 0:
 		if cost != 0 {
 			return Candidate{}, false, false
 		}
-	} else {
+	default:
 		margin = float64(pk.PriceMicros-cost) / float64(pk.PriceMicros)
 		if margin < in.MarginFloor {
 			return Candidate{}, false, false

@@ -3,6 +3,7 @@ package catalog
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,9 +22,12 @@ type Package struct {
 	ID        string
 	Resources provider.Resources
 	// GPUModel names each GPU as the catalog states it, such as NVIDIA L4, empty without a GPU
-	GPUModel    string
-	Minutes     int
+	GPUModel string
+	Minutes  int
+	// PriceMicros is the fixed price, 0 when FixedPrice is false
 	PriceMicros int64
+	// FixedPrice is true when the file sets price_micros, otherwise the router quotes it live
+	FixedPrice  bool
 	ExtensionOf string
 	// Edge is the package's own edge budget, which wins over the router's settings
 	Edge Edge
@@ -65,7 +69,7 @@ type filePackage struct {
 	ID          string        `json:"id"`
 	Resources   fileResources `json:"resources"`
 	Minutes     int           `json:"minutes"`
-	PriceMicros int64         `json:"price_micros"`
+	PriceMicros *int64        `json:"price_micros,omitempty"`
 	ExtensionOf string        `json:"extension_of"`
 	Edge        *fileEdge     `json:"edge"`
 	Egress      *fileEgress   `json:"egress"`
@@ -115,7 +119,10 @@ func Load(path string) (*Catalog, error) {
 				GPUMemoryGiB: fp.Resources.GPUMemoryGiB,
 			},
 			GPUModel: fp.Resources.GPUModel,
-			Minutes:  fp.Minutes, PriceMicros: fp.PriceMicros, ExtensionOf: fp.ExtensionOf,
+			Minutes:  fp.Minutes, ExtensionOf: fp.ExtensionOf,
+		}
+		if fp.PriceMicros != nil {
+			p.PriceMicros, p.FixedPrice = *fp.PriceMicros, true
 		}
 		if err := validate(p); err != nil {
 			return nil, err
@@ -147,6 +154,9 @@ func Load(path string) (*Catalog, error) {
 		case target.Resources != p.Resources || target.GPUModel != p.GPUModel:
 			return nil, fmt.Errorf(
 				"catalog: package %q has different resources than %q it extends", p.ID, target.ID)
+		case target.FixedPrice != p.FixedPrice:
+			return nil, fmt.Errorf("catalog: package %q and %q it extends must both set "+
+				"price_micros or both leave it out", p.ID, target.ID)
 		case !sameHosts(target.EgressAllow, p.EgressAllow):
 			// The sandbox keeps the egress rules it was created with
 			return nil, fmt.Errorf("catalog: package %q must carry the same egress.allow as %q "+
@@ -154,10 +164,16 @@ func Load(path string) (*Catalog, error) {
 		}
 	}
 	sort.Slice(c.all, func(i, j int) bool {
-		if c.all[i].PriceMicros != c.all[j].PriceMicros {
-			return c.all[i].PriceMicros < c.all[j].PriceMicros
-		}
-		return c.all[i].ID < c.all[j].ID
+		a, b := c.all[i], c.all[j]
+		return cmp.Or(
+			cmp.Compare(a.Resources.VCPU, b.Resources.VCPU),
+			cmp.Compare(a.Resources.MemoryMiB, b.Resources.MemoryMiB),
+			cmp.Compare(a.Resources.DiskGiB, b.Resources.DiskGiB),
+			cmp.Compare(a.Resources.GPUCount, b.Resources.GPUCount),
+			cmp.Compare(a.Resources.GPUMemoryGiB, b.Resources.GPUMemoryGiB),
+			cmp.Compare(a.Minutes, b.Minutes),
+			cmp.Compare(a.ID, b.ID),
+		) < 0
 	})
 	return c, nil
 }
@@ -283,7 +299,7 @@ func (c *Catalog) Get(id string) (Package, bool) {
 	return p, ok
 }
 
-// All returns every package sorted by price then id
+// All returns every package sorted by resources, then minutes, then id
 func (c *Catalog) All() []Package {
 	return append([]Package(nil), c.all...)
 }

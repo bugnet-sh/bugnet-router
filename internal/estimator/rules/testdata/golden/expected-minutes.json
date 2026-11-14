@@ -33,18 +33,18 @@
 				"total_price_micros": 225000
 			},
 			{
-				"extension_package_id": "cpu-large-30m-more",
-				"extensions_needed": 3,
-				"fits": true,
-				"package_id": "cpu-large-30m",
-				"total_price_micros": 900000
-			},
-			{
 				"extension_package_id": "gpu-20-30m-more",
 				"extensions_needed": 3,
 				"fits": false,
 				"package_id": "gpu-20-30m",
 				"total_price_micros": 2250000
+			},
+			{
+				"extension_package_id": "cpu-large-30m-more",
+				"extensions_needed": 3,
+				"fits": true,
+				"package_id": "cpu-large-30m",
+				"total_price_micros": 900000
 			}
 		],
 		"floor": {

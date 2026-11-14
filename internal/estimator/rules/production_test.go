@@ -52,9 +52,6 @@ func TestProductionServeRecommendsExtensions(t *testing.T) {
 	if rec == nil || rec.ExtensionsNeeded != 2 || rec.ExtensionPackageID != "small-10m-more" {
 		t.Fatalf("small-10m fit is %+v, want 2 extensions of small-10m-more", rec)
 	}
-	if rec.TotalPriceMicros != 150000 {
-		t.Fatalf("total %d micros, want 150000", rec.TotalPriceMicros)
-	}
 }
 
 // the default minutes cover a small install, so a Vite starter still takes two extensions
