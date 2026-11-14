@@ -7,6 +7,7 @@ create table price_quotes (
     cost_micros bigint not null,
     price_micros bigint not null,
     quoted_at timestamptz not null default now(),
+    order_id text,                                 -- the order that claimed it, null for none
     primary key (estimate_id, package_id)
 );
 
