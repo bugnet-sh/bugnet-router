@@ -68,6 +68,24 @@ payments_url = "http://127.0.0.1:8447"
 [sessions]
 base_url = "https://sessions.bugnet.sh"
 
+[pricing]
+markup = 0.10
+quote_hold = "45m"
+
+[pricing.overhead]
+boat = "10s"
+boxd = "10s"
+e2b = "15s"
+
+[boxd]
+usd_per_eur = 1.12
+
+[hedge]
+enabled = false
+
+[reconcile]
+cost_alert_fraction = 0.03
+
 [boat.types]                  # never xlarge, Boat sells it only on its $100 a month plan
 small = "small"
 default = "default"

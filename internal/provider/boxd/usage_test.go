@@ -22,12 +22,12 @@ func TestBoxdReadUsageGivesTheOrgsWindowInOneCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The euro cost is priced up at the adapter's fixed rate
-	eq(t, u.TotalMicros, int64(1150))
+	// The euro cost is priced up at the configured rate
+	eq(t, u.TotalMicros, int64(1120))
 	eq(t, u.Complete, false)
 	eq(t, u.Attributed, false)
 	eq(t, u.Next, "")
-	eq(t, u.Sandboxes, []provider.SandboxUsage{{ID: "vm-1", Seconds: 90, CostMicros: 460}})
+	eq(t, u.Sandboxes, []provider.SandboxUsage{{ID: "vm-1", Seconds: 90, CostMicros: 448}})
 	f.mu.Lock()
 	asked := f.usageAsked
 	f.mu.Unlock()

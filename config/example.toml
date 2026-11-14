@@ -11,6 +11,13 @@ deployment_id = "main"        # ^[a-z0-9-]{1,32}$
 replica_id = ""               # host-pid when empty
 events_url = ""               # signed events stay pending in the outbox when empty
 
+[pricing]
+markup = 0.10                 # 0 to 10, finite, the price is official cost plus this share
+quote_hold = "45m"            # how long a quoted price stays payable, at least 1m
+
+[pricing.overhead]            # time a provider bills beyond a run, 0s to 5m, none when absent
+# boat = "10s"
+
 [api]
 listen_addr = ":8080"         # router-api serves the Connect API here
 reuse_port = false            # SO_REUSEPORT, so a new router-api binds beside a draining one
@@ -393,6 +400,7 @@ region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
 gate_route = "default"        # the pinned default proxy, or "subdomain" for a bn proxy to the gate
 parked_gib = 5                # disk written per hibernated pool member, which sets its idle cost
+usd_per_eur = 1.12            # 0.5 to 3, converts boxd's euro prices to dollars
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
 ops_per_second = 0            # user operations on the account a second, 0 for no bucket

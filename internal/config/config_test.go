@@ -124,7 +124,7 @@ func TestLoadFileDefaults(t *testing.T) {
 		t.Fatalf("sandbox operations %d a second and %d at once, want the limiter's defaults",
 			c.SandboxOpsPerSecond, c.SandboxOpsBurst)
 	}
-	if c.Boxd != (Boxd{Region: "fra", GateRoute: "default", ParkedGiB: 5}) ||
+	if c.Boxd != (Boxd{Region: "fra", GateRoute: "default", ParkedGiB: 5, USDPerEUR: 1.12}) ||
 		c.Koyeb.Region != "fra" ||
 		c.Koyeb.InstanceTypes != nil || c.Boat.Types != nil || c.Boat.SSHPath != "gate" {
 		t.Fatalf("provider defaults: %+v, %+v, %+v", c.Boxd, c.Koyeb, c.Boat)
@@ -299,6 +299,7 @@ cpu8 = "large"
 	}
 	if c.Boxd != (Boxd{
 		Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default", ParkedGiB: 5,
+		USDPerEUR: 1.12,
 	}) {
 		t.Fatalf("boxd settings: %+v", c.Boxd)
 	}

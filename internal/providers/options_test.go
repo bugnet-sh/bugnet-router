@@ -30,12 +30,13 @@ func TestKoyebOptionsCarryTheTransferParts(t *testing.T) {
 
 func TestBoxdOptionsCarryTheGateSettings(t *testing.T) {
 	var cfg config.Config
-	cfg.Boxd = config.Boxd{Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default"}
+	cfg.Boxd = config.Boxd{Region: "nyc", Endpoint: "boxd.example:9443", GateRoute: "default",
+		USDPerEUR: 1.2}
 	cfg.Previews.GatePort = 29418
 	got := boxdOptions(cfg, "boxd_test")
 	want := boxd.Options{
 		APIKey: "boxd_test", Endpoint: "boxd.example:9443", Region: "nyc", GatePort: 29418,
-		GateRoute: "default",
+		GateRoute: "default", USDPerEUR: 1.2,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("boxd options %+v, want %+v", got, want)

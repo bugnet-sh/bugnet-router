@@ -22,7 +22,7 @@ func (p *Provider) ReadUsage(
 		return provider.Usage{}, classify(ctx, err)
 	}
 	out := provider.Usage{
-		TotalMicros: usdMicros(resp.GetCurrency(), resp.GetTotalCostMicro()),
+		TotalMicros: p.usdMicros(resp.GetCurrency(), resp.GetTotalCostMicro()),
 		Complete:    resp.GetComplete(),
 	}
 	for _, vm := range resp.GetVms() {
@@ -30,16 +30,21 @@ func (p *Provider) ReadUsage(
 		out.Sandboxes = append(out.Sandboxes, provider.SandboxUsage{
 			ID:         vm.GetVmId(),
 			Seconds:    int64(s.GetRunning() + s.GetStandby()),
-			CostMicros: usdMicros(resp.GetCurrency(), vm.GetCostMicro()),
+			CostMicros: p.usdMicros(resp.GetCurrency(), vm.GetCostMicro()),
 		})
 	}
 	return out, nil
 }
 
-// usdMicros converts a cost in boxd's currency to micro dollars at the adapter's fixed rate
-func usdMicros(currency string, micros int64) int64 {
+// usd converts EUR micros to micro dollars at the configured rate, rounded up
+func (p *Provider) usd(eurMicros int64) int64 {
+	return (eurMicros*p.rateBP + rateBase - 1) / rateBase
+}
+
+// usdMicros converts a cost in boxd's currency to micro dollars at the configured rate
+func (p *Provider) usdMicros(currency string, micros int64) int64 {
 	if currency == "eur" {
-		return (micros*usdPerEURCents + 99) / 100
+		return p.usd(micros)
 	}
 	return micros
 }

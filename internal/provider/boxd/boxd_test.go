@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"math"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -897,10 +898,10 @@ func TestBoxdSizesAndPrices(t *testing.T) {
 		size   string
 		hourly int64
 	}{
-		{provider.Resources{}, "1x4", 115000},
-		{provider.Resources{VCPU: 2}, "2x8", 207000},
-		{provider.Resources{MemoryMiB: 9 << 10}, "4x16", 414000},
-		{provider.Resources{VCPU: 5, DiskGiB: 100}, "8x32", 805000},
+		{provider.Resources{}, "1x4", 112000},
+		{provider.Resources{VCPU: 2}, "2x8", 203840},
+		{provider.Resources{MemoryMiB: 9 << 10}, "4x16", 403200},
+		{provider.Resources{VCPU: 5, DiskGiB: 100}, "8x32", 788480},
 	}
 	for _, c := range cases {
 		s, ok := p.SizeFor(c.floor)
@@ -919,7 +920,7 @@ func TestBoxdSizesAndPrices(t *testing.T) {
 			t.Errorf("floor %+v gave %+v, want none", floor, s)
 		}
 	}
-	if got := p.HourlyCostMicros(provider.Size{Name: "unknown"}); got != 805000 {
+	if got := p.HourlyCostMicros(provider.Size{Name: "unknown"}); got != 788480 {
 		t.Errorf("unknown size costs %d, want the dearest size", got)
 	}
 }
@@ -1072,4 +1073,20 @@ func TestBoxdRestrictedCreateCarriesTheEgressList(t *testing.T) {
 	eq(t, f.lastCreate().GetSpec().GetEgress(),
 		[]string{"huggingface.co", "egress.bugnet.sh", "203.0.113.7"})
 	eq(t, egressList(&provider.EgressAllow{}), []string{"none"})
+}
+
+func TestBoxdPricesAtTheConfiguredRate(t *testing.T) {
+	p, err := New(Options{APIKey: fakeKey, USDPerEUR: 1.2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	if got := p.HourlyCostMicros(provider.Size{Name: "2x8"}); got != 218400 {
+		t.Errorf("2x8 costs %d at 1.2, want 218400", got)
+	}
+	for _, rate := range []float64{-1, 0.00001, math.NaN(), math.Inf(1)} {
+		if _, err := New(Options{APIKey: fakeKey, USDPerEUR: rate}); err == nil {
+			t.Errorf("rate %v was accepted", rate)
+		}
+	}
 }

@@ -111,5 +111,5 @@ func (p *Provider) ping(ctx context.Context, ref provider.Ref) error {
 // ParkedHourlyCostMicros is the disk written per parked member at boxd's rate, in dollars
 func (p *Provider) ParkedHourlyCostMicros(provider.Size) int64 {
 	eur := int64(p.parkedGiB) * parkedEURMicrosPerGiBHour
-	return (eur*usdPerEURCents + 99) / 100
+	return p.usd(eur)
 }
