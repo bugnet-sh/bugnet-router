@@ -124,7 +124,7 @@ func (e *eval) fits(f Floor) []Fit {
 
 func (e *eval) fit(p catalog.Package, pa path, f Floor) Fit {
 	r := p.Resources
-	fit := Fit{PackageID: p.ID, TotalPriceMicros: p.PriceMicros}
+	fit := Fit{PackageID: p.ID, TotalPriceMicros: e.in.price(p)}
 	short := func(d Dimension) { fit.ShortOn = append(fit.ShortOn, d) }
 	if r.VCPU < pa.vcpu {
 		short(DimensionVCPU)
@@ -153,7 +153,7 @@ func (e *eval) fit(p catalog.Package, pa path, f Floor) Fit {
 		ext, n, ok, pastLifetime := e.extension(p, f.Minutes)
 		if ok {
 			fit.ExtensionsNeeded, fit.ExtensionPackageID = n, ext.ID
-			fit.TotalPriceMicros += int64(n) * ext.PriceMicros
+			fit.TotalPriceMicros += int64(n) * e.in.price(ext)
 		} else {
 			short(DimensionMinutes)
 			capped = pastLifetime
@@ -202,7 +202,7 @@ func (e *eval) extension(p catalog.Package, minutes int) (q catalog.Package, n i
 		return catalog.Package{}, 0, false, false
 	}
 	slices.SortFunc(exts, func(a, b catalog.Package) int {
-		return cmp.Or(cmp.Compare(a.PriceMicros, b.PriceMicros), cmp.Compare(a.ID, b.ID))
+		return cmp.Or(cmp.Compare(e.in.price(a), e.in.price(b)), cmp.Compare(a.ID, b.ID))
 	})
 	q = exts[0]
 	n = int(ceilDiv(int64(minutes-p.Minutes), int64(q.Minutes)))

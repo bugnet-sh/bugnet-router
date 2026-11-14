@@ -17,6 +17,9 @@ func productionInput(t *testing.T, req Request, f facts.Facts) Input {
 	return Input{Request: req, Facts: f, Catalog: c.All()}
 }
 
+// handedPrices are the live prices of small-10m and its extension
+var handedPrices = map[string]int64{"small-10m": 3355, "small-10m-more": 3300}
+
 // a few MiB of source must still fit small-10m, whose disk is 10 GiB
 func TestSmallServeSourceFitsSmall10m(t *testing.T) {
 	f := facts.Facts{Repo: &facts.Repo{Tree: facts.TreeSummary{Bytes: 4 << 20, Blobs: 60}}}
@@ -42,7 +45,9 @@ func TestSmallServeSourceFitsSmall10m(t *testing.T) {
 
 // a 30-minute serve takes a base package and two extensions of the same rate
 func TestProductionServeRecommendsExtensions(t *testing.T) {
-	o := Run(productionInput(t, Request{Workload: WorkloadServe}, facts.Facts{}))
+	in := productionInput(t, Request{Workload: WorkloadServe}, facts.Facts{})
+	in.Prices = handedPrices
+	o := Run(in)
 	var rec *Fit
 	for i, fit := range o.Fits {
 		if fit.PackageID == "small-10m" {
@@ -52,6 +57,7 @@ func TestProductionServeRecommendsExtensions(t *testing.T) {
 	if rec == nil || rec.ExtensionsNeeded != 2 || rec.ExtensionPackageID != "small-10m-more" {
 		t.Fatalf("small-10m fit is %+v, want 2 extensions of small-10m-more", rec)
 	}
+	eq(t, rec.TotalPriceMicros, int64(3355+2*3300))
 }
 
 // the default minutes cover a small install, so a Vite starter still takes two extensions

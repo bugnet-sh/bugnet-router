@@ -1,6 +1,7 @@
 package estimator_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/estimatortest"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/fetch"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/rules"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
@@ -376,4 +378,25 @@ func TestShuffledAvailabilityGivesTheSameBytes(t *testing.T) {
 	b, err := r.svc.Estimate(t.Context(), estimator.Request{})
 	eq(t, err, nil)
 	eq(t, a.EstimateID, b.EstimateID)
+}
+
+// the handed prices are stored with the inputs, and a row without them reads the fixed prices
+func TestReplayKeepsPrices(t *testing.T) {
+	cat, err := json.Marshal(map[string]any{"packages": []catalog.Package{
+		{ID: "a", Resources: provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5}, Minutes: 10},
+		{ID: "a-more", Resources: provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5},
+			Minutes: 10, ExtensionOf: "a", PriceMicros: 7, FixedPrice: true},
+	}})
+	eq(t, err, nil)
+	out := []byte(`{"available": ["a"]}`)
+	total := func(inputs string) int64 {
+		got, err := estimator.Replay([]byte(inputs), cat, out)
+		eq(t, err, nil)
+		var o struct{ Fits []rules.Fit }
+		eq(t, json.Unmarshal(got, &o), nil)
+		return o.Fits[0].TotalPriceMicros
+	}
+	const req = `"request": {"workload": "serve", "minutes": 30}`
+	eq(t, total(`{`+req+`, "prices": {"a": 3355, "a-more": 3300}}`), int64(9955))
+	eq(t, total(`{`+req+`}`), int64(0+2*7))
 }

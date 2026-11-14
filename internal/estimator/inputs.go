@@ -66,6 +66,8 @@ type storedInputs struct {
 	History            rules.History `json:"history"`
 	CatalogSHA256      string        `json:"catalog_sha256"`
 	MaxLifetimeMinutes int           `json:"max_lifetime_minutes"`
+	// Prices is absent in a row stored before prices came with the request
+	Prices map[string]int64 `json:"prices,omitempty"`
 }
 
 // filledInputs is storedInputs with the facts it names filled in, as GetEstimate returns it
@@ -96,6 +98,7 @@ func (s *Service) persist(
 	si := storedInputs{
 		V: rules.Version, Request: in.Request, History: in.History,
 		CatalogSHA256: s.CatalogSHA256(), MaxLifetimeMinutes: in.MaxLifetimeMinutes,
+		Prices: in.Prices,
 	}
 	var factsRow *store.FactsRow
 	if fv.Repo != nil || fv.Model != nil {
@@ -236,7 +239,7 @@ func Replay(inputs, catalogJSON, output []byte) ([]byte, error) {
 	}
 	in := rules.Input{
 		Request: fi.Request, History: fi.History, Catalog: cd.Packages, Images: cd.Images,
-		MaxLifetimeMinutes: fi.MaxLifetimeMinutes,
+		MaxLifetimeMinutes: fi.MaxLifetimeMinutes, Prices: fi.Prices,
 	}
 	if fi.Facts != nil {
 		in.Facts = *fi.Facts
