@@ -344,8 +344,9 @@ func routerReport(pkg string, runs []routerRun) bench.Report {
 
 // timeOrder places one order through CreatePlacement, runs `true` through Exec and stops it
 //
-// With reserved it calls Reserve first and waits the pay delay as a user would pay, then signs the
-// token with issued_at set and orders with the same quote. The clock starts at signing.
+// With reserved it calls Reserve first and waits the pay delay as a user would pay. It then signs
+// the token with issued_at set, which asks the router for a live price, and orders with the same
+// quote. The clock starts when the order is sent, after the token is signed.
 func (c *cli) timeOrder(
 	api routerv1connect.SandboxRouterServiceClient, pkg string, reserved bool, delay time.Duration,
 ) routerRun {
@@ -370,11 +371,11 @@ func (c *cli) timeOrder(
 			return fail(c.ctx.Err())
 		}
 	}
-	start := time.Now()
 	token, err := c.sign(order{kind: ordertoken.KindStart, pkg: pkg, ttl: defaultTTL})
 	if err != nil {
 		return fail(err)
 	}
+	start := time.Now()
 	res, err := api.CreatePlacement(c.ctx, connect.NewRequest(&routerv1.CreatePlacementRequest{
 		OrderToken: token, QuoteId: quote,
 	}))

@@ -243,6 +243,60 @@ func TestBenchRouterTimesOrdersAndStopsThem(t *testing.T) {
 	eq(t, len(parsed.Samples), 2)
 }
 
+// slowPriceRouter delays PricePackage and delays nothing else
+type slowPriceRouter struct {
+	timedRouter
+	delay  time.Duration
+	priced atomic.Int32
+}
+
+func (r *slowPriceRouter) PricePackage(
+	_ context.Context, _ *connect.Request[routerv1.PricePackageRequest],
+) (*connect.Response[routerv1.PricePackageResponse], error) {
+	r.priced.Add(1)
+	time.Sleep(r.delay)
+	return connect.NewResponse(&routerv1.PricePackageResponse{
+		Option: &routerv1.PackageOption{PriceMicros: 3355, Available: true},
+	}), nil
+}
+
+func TestBenchRouterPricesOutsideTheTimedWindow(t *testing.T) {
+	r := &slowPriceRouter{delay: 300 * time.Millisecond}
+	settings := serve(t, r)
+	packages := filepath.Join(t.TempDir(), "packages.json")
+	if err := os.WriteFile(packages, []byte(liveCatalogJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings = appendTo(t, settings, "\npackages_file = \""+packages+"\"\n")
+	_, priv := newKey(t)
+	vars := env(map[string]string{
+		"BUGNET_INTERNAL_TOKEN": strings.Repeat("i", 32), "BUGNET_ORDER_PRIVATE_KEY": priv,
+	})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "bench", "router",
+		"--package", "small-10m", "--runs", "2", "--json")
+	if code != 0 {
+		t.Fatalf("exited %d: %s", code, stderr)
+	}
+	var parsed struct {
+		Samples []struct {
+			ReadyMS int `json:"ready_ms"`
+			TotalMS int `json:"total_ms"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("json %q: %v", out, err)
+	}
+	if got := r.priced.Load(); got < 2 {
+		t.Errorf("router priced %d times, want a price for each run", got)
+	}
+	eq(t, len(parsed.Samples), 2)
+	for _, s := range parsed.Samples {
+		if s.TotalMS >= 200 {
+			t.Errorf("a run took %d ms, want the 300 ms price call outside it", s.TotalMS)
+		}
+	}
+}
+
 // appendTo adds text to a settings file, which must end its api table
 func appendTo(t *testing.T, path, text string) string {
 	t.Helper()
