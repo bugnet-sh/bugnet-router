@@ -205,6 +205,10 @@ type options struct {
 	catalog      string       // the saga's and API server's catalog JSON, catalogJSON when empty
 	apiCatalog   string       // the API server's catalog JSON, the saga's when empty
 	apiEngine    api.Engine   // the API server's engine, the saga's engine when nil
+	// apiRule is the API server's pricing rule, doubled when nil
+	apiRule *pricing.Rule
+	// quoteHold is how long an estimate's quote holds for PricePackage, none when zero
+	quoteHold time.Duration
 	// wrap replaces the faulty local provider in the registry, given the local provider's root
 	wrap      func(l *local.Provider, root string) provider.Provider
 	transfers config.Transfers // the transfer settings, each zero field at its default
@@ -405,6 +409,10 @@ func newEnv(t *testing.T, opts options) *env {
 	if opts.apiEngine != nil {
 		apiEngine = opts.apiEngine
 	}
+	rule := doubled
+	if opts.apiRule != nil {
+		rule = *opts.apiRule
+	}
 	host, apiKeys := transferHost, keys
 	if opts.noTransferHost {
 		host = ""
@@ -443,7 +451,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
-		Valkey: apiVK, Prefix: prefix, Rule: doubled, Log: log,
+		Valkey: apiVK, Prefix: prefix, Rule: rule, QuoteHold: opts.quoteHold, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,

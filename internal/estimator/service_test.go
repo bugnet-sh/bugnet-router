@@ -400,3 +400,32 @@ func TestReplayKeepsPrices(t *testing.T) {
 	eq(t, total(`{`+req+`, "prices": {"a": 3355, "a-more": 3300}}`), int64(9955))
 	eq(t, total(`{`+req+`}`), int64(0+2*7))
 }
+
+// the request's prices price the fits and the stored inputs, so other prices are another row
+func TestEstimateTakesHandedPrices(t *testing.T) {
+	r := newRig(t, nil, nil)
+	req := estimator.Request{Workload: rules.WorkloadScript, ExpectedMinutes: 50,
+		MinutesGiven: true, Prices: map[string]int64{"small-30m": 9955, "small-10m-more": 3300}}
+	a, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	totals := map[string]int64{}
+	for _, f := range a.Output.Fits {
+		totals[f.PackageID] = f.TotalPriceMicros
+	}
+	// small-30m takes two extensions, 9955 + 2 x 3300, and big-30m keeps its fixed price
+	eq(t, totals, map[string]int64{"small-30m": 16555, "big-30m": 400000})
+	st, err := r.svc.Get(t.Context(), uuid.MustParse(a.EstimateID))
+	eq(t, err, nil)
+	var in struct{ Prices map[string]int64 }
+	eq(t, json.Unmarshal(st.Inputs, &in), nil)
+	eq(t, in.Prices, req.Prices)
+	again, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	eq(t, again.EstimateID, a.EstimateID)
+	req.Prices = map[string]int64{"small-30m": 25031, "small-10m-more": 24420}
+	dearer, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	if dearer.EstimateID == a.EstimateID || dearer.InputsSHA256 == a.InputsSHA256 {
+		t.Fatalf("other prices reused the row %q", a.EstimateID)
+	}
+}

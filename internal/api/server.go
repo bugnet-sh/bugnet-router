@@ -67,6 +67,7 @@ import (
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
 	"github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1/routerv1connect"
 	"github.com/bugnet-sh/bugnet-run/frame"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/valkey-io/valkey-go"
@@ -112,9 +113,10 @@ const (
 	opsTimeout = 500 * time.Millisecond
 )
 
-// Engine finds the providers that may host a package now
+// Engine finds the providers that may host a package now and quotes its price
 type Engine interface {
 	Candidates(in placement.Inputs) ([]placement.Candidate, error)
+	Quote(in placement.Inputs) (placement.Candidate, bool)
 }
 
 // Deps are the services and settings a Server works with
@@ -129,6 +131,8 @@ type Deps struct {
 	Prefix   string
 	Rule     pricing.Rule // prices every candidate
 	Log      *slog.Logger // slog.Default when nil
+	// QuoteHold is how long an estimate's quote holds for PricePackage, none holding while zero
+	QuoteHold time.Duration
 	// SandboxOpsPerSecond refills each placement's operation bucket, a default when zero
 	SandboxOpsPerSecond int
 	// SandboxOpsBurst is what a placement's full operation bucket holds, a default when zero
@@ -401,11 +405,14 @@ func (s *Server) Estimate(
 	}
 	need := estimateNeeds(requirements(m.GetRequirements()), m.GetNeeds())
 	var opts []*routerv1.PackageOption
+	quoted := map[string]placement.Candidate{}
 	for _, pkg := range s.d.Catalog.All() {
 		if pkg.ExtensionOf != "" {
 			continue
 		}
-		opts = append(opts, s.startOption(pkg, need))
+		opt, q := s.startOption(pkg, need)
+		opts = append(opts, opt)
+		quoted[pkg.ID] = q
 	}
 	if s.d.Estimator == nil {
 		return connect.NewResponse(&routerv1.EstimateResponse{Options: opts}), nil
@@ -419,16 +426,61 @@ func (s *Server) Estimate(
 				return o.GetPackageId() == id && o.GetAvailable()
 			})
 		},
+		Prices: s.prices(opts, quoted),
 	})
 	if err != nil {
 		return nil, estimateStatus(err)
 	}
+	s.putQuotes(ctx, ans.EstimateID, opts, quoted)
 	return connect.NewResponse(estimateResponse(ans, opts)), nil
 }
 
-// PricePackage answers with one start package as Estimate lists it, writing and spending nothing
+// prices are each start package's answered price and each extension's price on its start's server
+func (s *Server) prices(
+	opts []*routerv1.PackageOption, quoted map[string]placement.Candidate,
+) map[string]int64 {
+	out := make(map[string]int64, len(opts))
+	for _, o := range opts {
+		out[o.GetPackageId()] = o.GetPriceMicros()
+	}
+	for _, pkg := range s.d.Catalog.All() {
+		// A start no server lands has no server to price its extensions on
+		if q := quoted[pkg.ExtensionOf]; pkg.ExtensionOf != "" && q.Provider != nil {
+			out[pkg.ID] = q.ExtensionPrice(pkg, s.d.Rule)
+		}
+	}
+	return out
+}
+
+// putQuotes stores the server and price of each start package a server lands under the answer's id
+func (s *Server) putQuotes(
+	ctx context.Context, estimateID string, opts []*routerv1.PackageOption,
+	quoted map[string]placement.Candidate,
+) {
+	// An answer that was not stored has no id
+	id, err := uuid.Parse(estimateID)
+	if err != nil {
+		return
+	}
+	var qs []store.Quote
+	for _, o := range opts {
+		q := quoted[o.GetPackageId()]
+		if q.Provider == nil {
+			continue
+		}
+		qs = append(qs, store.Quote{
+			PackageID: o.GetPackageId(), Provider: q.Provider.Name(), SizeName: q.Size.Name,
+			CostMicros: q.CostMicros, PriceMicros: q.PriceMicros,
+		})
+	}
+	if err := s.d.Store.PutQuotes(ctx, id, qs); err != nil {
+		s.d.Log.Warn("api: store the quotes", "estimate", id, "err", err)
+	}
+}
+
+// PricePackage answers a start package as Estimate lists it or as its quote holds, writing nothing
 func (s *Server) PricePackage(
-	_ context.Context, req *connect.Request[routerv1.PricePackageRequest],
+	ctx context.Context, req *connect.Request[routerv1.PricePackageRequest],
 ) (*connect.Response[routerv1.PricePackageResponse], error) {
 	id := req.Msg.GetPackageId()
 	pkg, ok := s.d.Catalog.Get(id)
@@ -439,30 +491,73 @@ func (s *Server) PricePackage(
 		ce := invalid("package %q is an extension, a start needs a start package", id)
 		return nil, withInfo(ce, reasonNotStartPackage)
 	}
-	return connect.NewResponse(&routerv1.PricePackageResponse{
-		Option: s.startOption(pkg, requirements(req.Msg.GetRequirements())),
-	}), nil
+	need := requirements(req.Msg.GetRequirements())
+	opt, held := s.heldOption(ctx, pkg, need, req.Msg.GetEstimateId())
+	if !held {
+		opt, _ = s.startOption(pkg, need)
+	}
+	return connect.NewResponse(&routerv1.PricePackageResponse{Option: opt}), nil
 }
 
-// startOption prices a start package and says whether a provider can host it now
+// heldOption is pkg at the price the estimate's quote holds, false when no quote of it holds
+func (s *Server) heldOption(
+	ctx context.Context, pkg catalog.Package, need placement.Requirements, estimateID string,
+) (*routerv1.PackageOption, bool) {
+	id, err := uuid.Parse(estimateID)
+	if err != nil || s.d.QuoteHold <= 0 {
+		return nil, false
+	}
+	q, ok, err := s.d.Store.QuoteFor(ctx, id, pkg.ID, s.d.QuoteHold)
+	if err != nil {
+		s.d.Log.Warn("api: read a quote", "estimate", id, "package", pkg.ID, "err", err)
+		return nil, false
+	}
+	if !ok {
+		return nil, false
+	}
+	// The quoted server takes the start at the held price and any other server within it
+	quoted := &placement.Server{Provider: q.Provider, Size: q.SizeName}
+	_, err = s.d.Engine.Candidates(placement.Inputs{
+		Package: pkg, Requirements: need, Rule: s.d.Rule, BudgetMicros: q.PriceMicros,
+		Prefer: quoted, ImageAccept: s.d.ImageAccept,
+	})
+	return packageOption(pkg, q.PriceMicros, err == nil, s.candidateReason(pkg, err)), true
+}
+
+// startOption prices a start package on its quoted server and says whether one can host it now
 func (s *Server) startOption(
 	pkg catalog.Package, need placement.Requirements,
-) *routerv1.PackageOption {
-	_, err := s.d.Engine.Candidates(placement.Inputs{
+) (*routerv1.PackageOption, placement.Candidate) {
+	in := placement.Inputs{
 		Package: pkg, Requirements: need, Rule: s.d.Rule, ImageAccept: s.d.ImageAccept,
-	})
-	reason := ""
+	}
+	var q placement.Candidate
+	cs, err := s.d.Engine.Candidates(in)
+	if err == nil {
+		q = cs[0]
+	} else {
+		// An unavailable package keeps the price of its cheapest landing
+		q, _ = s.d.Engine.Quote(in)
+	}
+	price := q.PriceMicros
+	if pkg.FixedPrice {
+		price = pkg.PriceMicros
+	}
+	return packageOption(pkg, price, err == nil, s.candidateReason(pkg, err)), q
+}
+
+// candidateReason is why no provider can host pkg after a candidates call, empty for none
+func (s *Server) candidateReason(pkg catalog.Package, err error) string {
 	switch {
 	case err == nil:
+		return ""
 	case errors.Is(err, placement.ErrNoCapableProvider):
-		reason = unavailableFeature
+		return unavailableFeature
 	case errors.Is(err, placement.ErrNoCandidate):
-		reason = unavailableNoCandidate
-	default:
-		s.d.Log.Error("api: find candidates", "package", pkg.ID, "err", err)
-		reason = unavailableInternal
+		return unavailableNoCandidate
 	}
-	return packageOption(pkg, err == nil, reason)
+	s.d.Log.Error("api: find candidates", "package", pkg.ID, "err", err)
+	return unavailableInternal
 }
 
 // CreatePlacement starts placing a paid order, a repeated order returning the same placement
@@ -602,7 +697,7 @@ func (s *Server) CheckExtendPlacement(
 	}
 	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
 		Placement: s.answer(ctx, p), Deadline: timestamppb.New(deadline),
-		Package: packageOption(pkg, true, ""),
+		Package: packageOption(pkg, pkg.PriceMicros, true, ""),
 	}), nil
 }
 
@@ -616,7 +711,8 @@ func (s *Server) ListExtensions(
 	}
 	opts := make([]*routerv1.PackageOption, 0, len(exts))
 	for _, x := range exts {
-		opts = append(opts, packageOption(x.Package, x.Refusal == nil, unavailable(x.Refusal)))
+		opts = append(opts, packageOption(x.Package, x.Package.PriceMicros, x.Refusal == nil,
+			unavailable(x.Refusal)))
 	}
 	return connect.NewResponse(&routerv1.ListExtensionsResponse{Options: opts}), nil
 }
@@ -985,8 +1081,10 @@ func requirements(r *routerv1.Requirements) placement.Requirements {
 	}
 }
 
-// packageOption describes a package and whether it is available, reason saying why when not
-func packageOption(pkg catalog.Package, available bool, reason string) *routerv1.PackageOption {
+// packageOption describes a package at a price and whether it is available, reason saying why not
+func packageOption(
+	pkg catalog.Package, priceMicros int64, available bool, reason string,
+) *routerv1.PackageOption {
 	r := pkg.Resources
 	return &routerv1.PackageOption{
 		PackageId: pkg.ID,
@@ -995,7 +1093,7 @@ func packageOption(pkg catalog.Package, available bool, reason string) *routerv1
 			GpuCount: uint32(r.GPUCount), GpuMemoryGib: uint32(r.GPUMemoryGiB),
 		},
 		Minutes:           uint32(pkg.Minutes),
-		PriceMicros:       pkg.PriceMicros,
+		PriceMicros:       priceMicros,
 		Available:         available,
 		UnavailableReason: reason,
 	}

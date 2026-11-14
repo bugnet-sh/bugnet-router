@@ -151,6 +151,15 @@ func (e *Engine) Quote(in Inputs) (Candidate, bool) {
 	return best, false
 }
 
+// ExtensionPrice is ext's fixed price, else its minutes on c's server marked up without a fee
+func (c Candidate) ExtensionPrice(ext catalog.Package, r pricing.Rule) int64 {
+	if ext.FixedPrice {
+		return ext.PriceMicros
+	}
+	run := time.Duration(ext.Minutes) * time.Minute
+	return r.Price(costMicros(c.HourlyMicros, run, c.Provider.BillingIncrement()))
+}
+
 // Landing is the size a package lands on at one provider, whatever the provider's state now
 type Landing struct {
 	Candidate

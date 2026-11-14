@@ -277,6 +277,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Valkey:              vk,
 		Prefix:              cfg.ValkeyPrefix,
 		Rule:                cfg.Pricing.Rule,
+		QuoteHold:           cfg.Pricing.QuoteHold,
 		Log:                 log,
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,

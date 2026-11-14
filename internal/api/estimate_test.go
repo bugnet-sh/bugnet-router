@@ -217,3 +217,90 @@ func TestGetEstimateReplaysThroughTheOperatorService(t *testing.T) {
 		&routerv1.GetEstimateRequest{EstimateId: "x"}))
 	mustCode(t, err, connect.CodeInvalidArgument, "")
 }
+
+func TestEstimatePricesLive(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	thirty := uint32(30)
+	req := &routerv1.EstimateRequest{Workload: routerv1.Workload_WORKLOAD_SCRIPT,
+		ExpectedMinutes: &thirty}
+	q, err := e.quote(t, req)
+	eq(t, err, nil)
+	opts := byPackage(q.GetOptions())
+	// 610 s on boat at 18,000 an hour cost 3,050, which 10% takes to 3,355
+	eq(t, offer(opts[smallPkg]), []any{int64(3355), true, ""})
+	// An extension's 10 minutes cost 3,000 on boat, priced at 3,300, and two cover 30 minutes
+	eq(t, opts[smallPkg].GetExtensionPackageId(), morePkg)
+	eq(t, opts[smallPkg].GetExtensionsNeeded(), uint32(2))
+	eq(t, opts[smallPkg].GetTotalPriceMicros(), int64(3355+2*3300))
+	// 1,810 s cost 9,050, priced at 9,955
+	eq(t, offer(opts[longPkg]), []any{int64(9955), true, ""})
+	eq(t, offer(opts[gpuPkg]), []any{int64(0), false, "feature_unavailable"})
+	eq(t, e.price(t, smallPkg, nil).GetPriceMicros(), int64(3355))
+	// With boat down 615 s on e2b at 133,200 an hour cost 22,755, priced at 25,031
+	s.down("boat")
+	q, err = e.quote(t, req)
+	eq(t, err, nil)
+	small := byPackage(q.GetOptions())[smallPkg]
+	eq(t, offer(small), []any{int64(25031), true, ""})
+	// An extension's 10 minutes cost 22,200 on e2b, priced at 24,420
+	eq(t, small.GetTotalPriceMicros(), int64(25031+2*24420))
+	eq(t, e.price(t, smallPkg, nil).GetPriceMicros(), int64(25031))
+}
+
+func TestEstimateStoresQuotes(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	opts := liveOptions(s)
+	opts.estimatorTune = func(c *config.Estimator) { c.StoredPerMinute = 1 }
+	e := newEnv(t, opts)
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	// The GPU package lands nowhere and an extension never starts, so neither has a quote
+	eq(t, e.quotes(t, q.GetEstimateId()), map[string]store.Quote{
+		smallPkg: {PackageID: smallPkg, Provider: "boat", SizeName: "small", CostMicros: 3050,
+			PriceMicros: 3355},
+		longPkg: {PackageID: longPkg, Provider: "boat", SizeName: "small", CostMicros: 9050,
+			PriceMicros: 9955},
+	})
+	// Past the stored-rows bucket an answer has no id and stores no quote
+	unstored, err := e.quote(t, &routerv1.EstimateRequest{EntryCommand: "make"})
+	eq(t, err, nil)
+	eq(t, unstored.GetEstimateId(), "")
+	var n int
+	eq(t, e.pool.QueryRow(t.Context(), "select count(*) from price_quotes").Scan(&n), nil)
+	eq(t, n, 2)
+
+	// A fixed package is quoted at its price on the server it would start on
+	fixed := newEnv(t, options{estimator: true})
+	q, err = fixed.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	eq(t, fixed.quotes(t, q.GetEstimateId()), map[string]store.Quote{
+		smallPkg: {PackageID: smallPkg, Provider: "local", SizeName: "small", CostMicros: 167,
+			PriceMicros: smallPrice},
+		longPkg: {PackageID: longPkg, Provider: "local", SizeName: "small", CostMicros: 500,
+			PriceMicros: longPrice},
+	})
+}
+
+func TestEstimateReusedRowRequotes(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"boxd", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	req := &routerv1.EstimateRequest{Workload: routerv1.Workload_WORKLOAD_TESTS}
+	first, err := e.quote(t, req)
+	eq(t, err, nil)
+	eq(t, e.quotes(t, first.GetEstimateId())[smallPkg].Provider, "boat")
+	// boxd bills what boat does, so the same prices answer again from the same row
+	s.down("boat")
+	again, err := e.quote(t, req)
+	eq(t, err, nil)
+	eq(t, again.GetEstimateId(), first.GetEstimateId())
+	eq(t, e.quotes(t, again.GetEstimateId())[smallPkg], store.Quote{PackageID: smallPkg,
+		Provider: "boxd", SizeName: "small", CostMicros: 3050, PriceMicros: 3355})
+	// With boxd down too the quote is the dearer server's
+	s.down("boxd")
+	dear, err := e.quote(t, req)
+	eq(t, err, nil)
+	eq(t, e.quotes(t, dear.GetEstimateId())[smallPkg], store.Quote{PackageID: smallPkg,
+		Provider: "e2b", SizeName: "small", CostMicros: 22755, PriceMicros: 25031})
+	eq(t, e.lockedPrice(t, smallPkg, dear.GetEstimateId()).GetPriceMicros(), int64(25031))
+}

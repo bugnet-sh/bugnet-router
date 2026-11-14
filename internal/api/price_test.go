@@ -5,23 +5,172 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	routerv1 "github.com/bugnet-sh/bugnet-proto/gen/go/bugnet/router/v1"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/bugnet-sh/bugnet-router/internal/handle"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
+	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
-// failingEngine answers every candidates call with err
+// failingEngine answers every candidates call with err and quotes no server
 type failingEngine struct{ err error }
 
 func (f failingEngine) Candidates(placement.Inputs) ([]placement.Candidate, error) {
 	return nil, f.err
+}
+
+func (failingEngine) Quote(placement.Inputs) (placement.Candidate, bool) {
+	return placement.Candidate{}, false
+}
+
+// Boat small's and E2B's hourly rates for the small size, both billed by the second
+const (
+	boatRate = 18_000
+	e2bRate  = 133_200
+)
+
+// tenPercent is the production markup with each provider's measured overhead
+var tenPercent = pricing.Rule{MarkupBP: 1000, Overhead: map[string]time.Duration{
+	"boat": 10 * time.Second, "boxd": 10 * time.Second, "e2b": 15 * time.Second,
+}}
+
+// liveCatalog is catalogJSON with every package quoted live
+const liveCatalog = `{"packages": [
+	{"id": "gpu-10m", "resources": {"vcpu": 4, "memory_mib": 8192, "disk_gib": 20,
+		"gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA L4"}, "minutes": 10},
+	{"id": "small-30m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 30},
+	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "extension_of": "small-10m"},
+	{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10}
+]}`
+
+// metered is a local provider whose hourly rate a test may move
+type metered struct {
+	*local.Provider
+	hourly *atomic.Int64
+}
+
+func (m metered) HourlyCostMicros(provider.Size) int64 { return m.hourly.Load() }
+
+// rate names one server and what it bills an hour
+type rate struct {
+	name   string
+	hourly int64
+}
+
+// servers are the API server's own providers, each with the small size, and their health
+type servers struct {
+	engine  *placement.Engine
+	tracker *placement.Tracker
+	hourly  map[string]*atomic.Int64
+}
+
+// newServers lists one provider per rate, in the order given
+func newServers(t *testing.T, rates ...rate) *servers {
+	t.Helper()
+	s := &servers{tracker: placement.NewTracker(time.Now), hourly: map[string]*atomic.Int64{}}
+	var ps []provider.Provider
+	for _, r := range rates {
+		h := &atomic.Int64{}
+		h.Store(r.hourly)
+		s.hourly[r.name] = h
+		ps = append(ps, metered{Provider: local.New(local.Options{
+			Name: r.name, Root: t.TempDir(), Sizes: []provider.Size{small}, Increment: time.Second,
+		}), hourly: h})
+	}
+	reg, err := provider.NewRegistry(ps, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.engine = placement.New(reg, s.tracker, nil)
+	return s
+}
+
+// down marks a provider unhealthy
+func (s *servers) down(name string) {
+	for range 3 {
+		s.tracker.RecordFailure(name)
+	}
+}
+
+// liveOptions give the API server the live catalog on s at 10%, an estimator and a 45 m hold
+func liveOptions(s *servers) options {
+	return options{
+		apiCatalog: liveCatalog, apiEngine: s.engine, apiRule: &tenPercent,
+		quoteHold: 45 * time.Minute, estimator: true,
+	}
+}
+
+// lockedPrice prices a start package under the quotes of an estimate
+func (e *env) lockedPrice(t *testing.T, id, estimateID string) *routerv1.PackageOption {
+	t.Helper()
+	resp, err := e.client.PricePackage(t.Context(), connect.NewRequest(
+		&routerv1.PricePackageRequest{PackageId: id, EstimateId: estimateID}))
+	if err != nil {
+		t.Fatalf("price %s under %q: %v", id, estimateID, err)
+	}
+	return resp.Msg.GetOption()
+}
+
+// quotes reads the stored quotes of an estimate by package, without their times
+func (e *env) quotes(t *testing.T, estimateID string) map[string]store.Quote {
+	t.Helper()
+	rows, err := e.pool.Query(t.Context(), `select package_id, provider, size_name, cost_micros,
+		price_micros from price_quotes where estimate_id = $1`, uuid.MustParse(estimateID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]store.Quote{}
+	for rows.Next() {
+		var q store.Quote
+		if err := rows.Scan(&q.PackageID, &q.Provider, &q.SizeName, &q.CostMicros,
+			&q.PriceMicros); err != nil {
+			t.Fatal(err)
+		}
+		out[q.PackageID] = q
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// ageQuotes moves the quotes of an estimate back to age ago
+func (e *env) ageQuotes(t *testing.T, estimateID string, age time.Duration) {
+	t.Helper()
+	_, err := e.pool.Exec(t.Context(), `update price_quotes set quoted_at = now() - $2::interval
+		where estimate_id = $1`, uuid.MustParse(estimateID), age)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// byPackage keys options by their package
+func byPackage(opts []*routerv1.PackageOption) map[string]*routerv1.PackageOption {
+	out := map[string]*routerv1.PackageOption{}
+	for _, o := range opts {
+		out[o.GetPackageId()] = o
+	}
+	return out
+}
+
+// offer is what an option says of its price and availability
+func offer(o *routerv1.PackageOption) []any {
+	return []any{o.GetPriceMicros(), o.GetAvailable(), o.GetUnavailableReason()}
 }
 
 func (e *env) estimate(t *testing.T, r *routerv1.Requirements) []*routerv1.PackageOption {
@@ -288,4 +437,63 @@ func (e *env) keys(t *testing.T) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+func TestPricePackageLocked(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	id := q.GetEstimateId()
+	// boat moves to 36,000 an hour, so 610 s cost 6,100, priced at 6,710
+	s.hourly["boat"].Store(2 * boatRate)
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), true, ""})
+	eq(t, offer(e.price(t, smallPkg, nil)), []any{int64(6710), true, ""})
+	for _, other := range []string{"", "garbage", uuid.NewString()} {
+		eq(t, offer(e.lockedPrice(t, smallPkg, other)), []any{int64(6710), true, ""})
+	}
+	// 1,810 s were 9,050 priced at 9,955 and are now 18,100 priced at 19,910
+	eq(t, e.lockedPrice(t, longPkg, id).GetPriceMicros(), int64(9955))
+	eq(t, e.price(t, longPkg, nil).GetPriceMicros(), int64(19910))
+	// With boat down nothing takes the start at the locked price, as e2b's is 25,031
+	s.down("boat")
+	eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), false, "no_candidate"})
+	eq(t, offer(e.price(t, smallPkg, nil)), []any{int64(25031), true, ""})
+}
+
+func TestPricePackageLockExpires(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate})
+	e := newEnv(t, liveOptions(s))
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	id := q.GetEstimateId()
+	s.hourly["boat"].Store(2 * boatRate)
+	e.ageQuotes(t, id, 44*time.Minute)
+	eq(t, e.lockedPrice(t, smallPkg, id).GetPriceMicros(), int64(3355))
+	e.ageQuotes(t, id, 46*time.Minute)
+	eq(t, e.lockedPrice(t, smallPkg, id).GetPriceMicros(), int64(6710))
+}
+
+func TestPricePackageUnavailableKeepsAPrice(t *testing.T) {
+	s := newServers(t, rate{"boat", boatRate}, rate{"e2b", e2bRate})
+	e := newEnv(t, liveOptions(s))
+	up, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	s.down("boat")
+	s.down("e2b")
+	// No server takes a start now, and each package keeps its cheapest landing's price
+	q, err := e.quote(t, &routerv1.EstimateRequest{})
+	eq(t, err, nil)
+	eq(t, reasons(t, q.GetOptions()), map[string]string{
+		smallPkg: "no_candidate", longPkg: "no_candidate", gpuPkg: "feature_unavailable",
+	})
+	opts := byPackage(q.GetOptions())
+	eq(t, offer(opts[smallPkg]), []any{int64(3355), false, "no_candidate"})
+	eq(t, offer(opts[longPkg]), []any{int64(9955), false, "no_candidate"})
+	eq(t, offer(opts[gpuPkg]), []any{int64(0), false, "feature_unavailable"})
+	eq(t, e.quotes(t, q.GetEstimateId())[smallPkg].Provider, "boat")
+	for _, id := range []string{"", up.GetEstimateId(), q.GetEstimateId()} {
+		eq(t, offer(e.lockedPrice(t, smallPkg, id)), []any{int64(3355), false, "no_candidate"})
+		eq(t, offer(e.lockedPrice(t, gpuPkg, id)), []any{int64(0), false, "feature_unavailable"})
+	}
 }

@@ -747,3 +747,20 @@ func TestQuoteFallsBackToCheapestLanding(t *testing.T) {
 	eq(t, ok, false)
 	eq(t, c, Candidate{})
 }
+
+func TestCandidateExtensionPrice(t *testing.T) {
+	// 10 minutes at 18,000 an hour cost 3,000, which 10% takes to 3,300 with no overhead
+	boat := engine(fakeHealth{}, newLocal(t, "boat", boatRate, time.Second))
+	c, ok := boat.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, ok, true)
+	eq(t, c.ExtensionPrice(live(10), boatRule), int64(3300))
+	// 10 minutes at 133,200 an hour cost 22,200, priced at 24,420
+	dear := engine(fakeHealth{}, newLocal(t, "e2b", 133_200, time.Second))
+	c, _ = dear.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, c.ExtensionPrice(live(10), boatRule), int64(24_420))
+	// A 7-minute increment bills the 10 minutes as 14, 4,200 priced at 4,620
+	slow := engine(fakeHealth{}, newLocal(t, "slow", boatRate, 7*time.Minute))
+	c, _ = slow.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, c.ExtensionPrice(live(10), boatRule), int64(4620))
+	eq(t, c.ExtensionPrice(pkg(10, 45_000), boatRule), int64(45_000))
+}
