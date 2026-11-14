@@ -20,6 +20,9 @@ var ErrNoCandidate = errors.New("placement: no candidate provider")
 // ErrNoCapableProvider is an ErrNoCandidate where no configured provider has the capabilities
 var ErrNoCapableProvider = fmt.Errorf("%w, none has the capabilities", ErrNoCandidate)
 
+// ErrNoServer means a provider or size to price on is not configured
+var ErrNoServer = errors.New("placement: no such server")
+
 const (
 	slowReadyThreshold = 10 * time.Second
 	// LifetimeSlack is how far a provider's lifetime limit must reach past a package's minutes
@@ -152,12 +155,46 @@ func (e *Engine) Quote(in Inputs) (Candidate, bool) {
 }
 
 // ExtensionPrice is ext's fixed price, else its minutes on c's server marked up without a fee
-func (c Candidate) ExtensionPrice(ext catalog.Package, r pricing.Rule) int64 {
+func (c Candidate) ExtensionPrice(ext catalog.Package, r pricing.Rule) (int64, error) {
+	// A zero Candidate is the quote of a start no server lands
+	if c.Provider == nil {
+		return 0, fmt.Errorf("%w: the candidate has no provider", ErrNoServer)
+	}
 	if ext.FixedPrice {
-		return ext.PriceMicros
+		return ext.PriceMicros, nil
 	}
 	run := time.Duration(ext.Minutes) * time.Minute
-	return r.Price(costMicros(c.HourlyMicros, run, c.Provider.BillingIncrement()))
+	return r.Price(costMicros(c.HourlyMicros, run, c.Provider.BillingIncrement())), nil
+}
+
+// ExtensionPrice is pkg's price on the named server as a Candidate there prices it
+func (e *Engine) ExtensionPrice(
+	pkg catalog.Package, name, size string, r pricing.Rule,
+) (int64, error) {
+	p, ok := e.reg.Get(name)
+	if !ok {
+		return 0, fmt.Errorf("%w: provider %q is not configured", ErrNoServer, name)
+	}
+	sz, ok := sizeNamed(p, size)
+	if !ok {
+		return 0, fmt.Errorf("%w: provider %q has no size %q", ErrNoServer, name, size)
+	}
+	c := Candidate{Provider: p, Size: sz, HourlyMicros: p.HourlyCostMicros(sz)}
+	return c.ExtensionPrice(pkg, r)
+}
+
+// sizeNamed finds a size of a provider by name
+func sizeNamed(p provider.Provider, name string) (provider.Size, bool) {
+	sz, ok := provider.As[provider.Sizer](p)
+	if !ok {
+		return provider.Size{}, false
+	}
+	for _, s := range sz.Sizes() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return provider.Size{}, false
 }
 
 // Landing is the size a package lands on at one provider, whatever the provider's state now

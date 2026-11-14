@@ -1061,6 +1061,36 @@ func TestListExtensions(t *testing.T) {
 	}
 }
 
+func TestExtensionsAnswerTheirServersPrice(t *testing.T) {
+	// 10 minutes at the local provider's 1,000 an hour cost 167, which the saga's rule doubles
+	e := newEnv(t, options{catalog: liveCatalog})
+	h, _ := e.readyPlacement(t)
+	more := &routerv1.PackageOption{
+		PackageId: morePkg, Resources: smallResources, Minutes: 10, PriceMicros: 334,
+		Available: true,
+	}
+	// small-10m extends by the same minutes at the same price, so the listing hides it
+	opts, err := e.listExtensions(t, h)
+	if err != nil || !equalOptions(opts, []*routerv1.PackageOption{more}) {
+		t.Fatalf("listed %v, %v, want %v alone", opts, err, more)
+	}
+	for _, id := range []string{morePkg, smallPkg} {
+		check, err := e.checkExtend(t, h, id)
+		if err != nil || check.Msg.GetPackage().GetPriceMicros() != 334 {
+			t.Fatalf("check of %s gave %v, %v, want a price of 334", id, check, err)
+		}
+	}
+	extend := func(paid int64) error {
+		_, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.ExtendPlacementRequest{
+				Handle: h, OrderToken: e.extendToken(t, h, morePkg, paid),
+			}))
+		return err
+	}
+	wantPriceChanged(t, extend(333), morePkg, 333, 334)
+	eq(t, extend(334), nil)
+}
+
 func TestGetPlacementLongPollWakes(t *testing.T) {
 	e := newEnv(t, options{readyDelay: time.Second})
 	h, _ := e.create(t)

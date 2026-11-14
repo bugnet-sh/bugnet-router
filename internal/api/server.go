@@ -444,9 +444,12 @@ func (s *Server) prices(
 		out[o.GetPackageId()] = o.GetPriceMicros()
 	}
 	for _, pkg := range s.d.Catalog.All() {
+		if pkg.ExtensionOf == "" {
+			continue
+		}
 		// A start no server lands has no server to price its extensions on
-		if q := quoted[pkg.ExtensionOf]; pkg.ExtensionOf != "" && q.Provider != nil {
-			out[pkg.ID] = q.ExtensionPrice(pkg, s.d.Rule)
+		if price, err := quoted[pkg.ExtensionOf].ExtensionPrice(pkg, s.d.Rule); err == nil {
+			out[pkg.ID] = price
 		}
 	}
 	return out
@@ -689,7 +692,8 @@ func (s *Server) ExtendPlacement(
 func (s *Server) CheckExtendPlacement(
 	ctx context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
 ) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
-	p, deadline, err := s.d.Saga.CheckExtend(ctx, req.Msg.GetHandle(), req.Msg.GetPackageId())
+	p, deadline, price, err := s.d.Saga.CheckExtend(ctx, req.Msg.GetHandle(),
+		req.Msg.GetPackageId())
 	if err != nil {
 		return nil, s.status(err)
 	}
@@ -699,7 +703,7 @@ func (s *Server) CheckExtendPlacement(
 	}
 	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{
 		Placement: s.answer(ctx, p), Deadline: timestamppb.New(deadline),
-		Package: packageOption(pkg, pkg.PriceMicros, true, ""),
+		Package: packageOption(pkg, price, true, ""),
 	}), nil
 }
 
@@ -713,7 +717,7 @@ func (s *Server) ListExtensions(
 	}
 	opts := make([]*routerv1.PackageOption, 0, len(exts))
 	for _, x := range exts {
-		opts = append(opts, packageOption(x.Package, x.Package.PriceMicros, x.Refusal == nil,
+		opts = append(opts, packageOption(x.Package, x.PriceMicros, x.Refusal == nil,
 			unavailable(x.Refusal)))
 	}
 	return connect.NewResponse(&routerv1.ListExtensionsResponse{Options: opts}), nil

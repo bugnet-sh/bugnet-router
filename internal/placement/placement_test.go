@@ -753,14 +753,45 @@ func TestCandidateExtensionPrice(t *testing.T) {
 	boat := engine(fakeHealth{}, newLocal(t, "boat", boatRate, time.Second))
 	c, ok := boat.Quote(Inputs{Package: live(10), Rule: boatRule})
 	eq(t, ok, true)
-	eq(t, c.ExtensionPrice(live(10), boatRule), int64(3300))
+	price, err := c.ExtensionPrice(live(10), boatRule)
+	eq(t, []any{price, err}, []any{int64(3300), nil})
 	// 10 minutes at 133,200 an hour cost 22,200, priced at 24,420
 	dear := engine(fakeHealth{}, newLocal(t, "e2b", 133_200, time.Second))
 	c, _ = dear.Quote(Inputs{Package: live(10), Rule: boatRule})
-	eq(t, c.ExtensionPrice(live(10), boatRule), int64(24_420))
+	price, err = c.ExtensionPrice(live(10), boatRule)
+	eq(t, []any{price, err}, []any{int64(24_420), nil})
 	// A 7-minute increment bills the 10 minutes as 14, 4,200 priced at 4,620
 	slow := engine(fakeHealth{}, newLocal(t, "slow", boatRate, 7*time.Minute))
 	c, _ = slow.Quote(Inputs{Package: live(10), Rule: boatRule})
-	eq(t, c.ExtensionPrice(live(10), boatRule), int64(4620))
-	eq(t, c.ExtensionPrice(pkg(10, 45_000), boatRule), int64(45_000))
+	price, err = c.ExtensionPrice(live(10), boatRule)
+	eq(t, []any{price, err}, []any{int64(4620), nil})
+	price, err = c.ExtensionPrice(pkg(10, 45_000), boatRule)
+	eq(t, []any{price, err}, []any{int64(45_000), nil})
+	// A start no server lands quotes a zero Candidate, which has no server to price on
+	for _, ext := range []catalog.Package{live(10), pkg(10, 45_000)} {
+		price, err = Candidate{}.ExtensionPrice(ext, boatRule)
+		eq(t, []any{price, errors.Is(err, ErrNoServer)}, []any{int64(0), true})
+	}
+}
+
+func TestEngineExtensionPrice(t *testing.T) {
+	// Health aside, the start's overhead aside, each server bills the extension's 10 minutes
+	e := engine(fakeHealth{down: map[string]bool{"e2b": true}},
+		newLocal(t, "boat", boatRate, time.Second), newLocal(t, "e2b", 133_200, time.Second))
+	for _, c := range []struct {
+		server string
+		want   int64
+	}{{"boat", 3300}, {"e2b", 24_420}} {
+		price, err := e.ExtensionPrice(live(10), c.server, smallSize.Name, boatRule)
+		eq(t, []any{c.server, price, err}, []any{c.server, c.want, nil})
+	}
+	price, err := e.ExtensionPrice(pkg(10, 45_000), "e2b", smallSize.Name, boatRule)
+	eq(t, []any{price, err}, []any{int64(45_000), nil})
+	// A provider or size that left the config prices nothing, fixed or live
+	for _, gone := range []Server{{"boxd", smallSize.Name}, {"boat", "large"}} {
+		for _, ext := range []catalog.Package{live(10), pkg(10, 45_000)} {
+			price, err := e.ExtensionPrice(ext, gone.Provider, gone.Size, boatRule)
+			eq(t, []any{gone, price, errors.Is(err, ErrNoServer)}, []any{gone, int64(0), true})
+		}
+	}
 }

@@ -1037,10 +1037,12 @@ var tenPercent = pricing.Rule{MarkupBP: 1000, Overhead: map[string]time.Duration
 	"boat": 10 * time.Second, "boxd": 10 * time.Second, "e2b": 15 * time.Second,
 }}
 
-// liveCatalogJSON lists small-10m quoted live, as production lists it
+// liveCatalogJSON lists small-10m and its extension quoted live, as production lists them
 const liveCatalogJSON = `{"packages": [
 	{"id": "small-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
-		"minutes": 10}
+		"minutes": 10},
+	{"id": "small-10m-more", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
+		"minutes": 10, "extension_of": "small-10m"}
 ]}`
 
 // Boat small's and E2B's hourly rates for the small size, both billed by the second
@@ -1248,6 +1250,146 @@ func TestCreateFreeLiveOrderRefusedOnAPricedServer(t *testing.T) {
 	p, err := e.startPaid(t, "order-1", 0, uuid.Nil, placement.Requirements{})
 	priceChanged(t, p, err, 0, 3355)
 	eq(t, len(owned(t, boat)), 0)
+}
+
+/* Extensions under the markup */
+
+// placedOn starts small-10m paying paid, failing unless it is ready on server
+func (e *env) placedOn(t *testing.T, server string, paid int64) (store.Placement, string) {
+	t.Helper()
+	p, err := e.startPaid(t, "order-1", paid, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != server {
+		t.Fatalf("placement %+v %v, want ready on %s", p, err, server)
+	}
+	h, _ := handle.Derive(e.handleKey, "order-1")
+	return p, h
+}
+
+// priced lists each extension as its package id, its price and its refusal
+func priced(exts []saga.Extension) []any {
+	var out []any
+	for _, x := range exts {
+		out = append(out, x.Package.ID, x.PriceMicros, refusal(x.Refusal))
+	}
+	return out
+}
+
+func TestExtensionPriceOnItsServer(t *testing.T) {
+	// A start bills its server's overhead, an extension its 10 minutes there and nothing more
+	for _, c := range []struct {
+		server             string
+		hourly, start, ext int64
+	}{
+		{"boat", boatRate, 3355, 3300},
+		{"e2b", e2bRate, 25_031, 24_420},
+	} {
+		t.Run(c.server, func(t *testing.T) {
+			e := newEnvWith(t, live(t), newBilled(t, c.server, c.hourly, 0))
+			p, h := e.placedOn(t, c.server, c.start)
+			// small-10m extends by the same minutes at the same price, so the listing hides it
+			exts, err := e.saga.ListExtensions(t.Context(), h)
+			eq(t, []any{err, priced(exts)}, []any{nil, []any{morePkg, c.ext, "ok"}})
+			for _, id := range []string{morePkg, smallPkg} {
+				_, _, price, err := e.saga.CheckExtend(t.Context(), h, id)
+				eq(t, []any{id, price, err}, []any{id, c.ext, nil})
+			}
+			got, err := e.saga.Extend(t.Context(), h,
+				e.extendToken(t, "ext-1", morePkg, c.ext, h))
+			if err != nil || !got.Deadline.Equal(p.Deadline.Add(10*time.Minute)) {
+				t.Fatalf("extend paying %d gave %v, %v", c.ext, got.Deadline, err)
+			}
+		})
+	}
+}
+
+func TestExtendUnderpaid(t *testing.T) {
+	e := newEnvWith(t, live(t), newBilled(t, "boat", boatRate, 0))
+	p, h := e.placedOn(t, "boat", 3355)
+	// The start package extends at the extension's price, not at the 3,355 its start paid
+	for _, id := range []string{morePkg, smallPkg} {
+		_, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "short-"+id, id, 3299, h))
+		var ue *saga.UnderpaidError
+		want := saga.UnderpaidError{PackageID: id, PaidMicros: 3299, PriceMicros: 3300}
+		if !errors.As(err, &ue) || *ue != want {
+			t.Fatalf("extend by %s paying 3299 gave %v, want %+v", id, err, want)
+		}
+		_, err = e.store.OrderByID(t.Context(), "short-"+id)
+		eq(t, errors.Is(err, store.ErrNotFound), true)
+	}
+	eq(t, e.reload(t, p.ID).Deadline.Equal(*p.Deadline), true)
+	eq(t, len(e.events(t, saga.EventExtended)), 0)
+
+	got, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, 3300, h))
+	if err != nil || !got.Deadline.Equal(p.Deadline.Add(10*time.Minute)) {
+		t.Fatalf("extend paying 3300 gave %v, %v", got.Deadline, err)
+	}
+	// A retry of the applied order answers as it did, whatever it now says it paid
+	again, err := e.saga.Extend(t.Context(), h, e.extendToken(t, "ext-1", morePkg, 3299, h))
+	if err != nil || !again.Deadline.Equal(*got.Deadline) {
+		t.Fatalf("retry gave %v, %v, want %v", again.Deadline, err, got.Deadline)
+	}
+	e.oneEvent(t, saga.EventExtended)
+}
+
+// warned reports whether logs hold a warning naming each of words
+func warned(logs string, words ...string) bool {
+	for line := range strings.Lines(logs) {
+		if strings.Contains(line, "level=WARN") && !slices.ContainsFunc(words, func(w string) bool {
+			return !strings.Contains(line, w)
+		}) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExtensionOnAGoneServer(t *testing.T) {
+	var deps saga.Deps
+	e := newEnvWith(t, func(d *saga.Deps) {
+		live(t)(d)
+		deps = *d
+	}, newBilled(t, "boat", boatRate, 0))
+	p, h := e.placedOn(t, "boat", 3355)
+	// Boat leaves the config, or stays in it without the small size the sandbox runs on
+	large := provider.Size{
+		Name: "large", Resources: provider.Resources{VCPU: 8, MemoryMiB: 16384, DiskGiB: 40},
+	}
+	resized := local.New(local.Options{
+		Name: "boat", Root: t.TempDir(), Sizes: []provider.Size{large},
+		HourlyCostMicros: boatRate, Increment: time.Second,
+	})
+	for _, c := range []struct {
+		name  string
+		ps    []provider.Provider
+		cause string
+	}{
+		{"provider gone", nil, "is not configured"},
+		{"size gone", []provider.Provider{resized}, "has no size"},
+	} {
+		var logs syncBuffer
+		d := deps
+		d.Log = slog.New(slog.NewTextHandler(&logs, nil))
+		other := sagaOver(t, d, c.ps...)
+		// Both are refused unpriced, so the listing hides small-10m as it repeats its extension
+		exts, err := other.ListExtensions(t.Context(), h)
+		eq(t, []any{c.name, err, priced(exts)},
+			[]any{c.name, nil, []any{morePkg, int64(0), "not ready"}})
+		_, _, price, err := other.CheckExtend(t.Context(), h, smallPkg)
+		eq(t, []any{c.name, price, errors.Is(err, saga.ErrNotReady)},
+			[]any{c.name, int64(0), true})
+		// The refusal comes before the payment check and names no provider
+		_, err = other.Extend(t.Context(), h, e.extendToken(t, "ext-"+c.name, morePkg, 0, h))
+		if !errors.Is(err, saga.ErrNotReady) || errors.Is(err, saga.ErrUnderpaid) ||
+			strings.Contains(err.Error(), "boat") {
+			t.Fatalf("%s: extend gave %v, want ErrNotReady naming no provider", c.name, err)
+		}
+		if !warned(logs.String(), "boat", c.cause) {
+			t.Fatalf("%s: no warning names the cause\n%s", c.name, logs.String())
+		}
+	}
+	eq(t, e.reload(t, p.ID).Deadline.Equal(*p.Deadline), true)
+	eq(t, len(e.events(t, saga.EventExtended)), 0)
+	eq(t, e.extendOrders(t), 0)
 }
 
 func TestCreateStoresNeedsSecrets(t *testing.T) {
@@ -2243,15 +2385,16 @@ func TestCheckExtendChangesNothingAndExtendAgrees(t *testing.T) {
 	before := calls.Load()
 	outbox := e.pendingOutbox(t)
 
-	for _, pkg := range []string{morePkg, smallPkg} {
-		got, deadline, err := e.saga.CheckExtend(t.Context(), h, pkg)
+	// A fixed price is the same on every server
+	for pkg, wantPrice := range map[string]int64{morePkg: morePrice, smallPkg: smallPrice} {
+		got, deadline, price, err := e.saga.CheckExtend(t.Context(), h, pkg)
 		if err != nil {
 			t.Fatalf("check %s: %v", pkg, err)
 		}
 		if got.ID != p.ID || got.State != store.PlacementReady ||
-			!got.Deadline.Equal(*p.Deadline) || !deadline.Equal(want) {
-			t.Fatalf("check %s gave %+v and %v, want the placement as it is and %v", pkg, got,
-				deadline, want)
+			!got.Deadline.Equal(*p.Deadline) || !deadline.Equal(want) || price != wantPrice {
+			t.Fatalf("check %s gave %+v, %v and %d, want the placement as it is, %v and %d",
+				pkg, got, deadline, price, want, wantPrice)
 		}
 	}
 	if got := e.reload(t, p.ID); !got.Deadline.Equal(*p.Deadline) {
@@ -2289,7 +2432,7 @@ func TestCheckExtendAddsTheCheckedPackagesMinutes(t *testing.T) {
 	e := newEnv(t, newLocal(t, local.Options{Name: "a"}))
 	p, h := e.placeReady(t, "order-1")
 	want := p.Deadline.Add(5 * time.Minute)
-	if _, deadline, err := e.saga.CheckExtend(t.Context(), h, shortPkg); err != nil ||
+	if _, deadline, _, err := e.saga.CheckExtend(t.Context(), h, shortPkg); err != nil ||
 		!deadline.Equal(want) {
 		t.Fatalf("check of a 5-minute extension gave %v, %v, want %v", deadline, err, want)
 	}
@@ -2327,7 +2470,8 @@ func TestCheckExtendRefusesAsExtendDoes(t *testing.T) {
 		"terminated placement":  {stopped, morePkg, morePrice, saga.ErrNotReady},
 		"unknown package first": {unknown, "no-such-package", morePrice, saga.ErrUnknownPackage},
 	} {
-		if _, _, err := e.saga.CheckExtend(t.Context(), c.handle, c.pkg); !errors.Is(err, c.want) {
+		_, _, _, err := e.saga.CheckExtend(t.Context(), c.handle, c.pkg)
+		if !errors.Is(err, c.want) {
 			t.Errorf("%s: check gave %v, want %v", name, err, c.want)
 		}
 		tok := e.extendToken(t, "ext-"+name, c.pkg, c.price, c.handle)
@@ -2336,7 +2480,7 @@ func TestCheckExtendRefusesAsExtendDoes(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{"", "nope", "sbx_not-a-handle"} {
-		_, _, err := e.saga.CheckExtend(t.Context(), bad, morePkg)
+		_, _, _, err := e.saga.CheckExtend(t.Context(), bad, morePkg)
 		if !errors.Is(err, store.ErrNotFound) {
 			t.Errorf("malformed handle %q gave %v, want ErrNotFound", bad, err)
 		}
@@ -2350,7 +2494,7 @@ func TestCheckExtendRefusesPastMaxLifetime(t *testing.T) {
 	a := newCapped(t, t.TempDir(), 30*time.Minute)
 	e := newEnv(t, a)
 	p, h := e.placeReady(t, "order-1")
-	_, deadline, err := e.saga.CheckExtend(t.Context(), h, morePkg)
+	_, deadline, _, err := e.saga.CheckExtend(t.Context(), h, morePkg)
 	if err != nil || !deadline.Equal(p.Deadline.Add(10*time.Minute)) {
 		t.Fatalf("check within the provider's max lifetime %v, %v", deadline, err)
 	}
@@ -2360,7 +2504,7 @@ func TestCheckExtendRefusesPastMaxLifetime(t *testing.T) {
 	}
 
 	before := a.calls.Load()
-	if _, _, err := e.saga.CheckExtend(t.Context(), h, morePkg); !errors.Is(
+	if _, _, _, err := e.saga.CheckExtend(t.Context(), h, morePkg); !errors.Is(
 		err, saga.ErrExceedsLifetime) {
 		t.Fatalf("check past the max lifetime gave %v, want ErrExceedsLifetime", err)
 	}
@@ -2440,9 +2584,12 @@ func (e *env) listed(t *testing.T, h string) []string {
 	}
 	var out []string
 	for _, x := range exts {
-		_, _, checkErr := e.saga.CheckExtend(t.Context(), h, x.Package.ID)
+		_, _, price, checkErr := e.saga.CheckExtend(t.Context(), h, x.Package.ID)
 		if refusal(checkErr) != refusal(x.Refusal) {
 			t.Errorf("%s listed with %v, CheckExtend gave %v", x.Package.ID, x.Refusal, checkErr)
+		}
+		if checkErr == nil && price != x.PriceMicros {
+			t.Errorf("%s listed at %d, CheckExtend gave %d", x.Package.ID, x.PriceMicros, price)
 		}
 		out = append(out, x.Package.ID+" "+refusal(x.Refusal))
 	}
@@ -2468,9 +2615,11 @@ func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each fixed price is listed as it is, the refused package's too
 	for _, x := range exts {
-		if pkg, _ := cat.Get(x.Package.ID); !reflect.DeepEqual(x.Package, pkg) {
-			t.Errorf("listed %+v, the catalog has %+v", x.Package, pkg)
+		if pkg, _ := cat.Get(x.Package.ID); !reflect.DeepEqual(x.Package, pkg) ||
+			x.PriceMicros != pkg.PriceMicros {
+			t.Errorf("listed %+v at %d, the catalog has %+v", x.Package, x.PriceMicros, pkg)
 		}
 	}
 
@@ -2492,9 +2641,10 @@ func TestListExtensionsOrdersAndChecksEachAsCheckExtend(t *testing.T) {
 }
 
 func TestListExtensionsOrdersByMinutesThenPriceThenID(t *testing.T) {
+	// The price is the one on the placement's server, a live package's own being 0
 	ext := func(id string, minutes int, price int64) saga.Extension {
 		return saga.Extension{
-			Package: catalog.Package{ID: id, Minutes: minutes, PriceMicros: price},
+			Package: catalog.Package{ID: id, Minutes: minutes}, PriceMicros: price,
 		}
 	}
 	for _, c := range []struct {
@@ -2546,22 +2696,43 @@ func TestListExtensionsOfAnUnknownHandle(t *testing.T) {
 	}
 }
 
-func TestListExtensionsFailsAsCheckExtendWhenTheProviderIsGone(t *testing.T) {
-	e, deps, _ := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
+func TestListExtensionsOfAGoneProviderAreNotReady(t *testing.T) {
+	e, deps, cat := newListEnv(t, newLocal(t, local.Options{Name: "a"}))
 	_, h := e.placeReady(t, "order-1")
-	empty, err := provider.NewRegistry(nil, provider.Features{})
+	other := sagaOver(t, deps)
+	exts, err := other.ListExtensions(t.Context(), h)
+	if err != nil {
+		t.Fatalf("listing on a saga without the provider: %v", err)
+	}
+	var got []string
+	for _, x := range exts {
+		got = append(got, x.Package.ID+" "+refusal(x.Refusal))
+		if pkg, _ := cat.Get(x.Package.ID); x.PriceMicros != pkg.PriceMicros {
+			t.Errorf("%s listed at %d, its fixed price is %d", pkg.ID, x.PriceMicros,
+				pkg.PriceMicros)
+		}
+	}
+	var want []string
+	for _, id := range listOrder {
+		want = append(want, id+" not ready")
+	}
+	eq(t, got, want)
+	_, _, _, err = other.CheckExtend(t.Context(), h, morePkg)
+	eq(t, errors.Is(err, saga.ErrNotReady), true)
+}
+
+// sagaOver is a saga on d whose registry and engine list ps alone
+func sagaOver(t *testing.T, d saga.Deps, ps ...provider.Provider) *saga.Saga {
+	t.Helper()
+	reg, err := provider.NewRegistry(ps, provider.Features{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	deps.Registry = empty
-	other := saga.New(deps)
-	exts, err := other.ListExtensions(t.Context(), h)
-	if err == nil || errors.Is(err, saga.ErrNotReady) || errors.Is(err, saga.ErrExceedsLifetime) {
-		t.Errorf("listing on a saga without the provider gave %+v, %v, want its error", exts, err)
-	}
-	if _, _, err := other.CheckExtend(t.Context(), h, morePkg); err == nil {
-		t.Error("check on a saga without the provider passed")
-	}
+	d.Registry, d.Engine = reg, placement.New(reg, placement.NewTracker(time.Now), nil)
+	s := saga.New(d)
+	t.Cleanup(s.Wait)
+	t.Cleanup(s.Close)
+	return s
 }
 
 /* Stop and Terminate */

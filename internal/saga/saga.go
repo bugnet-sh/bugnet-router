@@ -461,7 +461,7 @@ func (s *Saga) startRefusal(
 	ctx context.Context, c ordertoken.Claims, pkg catalog.Package, req placement.Requirements,
 	t terms, bind *bindRequest,
 ) (string, error) {
-	if !covers(c, pkg) {
+	if !covers(c, pkg.PriceMicros) {
 		return ReasonPriceChanged, nil
 	}
 	// The quoted server is exempt from the budget, so the price the order was quoted starts there
@@ -675,9 +675,9 @@ func (e *UnderpaidError) Error() string {
 // Unwrap makes an UnderpaidError match ErrUnderpaid
 func (e *UnderpaidError) Unwrap() error { return ErrUnderpaid }
 
-// covers reports whether the order paid pkg's price now, the x402 allowance and fee left out
-func covers(c ordertoken.Claims, pkg catalog.Package) bool {
-	return c.PackageMicros() >= pkg.PriceMicros
+// covers reports whether the order paid price, the x402 allowance and fee left out
+func covers(c ordertoken.Claims, price int64) bool {
+	return c.PackageMicros() >= price
 }
 
 // underpaid is the refusal of an order that paid less than price, what pkg costs now
@@ -1461,8 +1461,8 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 			return err
 		}
 		// Only the call that applies the order checks the price, so every retry answers as it did
-		if !covers(c, pkg) {
-			return underpaid(c, pkg, pkg.PriceMicros)
+		if !covers(c, x.price) {
+			return underpaid(c, pkg, x.price)
 		}
 		if payer != "" {
 			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {
@@ -1564,33 +1564,35 @@ func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 	}})
 }
 
-// CheckExtend answers as Extend would for a fresh order of the package now, changing nothing
+// CheckExtend answers as Extend would for a fresh order now, with its price, changing nothing
 func (s *Saga) CheckExtend(
 	ctx context.Context, h, packageID string,
-) (store.Placement, time.Time, error) {
+) (store.Placement, time.Time, int64, error) {
 	sha, err := hashHandle(h)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	pkg, err := s.lookupPackage(packageID)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	p, err := s.d.Store.PlacementByHandle(ctx, sha)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	x, err := s.checkExtend(p, pkg, nil)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
-	return x.p, x.p.Deadline.Add(x.by), nil
+	return x.p, x.p.Deadline.Add(x.by), x.price, nil
 }
 
 // Extension is a package that can extend a placement, with the refusal extending by it gets now
 type Extension struct {
 	Package catalog.Package
-	Refusal error // nil, or one wrapping ErrNotReady or ErrExceedsLifetime
+	// PriceMicros is what the package costs on the placement's server, 0 for a live one not priced
+	PriceMicros int64
+	Refusal     error // nil, or one wrapping ErrNotReady or ErrExceedsLifetime
 }
 
 // ListExtensions checks each package that can extend the placement as CheckExtend would
@@ -1606,20 +1608,20 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 	}
 	var out []Extension
 	for _, pkg := range s.d.Catalog.All() {
-		_, err := s.checkExtend(p, pkg, nil)
+		x, err := s.checkExtend(p, pkg, nil)
 		switch {
 		case errors.Is(err, ErrNotExtension):
 			continue
 		case err != nil && !errors.Is(err, ErrNotReady) && !errors.Is(err, ErrExceedsLifetime):
 			return nil, err
 		}
-		out = append(out, Extension{Package: pkg, Refusal: err})
+		out = append(out, Extension{Package: pkg, PriceMicros: x.price, Refusal: err})
 	}
 	// The start package is left out when a dedicated extension offers the same minutes and price
 	out = slices.DeleteFunc(out, func(x Extension) bool {
 		return x.Package.ID == p.PackageID && slices.ContainsFunc(out, func(y Extension) bool {
 			return y.Package.ExtensionOf == p.PackageID && y.Package.Minutes == x.Package.Minutes &&
-				y.Package.PriceMicros == x.Package.PriceMicros
+				y.PriceMicros == x.PriceMicros
 		})
 	})
 	slices.SortFunc(out, byListing)
@@ -1629,16 +1631,17 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 // byListing orders extensions by minutes, then price, then id
 func byListing(a, b Extension) int {
 	return cmp.Or(cmp.Compare(a.Package.Minutes, b.Package.Minutes),
-		cmp.Compare(a.Package.PriceMicros, b.Package.PriceMicros),
-		cmp.Compare(a.Package.ID, b.Package.ID))
+		cmp.Compare(a.PriceMicros, b.PriceMicros), cmp.Compare(a.Package.ID, b.Package.ID))
 }
 
 // extension is a placement that passed the extend checks, with what extending it needs
 type extension struct {
-	p      store.Placement
-	prov   provider.Provider
-	ref    provider.Ref
-	by     time.Duration
+	p    store.Placement
+	prov provider.Provider
+	ref  provider.Ref
+	by   time.Duration
+	// price is what the order must pay, the only field a refusal may also set
+	price  int64
 	replay bool // the order already extended the placement, so the later checks were skipped
 }
 
@@ -1659,16 +1662,34 @@ func (s *Saga) checkExtend(
 			return x, nil
 		}
 	}
+	// A refusal keeps the price known by then, the fixed one before the server prices it
+	known := extension{price: pkg.PriceMicros}
 	if p.State != store.PlacementReady {
-		return extension{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
+		return known, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
 	}
+	if x.price, err = s.extensionPrice(p, pkg); err != nil {
+		return known, err
+	}
+	known.price = x.price
 	if x.prov, x.ref, err = s.home(p); err != nil {
-		return extension{}, err
+		return known, err
 	}
 	if err := withinLifetime(x.prov, p, p.Deadline.Add(x.by)); err != nil {
-		return extension{}, err
+		return known, err
 	}
 	return x, nil
+}
+
+// extensionPrice is pkg's price on p's server, a refusal as not ready once the server is gone
+func (s *Saga) extensionPrice(p store.Placement, pkg catalog.Package) (int64, error) {
+	price, err := s.d.Engine.ExtensionPrice(pkg, p.Provider, p.SizeName, s.d.Rule)
+	if errors.Is(err, placement.ErrNoServer) {
+		s.d.Log.Warn("refuse an extension on a server no longer configured", "placement", p.ID,
+			"package", pkg.ID, "err", err)
+		// The provider and size come from the settings file, so the refusal leaves them out
+		return 0, fmt.Errorf("%w: the sandbox's server is no longer configured", ErrNotReady)
+	}
+	return price, err
 }
 
 // withinLifetime refuses a deadline whose sandbox would outlast the provider's maximum lifetime
