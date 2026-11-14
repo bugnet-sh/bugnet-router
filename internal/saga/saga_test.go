@@ -1229,6 +1229,27 @@ func TestCreateLapsedQuoteHoldsNothing(t *testing.T) {
 	priceChanged(t, p, err, 3355, 36355)
 }
 
+func TestCreateFreeLiveOrderStartsOnAFreeServer(t *testing.T) {
+	// The quote holds Boat at 0, which still costs money, so only the free server may take it
+	boat := newBilled(t, "boat", boatRate, 0)
+	free := newBilled(t, "free", 0, 0)
+	e := newEnvWith(t, live(t), boat, free)
+	est := e.hold(t, "boat", 0, 0)
+	p, err := e.startPaid(t, "order-1", 0, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "free" {
+		t.Fatalf("placement %+v %v, want ready on free", p, err)
+	}
+	eq(t, len(owned(t, boat)), 0)
+}
+
+func TestCreateFreeLiveOrderRefusedOnAPricedServer(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e := newEnvWith(t, live(t), boat)
+	p, err := e.startPaid(t, "order-1", 0, uuid.Nil, placement.Requirements{})
+	priceChanged(t, p, err, 0, 3355)
+	eq(t, len(owned(t, boat)), 0)
+}
+
 func TestCreateStoresNeedsSecrets(t *testing.T) {
 	a := newLocal(t, local.Options{Name: "a"})
 	e := newEnvWith(t, func(d *saga.Deps) {
@@ -1479,6 +1500,23 @@ func TestFailoverFitsWhatIsLeft(t *testing.T) {
 	if len(got) != 2 || got[0].provider != "a" || got[1] != (attemptRow{2, "b", "ready", ""}) {
 		t.Fatalf("attempts %+v", got)
 	}
+}
+
+func TestFreeLiveOrderFailsOverOnlyToFreeServers(t *testing.T) {
+	// a is free and never boots, and b next in line costs money, which an order of 0 never takes
+	a := unbootable{newBilled(t, "a", 0, 0)}
+	b := newBilled(t, "b", boatRate, 0)
+	e := newEnvWith(t, live(t), a, b)
+	p, err := e.startPaid(t, "order-1", 0, uuid.Nil, placement.Requirements{})
+	if err != nil || p.State != store.PlacementFailed || !p.Refundable ||
+		p.FailureReason != "boot_failed" {
+		t.Fatalf("placement %+v %v, want failed refundable for boot_failed", p, err)
+	}
+	got := e.attempts(t, p.ID)
+	if len(got) != 1 || got[0].provider != "a" {
+		t.Fatalf("attempts %+v, want a's alone", got)
+	}
+	eq(t, len(owned(t, b)), 0)
 }
 
 func TestSagaStopsAfterThreeAttempts(t *testing.T) {

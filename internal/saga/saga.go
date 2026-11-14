@@ -461,13 +461,11 @@ func (s *Saga) startRefusal(
 	ctx context.Context, c ordertoken.Claims, pkg catalog.Package, req placement.Requirements,
 	t terms, bind *bindRequest,
 ) (string, error) {
-	in, ok := s.within(pkg, req, nil, t.paid)
-	if !ok || !covers(c, pkg) {
+	if !covers(c, pkg) {
 		return ReasonPriceChanged, nil
 	}
 	// The quoted server is exempt from the budget, so the price the order was quoted starts there
-	in.Prefer = t.prefer
-	_, err := s.d.Engine.Candidates(in)
+	_, err := s.within(pkg, req, nil, t.paid, t.paid, t.prefer)
 	switch {
 	case err == nil:
 		return "", nil
@@ -606,18 +604,32 @@ func (s *Saga) inputs(
 	}
 }
 
-// within asks for an attempt that fits left of the payment, false when a live package has none
+// within are the candidates of an attempt that fit left of paid, ErrNoCandidate when none does
 func (s *Saga) within(
-	pkg catalog.Package, req placement.Requirements, tried map[string]bool, left int64,
-) (placement.Inputs, bool) {
+	pkg catalog.Package, req placement.Requirements, tried map[string]bool, paid, left int64,
+	prefer *placement.Server,
+) ([]placement.Candidate, error) {
 	in := s.inputs(pkg, req, tried)
-	// A fixed price is the same on every server and its fit holds the server's cost under it
-	if pkg.FixedPrice {
-		return in, true
+	in.Prefer = prefer
+	switch {
+	case pkg.FixedPrice:
+		// A fixed price is the same on every server and its fit holds the server's cost under it
+	case paid == 0:
+		// A budget of 0 reads as none, so an order that paid nothing keeps the servers priced 0
+	case left <= 0:
+		return nil, placement.ErrNoCandidate
+	default:
+		in.BudgetMicros = left
 	}
-	// A budget of 0 reads as none, so nothing left asks for nothing
-	in.BudgetMicros = left
-	return in, left > 0
+	cands, err := s.d.Engine.Candidates(in)
+	if err != nil || pkg.FixedPrice || paid != 0 {
+		return cands, err
+	}
+	cands = slices.DeleteFunc(cands, func(c placement.Candidate) bool { return c.PriceMicros > 0 })
+	if len(cands) == 0 {
+		return nil, placement.ErrNoCandidate
+	}
+	return cands, nil
 }
 
 // quoteInputs ask for pkg as Estimate and PricePackage quote it

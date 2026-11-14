@@ -144,15 +144,13 @@ func (pl *placing) finish() {
 func (pl *placing) next() *placement.Candidate {
 	s := pl.s
 	for pl.budget.Err() == nil && pl.started < maxAttempts {
-		in, ok := s.within(pl.pkg, pl.req, pl.tried, pl.paid-pl.spentMicros(s.now()))
-		if !ok {
-			return nil
-		}
 		// The quote holds its server for the first attempt alone
+		var prefer *placement.Server
 		if pl.started == 0 {
-			in.Prefer = pl.prefer
+			prefer = pl.prefer
 		}
-		cands, err := s.d.Engine.Candidates(in)
+		cands, err := s.within(pl.pkg, pl.req, pl.tried, pl.paid, pl.paid-pl.spentMicros(s.now()),
+			prefer)
 		if err != nil {
 			if !errors.Is(err, placement.ErrNoCandidate) {
 				pl.reason, pl.detail = reasonInternal, fmt.Sprintf("find candidates: %v", err)
@@ -401,11 +399,7 @@ func (pl *placing) tryHedge() {
 	excluded := maps.Clone(pl.tried)
 	excluded[r.cand.Provider.Name()] = true
 	rest := pl.paid - pl.spentMicros(s.now())
-	in, ok := s.within(pl.pkg, pl.req, excluded, rest)
-	if !ok {
-		return
-	}
-	cands, err := s.d.Engine.Candidates(in)
+	cands, err := s.within(pl.pkg, pl.req, excluded, pl.paid, rest, nil)
 	if err != nil {
 		return
 	}
