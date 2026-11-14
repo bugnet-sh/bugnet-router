@@ -10,7 +10,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 )
 
-// Pricing holds the markup on official cost and how long a quote holds
+// Pricing holds the markup on official cost, how long a quote holds and how far it may rise
 type Pricing struct {
 	// Rule is the markup in basis points and each provider's billed overhead
 	Rule pricing.Rule
