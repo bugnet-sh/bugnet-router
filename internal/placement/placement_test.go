@@ -697,30 +697,70 @@ func TestBudgetFilters(t *testing.T) {
 	eq(t, names(got), []string{"boat"})
 }
 
-func TestPreferExemptFromBudget(t *testing.T) {
+func TestPreferTakesOnlyAStartNothingFits(t *testing.T) {
 	// e2b bills 615 s at 36,000 an hour, 6,150 priced at 6,765
 	boat := newLocal(t, "boat", boatRate, time.Second)
 	dear := newLocal(t, "e2b", 2*boatRate, time.Second)
 	e := engine(fakeHealth{}, boat, dear)
-	in := Inputs{Package: live(10), Rule: boatRule, BudgetMicros: 3355}
+	held := &Server{Provider: "e2b", Size: "small"}
+	in := Inputs{
+		Package: live(10), Rule: boatRule, BudgetMicros: 3355, Prefer: held,
+		PreferRiseMicros: 30_000,
+	}
+	// Boat fits the budget, so the start goes to it as if nothing were held
 	got, err := e.Candidates(in)
 	eq(t, err, nil)
 	eq(t, names(got), []string{"boat"})
-	in.Prefer = &Server{Provider: "e2b", Size: "small"}
-	got, err = e.Candidates(in)
-	eq(t, err, nil)
-	eq(t, names(got), []string{"e2b", "boat"})
-	eq(t, got[0].PriceMicros, int64(6765))
-	// Without a budget the preferred server still comes ahead of a cheaper one
+	// Without a budget every server fits and the held one keeps its place by price
 	in.BudgetMicros = 0
 	got, err = e.Candidates(in)
 	eq(t, err, nil)
-	eq(t, names(got), []string{"e2b", "boat"})
-	// A preferred size the provider does not land the package on is no exemption
-	in.BudgetMicros, in.Prefer = 3355, &Server{Provider: "e2b", Size: "big"}
+	eq(t, names(got), []string{"boat", "e2b"})
+	// Nothing fits 3,354, so the held server takes it while its cost is within the rise
+	in.BudgetMicros = 3354
 	got, err = e.Candidates(in)
 	eq(t, err, nil)
-	eq(t, names(got), []string{"boat"})
+	eq(t, names(got), []string{"e2b"})
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{6150, 6765})
+	in.PreferRiseMicros = 6150 - 3354
+	got, err = e.Candidates(in)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"e2b"})
+	in.PreferRiseMicros--
+	_, err = e.Candidates(in)
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+	in.PreferRiseMicros = 0
+	_, err = e.Candidates(in)
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+}
+
+func TestPreferNeedsAServerThatCanTakeTheStart(t *testing.T) {
+	boat := newLocal(t, "boat", boatRate, time.Second)
+	dear := newLocal(t, "e2b", 2*boatRate, time.Second)
+	in := Inputs{
+		Package: live(10), Rule: boatRule, BudgetMicros: 3354,
+		Prefer: &Server{Provider: "e2b", Size: "small"}, PreferRiseMicros: 30_000,
+	}
+	for name, c := range map[string]struct {
+		e  *Engine
+		in func(Inputs) Inputs
+	}{
+		"unhealthy": {engine(fakeHealth{down: map[string]bool{"e2b": true}}, boat, dear),
+			func(in Inputs) Inputs { return in }},
+		"tried": {engine(fakeHealth{}, boat, dear), func(in Inputs) Inputs {
+			in.Exclude = map[string]bool{"e2b": true}
+			return in
+		}},
+		"other size": {engine(fakeHealth{}, boat, dear), func(in Inputs) Inputs {
+			in.Prefer = &Server{Provider: "e2b", Size: "big"}
+			return in
+		}},
+	} {
+		_, err := c.e.Candidates(c.in(in))
+		if !errors.Is(err, ErrNoCandidate) {
+			t.Errorf("%s: err %v, want ErrNoCandidate", name, err)
+		}
+	}
 }
 
 func TestQuoteFallsBackToCheapestLanding(t *testing.T) {

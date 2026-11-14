@@ -56,9 +56,12 @@ type Inputs struct {
 	Rule pricing.Rule
 	// BudgetMicros is the most a candidate's price may be, 0 for no budget
 	BudgetMicros int64
-	// Prefer is the server that sorts first and is exempt from the budget, nil for none
-	Prefer  *Server
-	Exclude map[string]bool // providers already tried
+	// Prefer is the server a held quote names, which takes a start no candidate fits the budget of
+	// while its cost is at most the budget plus PreferRiseMicros, nil for none
+	Prefer *Server
+	// PreferRiseMicros is how far over the budget Prefer's cost may be
+	PreferRiseMicros int64
+	Exclude          map[string]bool // providers already tried
 	// WarmFirst puts candidates with a warm member ahead of every cold one
 	WarmFirst bool
 	// Hold is provider time before the paid clock starts, billed into the cost and the price
@@ -97,9 +100,42 @@ func (e *Engine) Healthy(name string) bool { return e.health.Healthy(name) }
 
 // Candidates returns usable providers cheapest first, slow to get ready last, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
-	pk := in.Package
 	req := in.Requirements
-	req.GPU = req.GPU || pk.Resources.GPUCount > 0
+	req.GPU = req.GPU || in.Package.Resources.GPUCount > 0
+	rs := e.usable(in)
+	if len(rs) == 0 && in.Prefer != nil && in.BudgetMicros != 0 {
+		// The held server takes a start nothing fits, its cost within the rise over the budget
+		over := in
+		over.BudgetMicros = 0
+		rs = slices.DeleteFunc(e.usable(over), func(r ranked) bool {
+			return !in.Prefer.is(r.Candidate) ||
+				r.CostMicros > in.BudgetMicros+max(in.PreferRiseMicros, 0)
+		})
+	}
+	if len(rs) == 0 {
+		return nil, e.noCandidate(req)
+	}
+	/* Ordering */
+	// A stable sort leaves equal costs in the order the providers setting lists them
+	// With WarmFirst a warm member is quick to claim even where creates are slow, so it comes first
+	slices.SortStableFunc(rs, func(a, b ranked) int {
+		warm := 0
+		if in.WarmFirst {
+			warm = cmp.Compare(b2i(b.Warm), b2i(a.Warm))
+		}
+		return cmp.Or(warm, cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
+	})
+	out := make([]Candidate, len(rs))
+	for i, r := range rs {
+		out[i] = r.Candidate
+		// Cost first looks at the candidate a cold order would take, and no other
+		out[i].Warm = r.Warm && (in.WarmFirst || i == 0)
+	}
+	return out, nil
+}
+
+// usable are the healthy providers not excluded that fit in and would start now, unordered
+func (e *Engine) usable(in Inputs) []ranked {
 	var rs []ranked
 	for _, p := range e.reg.Ordered() {
 		name := p.Name()
@@ -111,32 +147,11 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 			continue
 		}
 		// A pool member carries no egress restriction, so a restricted package creates cold
-		c.Warm = e.warm != nil && len(pk.EgressAllow) == 0 &&
+		c.Warm = e.warm != nil && len(in.Package.EgressAllow) == 0 &&
 			e.warm.WarmAvailable(name, c.Size.Name)
-		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name), prefer: in.Prefer.is(c)})
+		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
 	}
-	if len(rs) == 0 {
-		return nil, e.noCandidate(req)
-	}
-	/* Ordering */
-	// A stable sort leaves equal costs in the order the providers setting lists them
-	// With WarmFirst a warm member is quick to claim even where creates are slow, so it comes first
-	// The preferred server comes ahead of every other
-	slices.SortStableFunc(rs, func(a, b ranked) int {
-		warm := 0
-		if in.WarmFirst {
-			warm = cmp.Compare(b2i(b.Warm), b2i(a.Warm))
-		}
-		return cmp.Or(cmp.Compare(b2i(b.prefer), b2i(a.prefer)), warm,
-			cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
-	})
-	out := make([]Candidate, len(rs))
-	for i, r := range rs {
-		out[i] = r.Candidate
-		// Cost first looks at the candidate a cold order would take, and no other
-		out[i].Warm = r.Warm && (in.WarmFirst || i == 0)
-	}
-	return out, nil
+	return rs
 }
 
 // Quote is the first candidate and true, else the cheapest landing or a zero Candidate and false
@@ -266,7 +281,7 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 		}
 		c.PriceMicros = pk.PriceMicros
 	}
-	if in.BudgetMicros != 0 && c.PriceMicros > in.BudgetMicros && !in.Prefer.is(c) {
+	if in.BudgetMicros != 0 && c.PriceMicros > in.BudgetMicros {
 		return Candidate{}, false, false
 	}
 	return c, open, true
@@ -294,8 +309,7 @@ func (e *Engine) noCandidate(req Requirements) error {
 // ranked keeps a slow rank read once, a ready time recorded mid-sort would break the comparator
 type ranked struct {
 	Candidate
-	slow   int
-	prefer bool
+	slow int
 }
 
 // is reports whether c runs on s, false for a nil s
