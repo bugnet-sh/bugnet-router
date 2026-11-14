@@ -238,7 +238,7 @@ func TestSnapshotDropsPaymentsDaysBeforeTheFloor(t *testing.T) {
 }
 
 func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
-	// dear costs 33,334 of small-10m's 50,000 for 10 minutes, under the saga's 0.5 floor
+	// dear costs 33,334 for 10 minutes, over half of small-10m's 50,000, which the rule refuses
 	dear := local.New(local.Options{
 		Name: "dear", Root: t.TempDir(), Sizes: []provider.Size{small},
 		HourlyCostMicros: 200000, Increment: time.Second,

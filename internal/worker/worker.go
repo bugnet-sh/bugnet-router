@@ -227,7 +227,7 @@ func New(pool *pgxpool.Pool, sd saga.Deps, d Deps) (*Worker, error) {
 		store:    sd.Store,
 		registry: sd.Registry,
 		engine:   sd.Engine,
-		placing:  placement.Inputs{MarginFloor: sd.MarginFloor, ImageAccept: sd.ImageAccept},
+		placing:  placement.Inputs{Rule: sd.Rule, ImageAccept: sd.ImageAccept},
 		log:      sd.Log,
 		bus:      streams.NewBus(sd.Valkey, sd.Prefix),
 		vk:       sd.Valkey,

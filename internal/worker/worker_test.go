@@ -37,6 +37,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -300,6 +301,7 @@ func newEnv(t *testing.T, o options) *env {
 		OrderKey:     pub,
 		HandleKey:    hk,
 		MarginFloor:  0.5,
+		Rule:         pricing.Rule{MarkupBP: 10000},
 		Tracker:      tracker,
 		ReplicaID:    "worker-test",
 		DeploymentID: o.deployment,

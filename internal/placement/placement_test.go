@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
@@ -222,11 +223,12 @@ func TestCandidatesDemoteSlowReadyStably(t *testing.T) {
 	}
 }
 
-func TestCandidatesDropBelowMarginFloor(t *testing.T) {
+func TestCandidatesDropWhereTheFixedPriceMissesTheMarkup(t *testing.T) {
+	// A 100% markup prices cheap's hour at 40,000 and dear's at 60,000
 	cheap := newLocal(t, "cheap", 20000, time.Hour)
 	dear := newLocal(t, "dear", 30000, time.Hour)
 	e := engine(fakeHealth{}, cheap, dear)
-	in := Inputs{Package: pkg(60, 50000), MarginFloor: 0.5}
+	in := Inputs{Package: pkg(60, 50000), Rule: pricing.Rule{MarkupBP: 10000}}
 	got, err := e.Candidates(in)
 	if err != nil {
 		t.Fatal(err)
@@ -234,11 +236,8 @@ func TestCandidatesDropBelowMarginFloor(t *testing.T) {
 	if !slices.Equal(names(got), []string{"cheap"}) {
 		t.Fatalf("got %v", names(got))
 	}
-	if m := got[0].MarginFraction; m < 0.59 || m > 0.61 {
-		t.Fatalf("margin = %v", m)
-	}
-	in.Package = pkg(60, 50000)
-	in.MarginFloor = 0.3
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{20000, 50000})
+	in.Rule.MarkupBP = 5000
 	if got, _ = e.Candidates(in); len(got) != 2 {
 		t.Fatalf("want both, got %v", names(got))
 	}
@@ -254,46 +253,49 @@ type startFee struct {
 func (s startFee) StartCostMicros(provider.Size) (int64, bool) { return s.fee, !s.refused }
 
 func TestCandidatesCountTheStartFee(t *testing.T) {
-	// 10 minutes of a small machine cost 3,000, a 30,000 start fee drops the margin to 34%
+	// 10 minutes of a small machine cost 3,000, a 30,000 start fee takes them to 33,000
 	fee := startFee{Provider: newLocal(t, "fee", 18000, time.Second), fee: 30000}
 	free := startFee{Provider: newLocal(t, "free", 18000, time.Second)}
 	refused := startFee{Provider: newLocal(t, "refused", 1, time.Second), refused: true}
 	e := engine(fakeHealth{}, fee, free, refused)
-	got, err := e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	got, err := e.Candidates(Inputs{
+		Package: pkg(10, 50000), Rule: pricing.Rule{MarkupBP: 10000},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(names(got), []string{"free"}) || got[0].CostMicros != 3000 {
 		t.Fatalf("got %v costing %d, want free alone at 3000", names(got), got[0].CostMicros)
 	}
-	got, err = e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.3})
+	got, err = e.Candidates(Inputs{Package: pkg(10, 50000), Rule: pricing.Rule{MarkupBP: 5000}})
 	if err != nil || !slices.Equal(names(got), []string{"free", "fee"}) ||
 		got[1].CostMicros != 33000 {
 		t.Fatalf("got %v, %v, want free then fee at 33000", got, err)
 	}
 }
 
-func TestCandidatesLivePackageSkipsTheFloor(t *testing.T) {
+func TestCandidatesLivePackageLandsAtAnyCost(t *testing.T) {
 	dear := newLocal(t, "dear", 100000, time.Hour)
-	live := pkg(60, 0)
-	live.FixedPrice = false
-	got, err := engine(fakeHealth{}, dear).Candidates(Inputs{Package: live, MarginFloor: 0.5})
+	got, err := engine(fakeHealth{}, dear).Candidates(Inputs{
+		Package: live(60), Rule: pricing.Rule{MarkupBP: 10000},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names(got), []string{"dear"}) || got[0].CostMicros != 100000 {
-		t.Fatalf("got %v", names(got))
-	}
+	eq(t, names(got), []string{"dear"})
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{100000, 200000})
 }
 
 func TestCandidatesZeroPrice(t *testing.T) {
 	free := newLocal(t, "free", 0, time.Second)
 	paid := newLocal(t, "paid", 100, time.Second)
-	got, err := engine(fakeHealth{}, free, paid).Candidates(Inputs{Package: pkg(10, 0)})
+	got, err := engine(fakeHealth{}, free, paid).Candidates(Inputs{
+		Package: pkg(10, 0), Rule: pricing.Rule{MarkupBP: 1000},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names(got), []string{"free"}) || got[0].MarginFraction != 0 {
+	if !slices.Equal(names(got), []string{"free"}) || got[0].PriceMicros != 0 {
 		t.Fatalf("got %v", names(got))
 	}
 }
@@ -486,8 +488,8 @@ func TestNoCapableProviderLooksOnlyAtCapabilities(t *testing.T) {
 		}, true},
 		{"ssh past its lifetime", engine(fakeHealth{}, plain, ssh),
 			Inputs{Package: pkg(56, 100000), Requirements: sshOnly}, true},
-		{"below the margin floor", engine(fakeHealth{}, plain),
-			Inputs{Package: pkg(10, 200), MarginFloor: 0.5}, true},
+		{"over the fixed price", engine(fakeHealth{}, plain),
+			Inputs{Package: pkg(10, 200), Rule: pricing.Rule{MarkupBP: 10000}}, true},
 		{"no size", engine(fakeHealth{}, plain), Inputs{Package: big}, true},
 		{"every provider unhealthy", engine(fakeHealth{down: map[string]bool{"plain": true}},
 			plain), Inputs{Package: pkg(10, 100000)}, true},
@@ -647,4 +649,101 @@ func TestEmptyAcceptFiltersNothing(t *testing.T) {
 	got, err := e.Candidates(Inputs{Package: pkg(10, 1000000)})
 	eq(t, err, nil)
 	eq(t, names(got), []string{"old", "fresh", "own"})
+}
+
+// boatRate is Boat small's hourly rate, billed by the second
+const boatRate = 18_000
+
+// boatRule is a 10% markup with Boat's 10 s and E2B's 15 s of overhead
+var boatRule = pricing.Rule{MarkupBP: 1000, Overhead: map[string]time.Duration{
+	"boat": 10 * time.Second, "e2b": 15 * time.Second,
+}}
+
+// live is a package quoted from its cost
+func live(minutes int) catalog.Package {
+	p := pkg(minutes, 0)
+	p.FixedPrice = false
+	return p
+}
+
+func TestCandidatePriceLive(t *testing.T) {
+	// 610 s at 18,000 an hour cost 3,050, which 10% takes to 3,355
+	e := engine(fakeHealth{}, newLocal(t, "boat", boatRate, time.Second))
+	got, err := e.Candidates(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, err, nil)
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{3050, 3355})
+	// A hold bills beside the overhead, 660 s cost 3,300
+	got, err = e.Candidates(Inputs{Package: live(10), Rule: boatRule, Hold: 50 * time.Second})
+	eq(t, err, nil)
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{3300, 3630})
+}
+
+func TestCandidateFixedFloor(t *testing.T) {
+	e := engine(fakeHealth{}, newLocal(t, "boat", boatRate, time.Second))
+	_, err := e.Candidates(Inputs{Package: pkg(10, 3354), Rule: boatRule})
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+	got, err := e.Candidates(Inputs{Package: pkg(10, 3355), Rule: boatRule})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"boat"})
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{3050, 3355})
+}
+
+func TestBudgetFilters(t *testing.T) {
+	e := engine(fakeHealth{}, newLocal(t, "boat", boatRate, time.Second))
+	_, err := e.Candidates(Inputs{Package: live(10), Rule: boatRule, BudgetMicros: 3354})
+	eq(t, errors.Is(err, ErrNoCandidate), true)
+	got, err := e.Candidates(Inputs{Package: live(10), Rule: boatRule, BudgetMicros: 3355})
+	eq(t, err, nil)
+	eq(t, names(got), []string{"boat"})
+}
+
+func TestPreferExemptFromBudget(t *testing.T) {
+	// e2b bills 615 s at 36,000 an hour, 6,150 priced at 6,765
+	boat := newLocal(t, "boat", boatRate, time.Second)
+	dear := newLocal(t, "e2b", 2*boatRate, time.Second)
+	e := engine(fakeHealth{}, boat, dear)
+	in := Inputs{Package: live(10), Rule: boatRule, BudgetMicros: 3355}
+	got, err := e.Candidates(in)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"boat"})
+	in.Prefer = &Server{Provider: "e2b", Size: "small"}
+	got, err = e.Candidates(in)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"e2b", "boat"})
+	eq(t, got[0].PriceMicros, int64(6765))
+	// Without a budget the preferred server still comes ahead of a cheaper one
+	in.BudgetMicros = 0
+	got, err = e.Candidates(in)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"e2b", "boat"})
+	// A preferred size the provider does not land the package on is no exemption
+	in.BudgetMicros, in.Prefer = 3355, &Server{Provider: "e2b", Size: "big"}
+	got, err = e.Candidates(in)
+	eq(t, err, nil)
+	eq(t, names(got), []string{"boat"})
+}
+
+func TestQuoteFallsBackToCheapestLanding(t *testing.T) {
+	dear := newLocal(t, "e2b", 2*boatRate, time.Second)
+	boat := newLocal(t, "boat", boatRate, time.Second)
+	twin := newLocal(t, "twin", 18_300, time.Second)
+	up := engine(fakeHealth{}, dear, boat, twin)
+	c, ok := up.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, ok, true)
+	eq(t, []any{c.Provider.Name(), c.PriceMicros}, []any{"boat", int64(3355)})
+	// boat and twin both cost 3,050, so the registry's order keeps boat
+	down := engine(fakeHealth{down: map[string]bool{"e2b": true, "boat": true, "twin": true}},
+		dear, boat, twin)
+	c, ok = down.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, ok, false)
+	eq(t, []any{c.Provider.Name(), c.PriceMicros}, []any{"boat", int64(3355)})
+	ties := engine(fakeHealth{down: map[string]bool{"twin": true, "boat": true}}, twin, boat)
+	c, ok = ties.Quote(Inputs{Package: live(10), Rule: boatRule})
+	eq(t, ok, false)
+	eq(t, c.Provider.Name(), "twin")
+	big := live(10)
+	big.Resources.VCPU = 64
+	c, ok = up.Quote(Inputs{Package: big, Rule: boatRule})
+	eq(t, ok, false)
+	eq(t, c, Candidate{})
 }

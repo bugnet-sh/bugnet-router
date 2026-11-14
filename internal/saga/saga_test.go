@@ -35,6 +35,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -337,6 +338,9 @@ type env struct {
 	keys      dpkeys.Keys
 }
 
+// doubled holds each fixed price to twice its cost
+var doubled = pricing.Rule{MarkupBP: 10000}
+
 func newEnv(t *testing.T, ps ...provider.Provider) *env {
 	t.Helper()
 	return newEnvWith(t, nil, ps...)
@@ -404,6 +408,7 @@ func newEnvFeatures(
 		OrderKey:    pub,
 		HandleKey:   hk,
 		MarginFloor: 0.5,
+		Rule:        doubled,
 		Tracker:     tracker,
 		ReplicaID:   "replica-test",
 		Log:         discard,

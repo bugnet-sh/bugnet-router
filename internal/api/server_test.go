@@ -55,6 +55,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -286,6 +287,9 @@ type env struct {
 	orders    atomic.Int64
 }
 
+// doubled holds each fixed price to twice its cost
+var doubled = pricing.Rule{MarkupBP: 10000}
+
 func newEnv(t *testing.T, opts options) *env {
 	t.Helper()
 	ctx := t.Context()
@@ -362,7 +366,7 @@ func newEnv(t *testing.T, opts options) *env {
 	writer := sessions.NewWriter(st, keys, discard)
 	sg := saga.New(saga.Deps{
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
-		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
+		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5, Rule: doubled,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
@@ -439,7 +443,7 @@ func newEnv(t *testing.T, opts options) *env {
 		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
-		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
+		Valkey: apiVK, Prefix: prefix, Rule: doubled, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,

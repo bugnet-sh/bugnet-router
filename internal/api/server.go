@@ -85,6 +85,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/jobs"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -118,16 +119,16 @@ type Engine interface {
 
 // Deps are the services and settings a Server works with
 type Deps struct {
-	Store       *store.Store
-	Saga        *saga.Saga
-	Jobs        *jobs.Service
-	Engine      Engine
-	Catalog     *catalog.Catalog
-	Registry    *provider.Registry
-	Valkey      valkey.Client
-	Prefix      string
-	MarginFloor float64
-	Log         *slog.Logger // slog.Default when nil
+	Store    *store.Store
+	Saga     *saga.Saga
+	Jobs     *jobs.Service
+	Engine   Engine
+	Catalog  *catalog.Catalog
+	Registry *provider.Registry
+	Valkey   valkey.Client
+	Prefix   string
+	Rule     pricing.Rule // prices every candidate
+	Log      *slog.Logger // slog.Default when nil
 	// SandboxOpsPerSecond refills each placement's operation bucket, a default when zero
 	SandboxOpsPerSecond int
 	// SandboxOpsBurst is what a placement's full operation bucket holds, a default when zero
@@ -448,8 +449,7 @@ func (s *Server) startOption(
 	pkg catalog.Package, need placement.Requirements,
 ) *routerv1.PackageOption {
 	_, err := s.d.Engine.Candidates(placement.Inputs{
-		Package: pkg, Requirements: need, MarginFloor: s.d.MarginFloor,
-		ImageAccept: s.d.ImageAccept,
+		Package: pkg, Requirements: need, Rule: s.d.Rule, ImageAccept: s.d.ImageAccept,
 	})
 	reason := ""
 	switch {

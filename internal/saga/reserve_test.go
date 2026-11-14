@@ -478,8 +478,8 @@ func TestRenewalStopsAtMaxHold(t *testing.T) {
 	e.saga.Wait()
 }
 
-func TestRenewalRefusedPastTheFloor(t *testing.T) {
-	// A 150 s hold takes this $0.05 package's margin to its floor of 50%, a longer one under it
+func TestRenewalRefusedPastHalfThePrice(t *testing.T) {
+	// A 150 s hold takes this $0.05 package's cost to half its price, a longer one past it
 	a := pricey{newLocal(t, local.Options{Name: "a"}), 120_000}
 	e, clk := reserveEnv(t, reserveSettings("a"), nil, a)
 	first := e.reserve(t, "q2.f", smallPkg)
@@ -501,7 +501,7 @@ func TestSpeculativeE2BExampleRefused(t *testing.T) {
 	e, _ := reserveEnv(t, reserveSettings("e2b"), nil, a)
 	eq(t, e.reserve(t, "q2.e", smallPkg).Skip, saga.SkipNoWarm)
 	eq(t, e.reservationCount(t, "q2.e"), 0)
-	// The same package without a hold clears the floor, so the order itself still starts
+	// The same package without a hold costs under half its price, so the order itself starts
 	p, _ := e.placeReady(t, "order-1")
 	eq(t, p.Provider, "e2b")
 }

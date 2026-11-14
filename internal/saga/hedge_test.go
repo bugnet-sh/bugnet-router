@@ -34,7 +34,7 @@ func newHedger(t *testing.T, h config.Hedge, tot saga.Totals, creates map[string
 	vk, prefix := testenv.Valkey(t)
 	return saga.NewHedger(saga.HedgerDeps{
 		Settings: h, Health: tot, Valkey: vk, Prefix: prefix, CreatesPerSecond: creates,
-		MarginFloor: 0.5,
+		Rule: doubled,
 	}), prefix
 }
 
@@ -107,7 +107,7 @@ func TestHedgerAllowOntoBoatWhenAllowed(t *testing.T) {
 func TestHedgerAllowRefusesAPausedProvider(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	h := saga.NewHedger(saga.HedgerDeps{
-		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, MarginFloor: 0.5,
+		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, Rule: doubled,
 	})
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)
 	eq(t, h.Allow(t.Context(), hedgePkg, running, next, 0, 20*time.Second), true)
@@ -120,7 +120,7 @@ func TestHedgerAllowRefusesAPausedProvider(t *testing.T) {
 func TestHedgerAllowRefusesALowCreateBucket(t *testing.T) {
 	vk, prefix := testenv.Valkey(t)
 	h := saga.NewHedger(saga.HedgerDeps{
-		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, MarginFloor: 0.5,
+		Settings: hedgeSettings(), Valkey: vk, Prefix: prefix, Rule: doubled,
 		CreatesPerSecond: map[string]int{"next": 1},
 	})
 	running, next := hedgeCand(t, "running", 1000), hedgeCand(t, "next", 1000)

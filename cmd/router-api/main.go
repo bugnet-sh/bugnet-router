@@ -225,6 +225,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		OrderKey:      cfg.OrderTokenPublicKey,
 		HandleKey:     cfg.HandleKey,
 		MarginFloor:   cfg.MarginFloor,
+		Rule:          cfg.Pricing.Rule,
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,
 		DeploymentID:  cfg.DeploymentID,
@@ -251,7 +252,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		ReserveShare:     cfg.Pools.ReserveShare,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
-			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
+			CreatesPerSecond: cfg.CreatesPerSecond, Rule: cfg.Pricing.Rule,
 		}),
 	})
 	est, err := buildEstimator(ctx, log, cfg, st, vk, cat, reg)
@@ -275,7 +276,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Registry:            reg,
 		Valkey:              vk,
 		Prefix:              cfg.ValkeyPrefix,
-		MarginFloor:         cfg.MarginFloor,
+		Rule:                cfg.Pricing.Rule,
 		Log:                 log,
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,
@@ -418,7 +419,7 @@ func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catal
 	return nil
 }
 
-// checkPackages logs each start package no configured provider can place, health aside
+// checkPackages logs each start package no configured provider can place at its price, health aside
 func checkPackages(
 	log *slog.Logger, e *placement.Engine, cat *catalog.Catalog, cfg config.Config,
 ) {
@@ -427,11 +428,11 @@ func checkPackages(
 			continue
 		}
 		in := placement.Inputs{
-			Package: pkg, MarginFloor: cfg.MarginFloor, ImageAccept: cfg.Images.Accept,
+			Package: pkg, Rule: cfg.Pricing.Rule, ImageAccept: cfg.Images.Accept,
 		}
 		if len(e.Lands(in)) == 0 {
-			log.Error("no configured provider can place a start package under margin_floor",
-				"package", pkg.ID, "margin_floor", cfg.MarginFloor)
+			log.Error("no configured provider can place a start package", "package", pkg.ID,
+				"fixed_price", pkg.FixedPrice, "markup_bp", cfg.Pricing.Rule.MarkupBP)
 		}
 	}
 }

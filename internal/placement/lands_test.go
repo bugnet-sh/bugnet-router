@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -25,11 +26,12 @@ func TestLandsKeepsTheProvidersOrderWhateverTheirHealth(t *testing.T) {
 	down := newLocal(t, "down", 6000, time.Second)
 	cheap := newLocal(t, "cheap", 1000, time.Second)
 	e := engine(fakeHealth{down: map[string]bool{"down": true}}, dear, down, cheap)
-	got := e.Lands(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	in := Inputs{Package: pkg(10, 50000), Rule: pricing.Rule{MarkupBP: 1000}}
+	got := e.Lands(in)
 	eq(t, landed(got), []string{"dear small open", "down small closed", "cheap small open"})
-	eq(t, got[0].CostMicros, int64(3000))
+	eq(t, []int64{got[0].CostMicros, got[0].PriceMicros}, []int64{3000, 50000})
 	eq(t, got[2].Warm, false)
-	cands, err := e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	cands, err := e.Candidates(in)
 	eq(t, err, nil)
 	eq(t, names(cands), []string{"cheap", "dear"})
 }
@@ -44,11 +46,12 @@ func TestLandsLeavesOutWhatTheRuleRefuses(t *testing.T) {
 	e := engine(fakeHealth{}, sized, dear, small)
 	large := pkg(10, 50000)
 	large.Resources.VCPU = 4
-	eq(t, landed(e.Lands(Inputs{Package: large, MarginFloor: 0.5})), []string{"sized big open"})
-	// 10 minutes at 200,000 an hour cost 33,334 of 50,000, under a 0.5 floor and over 0.3
-	eq(t, landed(e.Lands(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})),
+	double, plus40 := pricing.Rule{MarkupBP: 10000}, pricing.Rule{MarkupBP: 4000}
+	eq(t, landed(e.Lands(Inputs{Package: large, Rule: double})), []string{"sized big open"})
+	// 10 minutes at 200,000 an hour cost 33,334, over 50,000 at 100% and under it at 40%
+	eq(t, landed(e.Lands(Inputs{Package: pkg(10, 50000), Rule: double})),
 		[]string{"sized small open", "small small open"})
-	eq(t, landed(e.Lands(Inputs{Package: pkg(10, 50000), MarginFloor: 0.3})),
+	eq(t, landed(e.Lands(Inputs{Package: pkg(10, 50000), Rule: plus40})),
 		[]string{"sized small open", "dear small open", "small small open"})
 	eq(t, len(e.Lands(Inputs{Package: pkg(10, 50000), Exclude: map[string]bool{
 		"sized": true, "dear": true, "small": true,
@@ -61,13 +64,14 @@ func TestLandsCountsTheStartFeeAndClosesARefusedStart(t *testing.T) {
 	refused := startFee{Provider: newLocal(t, "refused", 18000, time.Second), refused: true,
 		fee: 30000}
 	e := engine(fakeHealth{}, fee, refused)
-	got := e.Lands(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	double := Inputs{Package: pkg(10, 50000), Rule: pricing.Rule{MarkupBP: 10000}}
+	got := e.Lands(double)
 	eq(t, landed(got), []string{"refused small closed"})
 	eq(t, []int64{got[0].CostMicros, got[0].StartFeeMicros}, []int64{3000, 0})
-	got = e.Lands(Inputs{Package: pkg(10, 50000), MarginFloor: 0.3})
+	got = e.Lands(Inputs{Package: pkg(10, 50000), Rule: pricing.Rule{MarkupBP: 5000}})
 	eq(t, landed(got), []string{"fee small open", "refused small closed"})
 	eq(t, got[0].CostMicros, int64(33000))
-	_, err := e.Candidates(Inputs{Package: pkg(10, 50000), MarginFloor: 0.5})
+	_, err := e.Candidates(double)
 	eq(t, err, ErrNoCandidate)
 }
 

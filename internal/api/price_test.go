@@ -107,14 +107,14 @@ func TestPricePackageMatchesEstimate(t *testing.T) {
 
 const thinPkg = "thin-10m"
 
-// thinCatalog adds a start package priced over the local provider's 167 micro cost but under the
-// 0.5 margin floor, so only the floor keeps a provider from taking it
+// thinCatalog adds a start package priced over the local provider's 167 micro cost but under
+// twice it, so only the markup keeps a provider from taking it
 var thinCatalog = strings.TrimSuffix(catalogJSON, "\n]}") + `,
 	{"id": "thin-10m", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10},
 		"minutes": 10, "price_micros": 200}
 ]}`
 
-func TestPricePackageKeepsTheMarginFloor(t *testing.T) {
+func TestPricePackageKeepsTheMarkup(t *testing.T) {
 	e := newEnv(t, options{apiCatalog: thinCatalog})
 	eq(t, reasons(t, e.estimate(t, nil)), map[string]string{
 		thinPkg: "no_candidate", smallPkg: "", longPkg: "", gpuPkg: "feature_unavailable",

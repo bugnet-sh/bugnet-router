@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -27,15 +28,19 @@ const (
 
 // Candidate is one provider and size that may host a package
 type Candidate struct {
-	Provider       provider.Provider
-	Size           provider.Size
-	CostMicros     int64 // the package's minutes in whole billing increments plus any start fee
-	MarginFraction float64
+	Provider   provider.Provider
+	Size       provider.Size
+	CostMicros int64 // the billed time in whole billing increments plus any start fee
+	// PriceMicros is what a run costs the user here, a fixed package's price or the marked up cost
+	PriceMicros int64
 	// Warm means a pool member is claimed before any create is tried
 	Warm bool
 	// HourlyMicros and StartFeeMicros are the parts of CostMicros that hedging needs
 	HourlyMicros, StartFeeMicros int64
 }
+
+// Server is one provider and one of its sizes
+type Server struct{ Provider, Size string }
 
 // Requirements are the capabilities a placement needs beyond the package's resources
 type Requirements struct{ SSH, Preview, GPU, Secrets bool }
@@ -44,11 +49,16 @@ type Requirements struct{ SSH, Preview, GPU, Secrets bool }
 type Inputs struct {
 	Package      catalog.Package
 	Requirements Requirements
-	MarginFloor  float64
-	Exclude      map[string]bool // providers already tried
+	// Rule prices a live package and holds a fixed package's price over its marked up cost
+	Rule pricing.Rule
+	// BudgetMicros is the most a candidate's price may be, 0 for no budget
+	BudgetMicros int64
+	// Prefer is the server that sorts first and is exempt from the budget, nil for none
+	Prefer  *Server
+	Exclude map[string]bool // providers already tried
 	// WarmFirst puts candidates with a warm member ahead of every cold one
 	WarmFirst bool
-	// Hold is provider time before the paid clock starts, billed and checked against the floor
+	// Hold is provider time before the paid clock starts, billed into the cost and the price
 	Hold time.Duration
 	// HoldMax is the longest a renewed hold can run, which the candidate's lifetime must cover
 	HoldMax time.Duration
@@ -100,7 +110,7 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		// A pool member carries no egress restriction, so a restricted package creates cold
 		c.Warm = e.warm != nil && len(pk.EgressAllow) == 0 &&
 			e.warm.WarmAvailable(name, c.Size.Name)
-		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name)})
+		rs = append(rs, ranked{Candidate: c, slow: e.slowRank(name), prefer: in.Prefer.is(c)})
 	}
 	if len(rs) == 0 {
 		return nil, e.noCandidate(req)
@@ -108,12 +118,14 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	/* Ordering */
 	// A stable sort leaves equal costs in the order the providers setting lists them
 	// With WarmFirst a warm member is quick to claim even where creates are slow, so it comes first
+	// The preferred server comes ahead of every other
 	slices.SortStableFunc(rs, func(a, b ranked) int {
 		warm := 0
 		if in.WarmFirst {
 			warm = cmp.Compare(b2i(b.Warm), b2i(a.Warm))
 		}
-		return cmp.Or(warm, cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
+		return cmp.Or(cmp.Compare(b2i(b.prefer), b2i(a.prefer)), warm,
+			cmp.Compare(a.slow, b.slow), cmp.Compare(a.CostMicros, b.CostMicros))
 	})
 	out := make([]Candidate, len(rs))
 	for i, r := range rs {
@@ -122,6 +134,21 @@ func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 		out[i].Warm = r.Warm && (in.WarmFirst || i == 0)
 	}
 	return out, nil
+}
+
+// Quote is the first candidate and true, else the cheapest landing or a zero Candidate and false
+func (e *Engine) Quote(in Inputs) (Candidate, bool) {
+	if cs, err := e.Candidates(in); err == nil {
+		return cs[0], true
+	}
+	var best Candidate
+	for i, l := range e.Lands(in) {
+		// A strict less keeps the providers order among equal prices
+		if i == 0 || l.PriceMicros < best.PriceMicros {
+			best = l.Candidate
+		}
+	}
+	return best, false
 }
 
 // Landing is the size a package lands on at one provider, whatever the provider's state now
@@ -152,7 +179,7 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 	req := in.Requirements
 	req.GPU = req.GPU || pk.Resources.GPUCount > 0
 	need := time.Duration(pk.Minutes)*time.Minute + max(in.HoldMax, 0) + LifetimeSlack
-	billed := time.Duration(pk.Minutes)*time.Minute + max(in.Hold, 0)
+	billed := in.Rule.Billed(p.Name(), time.Duration(pk.Minutes)*time.Minute+max(in.Hold, 0))
 	if !e.reg.ImageAccepted(p, in.ImageAccept) {
 		return Candidate{}, false, false
 	}
@@ -182,24 +209,21 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 		}
 		cost += fee
 	}
-	margin := 0.0
-	switch {
-	case !pk.FixedPrice:
-		// A live package is quoted from the cost, so no price is held to a floor
-	case pk.PriceMicros == 0:
-		if cost != 0 {
-			return Candidate{}, false, false
-		}
-	default:
-		margin = float64(pk.PriceMicros-cost) / float64(pk.PriceMicros)
-		if margin < in.MarginFloor {
-			return Candidate{}, false, false
-		}
-	}
-	return Candidate{
-		Provider: p, Size: size, CostMicros: cost, MarginFraction: margin,
+	c := Candidate{
+		Provider: p, Size: size, CostMicros: cost, PriceMicros: in.Rule.Price(cost),
 		HourlyMicros: hourly, StartFeeMicros: fee,
-	}, open, true
+	}
+	if pk.FixedPrice {
+		// A fixed price of 0 is free, which only a cost of 0 fits
+		if c.PriceMicros > pk.PriceMicros {
+			return Candidate{}, false, false
+		}
+		c.PriceMicros = pk.PriceMicros
+	}
+	if in.BudgetMicros != 0 && c.PriceMicros > in.BudgetMicros && !in.Prefer.is(c) {
+		return Candidate{}, false, false
+	}
+	return c, open, true
 }
 
 // capable reports whether caps covers every capability req asks for
@@ -224,7 +248,13 @@ func (e *Engine) noCandidate(req Requirements) error {
 // ranked keeps a slow rank read once, a ready time recorded mid-sort would break the comparator
 type ranked struct {
 	Candidate
-	slow int
+	slow   int
+	prefer bool
+}
+
+// is reports whether c runs on s, false for a nil s
+func (s *Server) is(c Candidate) bool {
+	return s != nil && s.Provider == c.Provider.Name() && s.Size == c.Size.Name
 }
 
 // slowRank puts a provider whose ready p95 is over the threshold behind the fast ones
@@ -254,20 +284,19 @@ func costMicros(hourly int64, used, increment time.Duration) int64 {
 	return num.Div(num, big.NewInt(int64(time.Hour))).Int64()
 }
 
-// HedgeFits reports whether b beside a stays above the floor, a having run pre before the order
+// HedgeFits reports whether the price of b beside a fits budget, a having run pre before the order
 //
-// Whichever attempt wins runs the whole package and the loser runs until it is destroyed, so the
+// Whichever attempt wins runs the whole of run and the loser runs until it is destroyed, so the
 // worst case is the dearer one winning, both start fees paid, and the loser living loserLife.
-// pre counts on both sides, which keeps the check an upper bound. A free package fits only when
+// pre counts on both sides, which keeps the check an upper bound. A budget of 0 fits only when
 // both candidates cost nothing.
 func HedgeFits(
-	pkg catalog.Package, a, b Candidate, pre, loserLife time.Duration, floor float64,
+	a, b Candidate, run, pre, loserLife time.Duration, budget int64, r pricing.Rule,
 ) bool {
-	run := time.Duration(pkg.Minutes) * time.Minute
 	incA, incB := a.Provider.BillingIncrement(), b.Provider.BillingIncrement()
 	winner := max(costMicros(a.HourlyMicros, pre+run, incA), costMicros(b.HourlyMicros, run, incB))
 	loser := max(costMicros(a.HourlyMicros, pre+loserLife, incA),
 		costMicros(b.HourlyMicros, pre+loserLife, incB))
 	worst := winner + a.StartFeeMicros + b.StartFeeMicros + loser
-	return float64(worst) <= float64(pkg.PriceMicros)*(1-floor)
+	return r.Price(worst) <= budget
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -40,6 +41,9 @@ type downHealth map[string]bool
 
 func (d downHealth) Healthy(name string) bool    { return !d[name] }
 func (downHealth) ReadyP95(string) time.Duration { return 0 }
+
+// doubled holds each fixed price to twice its cost
+var doubled = placement.Inputs{Rule: pricing.Rule{MarkupBP: 10000}}
 
 func size(name string, vcpu, memGiB, diskGiB int) provider.Size {
 	return provider.Size{Name: name, Resources: provider.Resources{
@@ -101,7 +105,7 @@ func TestServersListEachSizeAPackageLandsOn(t *testing.T) {
 	// b runs as root for at most an hour and is down
 	b := newShaped(t, "b", 1000, provider.Capabilities{MaxLifetime: time.Hour},
 		size("2x2", 2, 2, 10), size("4x8", 4, 8, 10))
-	// c costs 40,000 for 10 minutes, so only packages at 80,000 or more keep half their price
+	// c costs 40,000 for 10 minutes, so doubled leaves it only packages at 80,000 or more
 	c := newShaped(t, "c", 240000, provider.Capabilities{GPU: true, ExecUser: "boxd"},
 		size("1x4", 1, 4, 100), size("2x8", 2, 8, 100), gpu)
 	// d lists no sizes, so its sizes follow the order packages land on them, smallest package first
@@ -113,7 +117,7 @@ func TestServersListEachSizeAPackageLandsOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := placement.New(reg, downHealth{"b": true}, nil)
-	got := Servers(e, reg, serverPackages(t), placement.Inputs{MarginFloor: 0.5})
+	got := Servers(e, reg, serverPackages(t), doubled)
 	small := ServerPackage{ID: "small-10m", Minutes: 10, PriceMicros: 50000}
 	medium := ServerPackage{ID: "medium-10m", Minutes: 10, PriceMicros: 80000}
 	xl := ServerPackage{ID: "xl-10m", Minutes: 10, PriceMicros: 40000}
@@ -169,7 +173,7 @@ func TestServersLongestRunIsTheLargestOverTheSizesPackages(t *testing.T) {
 			"minutes": 10, "price_micros": 50000}
 	]}`)
 	e := placement.New(reg, downHealth{}, nil)
-	got := Servers(e, reg, pkgs, placement.Inputs{MarginFloor: 0.5})
+	got := Servers(e, reg, pkgs, doubled)
 	runs := []int64{}
 	for _, s := range got {
 		if s.LongestRunMinutes != nil {
@@ -195,7 +199,7 @@ func TestServersListASizeTheProviderDoesNotListLast(t *testing.T) {
 	}
 	// xl-10m comes first in catalog order and lands on the hidden size
 	e := placement.New(reg, downHealth{}, nil)
-	got := Servers(e, reg, serverPackages(t), placement.Inputs{MarginFloor: 0.5})
+	got := Servers(e, reg, serverPackages(t), doubled)
 	names := []string{}
 	for _, s := range got {
 		names = append(names, s.Size)

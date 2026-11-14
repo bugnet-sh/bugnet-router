@@ -211,7 +211,7 @@ func (s *Saga) reserveTx(
 	now := s.now()
 	hold := cfg.Hold + cfg.LapseGrace
 	cands, candErr := s.d.Engine.Candidates(placement.Inputs{
-		Package: pkg, Requirements: in.Requirements, MarginFloor: s.d.MarginFloor,
+		Package: pkg, Requirements: in.Requirements, Rule: s.d.Rule,
 		WarmFirst: s.d.WarmFirst, Hold: hold, HoldMax: cfg.MaxHold + cfg.LapseGrace,
 		ImageAccept: s.d.ImageAccept,
 	})
@@ -337,7 +337,7 @@ func (s *Saga) renew(
 		return Outcome{}, err
 	}
 	cands, err := s.d.Engine.Candidates(placement.Inputs{
-		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor,
+		Package: pkg, Requirements: req, Rule: s.d.Rule,
 		WarmFirst: s.d.WarmFirst, Hold: next.Sub(cur.CreatedAt) + cfg.LapseGrace,
 		HoldMax: cfg.MaxHold + cfg.LapseGrace, ImageAccept: s.d.ImageAccept,
 	})

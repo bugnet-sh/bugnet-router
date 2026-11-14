@@ -202,6 +202,7 @@ func serve(
 		OrderKey:      cfg.OrderTokenPublicKey,
 		HandleKey:     cfg.HandleKey,
 		MarginFloor:   cfg.MarginFloor,
+		Rule:          cfg.Pricing.Rule,
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,
 		DeploymentID:  cfg.DeploymentID,
@@ -228,7 +229,7 @@ func serve(
 		ReserveShare:     cfg.Pools.ReserveShare,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
-			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
+			CreatesPerSecond: cfg.CreatesPerSecond, Rule: cfg.Pricing.Rule,
 		}),
 	}, worker.Deps{
 		EventsURL: cfg.EventsURL, SigningKey: cfg.EventSigningKey,

@@ -57,7 +57,7 @@ func hedgingEnv(t *testing.T, ps ...provider.Provider) *env {
 		h := hedgeSettings()
 		h.DefaultAfter, h.MinAfter = 200*time.Millisecond, 50*time.Millisecond
 		d.Hedger = saga.NewHedger(saga.HedgerDeps{
-			Settings: h, Valkey: d.Valkey, Prefix: d.Prefix, MarginFloor: d.MarginFloor,
+			Settings: h, Valkey: d.Valkey, Prefix: d.Prefix, Rule: d.Rule,
 		})
 	}, ps...)
 }
@@ -258,7 +258,7 @@ func TestHedgeWinReleasesTheAwaitedReservation(t *testing.T) {
 		hs := hedgeSettings()
 		hs.DefaultAfter, hs.MinAfter = 200*time.Millisecond, 50*time.Millisecond
 		d.Hedger = saga.NewHedger(saga.HedgerDeps{
-			Settings: hs, Valkey: d.Valkey, Prefix: d.Prefix, MarginFloor: d.MarginFloor,
+			Settings: hs, Valkey: d.Valkey, Prefix: d.Prefix, Rule: d.Rule,
 		})
 	}, h, b)
 	p := startAwaiting(t, e.env, h, "q2.h", "order-1", placement.Requirements{})

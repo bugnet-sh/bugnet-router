@@ -47,12 +47,15 @@ func TestProductionCatalog(t *testing.T) {
 		t.Fatal("the production catalog sells nothing")
 	}
 	e, cfg := productionEngine(t)
+	if cfg.Pricing.Rule.MarkupBP != 1000 {
+		t.Fatalf("production marks cost up %d bp, want 1000", cfg.Pricing.Rule.MarkupBP)
+	}
 	for _, p := range c.All() {
 		if p.FixedPrice {
 			t.Errorf("package %s sets price_micros, production quotes every package live", p.ID)
 		}
 		in := placement.Inputs{
-			Package: p, MarginFloor: cfg.MarginFloor, ImageAccept: cfg.Images.Accept,
+			Package: p, Rule: cfg.Pricing.Rule, ImageAccept: cfg.Images.Accept,
 		}
 		if len(e.Lands(in)) == 0 {
 			t.Errorf("package %s lands on no production server", p.ID)

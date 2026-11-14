@@ -84,6 +84,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
@@ -181,6 +182,7 @@ type Deps struct {
 	OrderKey          ed25519.PublicKey
 	HandleKey         []byte
 	MarginFloor       float64
+	Rule              pricing.Rule // prices every candidate
 	Tracker           *placement.Tracker
 	ReplicaID         string            // recorded as the saga owner of the placements it places
 	DeploymentID      string            // labels every sandbox, "main" when empty
@@ -547,7 +549,7 @@ func (s *Saga) inputs(
 	pkg catalog.Package, req placement.Requirements, tried map[string]bool,
 ) placement.Inputs {
 	return placement.Inputs{
-		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
+		Package: pkg, Requirements: req, Rule: s.d.Rule, Exclude: tried,
 		WarmFirst: s.d.WarmFirst, ImageAccept: s.d.ImageAccept,
 	}
 }

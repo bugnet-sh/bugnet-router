@@ -9,6 +9,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
@@ -41,7 +42,8 @@ type HedgerDeps struct {
 	Prefix   string
 	// CreatesPerSecond is each provider's create rate, which sizes its create bucket
 	CreatesPerSecond map[string]int
-	MarginFloor      float64
+	// Rule prices the worst case of a hedge against the package's price
+	Rule pricing.Rule
 }
 
 // Hedger decides when a placing placement starts a second attempt beside the first
@@ -99,8 +101,8 @@ func (h *Hedger) Allow(
 		return false
 	case !h.bucketFull(ctx, name):
 		return false
-	case !placement.HedgeFits(pkg, running, next, pre, h.d.Settings.LoserLife,
-		h.d.MarginFloor):
+	case !placement.HedgeFits(running, next, time.Duration(pkg.Minutes)*time.Minute, pre,
+		h.d.Settings.LoserLife, pkg.PriceMicros, h.d.Rule):
 		return false
 	}
 	ok, _, err := h.limits.TakeKey(ctx, ratelimit.Bucket{
