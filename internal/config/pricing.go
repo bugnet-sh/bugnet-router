@@ -16,28 +16,39 @@ type Pricing struct {
 	Rule pricing.Rule
 	// QuoteHold is how long a quoted price stays payable
 	QuoteHold time.Duration
+	// QuoteRiseMicros is how far a held start's cost may be over what the order paid
+	QuoteRiseMicros int64
 }
 
 type pricingFile struct {
-	Markup    float64           `toml:"markup"`
-	QuoteHold string            `toml:"quote_hold"`
-	Overhead  map[string]string `toml:"overhead"`
+	Markup          float64           `toml:"markup"`
+	QuoteHold       string            `toml:"quote_hold"`
+	QuoteRiseMicros int64             `toml:"quote_rise_micros"`
+	Overhead        map[string]string `toml:"overhead"`
 }
 
-const maxOverhead = 5 * time.Minute
+const (
+	maxOverhead = 5 * time.Minute
+	// maxQuoteHold keeps a held quote inside the 24 h that retention keeps quotes for
+	maxQuoteHold = 24 * time.Hour
+	maxQuoteRise = 1_000_000
+)
 
 func (f pricingFile) read(d pricingFile) (Pricing, error) {
 	if !(f.Markup >= 0 && f.Markup <= 10) {
 		return Pricing{}, errors.New("pricing.markup must be a finite number from 0 to 10")
 	}
 	hold, err := time.ParseDuration(cmp.Or(f.QuoteHold, d.QuoteHold))
-	if err != nil || hold < time.Minute {
+	if err != nil || hold < time.Minute || hold > maxQuoteHold {
 		return Pricing{}, errors.New(
-			"pricing.quote_hold must be a Go duration of at least 1m such as 45m")
+			"pricing.quote_hold must be a Go duration from 1m to 24h such as 45m")
+	}
+	if f.QuoteRiseMicros < 0 || f.QuoteRiseMicros > maxQuoteRise {
+		return Pricing{}, fmt.Errorf("pricing.quote_rise_micros must be 0 to %d", maxQuoteRise)
 	}
 	p := Pricing{
 		Rule:      pricing.Rule{MarkupBP: int64(math.Round(f.Markup * 10_000))},
-		QuoteHold: hold,
+		QuoteHold: hold, QuoteRiseMicros: f.QuoteRiseMicros,
 	}
 	for name, raw := range f.Overhead {
 		if !knownProviders[name] {

@@ -71,6 +71,7 @@ base_url = "https://sessions.bugnet.sh"
 [pricing]
 markup = 0.10
 quote_hold = "45m"
+quote_rise_micros = 30000
 
 [pricing.overhead]
 boat = "10s"

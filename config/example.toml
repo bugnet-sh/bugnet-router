@@ -12,7 +12,8 @@ events_url = ""               # signed events stay pending in the outbox when em
 
 [pricing]
 markup = 0.10                 # 0 to 10, finite, price is ceil(cost x (1 + markup)) in whole micros
-quote_hold = "45m"            # how long an estimate's quoted price stays payable, at least 1m
+quote_hold = "45m"            # how long an estimate's quoted price stays payable, 1m to 24h
+quote_rise_micros = 30000     # most a held start may cost over what was paid, 0 to 1000000
 
 [pricing.overhead]            # billed boot and destroy time added to each start, 0s to 5m
 # boat = "10s"               # production values are boat 10s, boxd 10s, e2b 15s

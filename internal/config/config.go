@@ -590,7 +590,7 @@ type bootstrapFile struct {
 // defaults are the settings of an empty file, an empty string in the file also means its default
 func defaults() file {
 	return file{
-		Pricing:      pricingFile{Markup: 0.10, QuoteHold: "45m"},
+		Pricing:      pricingFile{Markup: 0.10, QuoteHold: "45m", QuoteRiseMicros: 30_000},
 		DeploymentID: "main",
 		API:          apiFile{ListenAddr: ":8080"},
 		Worker:       workerFile{ListenAddr: ":8081", DataplaneWorkers: 8, DefaultWorkers: 20},
