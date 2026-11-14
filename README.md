@@ -37,13 +37,13 @@ package, the x402 allowance left out. It is on every answer, from the first.
 | `internal/vkclient` | Valkey connections at `host:port` or a `unix://` socket path |
 | `internal/vkinfo` | Valkey's memory and `maxmemory-policy` from `INFO memory` |
 | `internal/saga` | Start, extend and stop of placements |
-| `internal/placement` | Provider choice by price, margin and health |
+| `internal/placement` | Provider choice by live price and health |
 | `internal/jobs`, `internal/streams` | Commands through `bugnet-run`, output streams, leases |
 | `internal/worker` | River workers for deadlines, the sweep, the outbox, the session copy, session expiry, limit polls and account checks |
 | `internal/probe` | The probe that starts, times and removes one sandbox, for canaries and benchmarks |
 | `internal/bench`, `internal/simulate` | Nearest-rank percentiles, benchmark cost estimates and start reports, and the placement simulator that replays recorded start samples |
 | `internal/reconcile` | `Classify` (the signal classes of CP 6.3), the correlation `Guard` and `Reconcile`, which ends the placements their provider lost |
-| `internal/spend` | `AttemptCost`, the router's own meter of provider cost, and the margin verdict |
+| `internal/spend` | `AttemptCost`, the router's own meter of provider cost, and the verdict on what a run cost against what it paid |
 | `internal/health` | The provider health the replicas share through Postgres, its rollup rules and canary schedule, and the requests for an account check or a limits poll |
 | `internal/store`, `migrations` | Postgres access and schema |
 | `internal/provider`, `internal/providers` | Provider port, adapters, the registry and the contract suites every adapter runs |
@@ -359,13 +359,15 @@ bin/bugnet-dev wallet list --blocked
 `bugnet-dev` reads `config/dev.toml`, or the file given with `--config FILE` before the command,
 for the API address and the catalog, and needs only `BUGNET_INTERNAL_TOKEN` and
 `BUGNET_ORDER_PRIVATE_KEY` from the environment. `create` signs an order token with
-`BUGNET_ORDER_PRIVATE_KEY`, priced from the catalog, and waits until the sandbox is ready.
+`BUGNET_ORDER_PRIVATE_KEY`, priced by the router for a live package and from the catalog for a
+fixed one, and waits until the sandbox is ready.
 `exec` streams the output and exits with the command's exit code. If the stream breaks, it
 prints the `bugnet-dev watch` command that resumes from the last cursor, with the same
 `--config` when one was given. `extensions` prints a line for each package that can extend the
 placement, with its minutes, its price and whether `extend` would take it now or the reason it
 would not. `check-extend` prints the placement, then as `deadline_after` and `price_micros` the
-deadline `extend` would give it and the package's price, with no order and no change.
+deadline `extend` would give it and the package's price on the placement's own server, with no
+order and no change.
 `transfer` mints a transfer URL and prints it with its window, size, cap and the `curl` command
 that uses it: an upload of a local file to `--path`, `~/<file name>` when none is given, with an
 optional `--sha256`, or a download of a sandbox path.
@@ -382,7 +384,10 @@ and an `ssh_config` stanza, one `config=` line each. It refuses a file holding a
 calling the router. `--identity-file` and `--known-hosts-file` name the paths the command and stanza
 use. `get` and `create` print the placement's `ssh_alias` once it has one. `token` and `create` take
 `--payer`, `--fee-payer`, `--tx` and `--allowance-micros`, which set those claims. Without
-`--amount` the allowance is added to the catalog price, so the package stays paid. `config/dev.toml`
+`--amount` the allowance is added to the package's price, so the package stays paid. A live
+package's token is signed with the router's quote from `PricePackage`, which `--estimate-id`
+asks for that estimate's held price, and an extension's with the price `CheckExtendPlacement`
+answers. `--amount` overrides either. `config/dev.toml`
 turns the payer claim on with one test facilitator address, so `create --payer` takes the wallet
 path, and raises the anonymous cap, since most dev tokens carry no payer. `wallet block`, `unblock`,
 `show` and `list` call `OperatorService` with `BUGNET_OPERATOR_TOKEN`, the actor from `--actor` or
@@ -751,10 +756,22 @@ call answers. `router-api` adds the deltas to one Valkey hash per placement unde
 
 ## Prices and availability
 
-`Estimate` lists every start package by price, each with `available` where a provider could host
-it now for the order's requirements. `PricePackage` takes one start package ID and the same
-requirements and answers with that package as `Estimate` would list it. The gateway asks it right
-before Payments charges a paid start. It writes nothing, spends no rate-limit token, and leaves
+A package's price is the provider's official cost plus `pricing.markup`, in whole micros as
+`ceil(cost x (1 + markup))`. The cost is the package's minutes, the hold and the provider's
+`pricing.overhead` (the billed boot and destroy time of a start), rounded up to the billing
+increment at the server's hourly rate, plus any start fee. A package in the catalog with no
+`price_micros` is quoted live, one price for each server that could host it. A package with
+`price_micros` has a fixed price, and a server fits it when its price with the markup is at most
+that price. `price_micros: 0` is free, and a server fits it only when it costs nothing.
+
+`Estimate` lists every start package, each with `available` where a provider could host it now
+for the order's requirements. It quotes each live package as the price of its first candidate, or
+of the cheapest server it could land on when none is available, shown unavailable. It stores
+each quote by estimate id in `price_quotes` and hands the prices to the estimator. `PricePackage`
+takes one start package ID and the same requirements and answers with that package as `Estimate`
+would list it. With the `estimate_id` of an estimate it answers the price that estimate quoted,
+held for `pricing.quote_hold`, and without one the live price. The gateway asks it right before
+Payments charges a paid start. It writes nothing, spends no rate-limit token, and leaves
 `fits`, `extensions_needed` and `short_on` unset. An unknown package answers `InvalidArgument`
 with reason `PACKAGE_UNKNOWN`, and one with `extension_of` set with reason `NOT_START_PACKAGE`.
 
@@ -767,21 +784,25 @@ text.
 | `feature_unavailable` | No configured provider offers the SSH, previews, secrets or GPU needed |
 | `internal` | Any other error, logged at error level with the detail |
 
-A capable provider can still refuse a package for its health, its sizes, the margin or its
-maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
+A capable provider can still refuse a package for its health, its sizes, its price against the
+budget or its maximum lifetime, which gives `no_candidate`. The capability check ignores health, so
 `feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
 
 At start `router-api` logs an error naming each start package that no configured provider can
-place under `margin_floor` and `images.accept`, health aside, and still starts.
+place under `images.accept` and its fixed price, health aside, and still starts.
 
-`CreatePlacement` and `ExtendPlacement` check that the order's `amount_micros`, less its x402
-allowance and fee, covers the package's price now. One that pays less answers
-`FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`,
-`paid_micros` and `price_micros`, the price the router asks now. A start is recorded as a failed,
-refundable placement with reason `price_changed` and a `placement.failed` event, so Payments
-refunds it in full. A retry answers `PRICE_CHANGED` again with the price now, which can be at or
-below `paid_micros` if the price fell since. An extension records nothing, and the gateway
-abandons it as it does every refused extension. A retry of an extension already applied answers
+`CreatePlacement` with the order's estimate id honors the held quote. It tries the quoted server
+first, even when that server has become dearer, when the order's `amount_micros`, less its x402
+allowance and fee, covers the held price. Otherwise the payment must cover a live candidate. An
+order that pays less answers `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata
+holds `package_id`, `paid_micros` and `price_micros`, the live price. A start is recorded as a
+failed, refundable placement with reason `price_changed` and a `placement.failed` event, so
+Payments refunds it in full. A retry answers `PRICE_CHANGED` again with the price now, which can
+be at or below `paid_micros` if the price fell since. A live order that paid 0 runs only on a
+server priced 0. `ExtendPlacement` checks that the payment, less the same allowance and fee,
+covers the extension's price on the placement's own server. One that pays less answers
+`PRICE_CHANGED`, records nothing, and the gateway abandons it as it does every refused
+extension. A retry of an extension already applied answers
 as the first call did, whatever the price now.
 
 ## Estimator
@@ -836,7 +857,9 @@ keys that start with `_` are the router's own, and `Exec` refuses them with
 
 `ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
 the package's minutes, once per order, for the placement's own package or one whose `extension_of`
-names it. It refuses a placement that is not ready with `FailedPrecondition` and the
+names it. Its price is the cost of those minutes on the sandbox's own server plus the markup, with
+no start fee and no overhead. A sandbox whose provider or size is no longer in the config cannot
+be extended, and answers `NOT_READY`. It refuses a placement that is not ready with `FailedPrecondition` and the
 `google.rpc.ErrorInfo` reason `NOT_READY`, as every call does that needs a ready placement, and an
 extension that would outlast the provider's maximum lifetime with `FailedPrecondition` and reason
 `EXCEEDS_LIFETIME`. The router keeps ended placements, so extending a handle past its deadline
@@ -1414,12 +1437,14 @@ in `docs/website/site-and-stats.md` section 7). With `stats.listen_addr` set:
   `BUGNET_PAYMENTS_ROUTER_TOKEN`, checks the answer, merges both with the catalog's start
   packages, the servers and the limits, and writes the one row of `stats_snapshot`.
 - `servers` lists each provider size a start package lands on (control-plane 20.6.5), from the
-  saga's placement engine with `margin_floor` and `images.accept`: the adapter's size, its
+  saga's placement engine with `images.accept`: the adapter's size, its
   resources and GPU, the longest run with extensions (`null` without a lifetime limit), the exec
   user, `available` while the provider is neither blocked nor down and takes the start now, and
-  each landing package's `id`, `minutes` and `priceMicros`. Providers keep the `providers` order
-  and sizes the adapter's order. A package `margin_floor` refuses on a size, and a size no package
-  lands on, are left out. No rate, fee, cost or margin goes out.
+  each landing package's `id`, `minutes` and `priceMicros`, the price of that server for the
+  package. Each start package also carries its live price, the first candidate's, or the cheapest
+  landing's when none is available. Providers keep the `providers` order and sizes the adapter's
+  order. A package a size cannot hold, and a size no package lands on, are left out. No cost, rate
+  or fee goes out.
 - A failed Payments call keeps the last good Payments part and its time, so `generatedAt` shows
   how old the money is. Without any Payments part the row holds no body.
 - `daily` leaves out Payments' days over a day before the router's first order, or over 90 days
@@ -1859,9 +1884,13 @@ a request that resolves to no placement makes no span anywhere.
 Every provider has an adapter: boxd, E2B, Koyeb and Boat, beside `local` for development. Each
 reads its key from the environment and its settings from its table in the settings file, and
 `providers` lists the ones a deployment uses. A placement tries the providers that can host the
-package cheapest first, a cost being the package's minutes in whole billing increments plus any
-start fee. A provider whose recent starts took over 10 s to get ready at the 95th percentile
-goes behind the faster ones. The order of `providers` only breaks ties in cost.
+package cheapest first by its price, the provider's official cost plus `pricing.markup`, with the
+package's minutes, the hold and `pricing.overhead` in whole billing increments plus any start
+fee. A server whose recent starts took over 10 s to get ready at the 95th percentile goes behind
+the faster ones. The order of `providers` only breaks ties in price. With a budget only
+candidates priced within it fit, and a server the order quoted is exempt. A failover goes only
+to a server whose price fits what the order paid less what the earlier attempts cost, and when
+nothing fits the start fails refundable in full.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
@@ -2176,8 +2205,9 @@ deployment nor in `known_deployments`. The count lands in `provider_health.forei
 Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. At
 termination `placements.cost_micros` sums `spend.AttemptCost` over the attempts, `edge_bytes` and
 `egress_bytes` come from the budget counters, and `placement.terminated` carries all three. A cost
-over `(1 - margin_floor)` of what the orders paid logs at error level, and `/monitor` counts such
-placements of the last 24 hours and those costing more than they paid.
+more than what the orders paid is a loss, which logs at error level, and a cost over the paid
+price less its markup that is not a loss is a warning. `/monitor` counts such placements of the
+last 24 hours, and the losses as a problem. `worker.cost_alert_fraction` is 0.03 in production.
 
 `cost_daily_tick` runs at `cost_daily_at` and queues `cost_daily{provider, day}` for the day before
 and for the last two days a provider had not finished. Each job reads one page of the provider's
@@ -2272,7 +2302,7 @@ One Reserve costs one Valkey call and one short transaction. The Valkey call is 
 reads `reserve:brake` and `reserve:spend` and takes a token from `rl:reserve:all` (1 a second, burst
 10), and a renewal reads the two keys and takes no token. Valkey silent for 200 ms answers `BUSY`.
 Then, in order: an open reservation for the quote of the same package and requirements is renewed to
-`min(now + hold, hold_until)`, and only while the longer hold still clears the margin floor, else
+`min(now + hold, hold_until)`, and only while the longer hold still fits the package's price, else
 it keeps its expiry. A different one is released and counts. `reserve.per_quote` (2) reservations
 per quote ever, `max_open` and `per_ip_open` follow, as `QUOTE_SPENT` and `BUSY`. Then a pool member
 of the first candidate with a warm member, while open reservations hold fewer than
@@ -2280,8 +2310,9 @@ of the first candidate with a warm member, while open reservations hold fewer th
 one miss, a full share none), else a start before payment on the first candidate whose provider is
 in `reserve.speculative_providers`, whose size costs at most `speculative_max_hourly_micros`, with
 fewer than `speculative_max_open` such reservations open, a free slot and a create token now
-(`speculative`). The hold is billed into each candidate, so the margin floor refuses a start where
-a 150 s hold would take a package under it.
+(`speculative`). The hold is billed into each candidate's price, which must fit the package's price
+without it, and a hold only adds to a server's cost, so at the markup a live package holds
+nothing and a Reserve hold never fits.
 
 The replica that answered prepares the sandbox in a goroutine of the saga's wait group:
 `Unpark` or `Create` and `Boot` with `Pool` set, `Prepare` once with the reservation's placement
@@ -2341,7 +2372,8 @@ records each provider's `cold` figure after `bugnet-dev pools drain`.
 ### Hedged starts
 
 A start that runs longer than its provider's p95 gets a second attempt beside it, and the first
-sandbox ready wins. The settings are `[hedge]` in `config/example.toml`: `enabled`,
+sandbox ready wins. Production sets `hedge.enabled = false`, since at the markup no hedge can fit
+the order's price. The settings are `[hedge]` in `config/example.toml`: `enabled`,
 `default_after` (5 s), `min_after` (1500 ms), `min_samples` (5), `loser_life` (90 s), `min_left`
 (10 s), `min_bucket_share` (0.5), `per_minute` (30) with `burst` (5), and `onto_boat`, which stays
 `false` until the founder answers CP question 21.
@@ -2358,8 +2390,8 @@ otherwise nothing is written and the timer does not arm again:
 - the next candidate is on another provider, has a free slot, no create pause and a create bucket
   at least `min_bucket_share` full (a level peek, so nothing is spent)
 - it is not Boat while `onto_boat` is `false`
-- `placement.HedgeFits` holds for the two, which prices the worst case of the dearer one winning,
-  both start fees and the loser living `loser_life`, with the awaited reservation's time so far
+- `placement.HedgeFits` holds for the two, which prices the worst case of the dearer one winning
+  against the order's price, both start fees and the loser living `loser_life`, with the awaited reservation's time so far
   (at most 55 s) counted on both sides
 - at least `min_left` of the 30 s placing budget is left
 - one token comes from `rl:hedge:all`

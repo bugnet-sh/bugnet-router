@@ -11,11 +11,13 @@ replica_id = ""               # host-pid when empty
 events_url = ""               # signed events stay pending in the outbox when empty
 
 [pricing]
-markup = 0.10                 # 0 to 10, finite, the price is official cost plus this share
-quote_hold = "45m"            # how long a quoted price stays payable, at least 1m
+markup = 0.10                 # 0 to 10, finite, price is ceil(cost x (1 + markup)) in whole micros
+quote_hold = "45m"            # how long an estimate's quoted price stays payable, at least 1m
 
-[pricing.overhead]            # time a provider bills beyond a run, 0s to 5m, none when absent
-# boat = "10s"
+[pricing.overhead]            # billed boot and destroy time added to each start, 0s to 5m
+# boat = "10s"               # production values are boat 10s, boxd 10s, e2b 15s
+# boxd = "10s"               # a provider not listed adds 0
+# e2b = "15s"
 
 [api]
 listen_addr = ":8080"         # router-api serves the Connect API here
@@ -383,11 +385,11 @@ first_command_p90 = "5s"      # /monitor warns when the hour's p90 is over this
 min_placements = 20           # reserved and pooled placements in the hour before it judges
 
 [hedge]                       # hedged starts, control-plane 18.7 and 18.15
-enabled = true                # false never starts a second attempt
+enabled = true                # false never starts a second attempt, production sets false
 default_after = "5s"          # when a hedge starts for a provider without min_samples whole attempts
 min_after = "1500ms"          # the earliest a hedge ever starts
 min_samples = 5               # whole attempts whose p95 sets the time
-loser_life = "90s"            # the loser's longest life, charged in the margin check
+loser_life = "90s"            # the loser's longest life, priced into the fit check
 min_left = "10s"              # of the 30 s placing budget a hedge needs left
 min_bucket_share = 0.5        # the next candidate's create bucket must be this full
 per_minute = 30               # hedges router-wide, with the burst below
