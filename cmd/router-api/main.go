@@ -224,7 +224,6 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Prefix:        cfg.ValkeyPrefix,
 		OrderKey:      cfg.OrderTokenPublicKey,
 		HandleKey:     cfg.HandleKey,
-		MarginFloor:   cfg.MarginFloor,
 		Rule:          cfg.Pricing.Rule,
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,

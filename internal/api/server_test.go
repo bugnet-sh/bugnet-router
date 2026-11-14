@@ -370,7 +370,7 @@ func newEnv(t *testing.T, opts options) *env {
 	writer := sessions.NewWriter(st, keys, discard)
 	sg := saga.New(saga.Deps{
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
-		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5, Rule: doubled,
+		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, Rule: doubled,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,

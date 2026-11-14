@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 	"github.com/bugnet-sh/bugnet-router/migrations"
@@ -139,4 +140,26 @@ func TestFailedRefundsCountsTheDay(t *testing.T) {
 		eq(t, err, nil)
 		eq(t, n, want)
 	}
+}
+
+func TestMarginCountsUnderAndLoss(t *testing.T) {
+	s, pool := newStoreWithPool(t)
+	ctx := t.Context()
+	ended := func(id string, cost, paid int64) {
+		t.Helper()
+		p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
+			HandleSHA256: []byte(id), OrderID: id, PackageID: "p", AmountMicros: paid,
+		})
+		eq(t, err, nil)
+		_, err = pool.Exec(ctx, `update placements set state = 'terminated', cost_micros = $2,
+			terminated_at = now() where id = $1`, p.ID, cost)
+		eq(t, err, nil)
+	}
+	ended("fits", 3050, 3355)
+	ended("under", 3050, 3354)
+	ended("loss", 3050, 3000)
+	under, loss, err := s.MarginCounts(ctx, time.Now().Add(-time.Hour),
+		pricing.Rule{MarkupBP: 1000})
+	eq(t, err, nil)
+	eq(t, []int{under, loss}, []int{2, 1})
 }

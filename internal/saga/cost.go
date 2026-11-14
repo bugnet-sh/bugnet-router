@@ -59,14 +59,17 @@ func (s *Saga) usedBytes(ctx context.Context, id uuid.UUID) (edge, egress int64)
 	return edge, egress
 }
 
-// judgeMargin logs at error level a placement whose cost is over (1 - margin_floor) of what its
-// orders paid (CP 10.7)
+// judgeMargin logs at warn level a placement whose cost plus markup is over what its orders
+// paid, and at error level one whose cost alone is over it (CP 10.7)
 func (s *Saga) judgeMargin(p store.Placement) {
-	v := spend.Judge(p.CostMicros, p.PaidMicros, s.d.MarginFloor)
-	if !v.BelowFloor {
+	v := spend.Judge(p.CostMicros, p.PaidMicros, s.d.Rule)
+	if v.Loss {
+		s.d.Log.Error("placement cost is over what it paid", "placement", p.ID,
+			"provider", p.Provider, "cost_micros", p.CostMicros, "paid_micros", p.PaidMicros)
 		return
 	}
-	s.d.Log.Error("placement cost is over the margin floor", "placement", p.ID,
-		"provider", p.Provider, "cost_micros", p.CostMicros, "paid_micros", p.PaidMicros,
-		"loss", v.Loss)
+	if v.UnderMarkup {
+		s.d.Log.Warn("placement cost is over its markup", "placement", p.ID,
+			"provider", p.Provider, "cost_micros", p.CostMicros, "paid_micros", p.PaidMicros)
+	}
 }

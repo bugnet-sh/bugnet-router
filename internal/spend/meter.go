@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -30,17 +31,17 @@ func AttemptCost(start, end time.Time, incr time.Duration, hourly, fee int64) in
 
 // Verdict is how a placement's cost compares with what its orders paid
 type Verdict struct {
-	// BelowFloor is true when the cost leaves less than the margin floor of what was paid
-	BelowFloor bool
+	// UnderMarkup is true when the price of the cost is more than what was paid
+	UnderMarkup bool
 	// Loss is true when the cost is more than what was paid
 	Loss bool
 }
 
 // Judge compares cost with paid, the sum of the placement's start and extension orders
-func Judge(cost, paid int64, floor float64) Verdict {
+func Judge(cost, paid int64, r pricing.Rule) Verdict {
 	return Verdict{
-		BelowFloor: float64(cost) > (1-floor)*float64(paid),
-		Loss:       cost > paid,
+		UnderMarkup: r.Price(cost) > paid,
+		Loss:        cost > paid,
 	}
 }
 

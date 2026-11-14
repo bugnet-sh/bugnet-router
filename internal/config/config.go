@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -47,7 +46,6 @@ type Config struct {
 	EventsURL           string
 	PackagesFile        string
 	Providers           []string
-	MarginFloor         float64
 	ReplicaID           string
 	DeploymentID        string // labels this deployment's sandboxes so the sweep keeps to its own
 	RunnerLinuxAMD64    string
@@ -381,7 +379,6 @@ type file struct {
 	OrderTokenPublicKey string         `toml:"order_token_public_key"`
 	PackagesFile        string         `toml:"packages_file"`
 	Providers           *[]string      `toml:"providers"`
-	MarginFloor         float64        `toml:"margin_floor"`
 	DeploymentID        string         `toml:"deployment_id"`
 	ReplicaID           string         `toml:"replica_id"`
 	EventsURL           string         `toml:"events_url"`
@@ -593,7 +590,6 @@ type bootstrapFile struct {
 // defaults are the settings of an empty file, an empty string in the file also means its default
 func defaults() file {
 	return file{
-		MarginFloor:  0.5,
 		Pricing:      pricingFile{Markup: 0.10, QuoteHold: "45m"},
 		DeploymentID: "main",
 		API:          apiFile{ListenAddr: ":8080"},
@@ -751,7 +747,6 @@ func (f file) config() (Config, error) {
 	d := defaults()
 	c := Config{
 		PackagesFile:      f.PackagesFile,
-		MarginFloor:       f.MarginFloor,
 		DeploymentID:      cmp.Or(f.DeploymentID, d.DeploymentID),
 		ReplicaID:         cmp.Or(f.ReplicaID, defaultReplicaID()),
 		EventsURL:         f.EventsURL,
@@ -799,10 +794,6 @@ func (f file) config() (Config, error) {
 	if !deploymentID.MatchString(c.DeploymentID) {
 		return Config{}, errors.New(
 			"deployment_id must be 1 to 32 lowercase letters, digits or hyphens")
-	}
-	if math.IsNaN(c.MarginFloor) || math.IsInf(c.MarginFloor, 0) ||
-		c.MarginFloor < 0 || c.MarginFloor > 10 {
-		return Config{}, errors.New("margin_floor must be a finite number from 0 to 10")
 	}
 	if c.LocalHourlyMicros < 0 {
 		return Config{}, errors.New("local.hourly_micros must be a non-negative whole number")

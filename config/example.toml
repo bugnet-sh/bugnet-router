@@ -6,7 +6,6 @@
 order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, required to serve
 packages_file = ""            # package catalog JSON, required
 providers = ["koyeb", "boat", "e2b", "boxd"]   # order only breaks cost ties, absent = this default
-margin_floor = 0.5            # 0 to 10, finite
 deployment_id = "main"        # ^[a-z0-9-]{1,32}$
 replica_id = ""               # host-pid when empty
 events_url = ""               # signed events stay pending in the outbox when empty

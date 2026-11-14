@@ -96,7 +96,7 @@ func TestLoadFileDefaults(t *testing.T) {
 	if c.DeploymentID != "main" {
 		t.Fatalf("deployment id %q, want main", c.DeploymentID)
 	}
-	if strings.Join(c.Providers, ",") != "koyeb,boat,e2b,boxd" || c.MarginFloor != 0.5 {
+	if strings.Join(c.Providers, ",") != "koyeb,boat,e2b,boxd" {
 		t.Fatalf("defaults: %+v", c)
 	}
 	host, _ := os.Hostname()
@@ -199,7 +199,6 @@ func TestLoadFileSettings(t *testing.T) {
 	c, err := LoadFile(writeFile(t, `order_token_public_key = "`+pub+`"
 packages_file = "/p/packages.json"
 providers = ["local", "e2b"]
-margin_floor = 2
 deployment_id = "staging-2"
 replica_id = "r1"
 events_url = "https://events.example"
@@ -273,7 +272,7 @@ cpu8 = "large"
 		c.PackagesFile != "/p/packages.json" || c.EventsURL != "https://events.example" {
 		t.Fatalf("top-level settings: %+v", c)
 	}
-	if !slices.Equal(c.Providers, []string{"local", "e2b"}) || c.MarginFloor != 2 ||
+	if !slices.Equal(c.Providers, []string{"local", "e2b"}) ||
 		c.DeploymentID != "staging-2" || c.ReplicaID != "r1" {
 		t.Fatalf("placement settings: %+v", c)
 	}
@@ -491,12 +490,6 @@ func TestLoadFileValidation(t *testing.T) {
 	cases := []struct {
 		name, toml, want string
 	}{
-		{"margin above 10", `margin_floor = 11`, "margin_floor must be a finite number"},
-		{"negative margin", `margin_floor = -0.1`, "margin_floor"},
-		{"non-numeric margin", `margin_floor = "abc"`, "margin_floor must be a number"},
-		{"NaN margin", `margin_floor = nan`, "margin_floor"},
-		{"+Inf margin", `margin_floor = +inf`, "margin_floor"},
-		{"-Inf margin", `margin_floor = -inf`, "margin_floor"},
 		{"unknown provider", `providers = ["koyeb", "nope"]`, "providers entry 2 is not one of"},
 		{"duplicate providers", `providers = ["boat", "e2b", "boat"]`, `"boat" more than once`},
 		{"empty entry", `providers = ["boat", "", "e2b"]`, "providers has an empty entry"},
@@ -567,7 +560,7 @@ func TestLoadFileValidation(t *testing.T) {
 		{"misspelt key", "[limits]\nmax_jobs = 4", "line 4: limits.max_jobs is not a setting"},
 		{"unknown table", "[nimbus]\nregion = \"fra\"", "nimbus is not a setting"},
 		{"template key", "[[e2b.templates]]\nmemory = 2048", "e2b.templates.memory is not"},
-		{"syntax error", "margin_floor = ", "line 3"},
+		{"syntax error", "providers = ", "line 3"},
 	}
 	for _, c := range cases {
 		path := writeFile(t, serving(t)+c.toml)
@@ -755,14 +748,15 @@ func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
 			"line 4: boat.types.cpu must be a string"},
 		{"provider as a number", "providers = [\n  \"boat\",\n  7,\n]",
 			"line 5: providers must be an array of strings"},
-		{"margin in hex", "margin_floor = 0x10", "line 3: margin_floor must be a number"},
 		{"table as a value", `api = "x"`, "line 3: api must be a table"},
 		{"templates as a table", "[e2b.templates]\nsize = \"2x2\"",
 			"line 3: e2b.templates must be an array of tables"},
 		{"api as an array of tables", "[[api]]\nlisten_addr = \":9\"",
 			"line 3: api must be a table"},
-		{"setting as a table", "[margin_floor]", "line 3: margin_floor must be a number"},
-		{"key below a setting", "margin_floor.x = 1", "line 3: margin_floor must be a number"},
+		{"setting as a table", "[limits.max_running_jobs]",
+			"line 3: limits.max_running_jobs must be a whole number"},
+		{"key below a setting", "[limits]\nmax_running_jobs.x = 1",
+			"line 4: limits.max_running_jobs must be a whole number"},
 		{"key below a size", "[boat.types]\ncpu.x = \"small\"",
 			"line 4: boat.types.cpu must be a string"},
 		{"size set twice", "[boat.types]\ncpu = \"small\"\ncpu = \"large\"",
@@ -780,7 +774,6 @@ func TestLoadFileTypeErrorsNameTheKey(t *testing.T) {
 			"line 5: e2b.templates is set twice"},
 		{"table given array tables", "[e2b.templates]\n[[e2b.templates]]",
 			"line 3: e2b.templates must be an array of tables"},
-		{"syntax error", "margin_floor = 0.5 0.6", "line 3: margin_floor is not valid TOML"},
 		{"syntax error in a table", "[limits]\nmax_running_jobs = 2 3",
 			"line 4: limits.max_running_jobs is not valid TOML"},
 		{"broken header", "[limits\nmax_running_jobs = 2", "line 3: not valid TOML"},
@@ -838,8 +831,8 @@ func TestLoadFileRefusesDatesAndTimes(t *testing.T) {
 	cases := []struct{ name, toml, want string }{
 		{"date as a whole number", "[limits]\nmax_running_jobs = 1979-05-27",
 			"line 4: limits.max_running_jobs must be a whole number"},
-		{"date and time as a number", "margin_floor = 1979-05-27T07:32:00Z",
-			"line 3: margin_floor must be a number"},
+		{"date and time as a number", "[limits]\nmax_running_jobs = 1979-05-27T07:32:00Z",
+			"line 4: limits.max_running_jobs must be a whole number"},
 		{"date as true or false", "[local]\nenabled = 1979-05-27",
 			"line 4: local.enabled must be true or false"},
 		{"date as a provider", "providers = [1979-05-27]",
@@ -905,7 +898,6 @@ func TestLoadFileSyntaxErrorsNameOnlyKnownKeys(t *testing.T) {
 		}
 	}
 	cases := []struct{ name, toml, want string }{
-		{"setting", "margin_floor = 0.5 0.6", "line 3: margin_floor is not valid TOML"},
 		{"template setting", "[[e2b.templates]]\nvcpu = 2 3",
 			"line 4: e2b.templates.vcpu is not valid TOML"},
 		{"unknown key", "nimbus_region = fra", "line 3: not valid TOML"},
@@ -948,7 +940,6 @@ func TestLoadFileValueKinds(t *testing.T) {
 			"line 4: api.listen_addr must be a string"},
 		{"boolean as an array", "[local]\nenabled = [true]",
 			"line 4: local.enabled must be true or false"},
-		{"number as an array", "margin_floor = [0.5]", "line 3: margin_floor must be a number"},
 		{"size type as an array", "[boat.types]\ncpu = [\"small\"]",
 			"line 4: boat.types.cpu must be a string"},
 		{"providers in an array", "providers = [[\"boat\"]]",
@@ -1317,6 +1308,13 @@ func TestX402HostListsRefuseBadNames(t *testing.T) {
 		msg := problem(t, "[x402]\n"+key+
 			` = ["a.example.com", "b.example.com", "a.example.com"]`+"\n")
 		eq(t, msg, "x402."+key+" entry 3 repeats entry 1")
+	}
+}
+
+func TestMarginFloorRefused(t *testing.T) {
+	want := "line 3: margin_floor is not a setting"
+	if msg := problem(t, "margin_floor = 0.5"); msg != want {
+		t.Fatalf("margin_floor gave %q, want %q", msg, want)
 	}
 }
 

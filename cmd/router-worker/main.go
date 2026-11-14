@@ -201,7 +201,6 @@ func serve(
 		Prefix:        cfg.ValkeyPrefix,
 		OrderKey:      cfg.OrderTokenPublicKey,
 		HandleKey:     cfg.HandleKey,
-		MarginFloor:   cfg.MarginFloor,
 		Rule:          cfg.Pricing.Rule,
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,
@@ -265,7 +264,7 @@ func serve(
 		sources.Providers(), canariesOf(cfg, reg, w),
 		lossCheck{alertPerHour: cfg.Abuse.LostAlertPerHour},
 		spendCheck{
-			marginFloor:       cfg.MarginFloor,
+			rule:              cfg.Pricing.Rule,
 			costAlertFraction: cfg.Reconcile.OrDefaults().CostAlertFraction,
 		},
 		poolLines(log, st, w.Pools()),

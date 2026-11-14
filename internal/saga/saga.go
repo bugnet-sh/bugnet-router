@@ -181,7 +181,6 @@ type Deps struct {
 	Prefix            string
 	OrderKey          ed25519.PublicKey
 	HandleKey         []byte
-	MarginFloor       float64
 	Rule              pricing.Rule // prices every candidate
 	Tracker           *placement.Tracker
 	ReplicaID         string            // recorded as the saga owner of the placements it places

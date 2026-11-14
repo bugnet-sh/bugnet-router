@@ -300,7 +300,6 @@ func newEnv(t *testing.T, o options) *env {
 		Prefix:       prefix,
 		OrderKey:     pub,
 		HandleKey:    hk,
-		MarginFloor:  0.5,
 		Rule:         pricing.Rule{MarkupBP: 10000},
 		Tracker:      tracker,
 		ReplicaID:    "worker-test",
