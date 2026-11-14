@@ -92,10 +92,12 @@ func (w *Worker) snapshot(ctx context.Context) error {
 	}
 	pkgs := s.Catalog.All()
 	var servers []stats.Server
+	var quote func(catalog.Package) int64
 	if w.engine != nil {
 		servers = stats.Servers(w.engine, w.registry, pkgs, w.placing)
+		quote = stats.Quote(w.engine, w.placing)
 	}
-	body, err := stats.Encode(stats.Merge(f, part, paidAt, pkgs, servers, s.Limits))
+	body, err := stats.Encode(stats.Merge(f, part, paidAt, pkgs, quote, servers, s.Limits))
 	if err != nil {
 		return err
 	}

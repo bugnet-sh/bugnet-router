@@ -173,7 +173,7 @@ func Encode(v any) ([]byte, error) { return json.Marshal(v) }
 // Merge builds CP 20.6.1's summary, generatedAt the older of f.At and paidAt
 func Merge(
 	f store.StatsFigures, p PaymentsPart, paidAt time.Time, pkgs []catalog.Package,
-	servers []Server, limits map[string]int64,
+	quote func(catalog.Package) int64, servers []Server, limits map[string]int64,
 ) Summary {
 	at := f.At
 	if paidAt.Before(at) {
@@ -192,7 +192,7 @@ func Merge(
 		Payments: Breakdown{
 			ByKind: orEmpty(p.ByKind), ByMethod: orEmpty(p.ByMethod), Refunds: p.Refunds,
 		},
-		Packages: Packages(pkgs),
+		Packages: Packages(pkgs, quote),
 		Servers:  orEmpty(servers),
 		Limits:   map[string]int64{},
 	}
@@ -282,18 +282,31 @@ func (p PaymentsPart) From(floor time.Time) (PaymentsPart, int) {
 	return p, dropped
 }
 
-// Packages returns the catalog's start packages in catalog order
-func Packages(pkgs []catalog.Package) []Package {
+// Quote is each package's live price on e, 0 when no server lands it
+func Quote(e *placement.Engine, in placement.Inputs) func(catalog.Package) int64 {
+	return func(pkg catalog.Package) int64 {
+		in.Package = pkg
+		c, _ := e.Quote(in)
+		return c.PriceMicros
+	}
+}
+
+// Packages returns the start packages in catalog order, priced by quote or by the catalog if nil
+func Packages(pkgs []catalog.Package, quote func(catalog.Package) int64) []Package {
 	out := []Package{}
 	for _, p := range pkgs {
 		if p.ExtensionOf != "" {
 			continue
 		}
+		price := p.PriceMicros
+		if quote != nil {
+			price = max(quote(p), 0)
+		}
 		r := p.Resources
 		out = append(out, Package{
 			ID: p.ID, VCPU: int64(r.VCPU), MemoryMiB: int64(r.MemoryMiB),
 			DiskGiB: int64(r.DiskGiB), GPU: gpu(r.GPUCount, r.GPUMemoryGiB, p.GPUModel),
-			Minutes: int64(p.Minutes), PriceMicros: p.PriceMicros,
+			Minutes: int64(p.Minutes), PriceMicros: price,
 		})
 	}
 	return out
@@ -324,7 +337,7 @@ func Servers(
 			}
 			s.Available = s.Available && l.Open
 			s.Packages = append(s.Packages, ServerPackage{
-				ID: pkg.ID, Minutes: int64(pkg.Minutes), PriceMicros: pkg.PriceMicros,
+				ID: pkg.ID, Minutes: int64(pkg.Minutes), PriceMicros: l.PriceMicros,
 			})
 			if caps.MaxLifetime > 0 {
 				run := longestRun(caps.MaxLifetime, pkg.Minutes)
