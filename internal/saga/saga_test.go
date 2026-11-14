@@ -1077,7 +1077,8 @@ func (unbootable) WaitReady(context.Context, provider.Ref) error {
 	return &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
 }
 
-// live gives the saga the live catalog at the production markup, a quote holding 45 minutes
+// live gives the saga the live catalog at the production markup, a quote holding 45 minutes and
+// rising one Boat step
 func live(t *testing.T) func(*saga.Deps) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "live-packages.json")
@@ -1089,7 +1090,7 @@ func live(t *testing.T) func(*saga.Deps) {
 		t.Fatal(err)
 	}
 	return func(d *saga.Deps) {
-		d.Catalog, d.Rule, d.QuoteHold = cat, tenPercent, 45*time.Minute
+		d.Catalog, d.Rule, d.QuoteHold, d.QuoteRise = cat, tenPercent, 45*time.Minute, 30_000
 	}
 }
 
@@ -1164,6 +1165,73 @@ func TestCreateHonorsTheLockedQuote(t *testing.T) {
 	p, err = e.startPaid(t, "order-2", 3355, uuid.Nil, placement.Requirements{})
 	priceChanged(t, p, err, 3355, 25031)
 	eq(t, len(owned(t, e2b)), 0)
+}
+
+func TestCreateQuoteHoldsForOneOrder(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e2b := newBilled(t, "e2b", e2bRate, 0)
+	e := newEnvWith(t, live(t), boat, e2b)
+	est := e.hold(t, "boat", 3050, 3355)
+	boat.fee.Store(30_000)
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "boat" {
+		t.Fatalf("placement %+v %v, want ready on boat", p, err)
+	}
+	q, ok, err := e.store.QuoteFor(t.Context(), est, smallPkg, time.Hour)
+	eq(t, []any{q.OrderID, ok, err}, []any{"order-1", true, nil})
+	// The first order claimed the quote, so a second one pays the price now
+	p, err = e.startPaid(t, "order-2", 3355, est, placement.Requirements{})
+	priceChanged(t, p, err, 3355, 25031)
+	p, err = e.startPaid(t, "order-3", 25031, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "e2b" {
+		t.Fatalf("placement %+v %v, want ready on e2b", p, err)
+	}
+	eq(t, len(owned(t, boat)), 1)
+}
+
+func TestCreateRetryKeepsItsClaim(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e := newEnvWith(t, live(t), boat)
+	est := e.hold(t, "boat", 3050, 3355)
+	// A first call claimed the quote and ended before its order was recorded
+	if _, ok, err := e.store.ClaimQuote(t.Context(), est, smallPkg, "order-1", 3355,
+		time.Hour); err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	boat.fee.Store(30_000)
+	p, err := e.startPaid(t, "order-2", 3355, est, placement.Requirements{})
+	priceChanged(t, p, err, 3355, 36355)
+	p, err = e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "boat" {
+		t.Fatalf("placement %+v %v, want ready on boat", p, err)
+	}
+}
+
+func TestCreateHeldServerPastTheRiseIsNotHeld(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	e2b := newBilled(t, "e2b", e2bRate, 0)
+	e := newEnvWith(t, live(t), boat, e2b)
+	est := e.hold(t, "boat", 3050, 3355)
+	// Boat's top fee puts its cost at 73,050, 69,695 over the payment and past one step
+	boat.fee.Store(70_000)
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	priceChanged(t, p, err, 3355, 25031)
+	eq(t, len(owned(t, boat)), 0)
+	eq(t, len(owned(t, e2b)), 0)
+}
+
+func TestCreateHeldServerGivesWayToOneThatFits(t *testing.T) {
+	boat := newBilled(t, "boat", boatRate, 0)
+	// b bills a little more an hour and nothing beyond the run, so it is 3355 as Boat was
+	b := newBilled(t, "b", 18_300, 0)
+	e := newEnvWith(t, live(t), boat, b)
+	est := e.hold(t, "boat", 3050, 3355)
+	boat.fee.Store(30_000)
+	p, err := e.startPaid(t, "order-1", 3355, est, placement.Requirements{})
+	if err != nil || p.State != store.PlacementReady || p.Provider != "b" {
+		t.Fatalf("placement %+v %v, want ready on b", p, err)
+	}
+	eq(t, len(owned(t, boat)), 0)
 }
 
 func TestCreateUnderpaidQuotesLive(t *testing.T) {

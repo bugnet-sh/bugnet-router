@@ -227,6 +227,7 @@ func serve(
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
 		QuoteHold:        cfg.Pricing.QuoteHold,
+		QuoteRise:        cfg.Pricing.QuoteRiseMicros,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
 			CreatesPerSecond: cfg.CreatesPerSecond,

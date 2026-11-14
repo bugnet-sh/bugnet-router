@@ -232,6 +232,9 @@ type Deps struct {
 	ReserveShare float64
 	// QuoteHold is how long an estimate's quote holds for an order, none when zero
 	QuoteHold time.Duration
+	// QuoteRise is how far over what the order paid a held start's cost may be,
+	// pricing.quote_rise_micros
+	QuoteRise int64
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
 	// Telemetry makes the saga's spans, telemetry.Off when nil
@@ -369,7 +372,7 @@ func (s *Saga) Create(
 	}
 	bind := s.bindTo(in, pkg)
 	t := terms{paid: c.PackageMicros()}
-	t.prefer = s.heldServer(ctx, in.EstimateID, pkg, t.paid)
+	t.prefer = s.heldServer(ctx, in.EstimateID, pkg, req, c.OrderID, t.paid)
 	if np.FailureReason, err = s.startRefusal(ctx, c, pkg, req, t, bind); err != nil {
 		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
 	}
@@ -436,23 +439,45 @@ type terms struct {
 	prefer *placement.Server
 }
 
-// heldServer is the server an estimate's quote holds pkg on when paid covers it, nil for none
+// heldServer claims the estimate's quote of pkg for the order and is the server it holds, nil for
+// none
 func (s *Saga) heldServer(
-	ctx context.Context, estimate uuid.UUID, pkg catalog.Package, paid int64,
+	ctx context.Context, estimate uuid.UUID, pkg catalog.Package, req placement.Requirements,
+	order string, paid int64,
 ) *placement.Server {
 	if estimate == uuid.Nil || s.d.QuoteHold <= 0 {
 		return nil
 	}
-	q, ok, err := s.d.Store.QuoteFor(ctx, estimate, pkg.ID, s.d.QuoteHold)
+	q, ok, err := s.d.Store.ClaimQuote(ctx, estimate, pkg.ID, order, paid, s.d.QuoteHold)
 	if err != nil {
-		s.d.Log.Warn("read an order's quote, it starts at the price now", "estimate", estimate,
+		s.d.Log.Warn("claim an order's quote, it starts at the price now", "estimate", estimate,
 			"package", pkg.ID, "err", err)
 		return nil
 	}
-	if !ok || paid < q.PriceMicros {
+	if !ok {
 		return nil
 	}
-	return &placement.Server{Provider: q.Provider, Size: q.SizeName}
+	return HeldServer(s.d.Engine, s.inputs(pkg, req, nil), q, order, paid, s.d.QuoteRise)
+}
+
+// CandidateFinder finds the candidates of a start
+type CandidateFinder interface {
+	Candidates(in placement.Inputs) ([]placement.Candidate, error)
+}
+
+// HeldServer is the server quote q holds the start of in on for order, which paid paid, nil when
+// another order claimed q, paid is short of it or no server takes the start under the quote
+func HeldServer(
+	f CandidateFinder, in placement.Inputs, q store.Quote, order string, paid, rise int64,
+) *placement.Server {
+	if q.OrderID != "" && q.OrderID != order || paid < q.PriceMicros {
+		return nil
+	}
+	held := &placement.Server{Provider: q.Provider, Size: q.SizeName}
+	if _, err := fitting(f, in, paid, paid, held, rise); err != nil {
+		return nil
+	}
+	return held
 }
 
 // startRefusal is why a start cannot begin, empty when a candidate fits what it paid
@@ -463,7 +488,7 @@ func (s *Saga) startRefusal(
 	if !covers(c, pkg.PriceMicros) {
 		return ReasonPriceChanged, nil
 	}
-	// The quoted server is exempt from the budget, so the price the order was quoted starts there
+	// A held server takes a start no other server fits, so the price the order was quoted starts
 	_, err := s.within(pkg, req, nil, t.paid, t.paid, t.prefer)
 	switch {
 	case err == nil:
@@ -608,10 +633,17 @@ func (s *Saga) within(
 	pkg catalog.Package, req placement.Requirements, tried map[string]bool, paid, left int64,
 	prefer *placement.Server,
 ) ([]placement.Candidate, error) {
-	in := s.inputs(pkg, req, tried)
-	in.Prefer = prefer
+	return fitting(s.d.Engine, s.inputs(pkg, req, tried), paid, left, prefer, s.d.QuoteRise)
+}
+
+// fitting are the candidates of in that fit left of paid, prefer taking a start none fits while
+// its cost is within rise, ErrNoCandidate when none does
+func fitting(
+	f CandidateFinder, in placement.Inputs, paid, left int64, prefer *placement.Server, rise int64,
+) ([]placement.Candidate, error) {
+	in.Prefer, in.PreferRiseMicros = prefer, rise
 	switch {
-	case pkg.FixedPrice:
+	case in.Package.FixedPrice:
 		// A fixed price is the same on every server and its fit holds the server's cost under it
 	case paid == 0:
 		// A budget of 0 reads as none, so an order that paid nothing keeps the servers priced 0
@@ -620,8 +652,8 @@ func (s *Saga) within(
 	default:
 		in.BudgetMicros = left
 	}
-	cands, err := s.d.Engine.Candidates(in)
-	if err != nil || pkg.FixedPrice || paid != 0 {
+	cands, err := f.Candidates(in)
+	if err != nil || in.Package.FixedPrice || paid != 0 {
 		return cands, err
 	}
 	cands = slices.DeleteFunc(cands, func(c placement.Candidate) bool { return c.PriceMicros > 0 })
