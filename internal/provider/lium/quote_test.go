@@ -220,3 +220,115 @@ func TestLiumPodOverTheOrderCapRefused(t *testing.T) {
 		})
 	}
 }
+
+// made is the Unmade and PriceCapped of a create's refusal, the test failing on any other error
+func made(t *testing.T, err error) []bool {
+	t.Helper()
+	e, ok := provider.AsError(err)
+	if !ok || e.Code != provider.CodeCapacity {
+		t.Fatalf("got %v, want a capacity refusal", err)
+	}
+	return []bool{e.Unmade, e.PriceCapped}
+}
+
+// TestLiumRefusalsSayWhatWasMade marks a refusal unmade only where Lium knows no pod of the key
+// was rented, and price capped only where the order's cap alone left no node
+func TestLiumRefusalsSayWhatWasMade(t *testing.T) {
+	capped := func(hourly int64) provider.CreateRequest {
+		req := createReq(testKey)
+		req.MaxHourlyMicros = hourly
+		return req
+	}
+	t.Run("a stale listing", func(t *testing.T) {
+		f := newFake(t)
+		clk := newClock()
+		p := listed(t, f, clk, euNode("node-a"))
+		clk.add(3 * time.Minute)
+		_, err := p.Create(context.Background(), createReq(testKey))
+		eq(t, made(t, err), []bool{true, false})
+	})
+	t.Run("no node listed", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.setNodes()
+		relist(t, p)
+		_, err := p.Create(context.Background(), createReq(testKey))
+		eq(t, made(t, err), []bool{true, false})
+	})
+	t.Run("every node over the order's cap", func(t *testing.T) {
+		_, p := liveFake(t)
+		_, err := p.Create(context.Background(), capped(240_000))
+		eq(t, made(t, err), []bool{true, true})
+	})
+	t.Run("every node refused", func(t *testing.T) {
+		f, p := liveFake(t)
+		for _, n := range []string{"node-a", "node-b", "node-c"} {
+			f.rentFault(n, fault{status: 400, code: "node_unavailable"})
+		}
+		_, err := p.Create(context.Background(), createReq(testKey))
+		eq(t, made(t, err), []bool{true, false})
+	})
+	t.Run("one node refused and the rest over the cap", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.rentFault("node-a", fault{status: 400, code: "node_unavailable"})
+		_, err := p.Create(context.Background(), capped(260_000))
+		eq(t, made(t, err), []bool{true, false})
+	})
+	t.Run("another rent of ours holds a node", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.rentFault("node-a", fault{status: 400, code: "own_rent_in_progress"})
+		f.rentFault("node-b", fault{status: 400, code: "node_unavailable"})
+		f.rentFault("node-c", fault{status: 400, code: "node_unavailable"})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		eq(t, made(t, err), []bool{false, false})
+	})
+	// The review's scenario A, a rent whose answers are lost and whose pod is listed dead
+	t.Run("a rent that may have rented a pod now dead", func(t *testing.T) {
+		f, p := liveFake(t)
+		f.startStatus = "FAILED"
+		f.inject(rentRoute, fault{status: 502, code: "upstream_unavailable", after: true,
+			times: 2})
+		_, err := p.Create(context.Background(), createReq(testKey))
+		eq(t, made(t, err), []bool{false, false})
+		if !strings.Contains(err.Error(), "already ended") {
+			t.Fatalf("err %v, want the key's pod listed as ended", err)
+		}
+		eq(t, len(f.rents()) > 0, true)
+	})
+}
+
+// TestLiumAdoptedPodKeepsTheOrderCap carries the order's cap on a pod a retry of its key adopts
+func TestLiumAdoptedPodKeepsTheOrderCap(t *testing.T) {
+	f, p := liveFake(t)
+	req := createReq(testKey)
+	req.MaxHourlyMicros = 280_000
+	first := mustCreate(t, p, req)
+	again := mustCreate(t, p, req)
+	eq(t, again.ID, first.ID)
+	eq(t, again.Meta["max_hourly_micros"], "280000")
+	eq(t, len(f.rents()), 1)
+	// A pod Lium moved to a dearer node under the size's cap is still refused at ready
+	f.setPod(again.ID, func(fp *fakePod) {
+		fp.status, fp.price = "RUNNING", 0.33
+		fp.node, fp.machine, fp.tier, fp.country = "node-moved", "NVIDIA GeForce RTX 3090",
+			"secure", "FR"
+		fp.nodeGPUs, fp.gpus = 1, 1
+	})
+	_, err := p.ReadyMeta(context.Background(), again)
+	wantCode(t, err, provider.CodeCapacity, true)
+}
+
+// TestLiumOrderCapHoldsPendingPrices skips a node whose coming price is over the order's cap
+func TestLiumOrderCapHoldsPendingPrices(t *testing.T) {
+	f, p := liveFake(t)
+	a := euNode("node-a")
+	a.price, a.pending = 0.25, ptr(0.34)
+	b := euNode("node-b")
+	b.price = 0.28
+	f.setNodes(a, b)
+	relist(t, p)
+	req := createReq(testKey)
+	req.MaxHourlyMicros = 280_000
+	ref := mustCreate(t, p, req)
+	eq(t, ref.Meta["node"], "node-b")
+	eq(t, len(f.rents()), 1)
+}

@@ -211,20 +211,26 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 }
 
 // rentNodes rents the cheapest eligible nodes under the order's cap not tried yet, up to maxNodes
-// in all
+// in all, a refusal unmade unless a rent met another rent of ours on the key, which may still rent
 func (p *Provider) rentNodes(
 	ctx context.Context, o order, tried []string, refused []error,
 ) (provider.Ref, error) {
 	nodes, fresh := p.nodes.fresh()
 	if !fresh {
 		return provider.Ref{}, &provider.Error{Code: provider.CodeCapacity, CanFailOver: true,
-			Err: errors.New("lium's node listing is over 2 minutes old")}
+			Unmade: !slices.ContainsFunc(refused, ownRent),
+			Err:    errors.New("lium's node listing is over 2 minutes old")}
 	}
+	overCap := 0
 	for _, n := range p.candidates(o.size, nodes) {
 		if len(tried) >= maxNodes {
 			break
 		}
-		if slices.Contains(tried, n.id) || n.hourlyMicros > o.maxHourly {
+		if slices.Contains(tried, n.id) {
+			continue
+		}
+		if n.hourlyMicros > o.maxHourly || n.pendingMicros > o.maxHourly {
+			overCap++
 			continue
 		}
 		template, err := p.template(ctx, o.image)
@@ -248,16 +254,18 @@ func (p *Provider) rentNodes(
 			err = fmt.Errorf("%w at or under %d micros an hour", err, o.maxHourly)
 		}
 		return provider.Ref{}, &provider.Error{Code: provider.CodeCapacity, CanFailOver: true,
-			Err: err}
+			Unmade: true, PriceCapped: overCap > 0, Err: err}
 	}
 	// Another rent of ours holding a node never sends the order elsewhere by itself
-	failOver := slices.ContainsFunc(refused, func(err error) bool {
-		return codeOf(err) != codeOwnRentInProgress
-	})
+	failOver := slices.ContainsFunc(refused, func(err error) bool { return !ownRent(err) })
 	return provider.Ref{}, &provider.Error{Code: provider.CodeCapacity, CanFailOver: failOver,
+		Unmade: !slices.ContainsFunc(refused, ownRent),
 		Err: fmt.Errorf("lium refused %d nodes, the last with %w", len(refused),
 			refused[len(refused)-1])}
 }
+
+// ownRent reports a rent refused because another rent of ours holds the key's node
+func ownRent(err error) bool { return codeOf(err) == codeOwnRentInProgress }
 
 // newRental builds the rent of one node, its body bytes fixed for every resend
 func (p *Provider) newRental(o order, n node, template string) (rental, error) {
@@ -509,6 +517,9 @@ func (p *Provider) adopted(o order, pod podItem) provider.Ref {
 	}
 	if pod.Price != nil {
 		meta[metaHourlyMicros] = strconv.FormatInt(micros(*pod.Price), 10)
+	}
+	if o.capped {
+		meta[metaMaxHourly] = strconv.FormatInt(o.maxHourly, 10)
 	}
 	return provider.Ref{Provider: providerName, ID: pod.ID, Meta: meta}
 }

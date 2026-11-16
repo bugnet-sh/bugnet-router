@@ -34,6 +34,11 @@ type Error struct {
 	Err         error
 	// Provider names the adapter on an account code, so any caller can ask for its account check
 	Provider string
+	// Unmade says the adapter knows the create made nothing at the provider, so nothing bills
+	Unmade bool
+	// PriceCapped says only the order's own price cap left nothing to rent, which is no fault of
+	// the provider's
+	PriceCapped bool
 }
 
 func (e *Error) Error() string {
