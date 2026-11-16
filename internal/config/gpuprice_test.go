@@ -46,7 +46,7 @@ func liveGPU(id, model string, gpuGiB int) catalog.Package {
 func TestCheckGPUPricesNeedACost(t *testing.T) {
 	c := loadEmpty(t)
 	h200 := liveGPU("gpu-h200-10m", gpu.H200, 141)
-	if err := c.CheckGPUMargin([]catalog.Package{h200}, []provider.Provider{liumFake,
+	if err := c.CheckGPUPrices([]catalog.Package{h200}, []provider.Provider{liumFake,
 		hfFake}); err != nil {
 		t.Fatalf("both price h200: %v", err)
 	}
@@ -60,21 +60,21 @@ func TestCheckGPUPricesNeedACost(t *testing.T) {
 		"a fixed extension": withExtension(gpuPackage("gpu-h200-10m-more", gpu.H200, 141,
 			9_000_000)),
 	} {
-		err := c.CheckGPUMargin([]catalog.Package{pkg}, []provider.Provider{liumFake, free})
+		err := c.CheckGPUPrices([]catalog.Package{pkg}, []provider.Provider{liumFake, free})
 		want := `package "` + pkg.ID + `" is covered by hf size h200, which has no hourly cost`
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v, want an error saying %q", name, err, want)
 		}
 	}
 	// A package no size of the provider covers needs no price from it
-	if err := c.CheckGPUMargin([]catalog.Package{liveGPU("gpu-t4-10m", gpu.T4, 16)},
+	if err := c.CheckGPUPrices([]catalog.Package{liveGPU("gpu-t4-10m", gpu.T4, 16)},
 		[]provider.Provider{liumFake, free}); err != nil {
 		t.Fatalf("hf's free h200 does not cover a T4 package: %v", err)
 	}
 	// A provider outside gpu_order is never asked
 	hfOnly := c
 	hfOnly.GPUOrder = []string{"lium"}
-	if err := hfOnly.CheckGPUMargin([]catalog.Package{h200},
+	if err := hfOnly.CheckGPUPrices([]catalog.Package{h200},
 		[]provider.Provider{liumFake, free}); err != nil {
 		t.Fatalf("hf outside gpu_order: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestCheckGPUPricesReadTheCap(t *testing.T) {
 		1_527_168: "",
 		1_527_167: `package "gpu-h200-10m" at 1527167 micros misses pricing.markup 0.1 on lium`,
 	} {
-		err := c.CheckGPUMargin([]catalog.Package{gpuPackage("gpu-h200-10m", gpu.H200, 141,
+		err := c.CheckGPUPrices([]catalog.Package{gpuPackage("gpu-h200-10m", gpu.H200, 141,
 			price)}, []provider.Provider{liumNodes, hfFake})
 		switch {
 		case want == "" && err != nil:
@@ -106,7 +106,7 @@ func TestCheckGPUPricesReadTheCap(t *testing.T) {
 	// A quote of nothing, as before the first node listing, still prices at the cap
 	cold := liumNodes
 	cold.quote = 0
-	if err := c.CheckGPUMargin([]catalog.Package{liveGPU("gpu-h200-10m", gpu.H200, 141)},
+	if err := c.CheckGPUPrices([]catalog.Package{liveGPU("gpu-h200-10m", gpu.H200, 141)},
 		[]provider.Provider{cold, hfFake}); err != nil {
 		t.Fatalf("lium before its listing: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCheckGPUFixedExtension(t *testing.T) {
 			`918497 micros or more`,
 	} {
 		ext := withExtension(gpuPackage("gpu-h200-10m-more", gpu.H200, 141, price))
-		err := c.CheckGPUMargin([]catalog.Package{ext}, []provider.Provider{liumNodes, hfFake})
+		err := c.CheckGPUPrices([]catalog.Package{ext}, []provider.Provider{liumNodes, hfFake})
 		switch {
 		case want == "" && err != nil:
 			t.Errorf("at %d: %v", price, err)

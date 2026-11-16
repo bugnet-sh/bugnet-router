@@ -325,7 +325,7 @@ func TestStartRefusesGPUPackagesUnderTheMarkup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = checkGPUMargin(r, cfg, cat)
+		err = checkGPUPrices(r, cfg, cat)
 		switch {
 		case want == "" && err != nil:
 			t.Errorf("at %q: %v", price, err)

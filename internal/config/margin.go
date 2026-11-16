@@ -11,9 +11,9 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
-// CheckGPUMargin refuses a GPU package a covering gpu_order provider cannot price, or whose
+// CheckGPUPrices refuses a GPU package a covering gpu_order provider cannot price, or whose
 // fixed price misses the markup on the dearest of them
-func (c Config) CheckGPUMargin(pkgs []catalog.Package, provs []provider.Provider) error {
+func (c Config) CheckGPUPrices(pkgs []catalog.Package, provs []provider.Provider) error {
 	r := c.Pricing.Rule
 	for _, pkg := range pkgs {
 		if pkg.Resources.GPUCount == 0 {

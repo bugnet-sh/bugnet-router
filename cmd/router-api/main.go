@@ -169,7 +169,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	if err := checkBoxdRefs(reg, cfg, cat); err != nil {
 		return err
 	}
-	if err := checkGPUMargin(reg, cfg, cat); err != nil {
+	if err := checkGPUPrices(reg, cfg, cat); err != nil {
 		return err
 	}
 	// A provider without its runner build would bill for sandboxes that can never run a job
@@ -427,9 +427,10 @@ func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catal
 	return nil
 }
 
-// checkGPUMargin refuses a GPU package priced so that a gpu_order provider could never serve it
-func checkGPUMargin(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
-	return cfg.CheckGPUMargin(cat.All(), reg.Ordered())
+// checkGPUPrices refuses a GPU package a covering gpu_order provider cannot price, or whose fixed
+// price misses the markup on one of them
+func checkGPUPrices(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
+	return cfg.CheckGPUPrices(cat.All(), reg.Ordered())
 }
 
 // checkPackages logs each start package no configured provider can place at its price, health

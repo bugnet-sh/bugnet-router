@@ -334,7 +334,7 @@ func buildHF(cfg config.Config, vk valkey.Client, pkgs []catalog.Package) (*hf.P
 	if len(pkgs) > 0 {
 		opts.OnChange = func() {
 			<-built
-			if err := cfg.CheckGPUMargin(pkgs, []provider.Provider{p}); err != nil {
+			if err := cfg.CheckGPUPrices(pkgs, []provider.Provider{p}); err != nil {
 				slog.Error("hf: a new price fails check 8", "err", err)
 			}
 		}

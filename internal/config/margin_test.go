@@ -123,14 +123,14 @@ func TestConfigGPUMargin(t *testing.T) {
 		"no extension":             {h200, more},
 		"a live package":           {live},
 	} {
-		if err := c.CheckGPUMargin(pkgs, both); err != nil {
+		if err := c.CheckGPUPrices(pkgs, both); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 
 	// 1.5 USDC clears hf's 1,194,046 but not lium's 1,527,168, so lium never serves it
 	old := gpuPackage("gpu-h200-10m", gpu.H200, 141, 1_500_000)
-	err := c.CheckGPUMargin([]catalog.Package{old}, both)
+	err := c.CheckGPUPrices([]catalog.Package{old}, both)
 	for _, want := range []string{
 		`package "gpu-h200-10m" at 1500000 micros misses pricing.markup 0.1 on lium`,
 		"lium-h200 costs 1388334 micros", "price it at 1527168 micros or more",
@@ -140,24 +140,24 @@ func TestConfigGPUMargin(t *testing.T) {
 		}
 	}
 	// The same price clears hf alone, and a provider outside gpu_order is never checked
-	if err := c.CheckGPUMargin([]catalog.Package{old}, []provider.Provider{hfFake}); err != nil {
+	if err := c.CheckGPUPrices([]catalog.Package{old}, []provider.Provider{hfFake}); err != nil {
 		t.Fatalf("hf alone: %v", err)
 	}
 	outside := c
 	outside.GPUOrder = []string{"hf"}
-	if err := outside.CheckGPUMargin([]catalog.Package{old}, both); err != nil {
+	if err := outside.CheckGPUPrices([]catalog.Package{old}, both); err != nil {
 		t.Fatalf("lium outside gpu_order: %v", err)
 	}
 	// A lower markup lets it through
 	low := c
 	low.Pricing.Rule.MarkupBP = 500
-	if err := low.CheckGPUMargin([]catalog.Package{old}, both); err != nil {
+	if err := low.CheckGPUPrices([]catalog.Package{old}, both); err != nil {
 		t.Fatalf("a 5%% markup: %v", err)
 	}
 	// A provider's billed overhead counts as placement counts it
 	slow := c
 	slow.Pricing.Rule.Overhead = map[string]time.Duration{"hf": 10 * time.Minute}
-	if err := slow.CheckGPUMargin([]catalog.Package{old}, []provider.Provider{hfFake}); err == nil {
+	if err := slow.CheckGPUPrices([]catalog.Package{old}, []provider.Provider{hfFake}); err == nil {
 		t.Fatal("hf's 10 minute overhead let 1.5 USDC through")
 	}
 
@@ -176,7 +176,7 @@ func TestConfigGPUMargin(t *testing.T) {
 				size: gpuSize("big", gpu.T4, 1, 16, 8, 32<<10, 100)}},
 			`misses pricing.markup 0.1 on hf, whose size big costs 333334 micros`},
 	} {
-		err := c.CheckGPUMargin([]catalog.Package{tc.pkg}, tc.prov)
+		err := c.CheckGPUPrices([]catalog.Package{tc.pkg}, tc.prov)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %v, want an error saying %q", name, err, tc.want)
 		}
@@ -185,7 +185,7 @@ func TestConfigGPUMargin(t *testing.T) {
 	// A size whose start would be refused is not one placement can use
 	refusing := liumFake
 	refusing.refused = map[string]bool{"lium-h200": true}
-	err = c.CheckGPUMargin([]catalog.Package{old}, []provider.Provider{refusing, hfFake})
+	err = c.CheckGPUPrices([]catalog.Package{old}, []provider.Provider{refusing, hfFake})
 	if err != nil {
 		t.Fatalf("a refused start: %v", err)
 	}

@@ -67,7 +67,7 @@ func TestGPUCatalogsPassCheck8(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := cfg.CheckGPUMargin(c.All(), provs); err != nil {
+		if err := cfg.CheckGPUPrices(c.All(), provs); err != nil {
 			t.Errorf("%s: %v", file, err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestGPUCatalogsPassCheck8(t *testing.T) {
 		}
 		under := p
 		under.PriceMicros--
-		if err := cfg.CheckGPUMargin([]catalog.Package{under}, provs); err == nil {
+		if err := cfg.CheckGPUPrices([]catalog.Package{under}, provs); err == nil {
 			t.Errorf("package %s passes at %d, so its price is over the least the markup "+
 				"allows", p.ID, under.PriceMicros)
 		}
