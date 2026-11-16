@@ -229,7 +229,7 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 		` >> /p/pins.conf; /p/setup-image.sh build --target boat --channel dev --inputs ` +
 		strings.Repeat("0", 64) + `; test ! -L /etc/systemd/system/ssh.service; echo kept`
 	payload := t.TempDir()
-	runner := filepath.Join(root, "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
+	runner := filepath.Join(root, "..", "run", "dist", "bugnet-run-linux-amd64")
 	for src, dst := range map[string]string{
 		filepath.Join(root, "deploy/image/setup-image.sh"): "setup-image.sh",
 		filepath.Join(root, "deploy/image/pins.conf"):      "pins.conf",
