@@ -35,6 +35,8 @@ func (failingEngine) Quote(placement.Inputs) (placement.Candidate, bool) {
 	return placement.Candidate{}, false
 }
 
+func (failingEngine) PricesPerNode(string) bool { return false }
+
 // Boat small's and E2B's hourly rates for the small size, both billed by the second
 const (
 	boatRate = 18_000

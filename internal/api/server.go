@@ -117,6 +117,8 @@ const (
 type Engine interface {
 	Candidates(in placement.Inputs) ([]placement.Candidate, error)
 	Quote(in placement.Inputs) (placement.Candidate, bool)
+	// PricesPerNode reports whether the named provider prices each node on its own under a cap
+	PricesPerNode(name string) bool
 }
 
 // Deps are the services and settings a Server works with

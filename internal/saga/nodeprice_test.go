@@ -138,9 +138,11 @@ func (n noded) Create(ctx context.Context, req provider.CreateRequest) (provider
 	}
 	i := slices.IndexFunc(*n.nodes, func(p int64) bool { return p <= limit })
 	if i < 0 {
+		// As Lium, it rented nothing, and only the order's cap left no node when any is listed
+		capped := len(*n.nodes) > 0
 		n.mu.Unlock()
 		return provider.Ref{}, &provider.Error{Code: provider.CodeCapacity, CanFailOver: true,
-			Err: errors.New("no node at or under the cap")}
+			Unmade: true, PriceCapped: capped, Err: errors.New("no node at or under the cap")}
 	}
 	price := (*n.nodes)[i]
 	*n.nodes = slices.Delete(*n.nodes, i, i+1)

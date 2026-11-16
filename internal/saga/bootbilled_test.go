@@ -164,6 +164,8 @@ func TestGPURentedThenFailedSpendsItsSpan(t *testing.T) {
 		}
 		eq(t, lium.free(), []int64{})
 		eq(t, e.attempts(t, p.ID)[0].provider, "lium")
+		// The pod never confirmed its price at ready, so its boot is metered at the size's cap
+		eq(t, e.attemptPrices(t, p.ID)[0], []any{"lium", int64(4_900_000), int64(0)})
 	})
 	t.Run("hf at the whole payment", func(t *testing.T) {
 		// $5.426922 an hour prices HF at exactly the payment, which any second on lium spent

@@ -475,9 +475,11 @@ func (s *Saga) heldServer(
 	return holdOf(s.d.Engine, s.inputs(pkg, req, nil), q, order, paid, s.d.QuoteRise)
 }
 
-// CandidateFinder finds the candidates of a start
+// CandidateFinder finds the candidates of a start and knows the providers that price per node
 type CandidateFinder interface {
 	Candidates(in placement.Inputs) ([]placement.Candidate, error)
+	// PricesPerNode reports whether the named provider prices each node on its own under a cap
+	PricesPerNode(name string) bool
 }
 
 // HeldServer is the server quote q holds the start of in on for order, which paid paid, nil when
@@ -492,11 +494,6 @@ func HeldServer(
 	return nil
 }
 
-// nodePricing is a finder that knows which providers price each node on their own
-type nodePricing interface {
-	PricesPerNode(name string) bool
-}
-
 // holdOf is the hold of HeldServer with the hourly figure quote q priced its server at
 func holdOf(
 	f CandidateFinder, in placement.Inputs, q store.Quote, order string, paid, rise int64,
@@ -504,7 +501,7 @@ func holdOf(
 	if q.OrderID != "" && q.OrderID != order || paid < q.PriceMicros {
 		return nil
 	}
-	if np, ok := f.(nodePricing); ok && q.HourlyMicros <= 0 && np.PricesPerNode(q.Provider) {
+	if q.HourlyMicros <= 0 && f.PricesPerNode(q.Provider) {
 		// A per-node server's quote without its hourly figure caps no rent, so it holds nothing
 		return nil
 	}
@@ -892,9 +889,6 @@ func (s *Saga) attemptCold(
 	smp.SandboxID = ref.ID
 	if err == nil {
 		rec.SandboxID = ref.ID
-		if hourly, fee, ok := rentedQuote(prov, c.Size.Name, ref); ok {
-			rec.HourlyMicros, rec.StartFeeMicros = hourly, fee
-		}
 		if err := s.recordAttempt(ctx, rec); err != nil {
 			s.d.Log.Error("record attempt sandbox", "placement", p.ID, "err", err)
 		}
@@ -1116,12 +1110,12 @@ func createReason(err error) string {
 	return reasonCreate
 }
 
-// unmade reports a create refused for capacity while no create of its attempt had an unknown
-// outcome, so the provider made nothing that bills
+// unmade reports a create the adapter says made nothing while no create of its attempt had an
+// unknown outcome, so nothing of the attempt bills
 func unmade(ctx context.Context, err error) bool {
 	e, ok := provider.AsError(err)
 	r := runOf(ctx)
-	return ok && e.Code == provider.CodeCapacity && r != nil && !r.unknown.Load()
+	return ok && e.Unmade && r != nil && !r.unknown.Load()
 }
 
 // canFailOver never allows an unknown outcome, since the first sandbox may still boot and bill

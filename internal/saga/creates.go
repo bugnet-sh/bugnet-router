@@ -108,6 +108,9 @@ func (s *Saga) providerFailed(ctx context.Context, name string, err error, creat
 			s.pauseCreates(ctx, name, e.RetryAfter)
 		}
 		return false
+	case e.PriceCapped:
+		// Only the order's own price cap left nothing to rent
+		return false
 	}
 	return true
 }
