@@ -815,7 +815,9 @@ budget or its maximum lifetime, which gives `no_candidate`. The capability check
 `feature_unavailable` means waiting will not help. `ListExtensions` has its own codes, below.
 
 At start `router-api` logs an error naming each start package that no configured provider can
-place under `images.accept` and its fixed price, health aside, and still starts.
+place under `images.accept` and its fixed price, health aside, and still starts. GPU start packages
+it cannot place, as on a dev stack without `lium` or `hf` or before Lium's first node listing,
+are counted in one warning (`gpu_packages`) instead.
 
 `CreatePlacement` with the order's estimate id honors the held quote when the order's
 `amount_micros`, less its x402 allowance and fee, covers the held price. The first such order claims
@@ -1937,7 +1939,10 @@ order of `providers` only breaks ties in price. With a budget only candidates pr
 When none does, the server of the order's held quote takes the first attempt while its cost is at
 most the budget plus `pricing.quote_rise_micros`. A failover goes only to a server whose price fits
 what the order paid less what the earlier attempts cost, and when nothing fits the start fails
-refundable in full.
+refundable in full. An earlier attempt costs its time from its start at its hour, plus its start
+fee where that is a charge of its own (Boat's), not where it is boot time the provider bills by
+the hour (Lium's and HF's). One whose create the provider refused for capacity, with no create of
+it left unknown, made nothing and costs nothing.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
@@ -2337,11 +2342,13 @@ counts the ones older than `foreign_alert_after` whose `bugnet_deployment` is ne
 deployment nor in `known_deployments`. The count lands in `provider_health.foreign_sandboxes`, and
 `/monitor` shows it. Nothing is destroyed.
 
-Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. On a
+Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. The
+start fee is a charge beside the sandbox's time, Boat's, and 0 for Lium and HF, whose start fee is
+boot time their hourly rate bills and the span from the create to the destroy already holds. On a
 server that prices each node the row holds the size's cap until the create names the rented node,
-and then that node's hour and the start fee at it. At
-termination `placements.cost_micros` sums `spend.AttemptCost` over the attempts, `edge_bytes` and
-`egress_bytes` come from the budget counters, and `placement.terminated` carries all three. A cost
+and then that node's hour. At termination `placements.cost_micros` sums `spend.AttemptCost` over
+the attempts, `edge_bytes` and `egress_bytes` come from the budget counters, and
+`placement.terminated` carries all three. A cost
 more than what the orders paid is a loss, which logs at error level, and a cost over the paid
 price less its markup that is not a loss is a warning. `/monitor` counts such placements of the
 last 24 hours, and the losses as a problem. `reconcile.cost_alert_fraction` is 0.03 in
