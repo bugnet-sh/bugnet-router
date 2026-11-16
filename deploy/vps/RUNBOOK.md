@@ -16,26 +16,29 @@ repository.
 
 ## Owners
 
-When this file says "Ask bugnet-<owner>", the fact is not written down anywhere yet.
+Owners are agent sessions, and a session's name changes when it restarts. When this file says
+"Ask <owner>", the fact is not written down anywhere yet: ask the session that owns the area now.
 
-| Owner | Owns |
-| --- | --- |
-| bugnet-d7 | Router, edges, egress, sessions and secrets roles, `ship.sh`, `deploy.sh`, `check.sh` |
-| bugnet-22 | Payments and `vps-install.sh` |
-| bugnet-ea | MCP gateway, the x402 index, the bridge `@bugnet/mcp`, the secret page |
-| bugnet-7f | The website `bugnet.sh` and the session page |
-| bugnet-65 | Demo filming; it sets production freezes |
+| Area | Owns | Session on 2026-11-16 | Earlier names |
+| --- | --- | --- | --- |
+| Router | Router, edges, egress, sessions and secrets roles, `ship.sh`, `deploy.sh`, `check.sh` | bugnet-e3 | bugnet-d7, bugnet-ad |
+| Payments | Payments and `vps-install.sh` | bugnet-81 | bugnet-22, bugnet-77 |
+| Gateway | MCP gateway, the x402 index, the bridge `@bugnet/mcp`, the secret page | bugnet-07 | bugnet-ea, bugnet-4b |
+| Website | The website `bugnet.sh` and the session page | bugnet-a8 | bugnet-7f, bugnet-17 |
+| Demo | Demo filming; the founder sets production freezes | none | bugnet-65 |
 
-## Live versions on 2026-11-09
+## Live versions on 2026-11-16
 
 | Part | Version |
 | --- | --- |
-| bugnet-router, bugnet-edges, bugnet-run | `b1ce86f`, `5a65a06`, `944471e` (redeployed 04:08Z) |
-| Gateway | `b61aa2b` |
-| Payments | `25cbc55` |
-| Website | `7f61eac` (deployed about 07:58Z) |
+| bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261116-0541-99efd3d`: `99efd3d`, `e51a997`, `ecfff7d`, `161224b` (deployed 05:44Z from `deploy/prod` in `lanes/c1`; previous `20261114-0112-e0ce937`) |
+| Gateway | `400d608` |
+| Payments | `17a5a89` (`release/2026-11-14`) |
+| Website | `120e579` (`bugnet-website@20261114T014318Z-120e579`) |
 | Secret page | `cf4988b` (bugnet-gateway) |
-| Session page | `9e11d2a` (bugnet-website `packages/session-page/release/dist`); next: `release/7f61eac/dist`, copied with the next router and edges redeploy (5.5) |
+| Session page | `58e9754` (bugnet-website `packages/session-page/release/58e9754/dist`, installed 2026-11-10 14:23) |
+| Bridge | `@bugnet/mcp` 0.1.2 on npm |
+| Base image | `2026.11.3` (E2B templates `bugnet-2026-11-3-2x2`, `-4x8`) |
 
 ## 1. What runs where
 
@@ -74,6 +77,29 @@ Every port is on `127.0.0.1` unless it says otherwise. HAProxy splits TCP 443 by
 gateway on 2222: that was the plan for a separate production server. Production is the test VPS,
 so [site.toml](site.toml) wins: admin SSH on 2222, the SSH gateway on 2201.
 
+### 1.1 Feature switches in production (2026-11-16)
+
+A change to any of these is a commit to [config/router.toml](config/router.toml) and a ship (5.6),
+or, for Payments and the gateway, a release of that service.
+
+| Switch | State | Where |
+| --- | --- | --- |
+| Placement providers | boat, e2b, boxd | `router.toml` `providers` |
+| Previews | boat, e2b, boxd | `[previews] providers` |
+| Sealed secrets and x402 | boat, e2b, boxd (x402 pays only on a provider listed here) | `[secrets] providers` |
+| SSH into a sandbox | off: no provider | `[ssh] providers = []` |
+| x402 | on in the router, the gateway and Payments | `[x402] enabled`; gateway `[x402]`; Payments `[x402]` |
+| x402 shared hosts | none: the 13 reviewed services each have their own host | `[x402] allowed_shared_hosts`, written from `/etc/bugnet/router-x402-index.json` |
+| Prices | official cost + 10%, a live quote held 45 minutes | `[pricing]`, `[pricing.overhead]` |
+| Hedged starts | off (pricing D5) | `[hedge] enabled = false` |
+| Warm pools | none | no `[pools]` table |
+| Reserve | built; the gateway never calls it | none |
+| Traces | off in the router and the gateway | no `[traces]` table |
+| Provider webhooks | off | no `[hooks]` table |
+| Loopback rule for egress 9443 | not installed (`bugnet-nft.service`) | `check.sh` prints a warning |
+| Payments `[router]` claims | on: `get_order`, `check_payer`, `token_payer_claims`, `allowance_claim`, `token_issued_at`, `fee_claim` (since 2026-11-14 01:19 UTC) | `/etc/bugnet/payments.toml` `[router]` |
+| Paying by address (deposits) | on since 2026-11-12 | `/etc/bugnet/payments.toml` `[deposits]` |
+
 ## 2. First-time server setup
 
 ### 2.1 Done by hand once (founder)
@@ -84,7 +110,15 @@ On 2026-11-07 the founder made, on the VPS:
 2. Admin SSH on port 2222 only.
 3. ufw left inactive. `deploy.sh` turns it on later.
 
-The exact lines used for steps 1 and 2: Ask bugnet-d7.
+The commands typed on 2026-11-07 were not recorded. The result, read on the VPS on 2026-11-16:
+
+- Admin user `bugnet` (uid 1000), password locked, key login only.
+  `/etc/sudoers.d/bugnet` holds `bugnet ALL=(ALL) NOPASSWD:ALL`, so `sudo -n` works.
+- `/etc/ssh/sshd_config` line 35: `Port 2222`. `ssh.socket` and `ssh.service` are both active.
+- Effective settings (`sudo sshd -T`): `passwordauthentication yes` and `permitrootlogin yes`.
+  `50-cloud-init.conf` sets `PasswordAuthentication yes`, and sshd keeps the first value it
+  reads, so the later `60-cloudimg-settings.conf` `no` loses. Root has a password and no
+  authorized keys. Turning password login off is a decision for the founder (2026-11-16).
 
 `ship.sh` calls plain `ssh` and `scp`, so the Mac must offer the deploy key without flags. In the
 2026-11-09 deploy, two small wrapper scripts named `ssh` and `scp`, first in `PATH`, ran
@@ -241,7 +275,12 @@ The wallet addresses are as printed on 2026-11-09; confirm with `--pubkeys` befo
 - With the founder: the cold wallet key, the Cloudflare token, the provider API keys, the Helius
   RPC key.
 
-Back up `/etc/bugnet/keys/` off the VPS, encrypted. How it is backed up today: Ask bugnet-d7.
+Back up `/etc/bugnet/keys/` off the VPS, encrypted. Today nothing does: on 2026-11-16 the VPS had
+no backup job for `/etc/bugnet/keys/` or for the router's `bugnet` database (the only backup
+timer is `bugnet-payments-backup.timer`, for Payments' database), and no off-VPS copy is on
+record. Losing `egress-ca.key` means rebuilding the base image and the E2B templates; losing
+`egress_box_k1` means a new gateway pin, bridge and secret page (below). A router backup is a
+decision for the founder (2026-11-16).
 
 A new box key means a new gateway pin, then a new bridge and secret page, before the router lists
 it (bugnet-gateway `CONTRIBUTING.md`, Sealing keys).
@@ -255,18 +294,20 @@ One `ship.sh` run ships all of them: it builds `router-api`, `router-worker`, `b
 
 ### 5.1 Before every ship
 
-1. **Freeze.** Ask the founder or bugnet-65 whether a filming freeze is on. During one, no
-   restart and no redeploy.
-2. **Same head in all four repos.** Put `bugnet-router`, `bugnet-edges`, `bugnet-run` and
-   `bugnet-proto` on the integration head you mean to ship, the same branch in each (production's
-   commits are on `main` and `feat/router-v1-rest`). A stale sibling broke production once
-   (section 11.1).
+1. **Freeze.** Ask the founder whether a filming freeze is on. During one, no restart and no
+   redeploy.
+2. **Ship from `lanes/c1`.** Production ships from branch `deploy/prod` in the four checkouts of
+   the workspace's `lanes/c1` (`bugnet-router`, `bugnet-edges`, `bugnet-run`, `bugnet-proto`),
+   and `ship.sh` is run from `lanes/c1/bugnet-router`. Fast-forward each `deploy/prod` to the
+   commit you mean to ship, then push it (`bugnet-run`'s `deploy/prod` is local only). The
+   integration branch `feat/router-v1-rest` in the canonical checkouts must be that commit or
+   behind it. A stale sibling broke production once (section 11.1).
 3. **Clean trees.** Commit everything. `ship.sh` builds what is checked out.
-4. **Head check.** Branch `fix/ship-same-head` (not merged on 2026-11-09) adds it to `ship.sh`.
-   Once it is merged, run `deploy/vps/ship.sh --check-heads` first: it checks the four checkouts
-   and builds nothing. Every ship runs the same check, prints one line per checkout and stops on
-   a mismatch. `--allow-mixed` ships anyway with a warning; use it only as a last resort. Until
-   then, read the first four lines of every ship (5.3).
+4. **Head check.** Run `deploy/vps/ship.sh --check-heads` first: it checks the four checkouts and
+   builds nothing. Every ship runs the same check, prints one line per checkout and stops on a
+   mismatch: a checkout with an `origin/deploy/prod` must sit exactly on it, and every checkout
+   must contain the canonical checkout's `HEAD`. `--allow-mixed` ships anyway with a warning;
+   use it only as a last resort.
 
 ### 5.2 First time only
 
@@ -356,10 +397,10 @@ deploy/vps/ship.sh <admin>@62.72.21.74
 `<UTC date>-<bugnet-router short commit>`. Expected output, in order:
 
 ```text
-bugnet-router <branch> <commit>
-bugnet-edges <branch> <commit>
-bugnet-run <branch> <commit>
-bugnet-proto <branch> <commit>
+bugnet-proto <path> deploy/prod <commit> expected origin/deploy/prod <commit> ok
+bugnet-run <path> deploy/prod <commit> expected feat/router-v1-rest <commit> or later ok
+bugnet-edges <path> deploy/prod <commit> expected origin/deploy/prod <commit> ok
+bugnet-router <path> deploy/prod <commit> expected origin/deploy/prod <commit> ok
 ship.sh: building linux/amd64 binaries
 ship.sh: rendering the HAProxy and bugnet-certs files from names.toml and .../deploy/vps/site.toml
 ship.sh: copying the bundle to <admin>@62.72.21.74:bugnet-deploy/<v> over port 2222
@@ -383,7 +424,7 @@ check.sh: ok only bugnet-router opens the data stores, users: haproxy and the se
 check.sh: ok pool_max_conns 48 is at least the workers' floor of 36
 check.sh: ok no unit failed
 check.sh: ok every service answers /readyz
-check.sh: warning skipped: who may connect to 127.0.0.1:9443 and :19443 waits for bugnet-nft (Task 43B)
+check.sh: warning skipped: no bugnet-nft, so any local user may connect to 127.0.0.1:9443 (README 12)
 check.sh: ok egress payments_timeout 3s is above Payments' sign_timeout 2s
 check.sh: ok x402 ports, files and settings checked
 check.sh: ok the stats feed answers on 8082
@@ -439,11 +480,12 @@ The secrets route and the sessions role each read their page once, at start (bug
 
 | Page | Owner | Build | On the VPS |
 | --- | --- | --- | --- |
-| Session page | bugnet-7f | bugnet-website `packages/session-page/release/<commit>/dist`; the live `9e11d2a` is `release/dist`, the next is `release/7f61eac/dist` | `/srv/bugnet/session-page/` |
-| Secret page | bugnet-ea | `pnpm --filter @bugnet/secret-page build` in bugnet-gateway; live `cf4988b` | `/srv/bugnet/secrets-page/` |
+| Session page | Website | bugnet-website `packages/session-page/release/<commit>/dist`; live `58e9754` (installed 2026-11-10 14:23) | `/srv/bugnet/session-page/` |
+| Secret page | Gateway | `pnpm --filter @bugnet/secret-page build` in bugnet-gateway; live `cf4988b` | `/srv/bugnet/secrets-page/` |
 
-bugnet-website keeps both session bundle folders until `release/7f61eac/dist` is live. It ships
-with the next router and edges redeploy, so the sessions role restarts once.
+A new bundle ships with the next router and edges redeploy, so the sessions role restarts once.
+The live folder also holds four macOS `._` files from the 2026-11-10 copy; nothing serves them.
+Run `find <folder> -name '._*' -delete` on the Mac before copying a bundle.
 
 Copy, as the 2026-11-09 deploy did. On the Mac, one `scp` per page you copy:
 
@@ -684,6 +726,12 @@ check.sh: ...
 A broken file stops at the first command and changes nothing. Later router deploys keep the line,
 generated from `/etc/bugnet/router-x402-index.json`.
 
+Index now (2026-11-16): the gateway `400d608` index of 13 services (sha256 `8428c2db…3750`) is in
+all three. Payments took it on 2026-11-14. The router's copy went in with the
+`20261116-0541-99efd3d` ship: `/etc/bugnet/router-x402-index.json` was installed before
+`ship.sh`, so the deploy wrote `allowed_shared_hosts = []` (no service shares a host) and
+router-api restarted once.
+
 ### 7.2 Install or upgrade the gateway
 
 The release is a self-contained esbuild bundle, no `node_modules`: a folder holding `deploy/`
@@ -838,8 +886,20 @@ cd ~/bugnet-deploy/<old> && sudo ./deploy.sh <old> ./bin
 ```
 
 The last line must be `deploy.sh: deployed <old>`. A version that is already running gets a fresh
-instance named `<old>_r<timestamp>`. Before rolling back across a database migration: Ask
-bugnet-d7.
+instance named `<old>_r<timestamp>`.
+
+Across a database migration: the old bundle's `deploy.sh` runs the old `router-api migrate`,
+which applies nothing, because goose skips versions newer than the ones it ships. The old code
+then runs on the newer schema. That is safe while every migration since `<old>` only adds tables,
+columns or indexes, or drops a constraint (00025 drops two CHECK constraints). Before rolling
+back, read the Up halves:
+
+```sh
+git -C lanes/c1/bugnet-router diff <old commit>..<new commit> -- migrations/
+```
+
+If one drops or renames a column or table, or adds `NOT NULL` without a default, do not roll
+back; ship a fix forward. Never run a Down migration in production.
 
 ### 10.2 Payments
 
@@ -896,8 +956,7 @@ If the index changed with that release, put the old `index.json` back in the 7.1
 - **Fix.** Redeployed at 04:08Z with router `b1ce86f`, edges `5a65a06`, run `944471e`. The
   rerun passed.
 - **Lesson.** Build all four sibling repos at the same integration head, and read `ship.sh`'s
-  first four lines every time (5.3). The head check on branch `fix/ship-same-head` makes
-  `ship.sh` refuse mixed checkouts once it is merged (5.1 step 4).
+  first four lines every time (5.3). `ship.sh` now refuses mixed checkouts (5.1 step 4).
 
 ### 11.2 Payments code folder 0700
 
@@ -936,9 +995,9 @@ If the index changed with that release, put the old `index.json` back in the 7.1
 
 Before:
 
-- [ ] No filming freeze (founder or bugnet-65).
-- [ ] The four Go repos on one integration head, trees clean (`ship.sh --check-heads` once
-      merged).
+- [ ] No filming freeze (founder).
+- [ ] The four `lanes/c1` checkouts on `deploy/prod`, pushed, trees clean
+      (`ship.sh --check-heads` prints `ok` four times).
 - [ ] Payments tarball: `grep -c` printed `0`.
 
 Router side:
