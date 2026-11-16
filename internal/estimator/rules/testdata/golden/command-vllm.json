@@ -39,17 +39,17 @@
 				"total_price_micros": 60000
 			},
 			{
+				"fits": true,
+				"package_id": "gpu-20-30m",
+				"total_price_micros": 600000
+			},
+			{
 				"fits": false,
 				"package_id": "cpu-large-30m",
 				"short_on": [
 					"gpu"
 				],
 				"total_price_micros": 240000
-			},
-			{
-				"fits": true,
-				"package_id": "gpu-20-30m",
-				"total_price_micros": 600000
 			}
 		],
 		"floor": {

@@ -207,13 +207,81 @@ func TestAllowanceClaimBounds(t *testing.T) {
 	}
 }
 
+func TestFeeClaimStartOnly(t *testing.T) {
+	pub, priv := keys(t)
+	e := start()
+	e.Kind, e.HandleSHA256, e.FeeMicros = KindExtend, "ab", 3000
+	tok, _ := Sign(priv, e)
+	if _, err := Verify(pub, tok, now); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("extend with a fee: %v", err)
+	}
+	s := start()
+	s.AmountMicros, s.AllowanceMicros, s.FeeMicros = 1053000, 1000000, 3000
+	tok, _ = Sign(priv, s)
+	got, err := Verify(pub, tok, now)
+	if err != nil || got != s {
+		t.Fatalf("start with a fee: %+v %v", got, err)
+	}
+	if paid := got.PackageMicros(); paid != 50000 {
+		t.Fatalf("package micros %d, want 50000", paid)
+	}
+}
+
+func TestFeeClaimBounds(t *testing.T) {
+	pub, priv := keys(t)
+	for _, c := range []struct {
+		allowance, fee int64
+		ok             bool
+	}{
+		{0, -1, false}, {0, 50001, false}, {40000, 10001, false}, {50000, 1, false},
+		{0, 0, true}, {0, 50000, true}, {40000, 10000, true},
+	} {
+		s := start()
+		s.AllowanceMicros, s.FeeMicros = c.allowance, c.fee
+		tok, _ := Sign(priv, s)
+		_, err := Verify(pub, tok, now)
+		if c.ok != (err == nil) || !c.ok && !errors.Is(err, ErrMalformed) {
+			t.Errorf("allowance %d, fee %d: %v", c.allowance, c.fee, err)
+		}
+	}
+}
+
+func TestTokenWithoutFeeDecodesAsBefore(t *testing.T) {
+	pub, priv := keys(t)
+	raw := `{"order_id":"o","kind":"start","package_id":"p","amount_micros":1053000,` +
+		`"allowance_micros":1000000,"expires_at":"2026-11-04T12:01:00Z"}`
+	got, err := Verify(pub, signRaw(priv, raw), now)
+	if err != nil || got.FeeMicros != 0 || got.PackageMicros() != 53000 {
+		t.Fatalf("got %+v %v, want no fee and 53000 for the package", got, err)
+	}
+	withFee := `{"order_id":"o","kind":"start","package_id":"p","amount_micros":1053000,` +
+		`"allowance_micros":1000000,"fee_micros":3000,"expires_at":"2026-11-04T12:01:00Z"}`
+	got, err = Verify(pub, signRaw(priv, withFee), now)
+	if err != nil || got.FeeMicros != 3000 || got.PackageMicros() != 50000 {
+		t.Fatalf("got %+v %v, want fee 3000 and 50000 for the package", got, err)
+	}
+	tok, _ := Sign(priv, start())
+	if seg := strings.Split(tok, ".")[1]; strings.Contains(decode(t, seg), "fee_micros") {
+		t.Fatalf("a token without a fee sends the claim: %s", decode(t, seg))
+	}
+}
+
+func decode(t *testing.T, seg string) string {
+	t.Helper()
+	b, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestUnknownClaimsStillRefused(t *testing.T) {
 	pub, priv := keys(t)
 	exp := `"expires_at":"2026-11-04T12:01:00Z"`
 	for _, payload := range []string{
 		`{"kind":"start","issued":"2026-11-04T12:00:00Z",` + exp + `}`,
 		`{"kind":"start","payer":"` + payerAddr + `","allowance":1,` + exp + `}`,
-		`{"kind":"start","fee_micros":1,` + exp + `}`,
+		`{"kind":"start","fee":1,` + exp + `}`,
 	} {
 		if _, err := Verify(pub, signRaw(priv, payload), now); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: got %v, want ErrMalformed", payload, err)

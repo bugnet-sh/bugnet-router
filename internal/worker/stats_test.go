@@ -1,6 +1,7 @@
 package worker_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/jobargs"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
+	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/stats"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/worker"
@@ -232,6 +235,60 @@ func TestSnapshotDropsPaymentsDaysBeforeTheFloor(t *testing.T) {
 			t.Errorf("the log names the dropped day %s", value)
 		}
 	}
+}
+
+func TestSnapshotListsTheServersStartsLandOn(t *testing.T) {
+	// dear costs 33,334 for 10 minutes, over half of small-10m's 50,000, which the rule refuses
+	dear := local.New(local.Options{
+		Name: "dear", Root: t.TempDir(), Sizes: []provider.Size{small},
+		HourlyCostMicros: 200000, Increment: time.Second,
+	})
+	loc := newLocal(t, "local")
+	e, _, _ := statsEnv(t, options{providers: []provider.Provider{dear, loc}})
+	run := int64((24*60 - 5) / 10 * 10)
+	want := []stats.Server{{
+		Provider: "local", Size: "small", VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
+		LongestRunMinutes: &run, User: cmp.Or(loc.Capabilities().ExecUser, "root"),
+		Available: true,
+		Packages:  []stats.ServerPackage{{ID: smallPkg, Minutes: 10, PriceMicros: smallPrice}},
+	}}
+	eq(t, e.servers(t), want)
+
+	// Three quick failures take local out of placements, which leaves it listed but unavailable
+	for range 3 {
+		e.tracker.RecordFailure("local")
+	}
+	want[0].Available = false
+	eq(t, e.servers(t), want)
+}
+
+// servers is a fresh snapshot body's servers
+func (e *env) servers(t *testing.T) []stats.Server {
+	t.Helper()
+	var body struct {
+		Servers []stats.Server `json:"servers"`
+	}
+	if err := json.Unmarshal(e.snapshot(t).Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Servers
+}
+
+func TestSnapshotLeavesOutAProviderImagesAcceptRefuses(t *testing.T) {
+	// old runs an image the saga's images.accept leaves out
+	old, loc := newLocal(t, "old"), newLocal(t, "local")
+	e, _, _ := statsEnv(t, options{
+		providers: []provider.Provider{old, loc},
+		features: provider.Features{Images: map[string]string{
+			"old": "2026.10.1", "local": "2026.11.1",
+		}},
+		imageAccept: []string{"2026.11.1"},
+	})
+	listed := []string{}
+	for _, s := range e.servers(t) {
+		listed = append(listed, s.Provider)
+	}
+	eq(t, listed, []string{"local"})
 }
 
 func TestSnapshotJobLimits(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/spend"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
@@ -45,11 +46,12 @@ func TestAttemptCostEdges(t *testing.T) {
 		int64(24_000_000_000_000))
 }
 
-func TestJudgeFindsPlacementsUnderTheFloor(t *testing.T) {
-	eq(t, spend.Judge(40, 100, 0.5), spend.Verdict{})
-	eq(t, spend.Judge(60, 100, 0.5), spend.Verdict{BelowFloor: true})
-	eq(t, spend.Judge(150, 100, 0.5), spend.Verdict{BelowFloor: true, Loss: true})
-	eq(t, spend.Judge(1, 0, 0.5), spend.Verdict{BelowFloor: true, Loss: true})
+func TestJudge(t *testing.T) {
+	r := pricing.Rule{MarkupBP: 1000}
+	eq(t, spend.Judge(3050, 3355, r), spend.Verdict{})
+	eq(t, spend.Judge(3050, 3354, r), spend.Verdict{UnderMarkup: true})
+	eq(t, spend.Judge(3050, 3000, r), spend.Verdict{UnderMarkup: true, Loss: true})
+	eq(t, spend.Judge(1, 0, r), spend.Verdict{UnderMarkup: true, Loss: true})
 }
 
 func TestSpansCostPricesEachAttemptAtItsOwnProvider(t *testing.T) {

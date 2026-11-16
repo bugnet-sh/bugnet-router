@@ -222,10 +222,10 @@ func hfHardware(w http.ResponseWriter, r *http.Request) {
 		"unitCostMicroUSD": 20000, "unitLabel": "minute"}]`)
 }
 
-// t4Package is a 10-minute T4 package, which t4-small covers
+// t4Package is a 10-minute T4 package at a fixed price, which t4-small covers
 func t4Package(price int64) catalog.Package {
-	return catalog.Package{ID: "gpu-t4-10m", Minutes: 10, PriceMicros: price, GPUModel: gpu.T4,
-		Resources: provider.Resources{
+	return catalog.Package{ID: "gpu-t4-10m", Minutes: 10, PriceMicros: price, FixedPrice: true,
+		GPUModel: gpu.T4, Resources: provider.Resources{
 			VCPU: 3, MemoryMiB: 12 << 10, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: 16,
 			GPUModel: gpu.T4,
 		}}
@@ -261,7 +261,7 @@ func buildHFRead(t *testing.T, pkgs []catalog.Package) (provider.Provider, *fake
 
 func TestBuildHF(t *testing.T) {
 	logs := captureLogs(t)
-	// The table's $0.41 an hour costs 88,838 for 10 minutes and 3 start minutes, now 262,167
+	// $0.41 an hour costs 88,838 for 10 minutes and 3 start minutes, now 262,167 priced 288,384
 	p, web := buildHFRead(t, []catalog.Package{t4Package(180_000)})
 	caps := p.Capabilities()
 	if !caps.GPU || !caps.NeedsRunnerUpload || !caps.LossyExecText ||
@@ -281,9 +281,9 @@ func TestBuildHF(t *testing.T) {
 		t.Errorf("calls %q, want one keyless read of the hardware list", got)
 	}
 	got := logs.String()
-	if !strings.Contains(got, "level=ERROR") || !strings.Contains(got, "margin_floor") ||
+	if !strings.Contains(got, "level=ERROR") || !strings.Contains(got, "pricing.markup") ||
 		!strings.Contains(got, `\"gpu-t4-10m\"`) {
-		t.Errorf("log %q, want an error naming the package the new price puts under margin", got)
+		t.Errorf("log %q, want an error naming the package the new price puts under markup", got)
 	}
 	if strings.Contains(got, "hf_test") {
 		t.Errorf("log %q holds the Jobs token", got)
@@ -294,7 +294,7 @@ func TestBuildHFLogsNoMarginKept(t *testing.T) {
 	logs := captureLogs(t)
 	buildHFRead(t, []catalog.Package{t4Package(600_000)})
 	if got := logs.String(); strings.Contains(got, "level=ERROR") {
-		t.Errorf("log %q, want no error while the package keeps its margin", got)
+		t.Errorf("log %q, want no error while the package keeps its markup", got)
 	}
 }
 

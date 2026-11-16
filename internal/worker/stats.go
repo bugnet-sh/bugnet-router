@@ -90,7 +90,14 @@ func (w *Worker) snapshot(ctx context.Context) error {
 	if dropped > 0 {
 		w.log.Warn("stats: Payments days before the floor left out of daily", "count", dropped)
 	}
-	body, err := stats.Encode(stats.Merge(f, part, paidAt, s.Catalog.All(), s.Limits))
+	pkgs := s.Catalog.All()
+	var servers []stats.Server
+	var quote func(catalog.Package) int64
+	if w.engine != nil {
+		servers = stats.Servers(w.engine, w.registry, pkgs, w.placing)
+		quote = stats.Quote(w.engine, w.placing)
+	}
+	body, err := stats.Encode(stats.Merge(f, part, paidAt, pkgs, quote, servers, s.Limits))
 	if err != nil {
 		return err
 	}

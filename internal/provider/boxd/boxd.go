@@ -27,6 +27,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"math"
 	"path"
 	"regexp"
 	"slices"
@@ -67,8 +68,10 @@ const (
 	afterCreateLimit = 15 * time.Second
 	// probeTimeout bounds one agent probe as E2B and Koyeb bound theirs, so a hung one is retried
 	probeTimeout = 5 * time.Second
-	// usdPerEURCents is a conservative fixed 1.15 USD per EUR, set on 2026-11-04
-	usdPerEURCents = 115
+	// defaultUSDPerEUR is the rate when Options sets none
+	defaultUSDPerEUR = 1.12
+	// rateBase is the parts per unit the rate is held in
+	rateBase = 10_000
 	// fallbackArch is assumed because boxd's API reports no architecture
 	fallbackArch = "amd64"
 )
@@ -78,12 +81,12 @@ type sizeClass struct {
 	eurPerHour int64
 }
 
-// Size classes and their maximum running prices in EUR micros per hour, boxd.sh/pricing 2026-11-04
+// Size classes and their maximum running prices in EUR micros per hour, boxd.sh/pricing 2026-11-14
 var sizes = []sizeClass{
 	{provider.Size{Name: "1x4", Resources: res(1, 4)}, 100_000},
-	{provider.Size{Name: "2x8", Resources: res(2, 8)}, 180_000},
+	{provider.Size{Name: "2x8", Resources: res(2, 8)}, 182_000},
 	{provider.Size{Name: "4x16", Resources: res(4, 16)}, 360_000},
-	{provider.Size{Name: "8x32", Resources: res(8, 32)}, 700_000},
+	{provider.Size{Name: "8x32", Resources: res(8, 32)}, 704_000},
 }
 
 func res(vcpu, memGiB int) provider.Resources {
@@ -114,6 +117,8 @@ type Options struct {
 	GateRoute string
 	// ParkedGiB is the disk written per hibernated machine, which sets its idle cost, 5 when 0
 	ParkedGiB int
+	// USDPerEUR converts boxd's euro prices to dollars, 1.12 when 0
+	USDPerEUR float64
 	// WakeCheck is the command Unpark runs until it exits 0, the runner's ping when empty
 	WakeCheck []string
 	// Snapshots maps each size to the snapshot its machines restore, none for boxd's own image
@@ -133,6 +138,7 @@ type Provider struct {
 	gatePort     int
 	gateRoute    string
 	parkedGiB    int
+	rateBP       int64 // dollars per 10000 euros
 	// pingArgv is the command Unpark runs until it exits 0
 	pingArgv  []string
 	snapshots map[string]string
@@ -147,6 +153,10 @@ func New(opts Options) (*Provider, error) {
 	}
 	if opts.ParkedGiB < 0 {
 		return nil, fmt.Errorf("boxd: parked GiB %d is negative", opts.ParkedGiB)
+	}
+	rateBP := int64(math.Round(cmp.Or(opts.USDPerEUR, defaultUSDPerEUR) * rateBase))
+	if math.IsNaN(opts.USDPerEUR) || rateBP < 1 || rateBP > 100*rateBase {
+		return nil, fmt.Errorf("boxd: USD per EUR %v is not a usable rate", opts.USDPerEUR)
 	}
 	if opts.GatePort < 0 || opts.GatePort > 65535 {
 		return nil, fmt.Errorf("boxd: gate port %d is not a TCP port", opts.GatePort)
@@ -188,6 +198,7 @@ func New(opts Options) (*Provider, error) {
 		afterCreate: afterCreateLimit, probeWithin: probeTimeout,
 		gatePort:  cmp.Or(opts.GatePort, provider.DefaultGatePort),
 		gateRoute: route, parkedGiB: cmp.Or(opts.ParkedGiB, defaultParkedGiB),
+		rateBP:   rateBP,
 		pingArgv: pingArgv, snapshots: maps.Clone(opts.Snapshots),
 		imagePoll: snapshotPoll, imageWait: snapshotWait,
 	}, nil
@@ -256,7 +267,7 @@ func (p *Provider) HourlyCostMicros(size provider.Size) int64 {
 			eur = s.eurPerHour
 		}
 	}
-	return (eur*usdPerEURCents + 99) / 100
+	return p.usd(eur)
 }
 
 // BillingIncrement is one second, boxd meters by the second

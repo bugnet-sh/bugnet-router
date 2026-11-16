@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,8 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 )
@@ -292,7 +297,7 @@ func TestStartRefusesBadBoxdRefs(t *testing.T) {
 	}
 }
 
-func TestStartRefusesGPUPackagesUnderTheMargin(t *testing.T) {
+func TestStartRefusesGPUPackagesUnderTheMarkup(t *testing.T) {
 	h200 := provider.Size{Name: "lium-h200", Resources: provider.Resources{
 		VCPU: 16, MemoryMiB: 240 << 10, DiskGiB: 900, GPUCount: 1, GPUMemoryGiB: 141,
 		GPUModel: gpu.H200,
@@ -303,25 +308,144 @@ func TestStartRefusesGPUPackagesUnderTheMargin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{GPUOrder: []string{"lium", "hf"}, MarginFloor: 0.5}
-	// 10 minutes at the $4.90 cap cost 816667 micros, so the floor wants 1633334
-	for price, want := range map[int64]string{
-		1_633_334: "",
-		1_633_333: `package "gpu-h200-10m" at 1633333 micros misses margin_floor 0.5 on lium`,
+	cfg := config.Config{GPUOrder: []string{"lium", "hf"}}
+	cfg.Pricing.Rule = pricing.Rule{MarkupBP: 1000}
+	// 10 minutes at the $4.90 cap cost 816667 micros, so the markup wants 898334
+	for price, want := range map[string]string{
+		`, "price_micros": 898334`: "",
+		`, "price_micros": 898333`: `package "gpu-h200-10m" at 898333 micros misses ` +
+			`pricing.markup 0.1 on lium`,
+		// A live package is priced at the marked up cost wherever it lands
+		"": "",
 	} {
 		cat, err := catalog.Load(writeTemp(t, "packages.json", fmt.Appendf(nil,
 			`{"packages": [{"id": "gpu-h200-10m", "resources": {"vcpu": 4, "memory_mib": `+
 				`12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 141, "gpu_model": `+
-				`"NVIDIA H200"}, "minutes": 10, "price_micros": %d}]}`, price)))
+				`"NVIDIA H200"}, "minutes": 10%s}]}`, price)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		err = checkGPUMargin(r, cfg, cat)
 		switch {
 		case want == "" && err != nil:
-			t.Errorf("at %d micros: %v", price, err)
+			t.Errorf("at %q: %v", price, err)
 		case want != "" && (err == nil || !strings.Contains(err.Error(), want)):
-			t.Errorf("at %d micros: got %v, want an error saying %q", price, err, want)
+			t.Errorf("at %q: got %v, want an error saying %q", price, err, want)
 		}
 	}
+}
+
+// downHealth reports every provider as down
+type downHealth struct{}
+
+func (downHealth) Healthy(string) bool           { return false }
+func (downHealth) ReadyP95(string) time.Duration { return 0 }
+
+func TestStartLogsEachPackageNoProviderPlaces(t *testing.T) {
+	// 10 minutes cost 3,000, so a fixed price of 5,000 holds a markup up to 66%
+	p := cheapProvider(t)
+	reg, err := provider.NewRegistry([]provider.Provider{p}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := func(id string, vcpu int, price int64, extends string) string {
+		return fmt.Sprintf(`{"id": %q, "resources": {"vcpu": %d, "memory_mib": 2048, `+
+			`"disk_gib": 10}, "minutes": 10, "price_micros": %d, "extension_of": %q}`,
+			id, vcpu, price, extends)
+	}
+	cat, err := catalog.Load(writeTemp(t, "packages.json", []byte(`{"packages": [`+
+		strings.Join([]string{
+			pkg("fits", 2, 50000, ""), pkg("fits-more", 2, 10, "fits"),
+			pkg("thin", 2, 5000, ""), pkg("huge", 64, 50000, ""),
+		}, ", ")+`]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cheap runs the image 2026.10.1 in this registry
+	aged, err := provider.NewRegistry([]provider.Provider{p}, provider.Features{
+		Images: map[string]string{"cheap": "2026.10.1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The provider is down, which a boot check looks past
+	e, agedE := placement.New(reg, downHealth{}, nil), placement.New(aged, downHealth{}, nil)
+	// A minute of overhead takes thin's cost to 3,300, which 60% prices at 5,280
+	slow := map[string]time.Duration{"cheap": time.Minute}
+	for _, tc := range []struct {
+		e      *placement.Engine
+		rule   pricing.Rule
+		accept []string
+		want   []string
+	}{
+		{e, pricing.Rule{MarkupBP: 10000}, nil, []string{"huge", "thin"}},
+		{e, pricing.Rule{MarkupBP: 1000}, nil, []string{"huge"}},
+		{e, pricing.Rule{MarkupBP: 6000}, nil, []string{"huge"}},
+		{e, pricing.Rule{MarkupBP: 6000, Overhead: slow}, nil, []string{"huge", "thin"}},
+		{agedE, pricing.Rule{MarkupBP: 1000}, []string{"2026.10.1"}, []string{"huge"}},
+		{agedE, pricing.Rule{MarkupBP: 1000}, []string{"2026.11.1"},
+			[]string{"fits", "huge", "thin"}},
+	} {
+		named := checked(t, tc.e, cat, tc.rule, tc.accept)
+		if !reflect.DeepEqual(named, tc.want) {
+			t.Errorf("rule %+v accept %v named %v, want %v", tc.rule, tc.accept, named, tc.want)
+		}
+	}
+}
+
+func TestStartLogsALivePackageThatLandsNowhere(t *testing.T) {
+	reg, err := provider.NewRegistry([]provider.Provider{cheapProvider(t)}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := placement.New(reg, downHealth{}, nil)
+	live := func(id string, vcpu int) *catalog.Catalog {
+		cat, err := catalog.Load(writeTemp(t, "packages.json", fmt.Appendf(nil,
+			`{"packages": [{"id": %q, "resources": {"vcpu": %d, "memory_mib": 2048, `+
+				`"disk_gib": 10}, "minutes": 10}]}`, id, vcpu)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cat
+	}
+	// A live package lands at any cost, so only a missing size keeps it off cheap
+	rule := pricing.Rule{MarkupBP: 100000}
+	if named := checked(t, e, live("lands", 2), rule, nil); len(named) != 0 {
+		t.Errorf("a live package that lands logged %v", named)
+	}
+	if named := checked(t, e, live("huge", 64), rule, nil); !slices.Equal(named, []string{"huge"}) {
+		t.Errorf("a live package that lands nowhere logged %v, want huge", named)
+	}
+}
+
+// cheapProvider is a provider named cheap that sells a small size at 18,000 an hour
+func cheapProvider(t *testing.T) provider.Provider {
+	t.Helper()
+	small := provider.Size{Name: "small", Resources: provider.Resources{
+		VCPU: 2, MemoryMiB: 2048, DiskGiB: 10,
+	}}
+	return local.New(local.Options{Name: "cheap", Root: t.TempDir(),
+		Sizes: []provider.Size{small}, HourlyCostMicros: 18000, Increment: time.Second})
+}
+
+// checked runs the boot check of the catalog and names each package it logged, sorted
+func checked(
+	t *testing.T, e *placement.Engine, cat *catalog.Catalog, rule pricing.Rule, accept []string,
+) []string {
+	t.Helper()
+	var logs bytes.Buffer
+	var cfg config.Config
+	cfg.Pricing.Rule = rule
+	cfg.Images.Accept = accept
+	checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), e, cat, cfg)
+	var named []string
+	for line := range strings.Lines(logs.String()) {
+		if !strings.Contains(line, "level=ERROR") {
+			t.Errorf("rule %+v accept %v logged %q", rule, accept, line)
+		}
+		_, id, _ := strings.Cut(line, "package=")
+		named = append(named, strings.Fields(id)[0])
+	}
+	slices.Sort(named)
+	return named
 }

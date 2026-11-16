@@ -8,26 +8,27 @@ import (
 	"slices"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
-// spendWindow is how far back /monitor counts placements that ended under the margin floor
+// spendWindow is how far back /monitor counts placements that ended over their price
 const spendWindow = 24 * time.Hour
 
 // costDays is how many UTC days back /monitor shows the daily cost check's mismatches
 const costDays = 3
 
-// spendCheck holds the margin floor and the settings of reconcile.cost_alert_fraction, a zero
-// floor reporting no margin
+// spendCheck holds the pricing rule and the settings of reconcile.cost_alert_fraction
 type spendCheck struct {
-	marginFloor       float64
+	rule              pricing.Rule
 	costAlertFraction float64
 }
 
 // spendHealth is what the last day showed of what placements cost and what providers bill
 type spendHealth struct {
-	// below counts the placements that ended costing over (1 - margin_floor) of what they paid
-	below, loss int
+	// under counts the placements that ended costing over their markup, loss those costing over
+	// what they paid
+	under, loss int
 	// foreign counts each provider's sandboxes no known deployment owns
 	foreign map[string]int
 	// alerts are the daily checks that found a mismatch
@@ -39,12 +40,10 @@ type spendHealth struct {
 func checkSpend(ctx context.Context, log *slog.Logger, st *store.Store, c spendCheck) spendHealth {
 	h := spendHealth{fraction: c.costAlertFraction}
 	now := time.Now()
-	if c.marginFloor > 0 {
-		var err error
-		h.below, h.loss, err = st.MarginCounts(ctx, now.Add(-spendWindow), c.marginFloor)
-		if err != nil {
-			log.Warn("monitor cannot read the margins", "err", err)
-		}
+	var err error
+	h.under, h.loss, err = st.MarginCounts(ctx, now.Add(-spendWindow), c.rule)
+	if err != nil {
+		log.Warn("monitor cannot read the margins", "err", err)
 	}
 	foreign, err := st.ForeignSandboxes(ctx)
 	if err != nil {
@@ -66,10 +65,10 @@ func checkSpend(ctx context.Context, log *slog.Logger, st *store.Store, c spendC
 
 func (h spendHealth) problems() []string {
 	var out []string
-	if h.below > 0 {
+	if h.loss > 0 {
 		out = append(out, fmt.Sprintf(
-			"%d placements ended under the margin floor in the last 24 hours, %d cost more than "+
-				"they paid", h.below, h.loss))
+			"%d placements ended costing more than they paid in the last 24 hours, %d more cost "+
+				"over their markup", h.loss, h.under-h.loss))
 	}
 	for _, name := range slices.Sorted(maps.Keys(h.foreign)) {
 		out = append(out, fmt.Sprintf("provider %s: %d sandboxes no known deployment owns",

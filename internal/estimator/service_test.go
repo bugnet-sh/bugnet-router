@@ -1,6 +1,7 @@
 package estimator_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/estimatortest"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/fetch"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/rules"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
@@ -376,4 +378,54 @@ func TestShuffledAvailabilityGivesTheSameBytes(t *testing.T) {
 	b, err := r.svc.Estimate(t.Context(), estimator.Request{})
 	eq(t, err, nil)
 	eq(t, a.EstimateID, b.EstimateID)
+}
+
+// the handed prices are stored with the inputs, and a row without them reads the fixed prices
+func TestReplayKeepsPrices(t *testing.T) {
+	cat, err := json.Marshal(map[string]any{"packages": []catalog.Package{
+		{ID: "a", Resources: provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5}, Minutes: 10},
+		{ID: "a-more", Resources: provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5},
+			Minutes: 10, ExtensionOf: "a", PriceMicros: 7, FixedPrice: true},
+	}})
+	eq(t, err, nil)
+	out := []byte(`{"available": ["a"]}`)
+	total := func(inputs string) int64 {
+		got, err := estimator.Replay([]byte(inputs), cat, out)
+		eq(t, err, nil)
+		var o struct{ Fits []rules.Fit }
+		eq(t, json.Unmarshal(got, &o), nil)
+		return o.Fits[0].TotalPriceMicros
+	}
+	const req = `"request": {"workload": "serve", "minutes": 30}`
+	eq(t, total(`{`+req+`, "prices": {"a": 3355, "a-more": 3300}}`), int64(9955))
+	eq(t, total(`{`+req+`}`), int64(0+2*7))
+}
+
+// the request's prices price the fits and the stored inputs, so other prices are another row
+func TestEstimateTakesHandedPrices(t *testing.T) {
+	r := newRig(t, nil, nil)
+	req := estimator.Request{Workload: rules.WorkloadScript, ExpectedMinutes: 50,
+		MinutesGiven: true, Prices: map[string]int64{"small-30m": 9955, "small-10m-more": 3300}}
+	a, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	totals := map[string]int64{}
+	for _, f := range a.Output.Fits {
+		totals[f.PackageID] = f.TotalPriceMicros
+	}
+	// small-30m takes two extensions, 9955 + 2 x 3300, and big-30m keeps its fixed price
+	eq(t, totals, map[string]int64{"small-30m": 16555, "big-30m": 400000})
+	st, err := r.svc.Get(t.Context(), uuid.MustParse(a.EstimateID))
+	eq(t, err, nil)
+	var in struct{ Prices map[string]int64 }
+	eq(t, json.Unmarshal(st.Inputs, &in), nil)
+	eq(t, in.Prices, req.Prices)
+	again, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	eq(t, again.EstimateID, a.EstimateID)
+	req.Prices = map[string]int64{"small-30m": 25031, "small-10m-more": 24420}
+	dearer, err := r.svc.Estimate(t.Context(), req)
+	eq(t, err, nil)
+	if dearer.EstimateID == a.EstimateID || dearer.InputsSHA256 == a.InputsSHA256 {
+		t.Fatalf("other prices reused the row %q", a.EstimateID)
+	}
 }

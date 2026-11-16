@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
@@ -113,13 +114,14 @@ func TestHoldRaisesCostAndLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	eq(t, held[0].CostMicros, int64(125000))
-	eq(t, held[0].MarginFraction, 0.375)
-	// The hold bills into the margin, so a floor the bare cost clears can refuse it
-	if _, err = e.Candidates(Inputs{Package: pkg(10, 200000), MarginFloor: 0.4}); err != nil {
+	eq(t, held[0].PriceMicros, int64(200000))
+	// The hold bills into the cost, so a markup the bare cost clears can refuse it
+	double := pricing.Rule{MarkupBP: 10000}
+	if _, err = e.Candidates(Inputs{Package: pkg(10, 200000), Rule: double}); err != nil {
 		t.Fatalf("the bare cost was refused: %v", err)
 	}
 	_, err = e.Candidates(Inputs{
-		Package: pkg(10, 200000), Hold: 150 * time.Second, MarginFloor: 0.4,
+		Package: pkg(10, 200000), Hold: 150 * time.Second, Rule: double,
 	})
 	eq(t, errors.Is(err, ErrNoCandidate), true)
 	// The longest hold must fit the lifetime: 10 + 6 + 5 minutes needs more than 20

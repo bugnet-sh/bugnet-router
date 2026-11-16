@@ -9,6 +9,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
@@ -41,7 +42,6 @@ type HedgerDeps struct {
 	Prefix   string
 	// CreatesPerSecond is each provider's create rate, which sizes its create bucket
 	CreatesPerSecond map[string]int
-	MarginFloor      float64
 }
 
 // Hedger decides when a placing placement starts a second attempt beside the first
@@ -80,11 +80,12 @@ func (h *Hedger) After(provider string, path Path) (time.Duration, bool) {
 // Allow reports whether next may run beside running, taking a hedge token when it may
 //
 // pre is the time running's sandbox already ran before the order and left is what remains of the
-// placing budget. A refusal writes nothing, and a token is taken only once every other condition
-// holds, so a refused hedge costs the bucket nothing.
+// placing budget. budget is what the earlier attempts left of the payment, which the worst case of
+// both attempts must fit at r's markup. A refusal writes nothing, and a token is taken only once
+// every other condition holds, so a refused hedge costs the bucket nothing.
 func (h *Hedger) Allow(
 	ctx context.Context, pkg catalog.Package, running, next placement.Candidate,
-	pre, left time.Duration,
+	pre, left time.Duration, budget int64, r pricing.Rule,
 ) bool {
 	if h == nil || !h.d.Settings.Enabled {
 		return false
@@ -101,8 +102,8 @@ func (h *Hedger) Allow(
 		return false
 	case !h.bucketFull(ctx, name):
 		return false
-	case !placement.HedgeFits(pkg, running, next, pre, h.d.Settings.LoserLife,
-		h.d.MarginFloor):
+	case !placement.HedgeFits(running, next, time.Duration(pkg.Minutes)*time.Minute, pre,
+		h.d.Settings.LoserLife, budget, r):
 		return false
 	}
 	ok, _, err := h.limits.TakeKey(ctx, ratelimit.Bucket{

@@ -37,6 +37,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -223,6 +224,8 @@ type options struct {
 	pools *config.Pools
 	// tel makes the saga's and the worker's spans, off when nil
 	tel *telemetry.Telemetry
+	// imageAccept is the saga's images.accept, any image when nil
+	imageAccept []string
 }
 
 type env struct {
@@ -240,6 +243,8 @@ type env struct {
 	worker     *worker.Worker
 	catalog    *catalog.Catalog
 	registry   *provider.Registry
+	// tracker is the engine's health source
+	tracker *placement.Tracker
 }
 
 func newEnv(t *testing.T, o options) *env {
@@ -301,7 +306,7 @@ func newEnv(t *testing.T, o options) *env {
 		Prefix:       prefix,
 		OrderKey:     pub,
 		HandleKey:    hk,
-		MarginFloor:  0.5,
+		Rule:         pricing.Rule{MarkupBP: 10000},
 		Tracker:      tracker,
 		ReplicaID:    "worker-test",
 		DeploymentID: o.deployment,
@@ -311,6 +316,7 @@ func newEnv(t *testing.T, o options) *env {
 		Wallets:      o.wallets,
 		Reserve:      o.reserve,
 		Telemetry:    o.tel,
+		ImageAccept:  o.imageAccept,
 	}
 	if o.pools != nil {
 		w := poolpkg.NewWarmth(st, poolpkg.Configs(*o.pools), nil)
@@ -366,7 +372,7 @@ func newEnv(t *testing.T, o options) *env {
 	return &env{
 		saga: w.Saga(), store: st, pool: pool, river: w.River(), local: ps[0], priv: priv,
 		deployment: o.deployment, vk: vk, prefix: prefix, keys: keys, worker: w, catalog: cat,
-		registry: reg,
+		registry: reg, tracker: tracker,
 	}
 }
 

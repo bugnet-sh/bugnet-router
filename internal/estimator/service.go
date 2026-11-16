@@ -104,6 +104,8 @@ type Request struct {
 	Needs        []rules.Need
 	// Available says whether a start package can be hosted now, all of them when nil
 	Available func(packageID string) bool
+	// Prices is each package's price for this answer, a missing package keeping its fixed price
+	Prices map[string]int64
 }
 
 // Answer is what Estimate returns
@@ -173,6 +175,7 @@ func (s *Service) Estimate(ctx context.Context, req Request) (Answer, error) {
 	in := rules.Input{
 		Request: rr, Facts: fv, Catalog: s.d.Catalog.All(), Images: s.d.Images,
 		MaxLifetimeMinutes: s.d.MaxLifetimeMinutes, History: s.loadHistory(ctx, src, res, fv, req),
+		Prices: req.Prices,
 	}
 	out := rules.Run(in)
 	available := s.available(in.Catalog, req.Available)

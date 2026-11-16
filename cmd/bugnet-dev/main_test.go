@@ -272,6 +272,151 @@ func TestTokenExtendPricedFromSettings(t *testing.T) {
 	}
 }
 
+const liveCatalogJSON = `{"packages": [
+	{"id": "small-10m", "resources": {"vcpu": 1, "memory_mib": 512}, "minutes": 10},
+	{"id": "small-10m-more", "resources": {"vcpu": 1, "memory_mib": 512}, "minutes": 10,
+		"extension_of": "small-10m"}
+]}`
+
+// quoteRouter answers PricePackage and CheckExtendPlacement and records each call
+type quoteRouter struct {
+	routerv1connect.UnimplementedSandboxRouterServiceHandler
+	option    *routerv1.PackageOption
+	priceReqs chan *routerv1.PricePackageRequest
+	checkReqs chan *routerv1.CheckExtendPlacementRequest
+}
+
+func newQuoteRouter(option *routerv1.PackageOption) *quoteRouter {
+	return &quoteRouter{
+		option:    option,
+		priceReqs: make(chan *routerv1.PricePackageRequest, 4),
+		checkReqs: make(chan *routerv1.CheckExtendPlacementRequest, 4),
+	}
+}
+
+func (r *quoteRouter) PricePackage(
+	_ context.Context, req *connect.Request[routerv1.PricePackageRequest],
+) (*connect.Response[routerv1.PricePackageResponse], error) {
+	r.priceReqs <- req.Msg
+	return connect.NewResponse(&routerv1.PricePackageResponse{Option: r.option}), nil
+}
+
+func (r *quoteRouter) CheckExtendPlacement(
+	_ context.Context, req *connect.Request[routerv1.CheckExtendPlacementRequest],
+) (*connect.Response[routerv1.CheckExtendPlacementResponse], error) {
+	r.checkReqs <- req.Msg
+	return connect.NewResponse(&routerv1.CheckExtendPlacementResponse{Package: r.option}), nil
+}
+
+// recvCall returns the call the router has already recorded, and fails when there is none
+func recvCall[T any](t *testing.T, calls chan *T) *T {
+	t.Helper()
+	select {
+	case req := <-calls:
+		return req
+	default:
+		t.Fatal("the router was not called")
+		return nil
+	}
+}
+
+// quoteSettings serves r and returns a settings file with the catalog and the router's address
+func quoteSettings(t *testing.T, r *quoteRouter, catalog string) string {
+	t.Helper()
+	packages := filepath.Join(t.TempDir(), "packages.json")
+	if err := os.WriteFile(packages, []byte(catalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	api, err := os.ReadFile(serve(t, r))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeSettings(t, `packages_file = "`+packages+`"`+"\n"+string(api))
+}
+
+func TestTokenPricesLiveFromTheRouter(t *testing.T) {
+	pub, priv := newKey(t)
+	r := newQuoteRouter(&routerv1.PackageOption{
+		PackageId: "small-10m", PriceMicros: 3355, Available: true,
+	})
+	settings := quoteSettings(t, r, liveCatalogJSON)
+	vars := env(map[string]string{
+		"BUGNET_ORDER_PRIVATE_KEY": priv, "BUGNET_INTERNAL_TOKEN": strings.Repeat("t", 32),
+	})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "token", "--package", "small-10m",
+		"--estimate-id", "est_1", "--allowance-micros", "100")
+	if code != 0 {
+		t.Fatalf("token exited %d: %s", code, stderr)
+	}
+	c, err := ordertoken.Verify(pub, strings.TrimSpace(out), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AmountMicros != 3455 {
+		t.Errorf("amount %d, want the quote 3355 plus the allowance 100", c.AmountMicros)
+	}
+	req := recvCall(t, r.priceReqs)
+	if req.GetPackageId() != "small-10m" || req.GetEstimateId() != "est_1" {
+		t.Errorf("router got %v, want the package and the estimate id", req)
+	}
+	if stderr != "" {
+		t.Errorf("an available package wrote %q to stderr", stderr)
+	}
+
+	gone := newQuoteRouter(&routerv1.PackageOption{PackageId: "small-10m", PriceMicros: 3355})
+	settings = quoteSettings(t, gone, liveCatalogJSON)
+	out, stderr, code = runCLI(t, vars, "--config", settings, "token", "--package", "small-10m")
+	if code != 0 || out == "" || !strings.Contains(stderr, "unavailable") {
+		t.Errorf("an unavailable package exited %d with %q and %q, want a token and a note",
+			code, out, stderr)
+	}
+}
+
+func TestTokenFixedPriceReadsTheCatalog(t *testing.T) {
+	pub, priv := newKey(t)
+	r := newQuoteRouter(&routerv1.PackageOption{PriceMicros: 1, Available: true})
+	settings := quoteSettings(t, r, catalogJSON)
+	vars := env(map[string]string{
+		"BUGNET_ORDER_PRIVATE_KEY": priv, "BUGNET_INTERNAL_TOKEN": strings.Repeat("t", 32),
+	})
+	out, stderr, code := runCLI(t, vars, "--config", settings, "token", "--package", "small-10m")
+	if code != 0 {
+		t.Fatalf("token exited %d: %s", code, stderr)
+	}
+	c, err := ordertoken.Verify(pub, strings.TrimSpace(out), time.Now())
+	if err != nil || c.AmountMicros != 50000 {
+		t.Errorf("claims %+v, %v, want the catalog price 50000", c, err)
+	}
+	if len(r.priceReqs) != 0 || len(r.checkReqs) != 0 {
+		t.Error("a fixed package called the router")
+	}
+}
+
+func TestTokenExtensionPriceFromCheckExtend(t *testing.T) {
+	pub, priv := newKey(t)
+	r := newQuoteRouter(&routerv1.PackageOption{
+		PackageId: "small-10m-more", PriceMicros: 3700, Available: true,
+	})
+	settings := quoteSettings(t, r, liveCatalogJSON)
+	vars := env(map[string]string{
+		"BUGNET_ORDER_PRIVATE_KEY": priv, "BUGNET_INTERNAL_TOKEN": strings.Repeat("t", 32),
+	})
+	h, _ := handle.New()
+	out, stderr, code := runCLI(t, vars, "--config", settings, "token", "--kind", "extend",
+		"--package", "small-10m-more", "--handle", h)
+	if code != 0 {
+		t.Fatalf("token exited %d: %s", code, stderr)
+	}
+	c, err := ordertoken.Verify(pub, strings.TrimSpace(out), time.Now())
+	if err != nil || c.AmountMicros != 3700 {
+		t.Errorf("claims %+v, %v, want the extension price 3700", c, err)
+	}
+	req := recvCall(t, r.checkReqs)
+	if req.GetHandle() != h || req.GetPackageId() != "small-10m-more" || len(r.priceReqs) != 0 {
+		t.Errorf("router got %v, want one check for the handle and package", req)
+	}
+}
+
 func TestTokenRefusesBadArguments(t *testing.T) {
 	_, priv := newKey(t)
 	h, _ := handle.New()

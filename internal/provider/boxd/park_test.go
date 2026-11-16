@@ -78,9 +78,9 @@ func TestBoxdUnparkUnknownMachine(t *testing.T) {
 
 func TestBoxdParkedCostFollowsGiB(t *testing.T) {
 	_, p, _ := parkProvider(t)
-	eq(t, p.ParkedHourlyCostMicros(provider.Size{Name: "1x4"}), int64(460))
+	eq(t, p.ParkedHourlyCostMicros(provider.Size{Name: "1x4"}), int64(448))
 	p.parkedGiB = 10
-	eq(t, p.ParkedHourlyCostMicros(provider.Size{Name: "1x4"}), int64(920))
+	eq(t, p.ParkedHourlyCostMicros(provider.Size{Name: "1x4"}), int64(896))
 }
 
 func TestBoxdIsAParker(*testing.T) {

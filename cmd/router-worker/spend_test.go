@@ -9,15 +9,17 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
-func TestMonitorShowsSpend(t *testing.T) {
+func TestSpendCheckFlagsLossOnly(t *testing.T) {
 	pool := migrated(t)
 	st := store.New(pool)
 	vk, _ := testenv.Valkey(t)
 	ctx := t.Context()
+	rule := pricing.Rule{MarkupBP: 1000}
 	ask := func(c spendCheck) (int, string) {
 		rec := httptest.NewRecorder()
 		monitor(discard, st, vk, testPrefix, healthy, testPools, feedCheck{}, nil,
@@ -39,19 +41,19 @@ func TestMonitorShowsSpend(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ended(10, 100)
-	ended(60, 100)
-	ended(150, 100)
-	code, body := ask(spendCheck{marginFloor: 0.5, costAlertFraction: 0.1})
-	want := "2 placements ended under the margin floor in the last 24 hours, 1 cost more than " +
-		"they paid\n"
+	ended(3050, 3355)
+	ended(3050, 3354)
+	code, body := ask(spendCheck{rule: rule, costAlertFraction: 0.1})
+	if code != http.StatusOK || body != "ok\n" {
+		t.Fatalf("answered %d %q with only an under-markup run, want ok", code, body)
+	}
+	ended(3050, 3000)
+	code, body = ask(spendCheck{rule: rule, costAlertFraction: 0.1})
+	want := "1 placements ended costing more than they paid in the last 24 hours, " +
+		"1 more cost over their markup\n"
 	if code != http.StatusServiceUnavailable || body != want {
 		t.Fatalf("answered %d %q, want %q", code, body, want)
 	}
-	if code, body := ask(spendCheck{}); code != http.StatusOK || body != "ok\n" {
-		t.Fatalf("answered %d %q with no floor, want ok", code, body)
-	}
-
 	if err := st.SetForeignSandboxes(ctx, "e2b", 3, time.Now()); err != nil {
 		t.Fatal(err)
 	}

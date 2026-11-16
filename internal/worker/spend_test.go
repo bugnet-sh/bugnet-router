@@ -306,8 +306,8 @@ func TestTerminationWritesCostAndBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// An order that paid next to nothing, so the placement's cost is over the margin floor
-	if _, err := e.pool.Exec(ctx, `update orders set amount_micros = 1 where placement_id = $1`,
+	// An order that paid next to nothing, so the placement's cost is over what it paid
+	if _, err := e.pool.Exec(ctx, `update orders set amount_micros = 0 where placement_id = $1`,
 		p.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestTerminationWritesCostAndBytes(t *testing.T) {
 		t.Fatalf("attempt %+v lacks its sandbox, size, price or destroy time", a)
 	}
 	// TestMarginLog: the error line names the placement
-	if !strings.Contains(logs.String(), "placement cost is over the margin floor") ||
+	if !strings.Contains(logs.String(), "placement cost is over what it paid") ||
 		!strings.Contains(logs.String(), p.ID.String()) {
 		t.Fatalf("no margin error in the log:\n%s", logs.String())
 	}
@@ -351,7 +351,7 @@ func TestMarginLogStaysQuietUnderTheFloor(t *testing.T) {
 	if _, err := e.saga.Stop(t.Context(), h); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(logs.String(), "over the margin floor") {
+	if strings.Contains(logs.String(), "placement cost is over") {
 		t.Fatalf("a placement that paid 50000 and cost almost nothing was logged:\n%s",
 			logs.String())
 	}

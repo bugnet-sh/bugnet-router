@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -47,7 +46,6 @@ type Config struct {
 	EventsURL           string
 	PackagesFile        string
 	Providers           []string
-	MarginFloor         float64
 	ReplicaID           string
 	DeploymentID        string // labels this deployment's sandboxes so the sweep keeps to its own
 	RunnerLinuxAMD64    string
@@ -80,11 +78,13 @@ type Config struct {
 	// SandboxOpsBurst is how many operations a placement's full bucket admits at once
 	SandboxOpsBurst int
 	Boxd            Boxd
-	E2B             E2B
-	Koyeb           Koyeb
-	Boat            Boat
-	Lium            Lium
-	HF              HF
+	// Pricing is the markup on official cost and how long a quote holds
+	Pricing Pricing
+	E2B     E2B
+	Koyeb   Koyeb
+	Boat    Boat
+	Lium    Lium
+	HF      HF
 	// DataplaneWorkers is how many River workers run the dataplane queue
 	DataplaneWorkers int
 	// DefaultWorkers is how many River workers run the default queue
@@ -165,6 +165,8 @@ type Boxd struct {
 	GateRoute string `toml:"gate_route"`
 	// ParkedGiB is the disk written per hibernated pool member, which sets its idle cost
 	ParkedGiB int `toml:"parked_gib"`
+	// USDPerEUR converts boxd's euro prices to dollars
+	USDPerEUR float64 `toml:"usd_per_eur"`
 }
 
 // E2B holds the E2B adapter's settings
@@ -459,7 +461,6 @@ type file struct {
 	OrderTokenPublicKey string         `toml:"order_token_public_key"`
 	PackagesFile        string         `toml:"packages_file"`
 	Providers           *[]string      `toml:"providers"`
-	MarginFloor         float64        `toml:"margin_floor"`
 	GPUOrder            []string       `toml:"gpu_order"`
 	GPUPlacingBudget    string         `toml:"gpu_placing_budget"`
 	DeploymentID        string         `toml:"deployment_id"`
@@ -472,6 +473,7 @@ type file struct {
 	Limits              limitsFile     `toml:"limits"`
 	Local               localFile      `toml:"local"`
 	Boxd                boxdFile       `toml:"boxd"`
+	Pricing             pricingFile    `toml:"pricing"`
 	E2B                 e2bFile        `toml:"e2b"`
 	Koyeb               koyebFile      `toml:"koyeb"`
 	Boat                boatFile       `toml:"boat"`
@@ -563,6 +565,7 @@ type boxdFile struct {
 	Endpoint       string   `toml:"endpoint"`
 	GateRoute      string   `toml:"gate_route"`
 	ParkedGiB      int64    `toml:"parked_gib"`
+	USDPerEUR      float64  `toml:"usd_per_eur"`
 	HardenRequired bool     `toml:"harden_required"`
 	HardenAllow    []string `toml:"harden_allow"`
 	OpsPerSecond   int64    `toml:"ops_per_second"`
@@ -719,7 +722,7 @@ type bootstrapFile struct {
 // defaults are the settings of an empty file, an empty string in the file also means its default
 func defaults() file {
 	return file{
-		MarginFloor: 0.5,
+		Pricing: pricingFile{Markup: 0.10, QuoteHold: "45m", QuoteRiseMicros: 30_000},
 		// A fresh list each call, since go-toml decodes a list into the slice it finds
 		GPUOrder:         []string{"lium", "hf"},
 		GPUPlacingBudget: "13m",
@@ -737,8 +740,8 @@ func defaults() file {
 			ReadyTimeout: "60s",
 		},
 		Boxd: boxdFile{
-			Region: "fra", GateRoute: "default", ParkedGiB: 5, HardenRequired: true,
-			ReadyTimeout: "60s",
+			Region: "fra", GateRoute: "default", ParkedGiB: 5, USDPerEUR: 1.12,
+			HardenRequired: true, ReadyTimeout: "60s",
 		},
 		E2B: e2bFile{
 			HardenRequired: true, MaxConcurrent: 20, CreatesPerSec: 1, ReadyTimeout: "60s",
@@ -884,7 +887,6 @@ func (f file) config() (Config, error) {
 	d := defaults()
 	c := Config{
 		PackagesFile:      f.PackagesFile,
-		MarginFloor:       f.MarginFloor,
 		DeploymentID:      cmp.Or(f.DeploymentID, d.DeploymentID),
 		ReplicaID:         cmp.Or(f.ReplicaID, defaultReplicaID()),
 		EventsURL:         f.EventsURL,
@@ -902,7 +904,7 @@ func (f file) config() (Config, error) {
 		Boxd: Boxd{
 			Region: cmp.Or(f.Boxd.Region, d.Boxd.Region), Endpoint: f.Boxd.Endpoint,
 			GateRoute: cmp.Or(f.Boxd.GateRoute, d.Boxd.GateRoute),
-			ParkedGiB: int(f.Boxd.ParkedGiB),
+			ParkedGiB: int(f.Boxd.ParkedGiB), USDPerEUR: f.Boxd.USDPerEUR,
 		},
 		E2B: E2B{
 			Domain: f.E2B.Domain, Templates: slices.Clone(f.E2B.Templates), TeamID: f.E2B.TeamID,
@@ -932,10 +934,6 @@ func (f file) config() (Config, error) {
 	if !deploymentID.MatchString(c.DeploymentID) {
 		return Config{}, errors.New(
 			"deployment_id must be 1 to 32 lowercase letters, digits or hyphens")
-	}
-	if math.IsNaN(c.MarginFloor) || math.IsInf(c.MarginFloor, 0) ||
-		c.MarginFloor < 0 || c.MarginFloor > 10 {
-		return Config{}, errors.New("margin_floor must be a finite number from 0 to 10")
 	}
 	if c.LocalHourlyMicros < 0 {
 		return Config{}, errors.New("local.hourly_micros must be a non-negative whole number")
@@ -1058,6 +1056,12 @@ func (f file) config() (Config, error) {
 	}
 	if f.Boxd.ParkedGiB < 1 || f.Boxd.ParkedGiB > 100_000 {
 		return Config{}, errors.New("boxd.parked_gib must be 1 to 100000")
+	}
+	if !(f.Boxd.USDPerEUR >= 0.5 && f.Boxd.USDPerEUR <= 3) {
+		return Config{}, errors.New("boxd.usd_per_eur must be 0.5 to 3")
+	}
+	if c.Pricing, err = f.Pricing.read(d.Pricing); err != nil {
+		return Config{}, err
 	}
 	if f.Koyeb.PoolIdleHourlyMicros < 0 || f.Koyeb.PoolIdleHourlyMicros > 1_000_000_000 {
 		return Config{}, errors.New("koyeb.pool_idle_hourly_micros must be 0 to 1000000000")

@@ -14,6 +14,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/canon"
 	"github.com/bugnet-sh/bugnet-router/internal/estimator/facts"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // eq fails the test when got and want differ
@@ -385,4 +386,31 @@ func TestServiceMemoryReasonNamesTheLargerSide(t *testing.T) {
 	eq(t, msg(&facts.Repo{Compose: &facts.Compose{Files: 1}}), []string(nil))
 	eq(t, msg(&facts.Repo{CI: &facts.CI{Jobs: 1, Services: []string{"unknown"}}}),
 		[]string(nil))
+}
+
+// a live catalog is priced from the handed prices, and the cheapest extension reads them too
+func TestFitUsesHandedPrices(t *testing.T) {
+	res := provider.Resources{VCPU: 1, MemoryMiB: 1024, DiskGiB: 5}
+	in := Input{Request: Request{Workload: WorkloadServe}, Catalog: []catalog.Package{
+		{ID: "a", Resources: res, Minutes: 10},
+		{ID: "a-dear", Resources: res, Minutes: 10, ExtensionOf: "a"},
+		{ID: "a-more", Resources: res, Minutes: 10, ExtensionOf: "a"},
+	}, Prices: map[string]int64{"a": 3355, "a-dear": 9000, "a-more": 3300}}
+	var fit Fit
+	for _, f := range Run(in).Fits {
+		if f.PackageID == "a" {
+			fit = f
+		}
+	}
+	eq(t, fit.ExtensionPackageID, "a-more")
+	eq(t, fit.ExtensionsNeeded, 2)
+	eq(t, fit.TotalPriceMicros, int64(9955))
+}
+
+// a package missing from the handed prices keeps its fixed price
+func TestMissingPriceFallsBackToFixed(t *testing.T) {
+	in := input(t, Request{Workload: WorkloadServe}, facts.Facts{})
+	want := Run(in)
+	in.Prices = map[string]int64{}
+	eq(t, Run(in), want)
 }

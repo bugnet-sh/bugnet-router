@@ -6,12 +6,22 @@
 order_token_public_key = ""   # base64 Ed25519 key verifying order tokens, required to serve
 packages_file = ""            # package catalog JSON, required
 providers = ["koyeb", "boat", "e2b", "boxd"]   # order only breaks cost ties, absent = this default
-margin_floor = 0.5            # 0 to 10, finite
 gpu_order = ["lium", "hf"]    # a GPU package tries these first, in this order, then the others
 gpu_placing_budget = "13m"    # a GPU package's placing budget, at least lium's slowest failing boot
 deployment_id = "main"        # ^[a-z0-9-]{1,32}$
 replica_id = ""               # host-pid when empty
 events_url = ""               # signed events stay pending in the outbox when empty
+
+[pricing]
+markup = 0.10                 # 0 to 10, finite, price is ceil(cost x (1 + markup)) in whole micros
+quote_hold = "45m"            # how long an estimate's quoted price stays payable, 1m to 24h
+quote_rise_micros = 30000     # most a held start may cost over what was paid, 0 to 1000000
+
+[pricing.overhead]            # billed boot and destroy time added to each start, 0s to 5m
+# boat = "10s"               # production values are boat 10s, boxd 10s, e2b 15s
+# boxd = "10s"               # a provider not listed adds 0
+# e2b = "15s"
+# lium and hf bill their boot in their start fee
 
 [api]
 listen_addr = ":8080"         # router-api serves the Connect API here
@@ -394,11 +404,11 @@ first_command_p90 = "5s"      # /monitor warns when the hour's p90 is over this
 min_placements = 20           # reserved and pooled placements in the hour before it judges
 
 [hedge]                       # hedged starts, control-plane 18.7 and 18.15
-enabled = true                # false never starts a second attempt
+enabled = true                # false never starts a second attempt, production sets false
 default_after = "5s"          # when a hedge starts for a provider without min_samples whole attempts
 min_after = "1500ms"          # the earliest a hedge ever starts
 min_samples = 5               # whole attempts whose p95 sets the time
-loser_life = "90s"            # the loser's longest life, charged in the margin check
+loser_life = "90s"            # the loser's longest life, priced into the fit check
 min_left = "10s"              # of the placing budget a hedge needs left
 min_bucket_share = 0.5        # the next candidate's create bucket must be this full
 per_minute = 30               # hedges router-wide, with the burst below
@@ -581,6 +591,7 @@ region = "fra"                # served at <region>.boxd.sh:9443 outside fra
 endpoint = ""                 # overrides the region's endpoint
 gate_route = "default"        # the pinned default proxy, or "subdomain" for a bn proxy to the gate
 parked_gib = 5                # disk written per hibernated pool member, which sets its idle cost
+usd_per_eur = 1.12            # 0.5 to 3, converts boxd's euro prices to dollars
 harden_required = true        # a failed harden fails the boot over to the next provider
 harden_allow = []             # the provider's own control addresses, open before any block
 ops_per_second = 0            # user operations on the account a second, 0 for no bucket

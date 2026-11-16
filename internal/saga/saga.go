@@ -86,6 +86,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/ratelimit"
 	"github.com/bugnet-sh/bugnet-router/internal/sessions"
@@ -120,6 +121,9 @@ const ReasonDeadline = "deadline"
 
 // ReasonPlacingStalled is the failure reason when the saga placing a placement stopped heartbeating
 const ReasonPlacingStalled = "placing_stalled"
+
+// ReasonPriceChanged is the failure reason when a start paid less than its package's price now
+const ReasonPriceChanged = "price_changed"
 
 // Failure reasons are stable codes the gateway may show, the attempts and logs keep the details
 const (
@@ -181,7 +185,7 @@ type Deps struct {
 	Prefix            string
 	OrderKey          ed25519.PublicKey
 	HandleKey         []byte
-	MarginFloor       float64
+	Rule              pricing.Rule // prices every candidate
 	Tracker           *placement.Tracker
 	ReplicaID         string            // recorded as the saga owner of the placements it places
 	DeploymentID      string            // labels every sandbox, "main" when empty
@@ -230,6 +234,11 @@ type Deps struct {
 	// ReserveShare is the share of a pool's target open reservations may hold, pools.reserve_share,
 	// one half when zero
 	ReserveShare float64
+	// QuoteHold is how long an estimate's quote holds for an order, none when zero
+	QuoteHold time.Duration
+	// QuoteRise is how far over what the order paid a held start's cost may be,
+	// pricing.quote_rise_micros
+	QuoteRise int64
 	// Hedger starts a second attempt beside one that runs long, none for no hedges
 	Hedger *Hedger
 	// ReadyTimeouts is each provider's ready timeout by name, 60 s for one it leaves out
@@ -334,12 +343,16 @@ type CreateInput struct {
 	Source *store.PlacementSource
 	// QuoteID binds the quote's reservation when the order matches it, empty for none
 	QuoteID string
+	// EstimateID is the estimate whose quote the order may hold, uuid.Nil for none
+	EstimateID uuid.UUID
 }
 
 // Create records a verified start order and places it, binding a matching reservation
 //
 // A package no provider can host fails at once with ErrNoCandidate, unless the quote's ready
-// reservation matches, since a prepared sandbox then exists.
+// reservation matches, since a prepared sandbox then exists. An order whose payment no server's
+// price fits fails at once with an UnderpaidError, unless its estimate's quote still holds a
+// server that takes it.
 func (s *Saga) Create(
 	ctx context.Context, in CreateInput,
 ) (store.Placement, string, error) {
@@ -349,7 +362,7 @@ func (s *Saga) Create(
 	if err != nil {
 		return store.Placement{}, "", err
 	}
-	pkg, err := s.paidPackage(c)
+	pkg, err := s.lookupPackage(c.PackageID)
 	if err != nil {
 		return store.Placement{}, "", err
 	}
@@ -366,13 +379,9 @@ func (s *Saga) Create(
 		PaidAt:        s.paidAt(c, arrived),
 	}
 	bind := s.bindTo(in, pkg)
-	_, err = s.d.Engine.Candidates(s.inputs(pkg, req, nil))
-	switch {
-	case errors.Is(err, placement.ErrNoCandidate):
-		if !s.readyFits(ctx, bind) {
-			np.FailureReason = ReasonNoCandidate
-		}
-	case err != nil:
+	t := terms{paid: c.PackageMicros()}
+	t.prefer = s.heldServer(ctx, in.EstimateID, pkg, req, c.OrderID, t.paid)
+	if np.FailureReason, err = s.startRefusal(ctx, c, pkg, req, t, bind); err != nil {
 		return store.Placement{}, "", fmt.Errorf("find candidates: %w", err)
 	}
 	rec, err := s.record(ctx, c, np, bind)
@@ -396,6 +405,8 @@ func (s *Saga) Create(
 		switch p.FailureReason {
 		case ReasonNoCandidate:
 			refusal = fmt.Errorf("%w for package %s", placement.ErrNoCandidate, pkg.ID)
+		case ReasonPriceChanged:
+			refusal = underpaid(c, pkg, s.startPrice(pkg, req))
 		case ReasonWalletBusy:
 			refusal = ErrWalletBusy
 		case ReasonWalletRateLimited:
@@ -423,11 +434,86 @@ func (s *Saga) Create(
 		go func() {
 			defer s.wg.Done()
 			pctx := context.WithoutCancel(ctx)
-			s.place(pctx, p, pkg, req, rec.awaiting, arrived)
+			s.place(pctx, p, pkg, req, t, rec.awaiting, arrived)
 			s.endOrderRoot(pctx, root, p.ID)
 		}()
 	}
 	return p, h, nil
+}
+
+// terms are what a start order paid for its package and the server its quote holds, nil for none
+type terms struct {
+	paid   int64
+	prefer *placement.Server
+}
+
+// heldServer claims the estimate's quote of pkg for the order and is the server it holds, nil for
+// none
+func (s *Saga) heldServer(
+	ctx context.Context, estimate uuid.UUID, pkg catalog.Package, req placement.Requirements,
+	order string, paid int64,
+) *placement.Server {
+	if estimate == uuid.Nil || s.d.QuoteHold <= 0 {
+		return nil
+	}
+	q, ok, err := s.d.Store.ClaimQuote(ctx, estimate, pkg.ID, order, paid, s.d.QuoteHold)
+	if err != nil {
+		s.d.Log.Warn("claim an order's quote, it starts at the price now", "estimate", estimate,
+			"package", pkg.ID, "err", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return HeldServer(s.d.Engine, s.inputs(pkg, req, nil), q, order, paid, s.d.QuoteRise)
+}
+
+// CandidateFinder finds the candidates of a start
+type CandidateFinder interface {
+	Candidates(in placement.Inputs) ([]placement.Candidate, error)
+}
+
+// HeldServer is the server quote q holds the start of in on for order, which paid paid, nil when
+// another order claimed q, paid is short of it or no server takes the start under the quote
+func HeldServer(
+	f CandidateFinder, in placement.Inputs, q store.Quote, order string, paid, rise int64,
+) *placement.Server {
+	if q.OrderID != "" && q.OrderID != order || paid < q.PriceMicros {
+		return nil
+	}
+	held := &placement.Server{Provider: q.Provider, Size: q.SizeName}
+	if _, err := fitting(f, in, paid, paid, held, rise); err != nil {
+		return nil
+	}
+	return held
+}
+
+// startRefusal is why a start cannot begin, empty when a candidate fits what it paid
+func (s *Saga) startRefusal(
+	ctx context.Context, c ordertoken.Claims, pkg catalog.Package, req placement.Requirements,
+	t terms, bind *bindRequest,
+) (string, error) {
+	if !covers(c, pkg.PriceMicros) {
+		return ReasonPriceChanged, nil
+	}
+	// A held server takes a start no other server fits, so the price the order was quoted starts
+	_, err := s.within(pkg, req, nil, t.paid, t.paid, t.prefer)
+	switch {
+	case err == nil:
+		return "", nil
+	case !errors.Is(err, placement.ErrNoCandidate):
+		return "", err
+	}
+	if !pkg.FixedPrice {
+		// A server takes the start at its price now, so the payment is what fell short
+		if _, ok := s.d.Engine.Quote(s.quoteInputs(pkg, req)); ok {
+			return ReasonPriceChanged, nil
+		}
+	}
+	if s.readyFits(ctx, bind) {
+		return "", nil
+	}
+	return ReasonNoCandidate, nil
 }
 
 // paidAt is when the order was paid as the 5 s target measures it, logging a claim it cannot use
@@ -545,9 +631,60 @@ func (s *Saga) inputs(
 	pkg catalog.Package, req placement.Requirements, tried map[string]bool,
 ) placement.Inputs {
 	return placement.Inputs{
-		Package: pkg, Requirements: req, MarginFloor: s.d.MarginFloor, Exclude: tried,
+		Package: pkg, Requirements: req, Rule: s.d.Rule, Exclude: tried,
 		WarmFirst: s.d.WarmFirst, ImageAccept: s.d.ImageAccept,
 	}
+}
+
+// within are the candidates of an attempt that fit left of paid, ErrNoCandidate when none does
+func (s *Saga) within(
+	pkg catalog.Package, req placement.Requirements, tried map[string]bool, paid, left int64,
+	prefer *placement.Server,
+) ([]placement.Candidate, error) {
+	return fitting(s.d.Engine, s.inputs(pkg, req, tried), paid, left, prefer, s.d.QuoteRise)
+}
+
+// fitting are the candidates of in that fit left of paid, prefer taking a start none fits while
+// its cost is within rise, ErrNoCandidate when none does
+func fitting(
+	f CandidateFinder, in placement.Inputs, paid, left int64, prefer *placement.Server, rise int64,
+) ([]placement.Candidate, error) {
+	in.Prefer, in.PreferRiseMicros = prefer, rise
+	switch {
+	case in.Package.FixedPrice:
+		// A fixed price is the same on every server and its fit holds the server's cost under it
+	case paid == 0:
+		// A budget of 0 reads as none, so an order that paid nothing keeps the servers priced 0
+	case left <= 0:
+		return nil, placement.ErrNoCandidate
+	default:
+		in.BudgetMicros = left
+	}
+	cands, err := f.Candidates(in)
+	if err != nil || in.Package.FixedPrice || paid != 0 {
+		return cands, err
+	}
+	cands = slices.DeleteFunc(cands, func(c placement.Candidate) bool { return c.PriceMicros > 0 })
+	if len(cands) == 0 {
+		return nil, placement.ErrNoCandidate
+	}
+	return cands, nil
+}
+
+// quoteInputs ask for pkg as Estimate and PricePackage quote it
+func (s *Saga) quoteInputs(pkg catalog.Package, req placement.Requirements) placement.Inputs {
+	return placement.Inputs{
+		Package: pkg, Requirements: req, Rule: s.d.Rule, ImageAccept: s.d.ImageAccept,
+	}
+}
+
+// startPrice is what a start of pkg costs now, its fixed price or the live quote's
+func (s *Saga) startPrice(pkg catalog.Package, req placement.Requirements) int64 {
+	if pkg.FixedPrice {
+		return pkg.PriceMicros
+	}
+	q, _ := s.d.Engine.Quote(s.quoteInputs(pkg, req))
+	return q.PriceMicros
 }
 
 func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, error) {
@@ -562,18 +699,29 @@ func (s *Saga) verify(token string, kind ordertoken.Kind) (ordertoken.Claims, er
 	return c, nil
 }
 
-// paidPackage returns the token's package once the amount paid covers its price
-func (s *Saga) paidPackage(c ordertoken.Claims) (catalog.Package, error) {
-	pkg, err := s.lookupPackage(c.PackageID)
-	if err != nil {
-		return pkg, err
-	}
-	// The x402 allowance rides along in a start's amount and never pays for the package
-	if paid := c.PackageMicros(); paid < pkg.PriceMicros {
-		return pkg, fmt.Errorf("%w: paid %d, %s costs %d", ErrUnderpaid, paid, pkg.ID,
-			pkg.PriceMicros)
-	}
-	return pkg, nil
+// UnderpaidError is ErrUnderpaid with what the order paid and the price the router asks now
+type UnderpaidError struct {
+	PackageID   string
+	PaidMicros  int64
+	PriceMicros int64
+}
+
+func (e *UnderpaidError) Error() string {
+	return fmt.Sprintf("%v: paid %d, %s costs %d", ErrUnderpaid, e.PaidMicros, e.PackageID,
+		e.PriceMicros)
+}
+
+// Unwrap makes an UnderpaidError match ErrUnderpaid
+func (e *UnderpaidError) Unwrap() error { return ErrUnderpaid }
+
+// covers reports whether the order paid price, the x402 allowance and fee left out
+func covers(c ordertoken.Claims, price int64) bool {
+	return c.PackageMicros() >= price
+}
+
+// underpaid is the refusal of an order that paid less than price, what pkg costs now
+func underpaid(c ordertoken.Claims, pkg catalog.Package, price int64) *UnderpaidError {
+	return &UnderpaidError{PackageID: pkg.ID, PaidMicros: c.PackageMicros(), PriceMicros: price}
 }
 
 // lookupPackage returns the catalog's package with this ID or ErrUnknownPackage
@@ -1300,7 +1448,7 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 	if want, err := hex.DecodeString(c.HandleSHA256); err != nil || !hmac.Equal(want, sha) {
 		return store.Placement{}, ErrHandleMismatch
 	}
-	pkg, err := s.paidPackage(c)
+	pkg, err := s.lookupPackage(c.PackageID)
 	if err != nil {
 		return store.Placement{}, err
 	}
@@ -1350,6 +1498,10 @@ func (s *Saga) Extend(ctx context.Context, h string, token string) (store.Placem
 		}, by)
 		if err != nil || !applied {
 			return err
+		}
+		// Only the call that applies the order checks the price, so every retry answers as it did
+		if !covers(c, x.price) {
+			return underpaid(c, pkg, x.price)
 		}
 		if payer != "" {
 			if err := ts.SeeWallet(ctx, payer, s.now()); err != nil {
@@ -1457,33 +1609,35 @@ func (s *Saga) deadlineMoved(ctx context.Context, p store.Placement) {
 	}})
 }
 
-// CheckExtend answers as Extend would for a fresh order of the package now, changing nothing
+// CheckExtend answers as Extend would for a fresh order now, with its price, changing nothing
 func (s *Saga) CheckExtend(
 	ctx context.Context, h, packageID string,
-) (store.Placement, time.Time, error) {
+) (store.Placement, time.Time, int64, error) {
 	sha, err := hashHandle(h)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	pkg, err := s.lookupPackage(packageID)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	p, err := s.d.Store.PlacementByHandle(ctx, sha)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
 	x, err := s.checkExtend(p, pkg, nil)
 	if err != nil {
-		return store.Placement{}, time.Time{}, err
+		return store.Placement{}, time.Time{}, 0, err
 	}
-	return x.p, x.p.Deadline.Add(x.by), nil
+	return x.p, x.p.Deadline.Add(x.by), x.price, nil
 }
 
 // Extension is a package that can extend a placement, with the refusal extending by it gets now
 type Extension struct {
 	Package catalog.Package
-	Refusal error // nil, or one wrapping ErrNotReady or ErrExceedsLifetime
+	// PriceMicros is what the package costs on the placement's server, 0 for a live one not priced
+	PriceMicros int64
+	Refusal     error // nil, or one wrapping ErrNotReady or ErrExceedsLifetime
 }
 
 // ListExtensions checks each package that can extend the placement as CheckExtend would
@@ -1499,20 +1653,20 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 	}
 	var out []Extension
 	for _, pkg := range s.d.Catalog.All() {
-		_, err := s.checkExtend(p, pkg, nil)
+		x, err := s.checkExtend(p, pkg, nil)
 		switch {
 		case errors.Is(err, ErrNotExtension):
 			continue
 		case err != nil && !errors.Is(err, ErrNotReady) && !errors.Is(err, ErrExceedsLifetime):
 			return nil, err
 		}
-		out = append(out, Extension{Package: pkg, Refusal: err})
+		out = append(out, Extension{Package: pkg, PriceMicros: x.price, Refusal: err})
 	}
 	// The start package is left out when a dedicated extension offers the same minutes and price
 	out = slices.DeleteFunc(out, func(x Extension) bool {
 		return x.Package.ID == p.PackageID && slices.ContainsFunc(out, func(y Extension) bool {
 			return y.Package.ExtensionOf == p.PackageID && y.Package.Minutes == x.Package.Minutes &&
-				y.Package.PriceMicros == x.Package.PriceMicros
+				y.PriceMicros == x.PriceMicros
 		})
 	})
 	slices.SortFunc(out, byListing)
@@ -1522,16 +1676,17 @@ func (s *Saga) ListExtensions(ctx context.Context, h string) ([]Extension, error
 // byListing orders extensions by minutes, then price, then id
 func byListing(a, b Extension) int {
 	return cmp.Or(cmp.Compare(a.Package.Minutes, b.Package.Minutes),
-		cmp.Compare(a.Package.PriceMicros, b.Package.PriceMicros),
-		cmp.Compare(a.Package.ID, b.Package.ID))
+		cmp.Compare(a.PriceMicros, b.PriceMicros), cmp.Compare(a.Package.ID, b.Package.ID))
 }
 
 // extension is a placement that passed the extend checks, with what extending it needs
 type extension struct {
-	p      store.Placement
-	prov   provider.Provider
-	ref    provider.Ref
-	by     time.Duration
+	p    store.Placement
+	prov provider.Provider
+	ref  provider.Ref
+	by   time.Duration
+	// price is what the order must pay, the only field a refusal may also set
+	price  int64
 	replay bool // the order already extended the placement, so the later checks were skipped
 }
 
@@ -1552,16 +1707,34 @@ func (s *Saga) checkExtend(
 			return x, nil
 		}
 	}
+	// A refusal keeps the price known by then, the fixed one before the server prices it
+	known := extension{price: pkg.PriceMicros}
 	if p.State != store.PlacementReady {
-		return extension{}, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
+		return known, fmt.Errorf("%w: placement is %s", ErrNotReady, p.State)
 	}
+	if x.price, err = s.extensionPrice(p, pkg); err != nil {
+		return known, err
+	}
+	known.price = x.price
 	if x.prov, x.ref, err = s.home(p); err != nil {
-		return extension{}, err
+		return known, err
 	}
 	if err := withinLifetime(x.prov, x.ref, p, p.Deadline.Add(x.by)); err != nil {
-		return extension{}, err
+		return known, err
 	}
 	return x, nil
+}
+
+// extensionPrice is pkg's price on p's server, a refusal as not ready once the server is gone
+func (s *Saga) extensionPrice(p store.Placement, pkg catalog.Package) (int64, error) {
+	price, err := s.d.Engine.ExtensionPrice(pkg, p.Provider, p.SizeName, s.d.Rule)
+	if errors.Is(err, placement.ErrNoServer) {
+		s.d.Log.Warn("refuse an extension on a server no longer configured", "placement", p.ID,
+			"package", pkg.ID, "err", err)
+		// The provider and size come from the settings file, so the refusal leaves them out
+		return 0, fmt.Errorf("%w: the sandbox's server is no longer configured", ErrNotReady)
+	}
+	return price, err
 }
 
 // withinLifetime refuses a deadline past the provider's maximum lifetime or the sandbox's own end

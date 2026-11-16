@@ -54,6 +54,8 @@ type Claims struct {
 	Tx string `json:"tx,omitempty"`
 	// AllowanceMicros is the x402 allowance inside AmountMicros, start tokens only
 	AllowanceMicros int64 `json:"allowance_micros,omitempty"`
+	// FeeMicros is the x402 session fee inside AmountMicros, start tokens only
+	FeeMicros int64 `json:"fee_micros,omitempty"`
 	// IssuedAt is when Payments signed the token after settlement, the start of the 5 s target
 	IssuedAt *time.Time `json:"issued_at,omitempty"`
 }
@@ -78,8 +80,10 @@ func (c Claims) PaidAt(created time.Time) (paid time.Time, ok bool) {
 	return at, true
 }
 
-// PackageMicros is what the order paid for its package, the x402 allowance left out
-func (c Claims) PackageMicros() int64 { return c.AmountMicros - c.AllowanceMicros }
+// PackageMicros is what the order paid for its package, the x402 allowance and fee left out
+func (c Claims) PackageMicros() int64 {
+	return c.AmountMicros - c.AllowanceMicros - c.FeeMicros
+}
 
 // Sign encodes and signs claims
 func Sign(priv ed25519.PrivateKey, c Claims) (string, error) {
@@ -142,8 +146,11 @@ func payment(c Claims) bool {
 	if _, ok := solana.Signature(c.Tx); c.Tx != "" && !ok {
 		return false
 	}
-	if c.AllowanceMicros != 0 && c.Kind != KindStart {
+	if (c.AllowanceMicros != 0 || c.FeeMicros != 0) && c.Kind != KindStart {
 		return false
 	}
-	return c.AllowanceMicros >= 0 && c.AllowanceMicros <= c.AmountMicros
+	if c.AllowanceMicros < 0 || c.AllowanceMicros > c.AmountMicros {
+		return false
+	}
+	return c.FeeMicros >= 0 && c.FeeMicros <= c.AmountMicros-c.AllowanceMicros
 }

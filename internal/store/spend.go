@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 )
 
 // RecountCapacity sets the provider's in_use to what its placements, attempts, pool members and
@@ -327,22 +329,36 @@ func (s *Store) CostAlerts(
 	})
 }
 
-// MarginCounts counts the placements that ended since a time costing more than (1 - floor) of
-// what their start and extension orders paid, and those costing more than they paid
+// MarginCounts counts the placements that ended since a time whose cost under the rule is more
+// than what their start and extension orders paid, and those whose cost is more than they paid
 func (s *Store) MarginCounts(
-	ctx context.Context, since time.Time, floor float64,
-) (below, loss int, err error) {
-	err = s.q.QueryRow(ctx, `
-		select count(*) filter (where cost > (1 - $2::float8) * paid),
-			count(*) filter (where cost > paid)
-		from (select p.cost_micros::float8 as cost,
-				coalesce((select sum(o.amount_micros) from orders o
-					where o.placement_id = p.id), 0)::float8 as paid
-			from placements p
-			where p.state = $3 and p.terminated_at > $1 and p.cost_micros > 0) t`,
-		utc(since), floor, PlacementTerminated).Scan(&below, &loss)
+	ctx context.Context, since time.Time, r pricing.Rule,
+) (under, loss int, err error) {
+	rows, err := s.q.Query(ctx, `
+		select p.cost_micros,
+			coalesce((select sum(o.amount_micros) from orders o
+				where o.placement_id = p.id), 0)::bigint
+		from placements p
+		where p.state = $2 and p.terminated_at > $1 and p.cost_micros > 0`,
+		utc(since), PlacementTerminated)
 	if err != nil {
 		return 0, 0, fmt.Errorf("count margins: %w", err)
 	}
-	return below, loss, nil
+	defer rows.Close()
+	for rows.Next() {
+		var cost, paid int64
+		if err := rows.Scan(&cost, &paid); err != nil {
+			return 0, 0, fmt.Errorf("count margins: %w", err)
+		}
+		if r.Price(cost) > paid {
+			under++
+		}
+		if cost > paid {
+			loss++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, fmt.Errorf("count margins: %w", err)
+	}
+	return under, loss, nil
 }

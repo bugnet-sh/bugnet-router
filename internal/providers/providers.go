@@ -38,11 +38,11 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 type Option func(*options)
 
 type options struct {
-	// packages are the packages sold, held to margin_floor at each new HF price
+	// packages are the packages sold, each fixed price held to the markup at each new HF price
 	packages []catalog.Package
 }
 
-// WithPackages names the packages sold, so a new HF price that breaks one's margin logs an error
+// WithPackages names the packages sold, so a new HF price over a fixed price logs an error
 func WithPackages(pkgs []catalog.Package) Option {
 	return func(o *options) { o.packages = pkgs }
 }
@@ -230,7 +230,8 @@ func boxdOptions(cfg config.Config, key string) boxd.Options {
 	return boxd.Options{
 		APIKey: key, Endpoint: cfg.Boxd.Endpoint, Region: cfg.Boxd.Region,
 		GatePort: cfg.Previews.GatePort, GateRoute: cfg.Boxd.GateRoute,
-		ParkedGiB: cfg.Boxd.ParkedGiB, Snapshots: cfg.Images.Boxd.Refs,
+		ParkedGiB: cfg.Boxd.ParkedGiB, USDPerEUR: cfg.Boxd.USDPerEUR,
+		Snapshots: cfg.Images.Boxd.Refs,
 	}
 }
 
@@ -334,7 +335,7 @@ func buildHF(cfg config.Config, vk valkey.Client, pkgs []catalog.Package) (*hf.P
 		opts.OnChange = func() {
 			<-built
 			if err := cfg.CheckGPUMargin(pkgs, []provider.Provider{p}); err != nil {
-				slog.Error("hf: a new price puts a package under margin_floor", "err", err)
+				slog.Error("hf: a new price puts a fixed price under the markup", "err", err)
 			}
 		}
 	}

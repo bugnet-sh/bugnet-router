@@ -155,6 +155,48 @@
             "priceMicros": 1500000
         }
     ],
+    "servers": [
+        {
+            "provider": "boat",
+            "size": "small",
+            "vcpu": 2,
+            "memoryMiB": 4096,
+            "diskGiB": 51,
+            "gpu": null,
+            "longestRunMinutes": 43190,
+            "user": "user",
+            "available": true,
+            "packages": [
+                {
+                    "id": "cpu-small-10m",
+                    "minutes": 10,
+                    "priceMicros": 50000
+                }
+            ]
+        },
+        {
+            "provider": "koyeb",
+            "size": "gpu-nvidia-l4",
+            "vcpu": 15,
+            "memoryMiB": 45056,
+            "diskGiB": 100,
+            "gpu": {
+                "count": 1,
+                "memoryGiB": 24,
+                "model": "NVIDIA L4"
+            },
+            "longestRunMinutes": null,
+            "user": "root",
+            "available": false,
+            "packages": [
+                {
+                    "id": "gpu-l4-30m",
+                    "minutes": 30,
+                    "priceMicros": 1500000
+                }
+            ]
+        }
+    ],
     "limits": {
         "order.max_micros": 100000000,
         "sandbox.max_running_jobs": 16,

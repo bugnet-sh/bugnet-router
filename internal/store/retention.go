@@ -18,6 +18,7 @@ const (
 	RetainProbeSlots       RetentionTable = "probe_slots"
 	RetainUsageObservation RetentionTable = "usage_observations"
 	RetainEstimates        RetentionTable = "estimates"
+	RetainPriceQuotes      RetentionTable = "price_quotes"
 	RetainSourceFacts      RetentionTable = "source_facts"
 	RetainReservations     RetentionTable = "reservations"
 	RetainPoolMembers      RetentionTable = "pool_members"
@@ -27,7 +28,7 @@ const (
 // RetentionTables lists the tables retention trims, in its order
 var RetentionTables = []RetentionTable{
 	RetainStartSamples, RetainBenches, RetainTransferIndex, RetainProbeSlots,
-	RetainUsageObservation, RetainEstimates, RetainSourceFacts,
+	RetainUsageObservation, RetainEstimates, RetainPriceQuotes, RetainSourceFacts,
 	// A reservation refers to its member, so reservations go first
 	RetainReservations, RetainPoolMembers, RetainPoolMisses,
 }
@@ -59,6 +60,10 @@ var retentionSQL = map[RetentionTable]string{
 				and not exists (select 1 from placements p where p.estimate_id = e.id)
 				and not exists (select 1 from usage_observations o where o.estimate_id = e.id)
 			limit $2) returning 1)
+		select count(*) from d`,
+	RetainPriceQuotes: `with d as (delete from price_quotes where (estimate_id, package_id) in (
+			select estimate_id, package_id from price_quotes where quoted_at < $1 limit $2)
+			returning 1)
 		select count(*) from d`,
 	RetainSourceFacts: `with d as (delete from source_facts f where (f.source_key, f.revision,
 			f.extractor_version) in (

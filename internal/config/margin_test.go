@@ -83,10 +83,10 @@ var hfFake = gpuSeller{
 	},
 }
 
-// gpuPackage is a 10-minute package of one GPU of model with design 5.4's floor
+// gpuPackage is a 10-minute package of one GPU of model with design 5.4's floor at a fixed price
 func gpuPackage(id, model string, gpuGiB int, price int64) catalog.Package {
-	return catalog.Package{ID: id, Minutes: 10, PriceMicros: price, GPUModel: model,
-		Resources: provider.Resources{
+	return catalog.Package{ID: id, Minutes: 10, PriceMicros: price, FixedPrice: true,
+		GPUModel: model, Resources: provider.Resources{
 			VCPU: 4, MemoryMiB: 12 << 10, DiskGiB: 40, GPUCount: 1, GPUMemoryGiB: gpuGiB,
 			GPUModel: model,
 		}}
@@ -99,17 +99,20 @@ func t4Package(id string, price int64) catalog.Package {
 	return p
 }
 
-// TestConfigGPUMargin is check 8 of 5.3, each GPU package over margin_floor on gpu_order sellers
+// TestConfigGPUMargin is check 8 of 5.3, each fixed GPU price over the markup on gpu_order sellers
 func TestConfigGPUMargin(t *testing.T) {
 	both := []provider.Provider{liumFake, hfFake}
 	c := loadEmpty(t)
 	// Lium's estimate for gpu-h200-10m is 816,667 for 10 minutes and 571,667 for 7 at the cap
 	h200 := gpuPackage("gpu-h200-10m", gpu.H200, 141, 2_780_000)
-	cpu := catalog.Package{ID: "cpu-10m", Minutes: 10, PriceMicros: 1,
+	cpu := catalog.Package{ID: "cpu-10m", Minutes: 10, PriceMicros: 1, FixedPrice: true,
 		Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}}
 	// Placement never starts an extension, so its price is never held to the start fee
-	more := gpuPackage("gpu-h200-10m-more", gpu.H200, 141, 1_700_000)
+	more := gpuPackage("gpu-h200-10m-more", gpu.H200, 141, 1)
 	more.ExtensionOf = h200.ID
+	// A live package is priced at the marked up cost of the server it lands on
+	live := gpuPackage("gpu-h200-10m", gpu.H200, 141, 0)
+	live.FixedPrice = false
 	for name, pkgs := range map[string][]catalog.Package{
 		"5.4's lowest price":       {h200},
 		"Q15's pick":               {gpuPackage("gpu-h200-10m", gpu.H200, 141, 3_060_000)},
@@ -117,18 +120,19 @@ func TestConfigGPUMargin(t *testing.T) {
 		"the cheapest flavor":      {t4Package("gpu-t4-10m", 180_000)},
 		"no package without a GPU": {cpu, h200},
 		"no extension":             {h200, more},
+		"a live package":           {live},
 	} {
 		if err := c.CheckGPUMargin(pkgs, both); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 
-	// Q15's old 2.2 x HF price clears hf but leaves lium a 42% margin, so lium never serves it
-	old := gpuPackage("gpu-h200-10m", gpu.H200, 141, 2_390_000)
+	// 1.5 USDC clears hf's 1,194,046 but not lium's 1,527,168, so lium never serves it
+	old := gpuPackage("gpu-h200-10m", gpu.H200, 141, 1_500_000)
 	err := c.CheckGPUMargin([]catalog.Package{old}, both)
 	for _, want := range []string{
-		`package "gpu-h200-10m" at 2390000 micros misses margin_floor 0.5 on lium`,
-		"lium-h200 costs 1388334 micros", "price it at 2776668 micros or more",
+		`package "gpu-h200-10m" at 1500000 micros misses pricing.markup 0.1 on lium`,
+		"lium-h200 costs 1388334 micros", "price it at 1527168 micros or more",
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Q15's old price gave %v, want an error saying %q", err, want)
@@ -143,11 +147,17 @@ func TestConfigGPUMargin(t *testing.T) {
 	if err := outside.CheckGPUMargin([]catalog.Package{old}, both); err != nil {
 		t.Fatalf("lium outside gpu_order: %v", err)
 	}
-	// A lower margin_floor lets it through
+	// A lower markup lets it through
 	low := c
-	low.MarginFloor = 0.4
+	low.Pricing.Rule.MarkupBP = 500
 	if err := low.CheckGPUMargin([]catalog.Package{old}, both); err != nil {
-		t.Fatalf("a 0.4 floor: %v", err)
+		t.Fatalf("a 5%% markup: %v", err)
+	}
+	// A provider's billed overhead counts as placement counts it
+	slow := c
+	slow.Pricing.Rule.Overhead = map[string]time.Duration{"hf": 10 * time.Minute}
+	if err := slow.CheckGPUMargin([]catalog.Package{old}, []provider.Provider{hfFake}); err == nil {
+		t.Fatal("hf's 10 minute overhead let 1.5 USDC through")
 	}
 
 	for name, tc := range map[string]struct {
@@ -155,14 +165,15 @@ func TestConfigGPUMargin(t *testing.T) {
 		prov []provider.Provider
 		want string
 	}{
-		"hf under its floor": {gpuPackage("gpu-l4-10m", gpu.L4, 24, 340_000), both,
-			`package "gpu-l4-10m" at 340000 micros misses margin_floor 0.5 on hf, whose size l4x1`},
+		"hf under its markup": {gpuPackage("gpu-l4-10m", gpu.L4, 24, 190_000), both,
+			`package "gpu-l4-10m" at 190000 micros misses pricing.markup 0.1 on hf, ` +
+				`whose size l4x1 costs 175496 micros`},
 		"a free package": {t4Package("gpu-t4-free", 0), both,
-			`package "gpu-t4-free" at 0 micros misses margin_floor 0.5 on lium`},
+			`package "gpu-t4-free" at 0 micros misses pricing.markup 0.1 on lium`},
 		"a size by SizeFor": {t4Package("gpu-t4-10m", 180_000),
 			[]provider.Provider{unsized{name: "hf", hourly: 2_000_000,
 				size: gpuSize("big", gpu.T4, 1, 16, 8, 32<<10, 100)}},
-			`misses margin_floor 0.5 on hf, whose size big costs 333334 micros`},
+			`misses pricing.markup 0.1 on hf, whose size big costs 333334 micros`},
 	} {
 		err := c.CheckGPUMargin([]catalog.Package{tc.pkg}, tc.prov)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

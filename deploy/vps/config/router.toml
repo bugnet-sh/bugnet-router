@@ -68,6 +68,25 @@ payments_url = "http://127.0.0.1:8447"
 [sessions]
 base_url = "https://sessions.bugnet.sh"
 
+[pricing]
+markup = 0.10
+quote_hold = "45m"
+quote_rise_micros = 30000
+
+[pricing.overhead]
+boat = "10s"
+boxd = "10s"
+e2b = "15s"
+
+[boxd]
+usd_per_eur = 1.12
+
+[hedge]
+enabled = false
+
+[reconcile]
+cost_alert_fraction = 0.03
+
 [hf]
 # "baked" runs the image's own sbx-server, which needs images.hf.version 2026.11.4 or later
 sbx_server = "fetch"          # downloaded at boot from HF's public bucket, checked by its sha256

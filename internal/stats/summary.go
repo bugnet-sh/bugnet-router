@@ -1,19 +1,23 @@
 // Package stats builds the public stats feed that bugnet.sh/stats and the landing's pricing read.
 //
 // router-worker's snapshot job reads the router's figures, calls Payments' totals, and merges both
-// with the catalog's start packages and the live limits into one summary, which router-api serves
-// as stored. Session pages are read from Postgres on request. Every value that a later task builds
-// comes from one source function in sources.go or internal/store/stats.go, which answers the form
-// the website's contract keeps for an unknown value until that task lands.
+// with the catalog's start packages, the servers they land on and the live limits into one
+// summary, which router-api serves as stored. Session pages are read from Postgres on request.
+// Every value that a later task builds comes from one source function in sources.go or
+// internal/store/stats.go, which answers the form the website's contract keeps for an unknown
+// value until that task lands.
 package stats
 
 import (
+	"cmp"
 	"encoding/json"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
@@ -41,6 +45,7 @@ type Summary struct {
 	Providers   []Provider       `json:"providers"`
 	Payments    Breakdown        `json:"payments"`
 	Packages    []Package        `json:"packages"`
+	Servers     []Server         `json:"servers"`
 	Limits      map[string]int64 `json:"limits"`
 }
 
@@ -138,13 +143,37 @@ type GPU struct {
 	Model     string `json:"model"`
 }
 
+// Server is one provider size a start package lands on, and the packages that land there
+type Server struct {
+	Provider  string `json:"provider"`
+	Size      string `json:"size"`
+	VCPU      int64  `json:"vcpu"`
+	MemoryMiB int64  `json:"memoryMiB"`
+	DiskGiB   int64  `json:"diskGiB"`
+	GPU       *GPU   `json:"gpu"`
+	// LongestRunMinutes is nil when the provider sets no lifetime
+	LongestRunMinutes *int64 `json:"longestRunMinutes"`
+	// User is the user commands run as
+	User string `json:"user"`
+	// Available means the provider is neither blocked nor down and takes this size's start now
+	Available bool            `json:"available"`
+	Packages  []ServerPackage `json:"packages"`
+}
+
+// ServerPackage is a start package landing on a server, PriceMicros what a run of it there costs
+type ServerPackage struct {
+	ID          string `json:"id"`
+	Minutes     int64  `json:"minutes"`
+	PriceMicros int64  `json:"priceMicros"`
+}
+
 // Encode writes a summary or a page as the routes serve it
 func Encode(v any) ([]byte, error) { return json.Marshal(v) }
 
 // Merge builds CP 20.6.1's summary, generatedAt the older of f.At and paidAt
 func Merge(
 	f store.StatsFigures, p PaymentsPart, paidAt time.Time, pkgs []catalog.Package,
-	limits map[string]int64,
+	quote func(catalog.Package) int64, servers []Server, limits map[string]int64,
 ) Summary {
 	at := f.At
 	if paidAt.Before(at) {
@@ -163,7 +192,8 @@ func Merge(
 		Payments: Breakdown{
 			ByKind: orEmpty(p.ByKind), ByMethod: orEmpty(p.ByMethod), Refunds: p.Refunds,
 		},
-		Packages: Packages(pkgs),
+		Packages: Packages(pkgs, quote),
+		Servers:  orEmpty(servers),
 		Limits:   map[string]int64{},
 	}
 	for _, name := range slices.Sorted(maps.Keys(f.Active)) {
@@ -252,21 +282,119 @@ func (p PaymentsPart) From(floor time.Time) (PaymentsPart, int) {
 	return p, dropped
 }
 
-// Packages returns the catalog's start packages in catalog order
-func Packages(pkgs []catalog.Package) []Package {
+// Quote is each package's live price on e, 0 when no server lands it
+func Quote(e *placement.Engine, in placement.Inputs) func(catalog.Package) int64 {
+	return func(pkg catalog.Package) int64 {
+		in.Package = pkg
+		c, _ := e.Quote(in)
+		return c.PriceMicros
+	}
+}
+
+// Packages returns the start packages in catalog order, priced by quote or by the catalog if nil
+func Packages(pkgs []catalog.Package, quote func(catalog.Package) int64) []Package {
 	out := []Package{}
 	for _, p := range pkgs {
 		if p.ExtensionOf != "" {
 			continue
 		}
+		price := p.PriceMicros
+		if quote != nil {
+			price = max(quote(p), 0)
+		}
 		r := p.Resources
 		out = append(out, Package{
 			ID: p.ID, VCPU: int64(r.VCPU), MemoryMiB: int64(r.MemoryMiB),
 			DiskGiB: int64(r.DiskGiB), GPU: gpu(r.GPUCount, r.GPUMemoryGiB, p.GPUModel),
-			Minutes: int64(p.Minutes), PriceMicros: p.PriceMicros,
+			Minutes: int64(p.Minutes), PriceMicros: price,
 		})
 	}
 	return out
+}
+
+// Servers lists each provider size a start package lands on, in provider and then size order
+func Servers(
+	e *placement.Engine, reg *provider.Registry, pkgs []catalog.Package, in placement.Inputs,
+) []Server {
+	type spot struct{ provider, size string }
+	found := map[spot]*Server{}
+	// landed holds each provider's sizes in the order a package first landed on them
+	landed := map[string][]string{}
+	for _, pkg := range pkgs {
+		if pkg.ExtensionOf != "" {
+			continue
+		}
+		in.Package = pkg
+		for _, l := range e.Lands(in) {
+			name := l.Provider.Name()
+			caps := reg.Capabilities(l.Provider)
+			k := spot{name, l.Size.Name}
+			s := found[k]
+			if s == nil {
+				s = newServer(caps, name, l.Size, pkg)
+				found[k] = s
+				landed[name] = append(landed[name], l.Size.Name)
+			}
+			s.Available = s.Available && l.Open
+			s.Packages = append(s.Packages, ServerPackage{
+				ID: pkg.ID, Minutes: int64(pkg.Minutes), PriceMicros: l.PriceMicros,
+			})
+			if caps.MaxLifetime > 0 {
+				run := longestRun(caps.MaxLifetime, pkg.Minutes)
+				*s.LongestRunMinutes = max(*s.LongestRunMinutes, run)
+			}
+		}
+	}
+	out := []Server{}
+	for _, p := range reg.Ordered() {
+		names := landed[p.Name()]
+		sizeOrder(p, names)
+		for _, name := range names {
+			out = append(out, *found[spot{p.Name(), name}])
+		}
+	}
+	return out
+}
+
+// sizeOrder sorts names as p lists its sizes, a size p does not list after those it does
+func sizeOrder(p provider.Provider, names []string) {
+	sz, ok := provider.As[provider.Sizer](p)
+	if !ok {
+		return
+	}
+	rank := map[string]int{}
+	for i, s := range sz.Sizes() {
+		rank[s.Name] = i + 1
+	}
+	at := func(name string) int {
+		if r, ok := rank[name]; ok {
+			return r
+		}
+		return len(rank) + 1
+	}
+	slices.SortStableFunc(names, func(a, b string) int { return cmp.Compare(at(a), at(b)) })
+}
+
+// newServer is a size with no package yet, its GPU model the first landing package's
+func newServer(
+	caps provider.Capabilities, name string, size provider.Size, pkg catalog.Package,
+) *Server {
+	r := size.Resources
+	s := &Server{
+		Provider: name, Size: size.Name, VCPU: int64(r.VCPU), MemoryMiB: int64(r.MemoryMiB),
+		DiskGiB: int64(r.DiskGiB), GPU: gpu(r.GPUCount, r.GPUMemoryGiB, pkg.GPUModel),
+		User: cmp.Or(caps.ExecUser, "root"), Available: true, Packages: []ServerPackage{},
+	}
+	if caps.MaxLifetime > 0 {
+		s.LongestRunMinutes = new(int64)
+	}
+	return s
+}
+
+// longestRun is the most whole runs of minutes that fit limit less the extend check's slack
+func longestRun(limit time.Duration, minutes int) int64 {
+	run := time.Duration(minutes) * time.Minute
+	return int64((limit-placement.LifetimeSlack)/run) * int64(minutes)
 }
 
 // gpu is nil without a GPU

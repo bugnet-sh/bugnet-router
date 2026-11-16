@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	poolpkg "github.com/bugnet-sh/bugnet-router/internal/pool"
+	"github.com/bugnet-sh/bugnet-router/internal/pricing"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/local"
 	"github.com/bugnet-sh/bugnet-router/internal/saga"
@@ -203,6 +205,12 @@ type options struct {
 	catalog      string       // the saga's and API server's catalog JSON, catalogJSON when empty
 	apiCatalog   string       // the API server's catalog JSON, the saga's when empty
 	apiEngine    api.Engine   // the API server's engine, the saga's engine when nil
+	// apiRule is the API server's pricing rule, doubled when nil
+	apiRule *pricing.Rule
+	// quoteHold is how long an estimate's quote holds for PricePackage, none when zero
+	quoteHold time.Duration
+	// quoteRise is how far over the held price a held start's cost may be
+	quoteRise int64
 	// wrap replaces the faulty local provider in the registry, given the local provider's root
 	wrap      func(l *local.Provider, root string) provider.Provider
 	transfers config.Transfers // the transfer settings, each zero field at its default
@@ -285,6 +293,9 @@ type env struct {
 	orders    atomic.Int64
 }
 
+// doubled holds each fixed price to twice its cost
+var doubled = pricing.Rule{MarkupBP: 10000}
+
 func newEnv(t *testing.T, opts options) *env {
 	t.Helper()
 	ctx := t.Context()
@@ -364,7 +375,7 @@ func newEnv(t *testing.T, opts options) *env {
 	writer := sessions.NewWriter(st, keys, discard)
 	sg := saga.New(saga.Deps{
 		Store: st, Engine: engine, Registry: reg, Catalog: cat, River: rc, Valkey: vk,
-		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, MarginFloor: 0.5,
+		Prefix: prefix, OrderKey: pub, HandleKey: handleKey, Rule: doubled,
 		Tracker: tracker, ReplicaID: "api-test", Log: discard,
 		Events: edgeevents.New(vk, prefix, discard), Budget: budgetDefaults, Keys: keys,
 		SSH: saga.SSHSettings{LocalSSHDPath: fakeSSHDPath}, Wallets: opts.wallets,
@@ -402,6 +413,10 @@ func newEnv(t *testing.T, opts options) *env {
 	var apiEngine api.Engine = engine
 	if opts.apiEngine != nil {
 		apiEngine = opts.apiEngine
+	}
+	rule := doubled
+	if opts.apiRule != nil {
+		rule = *opts.apiRule
 	}
 	host, apiKeys := transferHost, keys
 	if opts.noTransferHost {
@@ -441,7 +456,8 @@ func newEnv(t *testing.T, opts options) *env {
 		Sources:   sources,
 		Estimator: est,
 		Store:     st, Saga: sg, Jobs: js, Engine: apiEngine, Catalog: apiCat, Registry: reg,
-		Valkey: apiVK, Prefix: prefix, MarginFloor: 0.5, Log: log,
+		Valkey: apiVK, Prefix: prefix, Rule: rule, QuoteHold: opts.quoteHold,
+		QuoteRise: opts.quoteRise, Log: log,
 		SandboxOpsPerSecond: opts.opsPerSecond, SandboxOpsBurst: opts.opsBurst,
 		Budget: budgetDefaults, Keys: apiKeys, Transfers: opts.transfers, TransferHost: host,
 		PreviewDomain: previewDomain, Previews: previewSettings, River: rc,
@@ -681,6 +697,20 @@ func wantCode(t *testing.T, err error, want connect.Code) {
 	}
 	if got := connect.CodeOf(err); got != want {
 		t.Fatalf("error %v has code %v, want %v", err, got, want)
+	}
+}
+
+// wantPriceChanged checks err is PRICE_CHANGED naming the package, what was paid and the price now
+func wantPriceChanged(t *testing.T, err error, pkg string, paid, price int64) {
+	t.Helper()
+	mustCode(t, err, connect.CodeFailedPrecondition, "PRICE_CHANGED")
+	want := map[string]string{
+		"package_id":   pkg,
+		"paid_micros":  strconv.FormatInt(paid, 10),
+		"price_micros": strconv.FormatInt(price, 10),
+	}
+	if got := errInfo(t, err).GetMetadata(); !maps.Equal(got, want) {
+		t.Fatalf("metadata %v, want %v", got, want)
 	}
 }
 
@@ -1101,6 +1131,36 @@ func TestExtensionPastSandboxEnd(t *testing.T) {
 		t.Fatalf("deadline moved from %v to %v", ready.GetDeadline().AsTime(),
 			p.GetDeadline().AsTime())
 	}
+}
+
+func TestExtensionsAnswerTheirServersPrice(t *testing.T) {
+	// 10 minutes at the local provider's 1,000 an hour cost 167, which the saga's rule doubles
+	e := newEnv(t, options{catalog: liveCatalog})
+	h, _ := e.readyPlacement(t)
+	more := &routerv1.PackageOption{
+		PackageId: morePkg, Resources: smallResources, Minutes: 10, PriceMicros: 334,
+		Available: true,
+	}
+	// small-10m extends by the same minutes at the same price, so the listing hides it
+	opts, err := e.listExtensions(t, h)
+	if err != nil || !equalOptions(opts, []*routerv1.PackageOption{more}) {
+		t.Fatalf("listed %v, %v, want %v alone", opts, err, more)
+	}
+	for _, id := range []string{morePkg, smallPkg} {
+		check, err := e.checkExtend(t, h, id)
+		if err != nil || check.Msg.GetPackage().GetPriceMicros() != 334 {
+			t.Fatalf("check of %s gave %v, %v, want a price of 334", id, check, err)
+		}
+	}
+	extend := func(paid int64) error {
+		_, err := e.client.ExtendPlacement(t.Context(), connect.NewRequest(
+			&routerv1.ExtendPlacementRequest{
+				Handle: h, OrderToken: e.extendToken(t, h, morePkg, paid),
+			}))
+		return err
+	}
+	wantPriceChanged(t, extend(333), morePkg, 333, 334)
+	eq(t, extend(334), nil)
 }
 
 func TestGetPlacementLongPollWakes(t *testing.T) {
@@ -1844,9 +1904,11 @@ func TestErrorCodes(t *testing.T) {
 		wantCode(t, extend(h, e.startToken(t, smallPkg, smallPrice)),
 			connect.CodePermissionDenied)
 	})
-	t.Run("underpaid order is permission denied", func(t *testing.T) {
+	t.Run("underpaid order is a changed price", func(t *testing.T) {
 		_, err := e.createWith(t, e.startToken(t, smallPkg, smallPrice-1))
-		wantCode(t, err, connect.CodePermissionDenied)
+		wantPriceChanged(t, err, smallPkg, smallPrice-1, smallPrice)
+		err = extend(h, e.extendToken(t, h, morePkg, morePrice-1))
+		wantPriceChanged(t, err, morePkg, morePrice-1, morePrice)
 	})
 	t.Run("extend for another handle is permission denied", func(t *testing.T) {
 		other, _ := handle.New()

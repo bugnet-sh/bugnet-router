@@ -12,7 +12,7 @@ import (
 )
 
 // Version names the rule set, any change to a rule or a constant bumps it
-const Version = "est-2026.11.4"
+const Version = "est-2026.11.5"
 
 const (
 	mib = int64(1) << 20
@@ -178,6 +178,17 @@ type Input struct {
 	Images []Image
 	// MaxLifetimeMinutes is the longest run any provider allows, 0 when unlimited
 	MaxLifetimeMinutes int
+	// Prices is the price of each package for this answer, a package missing from it keeps its
+	// fixed price
+	Prices map[string]int64
+}
+
+// price is the price of a package for this answer
+func (in Input) price(p catalog.Package) int64 {
+	if v, ok := in.Prices[p.ID]; ok {
+		return v
+	}
+	return p.PriceMicros
 }
 
 // Floor is what the run needs at least

@@ -208,6 +208,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 	warmth, warm := poolWarmth(cfg, reg, st)
 	shared := health.NewShared(st, tracker, log)
 	engine := placement.New(reg, shared, warm).WithGPUOrder(cfg.GPUOrder)
+	checkPackages(log, engine, cat, cfg)
 	// Insert only, so it serves ListPools and DrainPool from Postgres alone
 	pools, err := poolpkg.New(poolpkg.Deps{
 		Store: st, Registry: reg, River: rc, Settings: cfg.Pools, Replica: cfg.ReplicaID, Log: log,
@@ -226,7 +227,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Prefix:        cfg.ValkeyPrefix,
 		OrderKey:      cfg.OrderTokenPublicKey,
 		HandleKey:     cfg.HandleKey,
-		MarginFloor:   cfg.MarginFloor,
+		Rule:          cfg.Pricing.Rule,
 		Tracker:       tracker,
 		ReplicaID:     cfg.ReplicaID,
 		DeploymentID:  cfg.DeploymentID,
@@ -251,9 +252,11 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		PoolRoom:         cfg.Pools.ExtensionRoom,
 		Reserve:          cfg.Reserve,
 		ReserveShare:     cfg.Pools.ReserveShare,
+		QuoteHold:        cfg.Pricing.QuoteHold,
+		QuoteRise:        cfg.Pricing.QuoteRiseMicros,
 		Hedger: saga.NewHedger(saga.HedgerDeps{
 			Settings: cfg.Hedge, Health: shared, Valkey: vk, Prefix: cfg.ValkeyPrefix,
-			CreatesPerSecond: cfg.CreatesPerSecond, MarginFloor: cfg.MarginFloor,
+			CreatesPerSecond: cfg.CreatesPerSecond,
 		}),
 		ReadyTimeouts:    cfg.ReadyTimeouts,
 		GPUPlacingBudget: cfg.GPUPlacingBudget,
@@ -279,7 +282,9 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, read vkinfo
 		Registry:            reg,
 		Valkey:              vk,
 		Prefix:              cfg.ValkeyPrefix,
-		MarginFloor:         cfg.MarginFloor,
+		Rule:                cfg.Pricing.Rule,
+		QuoteHold:           cfg.Pricing.QuoteHold,
+		QuoteRise:           cfg.Pricing.QuoteRiseMicros,
 		Log:                 log,
 		SandboxOpsPerSecond: cfg.SandboxOpsPerSecond,
 		SandboxOpsBurst:     cfg.SandboxOpsBurst,
@@ -425,6 +430,24 @@ func checkBoxdRefs(reg *provider.Registry, cfg config.Config, cat *catalog.Catal
 // checkGPUMargin refuses a GPU package priced so that a gpu_order provider could never serve it
 func checkGPUMargin(reg *provider.Registry, cfg config.Config, cat *catalog.Catalog) error {
 	return cfg.CheckGPUMargin(cat.All(), reg.Ordered())
+}
+
+// checkPackages logs each start package no configured provider can place at its price, health aside
+func checkPackages(
+	log *slog.Logger, e *placement.Engine, cat *catalog.Catalog, cfg config.Config,
+) {
+	for _, pkg := range cat.All() {
+		if pkg.ExtensionOf != "" {
+			continue
+		}
+		in := placement.Inputs{
+			Package: pkg, Rule: cfg.Pricing.Rule, ImageAccept: cfg.Images.Accept,
+		}
+		if len(e.Lands(in)) == 0 {
+			log.Error("no configured provider can place a start package", "package", pkg.ID,
+				"fixed_price", pkg.FixedPrice, "markup_bp", cfg.Pricing.Rule.MarkupBP)
+		}
+	}
 }
 
 // poolWarmth is the view of warm members that marks candidates, none while no pool is on
