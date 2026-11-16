@@ -780,6 +780,13 @@ increment at the server's hourly rate, plus any start fee. A package in the cata
 `price_micros` has a fixed price, and a server fits it when its price with the markup is at most
 that price. `price_micros: 0` is free, and a server fits it only when it costs nothing.
 
+A provider that prices each node on its own, Lium, has no list price, only a cap per size. Its
+hourly cost for a size is a live quote, the hourly price of the second cheapest node the size may
+rent now (the country rule, then price, then node id), so one rented node still leaves one at or
+under the quote, or the one node's price when only one is left. Its start fee is
+`lium.start_billed` at the same hour. With no node, or a node listing over 2 minutes old, the size
+is not offered. Such a server never shows a price under the cost of a node it could rent.
+
 `Estimate` lists every start package, each with `available` where a provider could host it now for
 the order's requirements. It quotes each live package as the price of its first candidate, or of the
 cheapest server it could land on when none is available, shown unavailable. It stores the quote of
@@ -817,6 +824,13 @@ cheapest server the payment covers, a GPU package's first in `gpu_order`, as it 
 quote. When none does, the quoted server takes it while its cost now is at most the payment plus
 `pricing.quote_rise_micros`, 30000 in production, one Boat start fee step. That bounds what Bugnet
 loses on a run quoted just before a price change. Otherwise the payment must cover a live candidate.
+
+A start on a server that prices each node rents no node above the hour the order was priced at,
+the server's live quote, or for the first attempt on a held quote the quote's own hour, which
+`price_quotes.hourly_micros` keeps and which prices that server for the order. When no node is
+left at or under it, the create answers `capacity`, and the start fails over to a server whose
+price fits what is left of the payment, or fails refundable in full. A held quote of such a server
+without its hour, a row from before the hour was kept, holds nothing, and the start is priced live.
 An order that pays less answers `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata
 holds `package_id`, `paid_micros` and `price_micros`, the live price. A start is recorded as a
 failed, refundable placement with reason `price_changed` and a `placement.failed` event, so Payments
@@ -880,11 +894,14 @@ keys that start with `_` are the router's own, and `Exec` refuses them with
 `ExtendPlacement` takes an extend order token for the placement's handle and moves the deadline by
 the package's minutes, once per order, for the placement's own package or one whose `extension_of`
 names it. Its price is the cost of those minutes on the sandbox's own server plus the markup, with
-no start fee and no overhead. A sandbox whose provider or size is no longer in the config cannot
-be extended, and answers `NOT_READY`. It refuses a placement that is not ready with `FailedPrecondition` and the
-`google.rpc.ErrorInfo` reason `NOT_READY`, as every call does that needs a ready placement, and an
-extension that would outlast the provider's maximum lifetime, or the sandbox's own end where the
-provider gives each sandbox one, with `FailedPrecondition` and reason `EXCEEDS_LIFETIME`. A new
+no start fee and no overhead. On a server that prices each node the hour is the rented node's,
+which `placements.rented_hourly_micros` records at ready, never the live quote, which can be under
+it, or the size's cap when none was recorded. A sandbox whose provider or size is no longer in the
+config cannot be extended, and answers `NOT_READY`. It refuses a placement that is not ready with
+`FailedPrecondition` and the `google.rpc.ErrorInfo` reason `NOT_READY`, as every call does that
+needs a ready placement, and an extension that would outlast the provider's maximum lifetime, or
+the sandbox's own end where the provider gives each sandbox one, with `FailedPrecondition` and
+reason `EXCEEDS_LIFETIME`. A new
 lifetime the provider itself refuses as invalid answers the same. The router keeps ended placements,
 so extending a handle past its deadline answers `NOT_READY`, and only a handle it never issued
 answers `NotFound`. `CheckExtendPlacement` takes a handle and a package ID and answers as
@@ -1935,6 +1952,10 @@ refundable in full.
   has no sizes and is never chosen.
 - `koyeb` runs Koyeb sandbox services, one app each, with the RTX 4000 SFF Ada for GPU packages,
   with `KOYEB_API_TOKEN`, `koyeb.region` and `[koyeb.instance_types]`.
+- `lium` runs Lium pods, each size one GPU type on a whole Secure node, with `LIUM_API_KEY`,
+  `LIUM_SSH_SEED` and `[lium]`. Its sizes carry a cap per hour instead of a price, and it prices
+  each node on its own (see Prices and availability). A create rents the cheapest eligible node at
+  or under the order's cap and the size's, and the ref records the node and its hour.
 - `hf` runs Hugging Face Jobs, one Job per GPU sandbox, with `HF_JOBS_TOKEN`, `HF_SANDBOX_SEED`
   and `[hf]`. A Job's command checks `sbx-server` against `hf.sbx_server_sha256` with
   `sha256sum -c` and execs it as PID 1. With `hf.sbx_server = "fetch"` it first downloads the
@@ -1980,14 +2001,16 @@ Both routers also refuse to start when:
 - `previews.providers` lists `hf` while `previews.gate_port` is not 29417, the one gate port every
   HF Job exposes.
 
-`router-api` refuses to start when a GPU package's fixed `price_micros` is under `pricing.markup`
-on a `gpu_order` provider with a size for it, estimated from `Sizes`, the size's hourly cost
-(Lium's cap) over the package's minutes and `[pricing.overhead]` in the provider's billing
-increments, and its start fee. Placement would leave that provider out of the package in silence.
-The error names the lowest price that fits. A live package (no `price_micros`) is priced at the
-marked up cost of the server it lands on, so the check passes it. HF reads its hardware list
-hourly, and a new price that puts a fixed package under the markup logs an error. Lium and HF
-bill their boot in their start fee, and `[pricing.overhead]` names neither.
+`router-api` refuses to start when a `gpu_order` provider with a size covering a GPU package, by
+`Sizes`, has no hourly cost for that size, so it could not price the package, and the error names
+the package, the provider and the size. It also refuses a fixed `price_micros`, which only dev
+catalogs set, under `pricing.markup` on the dearest covering provider: a start package's minutes
+and `[pricing.overhead]` in the provider's billing increments plus its start fee, an extension's
+minutes alone. A provider that prices each node is read at its size's cap, never its live quote,
+since no node listing is read yet at start and no rent goes above the cap. The error names the
+lowest price that fits. HF reads its hardware list hourly, and a new price that leaves a package
+unpriced or a fixed price under the markup logs an error. Lium and HF bill their boot in their
+start fee, and `[pricing.overhead]` names neither.
 
 ### Limits and account standing
 
@@ -2314,7 +2337,9 @@ counts the ones older than `foreign_alert_after` whose `bugnet_deployment` is ne
 deployment nor in `known_deployments`. The count lands in `provider_health.foreign_sandboxes`, and
 `/monitor` shows it. Nothing is destroyed.
 
-Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. At
+Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. On a
+server that prices each node the row holds the size's cap until the create names the rented node,
+and then that node's hour and the start fee at it. At
 termination `placements.cost_micros` sums `spend.AttemptCost` over the attempts, `edge_bytes` and
 `egress_bytes` come from the budget counters, and `placement.terminated` carries all three. A cost
 more than what the orders paid is a loss, which logs at error level, and a cost over the paid

@@ -72,7 +72,7 @@ type Options struct {
 	MinDownloadMbps int
 	// MaxLifetime is the longest a placement may run with its extensions, 2 hours when 0
 	MaxLifetime time.Duration
-	// StartBilled is the time Lium bills before the paid clock, priced at the size's cap
+	// StartBilled is the time Lium bills before the paid clock, priced at the node's hour
 	StartBilled time.Duration
 	// OpsPerSecond paces every API call, none when 0
 	OpsPerSecond int

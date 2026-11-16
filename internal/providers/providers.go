@@ -38,11 +38,11 @@ var localSize = provider.Size{Name: "local", Resources: provider.Resources{
 type Option func(*options)
 
 type options struct {
-	// packages are the packages sold, each fixed price held to the markup at each new HF price
+	// packages are the packages sold, each held to check 8 at each new HF price
 	packages []catalog.Package
 }
 
-// WithPackages names the packages sold, so a new HF price over a fixed price logs an error
+// WithPackages names the packages sold, so a new HF price that fails check 8 logs an error
 func WithPackages(pkgs []catalog.Package) Option {
 	return func(o *options) { o.packages = pkgs }
 }
@@ -316,7 +316,7 @@ func liumOptions(cfg config.Config, key string, seed []byte) lium.Options {
 	}
 }
 
-// buildHF builds HF, logging an error when an hourly price read puts one of pkgs under its margin
+// buildHF builds HF, logging an error when an hourly price read makes one of pkgs fail check 8
 func buildHF(cfg config.Config, vk valkey.Client, pkgs []catalog.Package) (*hf.Provider, error) {
 	token, seed := cfg.ProviderKeys["hf"], cfg.ProviderSeeds["hf"]
 	switch {
@@ -335,7 +335,7 @@ func buildHF(cfg config.Config, vk valkey.Client, pkgs []catalog.Package) (*hf.P
 		opts.OnChange = func() {
 			<-built
 			if err := cfg.CheckGPUMargin(pkgs, []provider.Provider{p}); err != nil {
-				slog.Error("hf: a new price puts a fixed price under the markup", "err", err)
+				slog.Error("hf: a new price fails check 8", "err", err)
 			}
 		}
 	}
