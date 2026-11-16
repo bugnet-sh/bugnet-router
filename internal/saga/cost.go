@@ -7,19 +7,59 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bugnet-sh/bugnet-router/internal/budget"
+	"github.com/bugnet-sh/bugnet-router/internal/placement"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/spend"
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
-// quote prices an attempt of size on prov for its record, the hour and the start fee
+// quote prices an attempt of size on prov for its record, the hour and the start fee, a per-node
+// provider's at the size's cap until its rented node's price is known
 func quote(prov provider.Provider, size provider.Size) (hourly, fee int64) {
+	if np, ok := provider.As[provider.NodePricer](prov); ok {
+		hourly = np.CapHourlyMicros(size)
+		if f, ok := np.StartCostAt(size, hourly); ok {
+			fee = f
+		}
+		return hourly, fee
+	}
 	if c, ok := provider.As[provider.StartCoster](prov); ok {
 		if f, ok := c.StartCostMicros(size); ok {
 			fee = f
 		}
 	}
 	return prov.HourlyCostMicros(size), fee
+}
+
+// rentedQuote is the hour and start fee of the node ref runs on, false for a provider that prices
+// no node on its own, a ref that names no price or a size no longer sold
+func rentedQuote(
+	prov provider.Provider, size string, ref provider.Ref,
+) (hourly, fee int64, ok bool) {
+	np, isNode := provider.As[provider.NodePricer](prov)
+	if !isNode {
+		return 0, 0, false
+	}
+	sz, found := sizeNamed(prov, size)
+	if !found {
+		return 0, 0, false
+	}
+	if hourly, ok = np.RentedHourlyMicros(ref); !ok {
+		return 0, 0, false
+	}
+	if fee, ok = np.StartCostAt(sz, hourly); !ok {
+		return 0, 0, false
+	}
+	return hourly, fee, true
+}
+
+// rentCap is the most c's node may cost an hour for the order, the hourly figure c was priced at
+// on a provider that prices each node, 0 for any other
+func rentCap(c placement.Candidate) int64 {
+	if _, ok := provider.As[provider.NodePricer](c.Provider); ok {
+		return c.HourlyMicros
+	}
+	return 0
 }
 
 // markDestroyed stamps the attempt that made a destroyed sandbox, a failure only logging since

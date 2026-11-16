@@ -477,7 +477,7 @@ func (s *Server) putQuotes(
 		}
 		qs = append(qs, store.Quote{
 			PackageID: o.GetPackageId(), Provider: q.Provider.Name(), SizeName: q.Size.Name,
-			CostMicros: q.CostMicros, PriceMicros: q.PriceMicros,
+			CostMicros: q.CostMicros, PriceMicros: q.PriceMicros, HourlyMicros: q.HourlyMicros,
 		})
 	}
 	if err := s.d.Store.PutQuotes(ctx, id, qs); err != nil {

@@ -444,7 +444,14 @@ func (s *Saga) Create(
 // terms are what a start order paid for its package and the server its quote holds, nil for none
 type terms struct {
 	paid   int64
-	prefer *placement.Server
+	prefer *hold
+}
+
+// hold is the server a quote holds a start on and the hourly figure the quote priced it at
+type hold struct {
+	server placement.Server
+	// hourly caps the rent of a server that prices each node on its own, 0 for none recorded
+	hourly int64
 }
 
 // heldServer claims the estimate's quote of pkg for the order and is the server it holds, nil for
@@ -452,7 +459,7 @@ type terms struct {
 func (s *Saga) heldServer(
 	ctx context.Context, estimate uuid.UUID, pkg catalog.Package, req placement.Requirements,
 	order string, paid int64,
-) *placement.Server {
+) *hold {
 	if estimate == uuid.Nil || s.d.QuoteHold <= 0 {
 		return nil
 	}
@@ -465,7 +472,7 @@ func (s *Saga) heldServer(
 	if !ok {
 		return nil
 	}
-	return HeldServer(s.d.Engine, s.inputs(pkg, req, nil), q, order, paid, s.d.QuoteRise)
+	return holdOf(s.d.Engine, s.inputs(pkg, req, nil), q, order, paid, s.d.QuoteRise)
 }
 
 // CandidateFinder finds the candidates of a start
@@ -474,18 +481,40 @@ type CandidateFinder interface {
 }
 
 // HeldServer is the server quote q holds the start of in on for order, which paid paid, nil when
-// another order claimed q, paid is short of it or no server takes the start under the quote
+// another order claimed q, paid is short of it, q priced a per-node server without its hourly
+// figure or no server takes the start under the quote
 func HeldServer(
 	f CandidateFinder, in placement.Inputs, q store.Quote, order string, paid, rise int64,
 ) *placement.Server {
+	if h := holdOf(f, in, q, order, paid, rise); h != nil {
+		return &h.server
+	}
+	return nil
+}
+
+// nodePricing is a finder that knows which providers price each node on their own
+type nodePricing interface {
+	PricesPerNode(name string) bool
+}
+
+// holdOf is the hold of HeldServer with the hourly figure quote q priced its server at
+func holdOf(
+	f CandidateFinder, in placement.Inputs, q store.Quote, order string, paid, rise int64,
+) *hold {
 	if q.OrderID != "" && q.OrderID != order || paid < q.PriceMicros {
 		return nil
 	}
-	held := &placement.Server{Provider: q.Provider, Size: q.SizeName}
-	if _, err := fitting(f, in, paid, paid, held, rise); err != nil {
+	if np, ok := f.(nodePricing); ok && q.HourlyMicros <= 0 && np.PricesPerNode(q.Provider) {
+		// A per-node server's quote without its hourly figure caps no rent, so it holds nothing
 		return nil
 	}
-	return held
+	h := &hold{
+		server: placement.Server{Provider: q.Provider, Size: q.SizeName}, hourly: q.HourlyMicros,
+	}
+	if _, err := fitting(f, in, paid, paid, h, rise); err != nil {
+		return nil
+	}
+	return h
 }
 
 // startRefusal is why a start cannot begin, empty when a candidate fits what it paid
@@ -639,17 +668,21 @@ func (s *Saga) inputs(
 // within are the candidates of an attempt that fit left of paid, ErrNoCandidate when none does
 func (s *Saga) within(
 	pkg catalog.Package, req placement.Requirements, tried map[string]bool, paid, left int64,
-	prefer *placement.Server,
+	prefer *hold,
 ) ([]placement.Candidate, error) {
 	return fitting(s.d.Engine, s.inputs(pkg, req, tried), paid, left, prefer, s.d.QuoteRise)
 }
 
 // fitting are the candidates of in that fit left of paid, prefer taking a start none fits while
-// its cost is within rise, ErrNoCandidate when none does
+// its cost is within rise and pricing a per-node server at its hourly figure, ErrNoCandidate when
+// none does
 func fitting(
-	f CandidateFinder, in placement.Inputs, paid, left int64, prefer *placement.Server, rise int64,
+	f CandidateFinder, in placement.Inputs, paid, left int64, prefer *hold, rise int64,
 ) ([]placement.Candidate, error) {
-	in.Prefer, in.PreferRiseMicros = prefer, rise
+	in.Prefer, in.PreferHourlyMicros, in.PreferRiseMicros = nil, 0, rise
+	if prefer != nil {
+		in.Prefer, in.PreferHourlyMicros = &prefer.server, prefer.hourly
+	}
 	switch {
 	case in.Package.FixedPrice:
 		// A fixed price is the same on every server and its fit holds the server's cost under it
@@ -845,17 +878,21 @@ func (s *Saga) attemptCold(
 	smp.StartPath = store.PathCold
 	wctx, wcancel := work(budget)
 	ref, err := s.create(wctx, prov, provider.CreateRequest{
-		IdempotencyKey: rec.IdempotencyKey,
-		Size:           c.Size,
-		Labels:         s.labels(p.ID),
-		Lifetime:       time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
-		Egress:         s.d.Boot.egressAllow(pkg.EgressAllow),
+		IdempotencyKey:  rec.IdempotencyKey,
+		Size:            c.Size,
+		Labels:          s.labels(p.ID),
+		Lifetime:        time.Duration(pkg.Minutes)*time.Minute + lifetimeSlack,
+		Egress:          s.d.Boot.egressAllow(pkg.EgressAllow),
+		MaxHourlyMicros: rentCap(c),
 	})
 	wcancel()
 	smp.CreateMS = int(s.now().Sub(started).Milliseconds())
 	smp.SandboxID = ref.ID
 	if err == nil {
 		rec.SandboxID = ref.ID
+		if hourly, fee, ok := rentedQuote(prov, c.Size.Name, ref); ok {
+			rec.HourlyMicros, rec.StartFeeMicros = hourly, fee
+		}
 		if err := s.recordAttempt(ctx, rec); err != nil {
 			s.d.Log.Error("record attempt sandbox", "placement", p.ID, "err", err)
 		}
@@ -1193,6 +1230,13 @@ func (s *Saga) readyWrites(
 	}
 	ready := rec
 	ready.State = attemptReady
+	if hourly, fee, ok := rentedQuote(prov, size, prep.Ref); ok {
+		// The node the sandbox runs on prices its meter and every extension
+		ready.HourlyMicros, ready.StartFeeMicros = hourly, fee
+		if err := ts.SetRentedHourly(ctx, p.ID, hourly); err != nil {
+			return Event{}, err
+		}
+	}
 	if err := ts.RecordAttempt(ctx, ready); err != nil {
 		return Event{}, err
 	}
@@ -1725,9 +1769,11 @@ func (s *Saga) checkExtend(
 	return x, nil
 }
 
-// extensionPrice is pkg's price on p's server, a refusal as not ready once the server is gone
+// extensionPrice is pkg's price on p's server at its rented node's hour where the server prices
+// each node, a refusal as not ready once the server is gone
 func (s *Saga) extensionPrice(p store.Placement, pkg catalog.Package) (int64, error) {
-	price, err := s.d.Engine.ExtensionPrice(pkg, p.Provider, p.SizeName, s.d.Rule)
+	price, err := s.d.Engine.RentedExtensionPrice(pkg, p.Provider, p.SizeName,
+		p.RentedHourlyMicros, s.d.Rule)
 	if errors.Is(err, placement.ErrNoServer) {
 		s.d.Log.Warn("refuse an extension on a server no longer configured", "placement", p.ID,
 			"package", pkg.ID, "err", err)

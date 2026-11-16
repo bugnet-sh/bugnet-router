@@ -47,7 +47,7 @@ type placing struct {
 	results chan attemptResult
 	// paid is what the order paid for its package, and prefer the server its quote holds
 	paid   int64
-	prefer *placement.Server
+	prefer *hold
 	// ran are the attempts that ended having tried a provider, which spend the payment
 	ran []*run
 
@@ -153,7 +153,7 @@ func (pl *placing) next() *placement.Candidate {
 	s := pl.s
 	for pl.budget.Err() == nil && pl.started < maxAttempts {
 		// The quote holds its server for the first attempt alone
-		var prefer *placement.Server
+		var prefer *hold
 		if pl.started == 0 {
 			prefer = pl.prefer
 		}
