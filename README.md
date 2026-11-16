@@ -1941,8 +1941,11 @@ most the budget plus `pricing.quote_rise_micros`. A failover goes only to a serv
 what the order paid less what the earlier attempts cost, and when nothing fits the start fails
 refundable in full. An earlier attempt costs its time from its start at its hour, plus its start
 fee where that is a charge of its own (Boat's), not where it is boot time the provider bills by
-the hour (Lium's and HF's). One whose create the provider refused for capacity, with no create of
-it left unknown, made nothing and costs nothing.
+the hour (Lium's and HF's). An attempt costs nothing only when its adapter says its create made
+nothing (`provider.Error.Unmade`, which Lium sets when it knows no pod of the key exists) and no
+create of the attempt had an unknown outcome. Every other refused create, a Boat capacity refusal
+included, costs as above. A Lium refusal caused only by the order's cap
+(`provider.Error.PriceCapped`) does not count against Lium's health.
 
 - `local` runs sandboxes as host directories and processes, for tests and development only.
 - `boxd` runs isolated boxd machines, with `BOXD_API_KEY`, `boxd.region` and `boxd.endpoint`.
@@ -1960,7 +1963,8 @@ it left unknown, made nothing and costs nothing.
 - `lium` runs Lium pods, each size one GPU type on a whole Secure node, with `LIUM_API_KEY`,
   `LIUM_SSH_SEED` and `[lium]`. Its sizes carry a cap per hour instead of a price, and it prices
   each node on its own (see Prices and availability). A create rents the cheapest eligible node at
-  or under the order's cap and the size's, and the ref records the node and its hour.
+  or under the order's cap and the size's, its pending price included, and the ref, an adopted
+  one too, records the node, its hour and the order's cap, which `ReadyMeta` holds the pod to.
 - `hf` runs Hugging Face Jobs, one Job per GPU sandbox, with `HF_JOBS_TOKEN`, `HF_SANDBOX_SEED`
   and `[hf]`. A Job's command checks `sbx-server` against `hf.sbx_server_sha256` with
   `sha256sum -c` and execs it as PID 1. With `hf.sbx_server = "fetch"` it first downloads the
@@ -2345,12 +2349,12 @@ deployment nor in `known_deployments`. The count lands in `provider_health.forei
 Each attempt row keeps its `sandbox_id`, size, hourly price, start fee and `destroyed_at`. The
 start fee is a charge beside the sandbox's time, Boat's, and 0 for Lium and HF, whose start fee is
 boot time their hourly rate bills and the span from the create to the destroy already holds. On a
-server that prices each node the row holds the size's cap until the create names the rented node,
-and then that node's hour. At termination `placements.cost_micros` sums `spend.AttemptCost` over
-the attempts, `edge_bytes` and `egress_bytes` come from the budget counters, and
-`placement.terminated` carries all three. A cost
-more than what the orders paid is a loss, which logs at error level, and a cost over the paid
-price less its markup that is not a loss is a warning. `/monitor` counts such placements of the
+server that prices each node the row holds the size's cap until the sandbox is ready, and then the
+rented node's hour, the pod's own price where `ReadyMeta` reads one, so a pod refused at ready is
+metered at the cap. At termination `placements.cost_micros` sums `spend.AttemptCost` over the
+attempts, `edge_bytes` and `egress_bytes` come from the budget counters, and `placement.terminated`
+carries all three. A cost more than what the orders paid is a loss, which logs at error level, and
+a cost over the paid price less its markup that is not a loss is a warning. `/monitor` counts such placements of the
 last 24 hours, and the losses as a problem. `reconcile.cost_alert_fraction` is 0.03 in
 production.
 
