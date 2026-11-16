@@ -67,10 +67,11 @@ func TestHFPricesUnderTheRule(t *testing.T) {
 	}
 	price, err := q.ExtensionPrice(t4More, rule)
 	eq(t, []any{price, err}, []any{int64(75_171), nil})
-	// The meter bills the same hour and start fee per whole minute, under the markup paid
+	// The meter bills a 13-minute create to destroy span, boot included, at the same hour per
+	// whole minute with no fee beside it, 88,838 under the markup paid
 	start := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	cost := spend.AttemptCost(start, start.Add(9*time.Minute+time.Second), p.BillingIncrement(),
-		q.HourlyMicros, q.StartFeeMicros)
+	cost := spend.AttemptCost(start, start.Add(12*time.Minute+time.Second), p.BillingIncrement(),
+		q.HourlyMicros, provider.SeparateStartFee(p, q.StartFeeMicros))
 	eq(t, cost, int64(88_838))
 	eq(t, spend.Judge(cost, q.PriceMicros, rule), spend.Verdict{})
 
