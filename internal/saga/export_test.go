@@ -92,3 +92,8 @@ func SetCreateWait(t testing.TB, d time.Duration) {
 
 // LifetimeUntil is the lifetime a reserved sandbox is asked for, never past the provider's limit
 var LifetimeUntil = lifetimeUntil
+
+// AttemptQuote is the hour and start fee the saga records on an attempt of size on prov
+func AttemptQuote(prov provider.Provider, size provider.Size) (int64, int64) {
+	return quote(prov, size)
+}

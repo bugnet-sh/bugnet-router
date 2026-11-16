@@ -259,6 +259,21 @@ type NodePricer interface {
 	RentedHourlyMicros(ref Ref) (int64, bool)
 }
 
+// BootBiller is a provider whose start fee is boot time it bills at its hourly rate, which a
+// sandbox's span from create to destroy already holds, never a charge of its own
+type BootBiller interface {
+	StartFeeIsBootTime() bool
+}
+
+// SeparateStartFee is fee, a start fee of p, as a charge beside the sandbox's billed span, 0 where
+// p bills its start fee as boot time
+func SeparateStartFee(p Provider, fee int64) int64 {
+	if b, ok := As[BootBiller](p); ok && b.StartFeeIsBootTime() {
+		return 0
+	}
+	return fee
+}
+
 // Sizer is a provider that lists the sizes it sells, smallest first
 type Sizer interface {
 	Sizes() []Size

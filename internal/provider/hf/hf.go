@@ -260,6 +260,10 @@ func (p *Provider) HourlyCostMicros(sz provider.Size) int64 {
 	return 0
 }
 
+// StartFeeIsBootTime is true, the start fee prices the Starting time and boot HF bills by the
+// minute
+func (p *Provider) StartFeeIsBootTime() bool { return true }
+
 // BillingIncrement is one minute, HF bills Jobs by the minute
 func (p *Provider) BillingIncrement() time.Duration { return time.Minute }
 

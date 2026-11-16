@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ const gpuLiveJSON = `{"packages": [
 ]}`
 
 // noded rents nodes as Lium does, quoting the second cheapest node left and renting the cheapest
-// at or under the order's cap and the size's
+// at or under the order's cap and the size's, its start fee billed boot time
 type noded struct {
 	gpuLocal
 	mu    *sync.Mutex
@@ -42,16 +43,36 @@ type noded struct {
 	limit int64
 	// asked is the cap each create named
 	asked *[]int64
+	// fails makes every sandbox it rents fail to become ready
+	fails *atomic.Bool
 }
 
 func newNoded(t *testing.T, limit int64, nodes ...int64) noded {
 	t.Helper()
+	return newNodedOf(t, t4, limit, nodes...)
+}
+
+// newNodedOf is newNoded selling size
+func newNodedOf(t *testing.T, size provider.Size, limit int64, nodes ...int64) noded {
+	t.Helper()
 	n := noded{
-		gpuLocal: gpuLocal{newLocal(t, local.Options{Name: "lium", Sizes: []provider.Size{t4}})},
-		mu:       &sync.Mutex{}, nodes: &[]int64{}, limit: limit, asked: &[]int64{},
+		gpuLocal: gpuLocal{newLocal(t, local.Options{
+			Name: "lium", Sizes: []provider.Size{size},
+		})},
+		mu: &sync.Mutex{}, nodes: &[]int64{}, limit: limit, asked: &[]int64{},
+		fails: &atomic.Bool{},
 	}
 	n.set(nodes...)
 	return n
+}
+
+func (noded) StartFeeIsBootTime() bool { return true }
+
+func (n noded) WaitReady(ctx context.Context, ref provider.Ref) error {
+	if n.fails.Load() {
+		return &provider.Error{Code: provider.CodeInternal, Err: errors.New("boot failed")}
+	}
+	return n.gpuLocal.WaitReady(ctx, ref)
 }
 
 // set lists the free nodes at these prices
@@ -147,8 +168,19 @@ func newHF(t *testing.T, hourly int64) gpuLocal {
 // gpuEnv gives the saga the live T4 catalog at 10%, lium first, a 45 m hold and a rise of 30,000
 func gpuEnv(t *testing.T, ps ...provider.Provider) *env {
 	t.Helper()
+	return gpuEnvOf(t, gpuLiveJSON, nil, ps...)
+}
+
+// gpuEnvOf is gpuEnv with the catalog raw and adjust applied last
+func gpuEnvOf(
+	t *testing.T, raw string, adjust func(*saga.Deps), ps ...provider.Provider,
+) *env {
+	t.Helper()
 	return newEnvWith(t, func(d *saga.Deps) {
-		d.Catalog = loadCatalog(t, gpuLiveJSON)
+		if adjust != nil {
+			defer adjust(d)
+		}
+		d.Catalog = loadCatalog(t, raw)
 		d.Engine = d.Engine.WithGPUOrder([]string{"lium", "hf"})
 		d.Rule, d.QuoteHold, d.QuoteRise = tenPercent, 45*time.Minute, 30_000
 		d.GPUPlacingBudget = time.Minute
@@ -225,7 +257,8 @@ func TestGPUQuoteIsTheSecondCheapestNode(t *testing.T) {
 	// The order was priced at $0.28, so its rent is capped there and takes the $0.25 node
 	eq(t, lium.caps(), []int64{quotedHourly})
 	eq(t, p.RentedHourlyMicros, int64(250_000))
-	eq(t, e.attemptPrices(t, p.ID), [][]any{{"lium", int64(250_000), int64(29_167)}})
+	// The start fee is boot time the span bills, so the meter's row adds none
+	eq(t, e.attemptPrices(t, p.ID), [][]any{{"lium", int64(250_000), int64(0)}})
 	eq(t, lium.free(), []int64{280_000, 300_000})
 }
 
@@ -280,7 +313,7 @@ func TestGPUHeldQuoteStartsOnTheNextNode(t *testing.T) {
 	}
 	eq(t, lium.caps(), []int64{quotedHourly})
 	eq(t, p.RentedHourlyMicros, int64(quotedHourly))
-	eq(t, e.attemptPrices(t, p.ID), [][]any{{"lium", int64(quotedHourly), int64(32_667)}})
+	eq(t, e.attemptPrices(t, p.ID), [][]any{{"lium", int64(quotedHourly), int64(0)}})
 	// The same payment without the quote is short of the live price
 	lium.set(280_000, 300_000)
 	p, _, err = e.startGPU(t, "order-2", quotedPrice, uuid.Nil)

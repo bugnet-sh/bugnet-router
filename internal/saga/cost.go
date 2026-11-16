@@ -13,26 +13,26 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/store"
 )
 
-// quote prices an attempt of size on prov for its record, the hour and the start fee, a per-node
-// provider's at the size's cap until its rented node's price is known
+// quote prices an attempt of size on prov for its record, the hour and the start fee charged
+// beside the span, a per-node provider's hour at the size's cap until its rented node is known
 func quote(prov provider.Provider, size provider.Size) (hourly, fee int64) {
 	if np, ok := provider.As[provider.NodePricer](prov); ok {
 		hourly = np.CapHourlyMicros(size)
 		if f, ok := np.StartCostAt(size, hourly); ok {
 			fee = f
 		}
-		return hourly, fee
+		return hourly, provider.SeparateStartFee(prov, fee)
 	}
 	if c, ok := provider.As[provider.StartCoster](prov); ok {
 		if f, ok := c.StartCostMicros(size); ok {
 			fee = f
 		}
 	}
-	return prov.HourlyCostMicros(size), fee
+	return prov.HourlyCostMicros(size), provider.SeparateStartFee(prov, fee)
 }
 
-// rentedQuote is the hour and start fee of the node ref runs on, false for a provider that prices
-// no node on its own, a ref that names no price or a size no longer sold
+// rentedQuote is the hour of the node ref runs on and the start fee charged beside its span, false
+// for a provider that prices no node on its own, a ref that names no price or a size not sold
 func rentedQuote(
 	prov provider.Provider, size string, ref provider.Ref,
 ) (hourly, fee int64, ok bool) {
@@ -50,7 +50,7 @@ func rentedQuote(
 	if fee, ok = np.StartCostAt(sz, hourly); !ok {
 		return 0, 0, false
 	}
-	return hourly, fee, true
+	return hourly, provider.SeparateStartFee(prov, fee), true
 }
 
 // rentCap is the most c's node may cost an hour for the order, the hourly figure c was priced at

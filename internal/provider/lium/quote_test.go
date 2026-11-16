@@ -92,6 +92,10 @@ func TestLiumNodePricer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The start fee is the boot Lium bills by the hour, which a sandbox's span already holds
+	var boot provider.BootBiller = p
+	eq(t, boot.StartFeeIsBootTime(), true)
+	eq(t, provider.SeparateStartFee(p, 32_667), int64(0))
 	eq(t, p.CapHourlyMicros(rtx3090), int64(350_000))
 	eq(t, p.CapHourlyMicros(provider.Size{Name: "lium-h200"}), int64(4_900_000))
 	eq(t, p.CapHourlyMicros(provider.Size{Name: "lium-b200"}), int64(0))

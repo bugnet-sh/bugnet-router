@@ -41,6 +41,10 @@ func TestHFPricesUnderTheRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	var _ provider.StartCoster = p
+	// The start fee is the Starting time and boot HF bills by the minute, which the span holds
+	var boot provider.BootBiller = p
+	eq(t, boot.StartFeeIsBootTime(), true)
+	eq(t, provider.SeparateStartFee(p, 20_501), int64(0))
 	if _, perNode := provider.As[provider.NodePricer](p); perNode {
 		t.Fatal("hf prices its flavors from a list, never per node")
 	}

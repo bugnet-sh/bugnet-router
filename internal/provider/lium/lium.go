@@ -397,6 +397,9 @@ func (p *Provider) RentedHourlyMicros(ref provider.Ref) (int64, bool) {
 	return h, true
 }
 
+// StartFeeIsBootTime is true, the start fee prices the pull and boot Lium bills by the hour
+func (p *Provider) StartFeeIsBootTime() bool { return true }
+
 // BillingIncrement is one second, Lium bills per second with no minimum
 func (p *Provider) BillingIncrement() time.Duration { return time.Second }
 
