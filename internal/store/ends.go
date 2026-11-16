@@ -39,7 +39,7 @@ func (s *Store) MarkPlacementEnding(ctx context.Context, id uuid.UUID, e Ending)
 func (s *Store) OrdersNewestFirst(ctx context.Context, placementID uuid.UUID) ([]Order, error) {
 	rows, err := s.q.Query(ctx, `
 		select order_id, kind, placement_id, coalesce(payer, ''), coalesce(fee_payer, ''),
-			amount_micros, seconds_bought
+			amount_micros, fee_micros, seconds_bought
 		from orders where placement_id = $1
 		order by kind = $2, created_at desc, order_id desc`, placementID, OrderStart)
 	if err != nil {
@@ -48,7 +48,7 @@ func (s *Store) OrdersNewestFirst(ctx context.Context, placementID uuid.UUID) ([
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Order, error) {
 		var o Order
 		err := r.Scan(&o.ID, &o.Kind, &o.PlacementID, &o.Payer, &o.FeePayer, &o.AmountMicros,
-			&o.SecondsBought)
+			&o.FeeMicros, &o.SecondsBought)
 		return o, err
 	})
 	if err != nil {

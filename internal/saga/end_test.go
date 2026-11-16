@@ -427,6 +427,28 @@ func TestRefundsExcludeAllowance(t *testing.T) {
 	eq(t, ev.Refunds, []saga.Refund{{OrderID: "paid", RefundMicros: 88 * *ev.UnusedSeconds}})
 }
 
+func TestRefundsKeepTheFeeShare(t *testing.T) {
+	e := endEnv(t, nil, nil, nil)
+	tok := e.token(t, ordertoken.Claims{
+		OrderID: "paid", Kind: ordertoken.KindStart, PackageID: smallPkg, AmountMicros: 1053000,
+		AllowanceMicros: 1000000, FeeMicros: 3000,
+	})
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: tok, Requirements: placement.Requirements{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.saga.Wait()
+	o, err := e.store.OrderByID(t.Context(), "paid")
+	eq(t, err, nil)
+	eq(t, []int64{o.AmountMicros, o.FeeMicros, o.SecondsBought}, []int64{50000, 3000, 600})
+	e.end(t, p.ID, saga.End{Reason: saga.ReasonProviderFailed, Actor: wallets.ActorRouter})
+	ev, _ := e.terminated(t, p.ID)
+	// Founder decision F9 (b): 50000 plus the 3000 fee over 600 s is 88 a second
+	eq(t, ev.Refunds, []saga.Refund{{OrderID: "paid", RefundMicros: 88 * *ev.UnusedSeconds}})
+}
+
 func TestRefundsTakeTheNewestOrderFirst(t *testing.T) {
 	clk := &clock{}
 	e := endEnv(t, nil, clk, nil)
@@ -464,6 +486,9 @@ func TestRefundsPriceEachOrder(t *testing.T) {
 			rf("e2", 83*300), rf("e1", 75*600), rf("s", 83*100),
 		}},
 		{"more than was bought", []store.Order{start}, 700, []saga.Refund{rf("s", 83*600)}},
+		{"a start with the x402 fee", []store.Order{
+			{ID: "f", AmountMicros: 50000, FeeMicros: 3000, SecondsBought: 600},
+		}, 300, []saga.Refund{rf("f", 88*300)}},
 		{"nothing unused", newest, 0, []saga.Refund{}},
 		{"an order from before seconds were kept", []store.Order{
 			ext2, {ID: "old", AmountMicros: 50000},

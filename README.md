@@ -941,7 +941,8 @@ fee inside it. A set address must be the one canonical base58 text of 32 bytes, 
 decode to 64 bytes, else the token is refused with `PermissionDenied`. `allowance_micros` runs
 from 0 to `amount_micros`, `fee_micros` from 0 to what the allowance leaves of it, and an extend
 token carrying either is refused. The underpaid check, `orders.amount_micros` and the session
-record's payment use `amount_micros` less the allowance and the fee. Each order keeps its checked
+record's payment use `amount_micros` less the allowance and the fee; `orders.fee_micros` keeps the
+fee for refunds. Each order keeps its checked
 `tx` in `orders.tx`, which the public stats feed shows beside the start order's payer.
 
 The router decides the payer an order counts under in this order: `wallets.use_payer` false, no
@@ -1840,8 +1841,9 @@ exact body) and deduplicated by `X-Bugnet-Event-Id`. The payload carries:
 | `refunds` | On `placement.terminated` only, `[{order_id, refund_micros}]` when refundable, else `[]` |
 
 `refunds` takes the unused seconds from the newest order back to the start order. Each order
-refunds its share at its own price a second, `amount_micros / seconds_bought` rounded down to
-whole micros, where `amount_micros` already leaves out a start order's x402 allowance and fee.
+refunds its share at its own price a second, `(amount_micros + fee_micros) / seconds_bought`
+rounded down to whole micros. `amount_micros` leaves out a start order's x402 allowance and fee,
+and adding `fee_micros` back refunds a pro-rata share of the fee (founder decision F9).
 An order from before `orders.seconds_bought` was kept stops the list there.
 
 With `wallets.emit_events`, `wallet.blocked` carries `{payer, until, reason, placement_id}`, with
