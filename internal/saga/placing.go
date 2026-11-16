@@ -48,7 +48,7 @@ type placing struct {
 	// paid is what the order paid for its package, and prefer the server its quote holds
 	paid   int64
 	prefer *hold
-	// ran are the attempts that ended having tried a provider, which spend the payment
+	// ran are the attempts that ended having made something at a provider, which spend the payment
 	ran []*run
 
 	tried     map[string]bool
@@ -183,13 +183,14 @@ func (pl *placing) next() *placement.Candidate {
 	return nil
 }
 
-// spentMicros is what the attempts that ended cost by now, each billed from its start
+// spentMicros is what the attempts that ended cost by now, each billed from its start at its
+// hour, with its start fee where that is a charge beside the billed time
 func (pl *placing) spentMicros(now time.Time) int64 {
 	var total int64
 	for _, r := range pl.ran {
 		c := r.cand
 		total += spend.AttemptCost(r.started, now, c.Provider.BillingIncrement(), c.HourlyMicros,
-			c.StartFeeMicros)
+			provider.SeparateStartFee(c.Provider, c.StartFeeMicros))
 	}
 	return total
 }
@@ -290,7 +291,10 @@ func (pl *placing) handle(res attemptResult) {
 	}
 	if res.ran {
 		pl.attempted = append(pl.attempted, res.prov)
-		pl.ran = append(pl.ran, res.r)
+		// A create refused before the provider made anything billed nothing
+		if !res.out.unmade {
+			pl.ran = append(pl.ran, res.r)
+		}
 	}
 	if res.full {
 		// A provider with no slot takes no attempt number, as it never took an attempt

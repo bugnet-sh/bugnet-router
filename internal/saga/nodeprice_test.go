@@ -265,7 +265,7 @@ func TestGPUQuoteIsTheSecondCheapestNode(t *testing.T) {
 // TestGPUHeldQuoteRefusesTheDearerNode is review focus 1, a rise past the held quote's cap
 func TestGPUHeldQuoteRefusesTheDearerNode(t *testing.T) {
 	t.Run("hf inside the payment", func(t *testing.T) {
-		// hf's 40,000 for 10 minutes is priced at 44,000, which the payment still covers
+		// hf's 40,000 for 10 minutes is priced at 44,000, which the payment covers
 		lium := newNoded(t, 350_000, 250_000, 280_000, 300_000)
 		hf := newHF(t, 240_000)
 		e := gpuEnv(t, lium, hf)
@@ -281,9 +281,9 @@ func TestGPUHeldQuoteRefusesTheDearerNode(t *testing.T) {
 		eq(t, p.RentedHourlyMicros, int64(0))
 	})
 	t.Run("hf past the payment", func(t *testing.T) {
-		// hf's 70,000 is priced at 77,000, over what is left after lium's attempt
+		// hf's 90,000 is priced at 99,000, over the whole payment lium's refusal left
 		lium := newNoded(t, 350_000, 250_000, 280_000, 300_000)
-		hf := newHF(t, 420_000)
+		hf := newHF(t, 540_000)
 		e := gpuEnv(t, lium, hf)
 		est := e.holdGPU(t, quotedCost, quotedPrice, quotedHourly)
 		lium.set(300_000, 320_000)

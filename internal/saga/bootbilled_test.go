@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bugnet-sh/bugnet-router/internal/gpu"
+	"github.com/bugnet-sh/bugnet-router/internal/ordertoken"
 	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boat"
 	"github.com/bugnet-sh/bugnet-router/internal/provider/boxd"
@@ -89,6 +91,93 @@ func TestGPUMeterBillsBootOnce(t *testing.T) {
 	if got := logs.String(); strings.Contains(got, "placement cost is over") {
 		t.Fatalf("log %q, want no loss and no cost over the markup", got)
 	}
+}
+
+// h200 is a one-GPU H200 size, which the H200 package below fits
+var h200 = provider.Size{Name: "h200", Resources: provider.Resources{
+	VCPU: 16, MemoryMiB: 245760, DiskGiB: 900, GPUCount: 1, GPUMemoryGiB: 141,
+	GPUModel: gpu.H200,
+}}
+
+// h200JSON is a live H200 package
+const h200JSON = `{"packages": [
+	{"id": "gpu-h200-10m", "resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40,
+		"gpu_count": 1, "gpu_memory_gib": 141, "gpu_model": "NVIDIA H200"}, "minutes": 10}
+]}`
+
+// On a $4.15 node 10 minutes cost 691,667 and 7 start minutes 484,167, priced at 1,293,418, and
+// HF's h200 at $5.00998 costs 834,997 and 250,499, priced at 1,194,046
+const (
+	h200Hourly = 4_150_000
+	h200Paid   = 1_293_418
+	hfH200     = 5_009_980
+)
+
+// startH200 orders the H200 package paying h200Paid under the estimate
+func (e *env) startH200(t *testing.T, order string, estimate uuid.UUID) (store.Placement, error) {
+	t.Helper()
+	p, _, err := e.saga.Create(t.Context(), saga.CreateInput{
+		Token: e.token(t, ordertoken.Claims{
+			OrderID: order, Kind: ordertoken.KindStart, PackageID: "gpu-h200-10m",
+			AmountMicros: h200Paid,
+		}),
+		EstimateID: estimate,
+	})
+	e.saga.Wait()
+	if p.ID == uuid.Nil {
+		t.Fatalf("create %s recorded nothing: %v", order, err)
+	}
+	return e.reload(t, p.ID), err
+}
+
+// TestGPUCapRefusalSpendsNothing fails over to HF with the whole payment after Lium's create
+// refused every node over the held quote's cap, since nothing was rented
+func TestGPUCapRefusalSpendsNothing(t *testing.T) {
+	lium := newNodedOf(t, h200, 4_900_000, h200Hourly)
+	e := gpuEnvOf(t, h200JSON, nil, lium, newHFBilled(t, h200, hfH200))
+	est := uuid.New()
+	if err := e.store.PutQuotes(t.Context(), est, []store.Quote{{
+		PackageID: "gpu-h200-10m", Provider: "lium", SizeName: h200.Name,
+		CostMicros: 1_175_834, PriceMicros: h200Paid, HourlyMicros: h200Hourly,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	lium.set(4_300_000)
+	p, err := e.startH200(t, "order-1", est)
+	if err != nil || p.State != store.PlacementReady || p.Provider != "hf" {
+		t.Fatalf("placement %+v %v, want ready on hf", p, err)
+	}
+	eq(t, lium.caps(), []int64{h200Hourly})
+	eq(t, lium.free(), []int64{4_300_000})
+}
+
+// TestGPURentedThenFailedSpendsItsSpan counts a Lium attempt that rented and failed at its span's
+// hours, its start fee being boot time the span holds
+func TestGPURentedThenFailedSpendsItsSpan(t *testing.T) {
+	t.Run("hf inside what is left", func(t *testing.T) {
+		lium := newNodedOf(t, h200, 4_900_000, h200Hourly)
+		lium.fails.Store(true)
+		e := gpuEnvOf(t, h200JSON, nil, lium, newHFBilled(t, h200, hfH200))
+		p, err := e.startH200(t, "order-1", uuid.Nil)
+		if err != nil || p.State != store.PlacementReady || p.Provider != "hf" {
+			t.Fatalf("placement %+v %v, want ready on hf", p, err)
+		}
+		eq(t, lium.free(), []int64{})
+		eq(t, e.attempts(t, p.ID)[0].provider, "lium")
+	})
+	t.Run("hf at the whole payment", func(t *testing.T) {
+		// $5.426922 an hour prices HF at exactly the payment, which any second on lium spent
+		lium := newNodedOf(t, h200, 4_900_000, h200Hourly)
+		lium.fails.Store(true)
+		hf := newHFBilled(t, h200, 5_426_922)
+		e := gpuEnvOf(t, h200JSON, nil, lium, hf)
+		p, err := e.startH200(t, "order-1", uuid.Nil)
+		if err != nil || p.State != store.PlacementFailed || !p.Refundable {
+			t.Fatalf("placement %+v %v, want failed refundable", p, err)
+		}
+		eq(t, lium.free(), []int64{})
+		eq(t, len(owned(t, hf)), 0)
+	})
 }
 
 // cpuAdapters builds every CPU provider adapter offline, each pointed at a closed loopback port

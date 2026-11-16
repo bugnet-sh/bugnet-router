@@ -775,6 +775,8 @@ type outcome struct {
 	failOver bool
 	reason   string
 	detail   string
+	// unmade says the provider refused the create before it made anything, so nothing was billed
+	unmade bool
 }
 
 // heartbeat shows the placement is still being placed by this replica until stop is called
@@ -905,7 +907,7 @@ func (s *Saga) attemptCold(
 		s.abandon(ctx, prov, rec, nil, err)
 		return outcome{
 			failOver: canFailOver(err), reason: createReason(err),
-			detail: fmt.Sprintf("create on %s: %v", name, err),
+			detail: fmt.Sprintf("create on %s: %v", name, err), unmade: unmade(ctx, err),
 		}
 	}
 	bctx, bcancel := work(ctx)
@@ -1112,6 +1114,14 @@ func createReason(err error) string {
 		return "provider_" + string(e.Code)
 	}
 	return reasonCreate
+}
+
+// unmade reports a create refused for capacity while no create of its attempt had an unknown
+// outcome, so the provider made nothing that bills
+func unmade(ctx context.Context, err error) bool {
+	e, ok := provider.AsError(err)
+	r := runOf(ctx)
+	return ok && e.Code == provider.CodeCapacity && r != nil && !r.unknown.Load()
 }
 
 // canFailOver never allows an unknown outcome, since the first sandbox may still boot and bill
