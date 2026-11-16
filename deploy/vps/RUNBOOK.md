@@ -32,8 +32,8 @@ Owners are agent sessions, and a session's name changes when it restarts. When t
 | Part | Version |
 | --- | --- |
 | bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261116-0541-99efd3d`: `99efd3d`, `e51a997`, `ecfff7d`, `161224b` (deployed 05:44Z from `deploy/prod` in `lanes/c1`; previous `20261114-0112-e0ce937`) |
-| Gateway | `400d608` |
-| Payments | `17a5a89` (`release/2026-11-14`) |
+| Gateway | `4ef8d70` (deployed 2026-11-16 07:00Z with internal `deploy/gateway/deploy.sh`; `400d608` stays installed for rollback) |
+| Payments | `f88af40` (deployed 2026-11-16 06:59Z; router refunds under 1000 micros are kept, pricing D4) |
 | Website | `120e579` (`bugnet-website@20261114T014318Z-120e579`) |
 | Secret page | `cf4988b` (bugnet-gateway) |
 | Session page | `58e9754` (bugnet-website `packages/session-page/release/58e9754/dist`, installed 2026-11-10 14:23) |
@@ -726,7 +726,7 @@ check.sh: ...
 A broken file stops at the first command and changes nothing. Later router deploys keep the line,
 generated from `/etc/bugnet/router-x402-index.json`.
 
-Index now (2026-11-16): the gateway `400d608` index of 13 services (sha256 `8428c2db…3750`) is in
+Index now (2026-11-16): the gateway index of 13 services (unchanged from `400d608` to `4ef8d70`) (sha256 `8428c2db…3750`) is in
 all three. Payments took it on 2026-11-14. The router's copy went in with the
 `20261116-0541-99efd3d` ship: `/etc/bugnet/router-x402-index.json` was installed before
 `ship.sh`, so the deploy wrote `allowed_shared_hosts = []` (no service shares a host) and
@@ -736,8 +736,12 @@ router-api restarted once.
 
 The release is a self-contained esbuild bundle, no `node_modules`: a folder holding `deploy/`
 (the units) and `packages/gateway/` (`dist/main.js`, `dist/x402-crawl.js`, `package.json`,
-`src/x402/index.json`). How bugnet-ea builds it: Ask bugnet-ea. It needs Node 26 at
-`/usr/bin/node`, which the Payments install puts there.
+`src/x402/index.json`). bugnet-gateway `CONTRIBUTING.md` "Building a release" builds it with
+`deploy/release.sh`. It needs Node 26 at `/usr/bin/node`, which the Payments install puts there.
+
+Since 2026-11-16 one command rolls a release out: `deploy/gateway/deploy.sh` in the private
+`internal` repo (its `README.md` beside it), which stops on any failure, keeps the index order
+(7.1) and can roll back. The steps below are the manual form, for a first install or by hand.
 
 The gateway binds 8444 and 8787 without port sharing, so two versions cannot run at once. An
 upgrade stops the old version first, and `mcp.bugnet.sh` is down for the few seconds between the
