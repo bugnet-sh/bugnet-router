@@ -31,7 +31,7 @@ case "$CHANNEL" in dev | prod) ;; *) die "--channel must be dev or prod" ;; esac
 [ "${#CAS[@]}" -gt 0 ] || die "give at least one --ca FILE"
 
 VERSION="$(tr -d '[:space:]' <"$HERE/VERSION")"
-RUNNER="$ROOT/../bugnet-run/dist/bugnet-run-linux-amd64"
+RUNNER="$ROOT/../run/dist/bugnet-run-linux-amd64"
 [ -f "$RUNNER" ] || die "build bugnet-run first, make build in bugnet-run writes $RUNNER"
 
 # The line of inputs.sha256 must hold the current hash, so no input moved after it was written

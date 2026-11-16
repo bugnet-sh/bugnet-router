@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Ships a production bundle from the Mac to the VPS over the admin SSH, then runs deploy.sh there
 # with sudo (data-plane plan Task 39). It cross-builds linux/amd64 binaries from the checkouts
-# beside this repository (bugnet-router, bugnet-edges, bugnet-run, with bugnet-proto through their
-# go.mod replace lines), renders the HAProxy and bugnet-certs files with `bugnet-dev deploy maps`,
+# beside this repository (router, edges, run, with proto through their go.mod replace lines),
+# renders the HAProxy and bugnet-certs files with `bugnet-dev deploy maps`,
 # and copies them with the units and settings to ~/bugnet-deploy/<version>/ on the VPS. It never
 # makes, reads or prints a secret: the env files are made on the VPS (README.md). Before building
 # it requires the four checkouts clean and on the router's branch, the canonical checkout at its
@@ -23,9 +23,9 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 router=$(cd "$here/../.." && pwd)
 root=$(dirname "$router")
-edges=$root/bugnet-edges
-run=$root/bugnet-run
-proto=$root/bugnet-proto
+edges=$root/edges
+run=$root/run
+proto=$root/proto
 
 die() {
 	printf 'ship.sh: %s\n' "$*" >&2
@@ -49,9 +49,9 @@ heads() {
 	canon=$(git -C "$router" worktree list --porcelain | sed -n '1s/^worktree //p')
 	canon=$(dirname "$canon")
 	commits=""
-	for name in bugnet-proto bugnet-run bugnet-edges bugnet-router; do
+	for name in proto run edges router; do
 		dir=$root/$name
-		[[ $name != bugnet-router ]] || dir=$router
+		[[ $name != router ]] || dir=$router
 		branch=$(git -C "$dir" branch --show-current)
 		sha=$(git -C "$dir" rev-parse HEAD)
 		origin=""
@@ -91,9 +91,9 @@ heads() {
 			grep -c -E '(\.go|(^|/)(go\.mod|go\.sum|Makefile))$') || true
 		note=""
 		[[ $n == 0 ]] || note=", untracked build files ($n)"
-		printf '%s %s %s %s expected %s %s%s\n' "$name" "$dir" "${branch:-detached}" \
+		printf '%s %s %s %s expected %s %s%s\n' "bugnet-$name" "$dir" "${branch:-detached}" \
 			"${sha:0:12}" "$expected" "${why:-ok}" "$note"
-		commits="$commits$name:$sha ${branch:-detached} ${why:-ok}$note"$'\n'
+		commits="${commits}bugnet-$name:$sha ${branch:-detached} ${why:-ok}$note"$'\n'
 	done
 	return $bad
 }
@@ -116,7 +116,7 @@ while (($# > 0)); do
 done
 
 for d in "$edges" "$run" "$proto"; do
-	[[ -d $d ]] || die "$d is missing; ship.sh builds from the checkouts beside bugnet-router"
+	[[ -d $d ]] || die "$d is missing; ship.sh builds from the checkouts beside router"
 done
 if ! heads; then
 	[[ -n $mixed ]] || die "the checkouts above failed the head check; commit, switch, pull or" \

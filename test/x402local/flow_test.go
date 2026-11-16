@@ -48,7 +48,7 @@ func gatewayDir(t testing.TB) string {
 		return d
 	}
 	for _, rel := range []string{"..", filepath.Join("..", "..", "..")} {
-		d := filepath.Join(repo(t), rel, "bugnet-gateway")
+		d := filepath.Join(repo(t), rel, "gateway")
 		if _, err := os.Stat(filepath.Join(d, "packages", "gateway", "package.json")); err == nil {
 			return d
 		}

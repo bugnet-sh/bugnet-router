@@ -251,10 +251,10 @@ func binaries(t *testing.T) string {
 		root := repo(t)
 		for _, b := range []struct{ dir, pkg string }{
 			{root, "./cmd/router-api"}, {root, "./cmd/router-worker"}, {root, "./cmd/bugnet-dev"},
-			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-edge"},
-			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-ssh"},
-			{filepath.Join(root, "..", "bugnet-edges"), "./cmd/bugnet-egress"},
-			{filepath.Join(root, "..", "bugnet-run"), "./cmd/bugnet-run"},
+			{filepath.Join(root, "..", "edges"), "./cmd/bugnet-edge"},
+			{filepath.Join(root, "..", "edges"), "./cmd/bugnet-ssh"},
+			{filepath.Join(root, "..", "edges"), "./cmd/bugnet-egress"},
+			{filepath.Join(root, "..", "run"), "./cmd/bugnet-run"},
 		} {
 			cmd := exec.Command("go", "build", "-o", dir+string(os.PathSeparator), b.pkg)
 			cmd.Dir = b.dir
@@ -337,9 +337,9 @@ func startStack(
 		t.Fatal(err)
 	}
 	s.dir = dir
-	runner := filepath.Join(s.root, "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
+	runner := filepath.Join(s.root, "..", "run", "dist", "bugnet-run-linux-amd64")
 	if _, err := os.Stat(runner); err != nil && provider != "local" {
-		t.Fatalf("live: no bugnet-run build at %s, run make -C ../bugnet-run build", runner)
+		t.Fatalf("live: no bugnet-run build at %s, run make -C ../run build", runner)
 	}
 	s.keys = s.devKeys(t)
 	s.egress = s.prepareEgress(t)
@@ -632,7 +632,7 @@ page_dir = %q
 // the bugnet-website checkout beside the repositories holds one in packages/session-page/dist.
 func (s *stack) sessionPage(t *testing.T) string {
 	t.Helper()
-	dirs := []string{filepath.Join(s.root, "..", "bugnet-website", "packages", "session-page",
+	dirs := []string{filepath.Join(s.root, "..", "website", "packages", "session-page",
 		"dist")}
 	if dir := os.Getenv("BUGNET_SESSION_PAGE_DIR"); dir != "" {
 		dirs = []string{dir}

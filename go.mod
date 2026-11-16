@@ -61,6 +61,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8 // indirect
 )
 
-replace github.com/bugnet-sh/bugnet-run => ../bugnet-run
+replace github.com/bugnet-sh/bugnet-run => ../run
 
-replace github.com/bugnet-sh/bugnet-proto => ../bugnet-proto
+replace github.com/bugnet-sh/bugnet-proto => ../proto

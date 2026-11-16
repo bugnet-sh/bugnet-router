@@ -75,7 +75,7 @@ func paymentsDir(t testing.TB) string {
 		return d
 	}
 	for _, rel := range []string{"..", filepath.Join("..", "..", "..")} {
-		d := filepath.Join(repo(t), rel, "bugnet-payments")
+		d := filepath.Join(repo(t), rel, "payments")
 		if _, err := os.Stat(filepath.Join(d, "package.json")); err == nil {
 			return d
 		}
@@ -663,7 +663,7 @@ func (s *stack) startRouter() {
 	table(m, "worker")["listen_addr"] = workerAddr
 	table(m, "valkey")["addr"] = testenv.ValkeyAddr()
 	table(m, "valkey")["prefix"] = prefix
-	runner := filepath.Join(s.root, "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
+	runner := filepath.Join(s.root, "..", "run", "dist", "bugnet-run-linux-amd64")
 	table(m, "runner")["linux_amd64"] = runner
 	local := table(m, "local")
 	local["enabled"], local["root"] = true, filepath.Join(s.dir, "local")
