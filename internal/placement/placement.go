@@ -62,7 +62,10 @@ type Inputs struct {
 	Prefer *Server
 	// PreferRiseMicros is how far over the budget Prefer's cost may be
 	PreferRiseMicros int64
-	Exclude          map[string]bool // providers already tried
+	// PreferHourlyMicros is the hourly figure the held quote priced a per-node Prefer at, which
+	// prices that server and caps its rent, 0 for none, which holds a per-node server nothing
+	PreferHourlyMicros int64
+	Exclude            map[string]bool // providers already tried
 	// WarmFirst puts candidates with a warm member ahead of every cold one
 	WarmFirst bool
 	// Hold is provider time before the paid clock starts, billed into the cost and the price
@@ -113,10 +116,24 @@ func (e *Engine) WithGPUOrder(names []string) *Engine {
 // Healthy reports whether the engine's health source lets the provider be tried now
 func (e *Engine) Healthy(name string) bool { return e.health.Healthy(name) }
 
+// PricesPerNode reports whether the named provider prices each node on its own under a cap
+func (e *Engine) PricesPerNode(name string) bool {
+	p, ok := e.reg.Get(name)
+	if !ok {
+		return false
+	}
+	_, perNode := provider.As[provider.NodePricer](p)
+	return perNode
+}
+
 // Candidates returns usable providers by GPU order, speed, then cost, or ErrNoCandidate
 func (e *Engine) Candidates(in Inputs) ([]Candidate, error) {
 	req := in.Requirements
 	req.GPU = req.GPU || in.Package.Resources.GPUCount > 0
+	if in.Prefer != nil && in.PreferHourlyMicros <= 0 && e.PricesPerNode(in.Prefer.Provider) {
+		// A per-node server's quote without its hourly figure caps no rent, so it holds nothing
+		in.Prefer = nil
+	}
 	rs := e.usable(in)
 	if len(rs) == 0 && in.Prefer != nil && in.BudgetMicros != 0 {
 		// The held server takes a start nothing fits, its cost within the rise over the budget
@@ -202,9 +219,18 @@ func (c Candidate) ExtensionPrice(ext catalog.Package, r pricing.Rule) (int64, e
 	return r.Price(CostMicros(c.HourlyMicros, run, c.Provider.BillingIncrement())), nil
 }
 
-// ExtensionPrice is pkg's price on the named server as a Candidate there prices it
+// ExtensionPrice is pkg's price on the named server as a Candidate there prices it, a per-node
+// server's at its size's cap
 func (e *Engine) ExtensionPrice(
 	pkg catalog.Package, name, size string, r pricing.Rule,
+) (int64, error) {
+	return e.RentedExtensionPrice(pkg, name, size, 0, r)
+}
+
+// RentedExtensionPrice is pkg's price on the named server for a sandbox whose node costs rented
+// an hour, which prices a per-node server, or its size's cap when rented is 0
+func (e *Engine) RentedExtensionPrice(
+	pkg catalog.Package, name, size string, rented int64, r pricing.Rule,
 ) (int64, error) {
 	p, ok := e.reg.Get(name)
 	if !ok {
@@ -214,7 +240,15 @@ func (e *Engine) ExtensionPrice(
 	if !ok {
 		return 0, fmt.Errorf("%w: provider %q has no size %q", ErrNoServer, name, size)
 	}
-	c := Candidate{Provider: p, Size: sz, HourlyMicros: p.HourlyCostMicros(sz)}
+	hourly := p.HourlyCostMicros(sz)
+	if np, ok := provider.As[provider.NodePricer](p); ok {
+		// The live quote can be under what the sandbox's own node costs, so it never prices one
+		hourly = rented
+		if hourly <= 0 {
+			hourly = np.CapHourlyMicros(sz)
+		}
+	}
+	c := Candidate{Provider: p, Size: sz, HourlyMicros: hourly}
 	return c.ExtensionPrice(pkg, r)
 }
 
@@ -280,16 +314,17 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 		return Candidate{}, false, false
 	}
 	hourly := p.HourlyCostMicros(size)
-	cost := CostMicros(hourly, billed, p.BillingIncrement())
-	open := true
-	var fee int64
-	if sc, ok := provider.As[provider.StartCoster](p); ok {
-		// A refused start counts no fee, so the package still lands where its hours fit
-		if fee, open = sc.StartCostMicros(size); !open {
-			fee = 0
-		}
-		cost += fee
+	_, perNode := provider.As[provider.NodePricer](p)
+	if perNode && in.holds(p.Name(), size.Name) {
+		// The held quote prices the server at its own hourly figure, which caps the order's rent
+		hourly = in.PreferHourlyMicros
 	}
+	if perNode && hourly <= 0 {
+		// A per-node server that quotes nothing has no price to mark up
+		return Candidate{}, false, false
+	}
+	fee, open := feeOf(p, size, hourly)
+	cost := CostMicros(hourly, billed, p.BillingIncrement()) + fee
 	c := Candidate{
 		Provider: p, Size: size, CostMicros: cost, PriceMicros: in.Rule.Price(cost),
 		HourlyMicros: hourly, StartFeeMicros: fee,
@@ -305,6 +340,29 @@ func (e *Engine) fit(p provider.Provider, in Inputs) (Candidate, bool, bool) {
 		return Candidate{}, false, false
 	}
 	return c, open, true
+}
+
+// holds reports whether the held quote names the server and gives it an hourly figure
+func (in Inputs) holds(name, size string) bool {
+	return in.Prefer != nil && in.PreferHourlyMicros > 0 && in.Prefer.Provider == name &&
+		in.Prefer.Size == size
+}
+
+// feeOf is p's fee for the next start of size, a per-node server's at hourly, open false when
+// p would refuse the start
+func feeOf(p provider.Provider, size provider.Size, hourly int64) (fee int64, open bool) {
+	if np, ok := provider.As[provider.NodePricer](p); ok {
+		fee, open = np.StartCostAt(size, hourly)
+	} else if sc, ok := provider.As[provider.StartCoster](p); ok {
+		fee, open = sc.StartCostMicros(size)
+	} else {
+		return 0, true
+	}
+	// A refused start counts no fee, so the package still lands where its hours fit
+	if !open {
+		fee = 0
+	}
+	return fee, open
 }
 
 // capable reports whether caps covers every capability req asks for
