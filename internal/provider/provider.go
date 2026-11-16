@@ -71,6 +71,9 @@ type CreateRequest struct {
 	Image string
 	// Builder asks for a sandbox an image can be saved from, never one sold to a user
 	Builder bool
+	// MaxHourlyMicros is the most a NodePricer's node may cost an hour for this order, 0 for no
+	// cap beyond the size's
+	MaxHourlyMicros int64
 }
 
 // EgressAllow is all a restricted package's sandbox may reach, set at create where EgressControl
@@ -243,6 +246,17 @@ type Pather interface {
 type StartCoster interface {
 	// StartCostMicros is what the next start of size costs, false when it would be refused
 	StartCostMicros(size Size) (int64, bool)
+}
+
+// NodePricer is a provider whose nodes each cost a price of their own under a cap per size, so
+// HourlyCostMicros is a live quote and a create rents no node above the order's cap
+type NodePricer interface {
+	// CapHourlyMicros is the most a node of size may cost an hour, 0 for a size not sold
+	CapHourlyMicros(size Size) int64
+	// StartCostAt is what the next start of size costs on a node at hourly, false when refused
+	StartCostAt(size Size, hourly int64) (int64, bool)
+	// RentedHourlyMicros is what the node of ref costs an hour, false when the ref does not say
+	RentedHourlyMicros(ref Ref) (int64, bool)
 }
 
 // Sizer is a provider that lists the sizes it sells, smallest first

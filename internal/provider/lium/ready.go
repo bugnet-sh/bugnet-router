@@ -136,8 +136,16 @@ func (p *Provider) moveRefused(ref provider.Ref, d podDetail) string {
 		return "has another GPU type"
 	case d.Price == nil || micros(*d.Price) > s.MaxHourlyMicros:
 		return "costs more than the size's cap"
+	case overOrderCap(ref, micros(*d.Price)):
+		return "costs more than the order's cap"
 	}
 	return ""
+}
+
+// overOrderCap reports a price over the cap the pod's order set, false for an order without one
+func overOrderCap(ref provider.Ref, price int64) bool {
+	limit, err := strconv.ParseInt(ref.Meta[metaMaxHourly], 10, 64)
+	return err == nil && limit > 0 && price > limit
 }
 
 // allowedCountry is design 3.5's country rule for a pod's own node

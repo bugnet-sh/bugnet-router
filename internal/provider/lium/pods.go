@@ -43,6 +43,8 @@ const (
 	metaSSHHost      = "ssh_host"
 	metaSSHPort      = "ssh_port"
 	metaReadyAt      = "ready_at"
+	// metaMaxHourly is the order's cap on the pod's node, absent for an order without one
+	metaMaxHourly = "max_hourly_micros"
 )
 
 var (

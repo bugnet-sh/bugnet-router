@@ -76,9 +76,14 @@ type order struct {
 	fresh bool
 	hours int
 	size  size
+	// maxHourly is the most a node may cost an hour, the order's cap when under the size's
+	maxHourly int64
+	// capped marks an order that set a cap of its own
+	capped bool
 }
 
-// Create adopts the live pod of the key, else rents the cheapest eligible node, trying up to 3
+// Create adopts the live pod of the key, else rents the cheapest eligible node at or under the
+// order's cap and the size's, trying up to 3
 func (p *Provider) Create(ctx context.Context, req provider.CreateRequest) (provider.Ref, error) {
 	o, err := p.orderFor(req)
 	if err != nil {
@@ -133,6 +138,10 @@ func (p *Provider) orderFor(req provider.CreateRequest) (order, error) {
 	o := order{
 		key: podKey(req.IdempotencyKey), image: image, customerRef: customerRef(req.Labels),
 		fresh: req.IdempotencyKey == "", hours: p.terminationHours(req.Lifetime), size: s,
+		maxHourly: s.MaxHourlyMicros, capped: req.MaxHourlyMicros > 0,
+	}
+	if o.capped {
+		o.maxHourly = min(o.maxHourly, req.MaxHourlyMicros)
 	}
 	if o.fresh {
 		// A hash of no key would give every such create one name, SSH key and replay
@@ -201,7 +210,8 @@ func (p *Provider) findOwn(ctx context.Context, o order) (provider.Ref, bool, er
 	return provider.Ref{}, false, nil
 }
 
-// rentNodes rents the cheapest eligible nodes not tried yet, up to maxNodes in all
+// rentNodes rents the cheapest eligible nodes under the order's cap not tried yet, up to maxNodes
+// in all
 func (p *Provider) rentNodes(
 	ctx context.Context, o order, tried []string, refused []error,
 ) (provider.Ref, error) {
@@ -214,7 +224,7 @@ func (p *Provider) rentNodes(
 		if len(tried) >= maxNodes {
 			break
 		}
-		if slices.Contains(tried, n.id) {
+		if slices.Contains(tried, n.id) || n.hourlyMicros > o.maxHourly {
 			continue
 		}
 		template, err := p.template(ctx, o.image)
@@ -233,8 +243,12 @@ func (p *Provider) rentNodes(
 		refused = append(refused, err)
 	}
 	if len(refused) == 0 {
+		err := fmt.Errorf("lium lists no node for size %s", o.size.Name)
+		if o.capped {
+			err = fmt.Errorf("%w at or under %d micros an hour", err, o.maxHourly)
+		}
 		return provider.Ref{}, &provider.Error{Code: provider.CodeCapacity, CanFailOver: true,
-			Err: fmt.Errorf("lium lists no node for size %s", o.size.Name)}
+			Err: err}
 	}
 	// Another rent of ours holding a node never sends the order elsewhere by itself
 	failOver := slices.ContainsFunc(refused, func(err error) bool {
@@ -472,13 +486,17 @@ func pause(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// rented is the ref of a pod a rent made
+// rented is the ref of a pod a rent made, with the order's cap when it set one
 func (p *Provider) rented(o order, r rental, id string) provider.Ref {
-	return provider.Ref{Provider: providerName, ID: id, Meta: map[string]string{
+	ref := provider.Ref{Provider: providerName, ID: id, Meta: map[string]string{
 		metaPodName: o.name, metaCreatedAt: r.sentAt.Format(time.RFC3339), metaNode: r.node,
 		metaHourlyMicros: strconv.FormatInt(r.hourlyMicros, 10), metaArch: arch,
 		metaSize: o.size.Name,
 	}}
+	if o.capped {
+		ref.Meta[metaMaxHourly] = strconv.FormatInt(o.maxHourly, 10)
+	}
+	return ref
 }
 
 // adopted is the ref of a listed pod of the key

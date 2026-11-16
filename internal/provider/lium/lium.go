@@ -1,10 +1,12 @@
 // Package lium sells GPU sandboxes on Lium pods, each one GPU type on a whole Secure node.
 //
-// Hosts set their own prices, so a size carries a cap instead of a price, and the adapter quotes
-// the cap. A background loop reads Lium's keyless node listing every 30 seconds. A size is
-// offered only while the newest listing is under 2 minutes old and holds a node the size may
-// rent, so a Lium outage moves GPU orders to the next GPU provider. Nodes in the first countries
-// always win, and other countries that are not blocked serve only when the first hold none.
+// Hosts set their own prices, so a size carries a cap instead of a price. The adapter quotes the
+// second cheapest node a size may rent now, so one rent still leaves a node at or under the
+// quote, and a create rents no node above the order's cap or the size's. A background loop reads
+// Lium's keyless node listing every 30 seconds. A size is offered only while the newest listing
+// is under 2 minutes old and holds a node the size may rent, so a Lium outage moves GPU orders
+// to the next GPU provider. Nodes in the first countries always win, and other countries that are
+// not blocked serve only when the first hold none.
 package lium
 
 import (
@@ -18,6 +20,7 @@ import (
 	"net/netip"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -355,25 +358,60 @@ func (p *Provider) Sizes() []provider.Size {
 	return out
 }
 
-// HourlyCostMicros is the size's cap, since no node above it is rented, 0 for a size not sold
+// HourlyCostMicros is the live quote of a size, the second cheapest node it may rent now so one
+// rent still leaves a node at or under it, or the one node's price, and the cap while the
+// listing is stale or holds none, 0 for a size not sold
 func (p *Provider) HourlyCostMicros(sz provider.Size) int64 {
+	s, ok := p.size(sz.Name)
+	if !ok {
+		return 0
+	}
+	nodes, fresh := p.nodes.fresh()
+	if !fresh {
+		return s.MaxHourlyMicros
+	}
+	switch c := p.candidates(s, nodes); len(c) {
+	case 0:
+		return s.MaxHourlyMicros
+	case 1:
+		return c[0].hourlyMicros
+	default:
+		return c[1].hourlyMicros
+	}
+}
+
+// CapHourlyMicros is the most a node of the size may cost an hour, 0 for a size not sold
+func (p *Provider) CapHourlyMicros(sz provider.Size) int64 {
 	if s, ok := p.size(sz.Name); ok {
 		return s.MaxHourlyMicros
 	}
 	return 0
 }
 
+// RentedHourlyMicros is the hourly price Meta records for the pod's node, false for none
+func (p *Provider) RentedHourlyMicros(ref provider.Ref) (int64, bool) {
+	h, err := strconv.ParseInt(ref.Meta[metaHourlyMicros], 10, 64)
+	if err != nil || h <= 0 {
+		return 0, false
+	}
+	return h, true
+}
+
 // BillingIncrement is one second, Lium bills per second with no minimum
 func (p *Provider) BillingIncrement() time.Duration { return time.Second }
 
-// StartCostMicros prices the pull, start and boot Lium bills before the paid clock at the cap
+// StartCostMicros prices the pull, start and boot Lium bills before the paid clock at the quote
 func (p *Provider) StartCostMicros(sz provider.Size) (int64, bool) {
-	s, ok := p.size(sz.Name)
-	if !ok {
+	return p.StartCostAt(sz, p.HourlyCostMicros(sz))
+}
+
+// StartCostAt prices the pull, start and boot Lium bills before the paid clock at hourly
+func (p *Provider) StartCostAt(sz provider.Size, hourly int64) (int64, bool) {
+	if _, ok := p.size(sz.Name); !ok {
 		return 0, false
 	}
 	seconds := int64((p.startBilled + time.Second - 1) / time.Second)
-	return ceilDiv(s.MaxHourlyMicros*seconds, 3600), true
+	return ceilDiv(max(hourly, 0)*seconds, 3600), true
 }
 
 func (p *Provider) size(name string) (size, bool) {
