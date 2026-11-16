@@ -17,7 +17,8 @@ import (
 // refuseTimeout bounds the delete of a pod whose boot the checks refused
 const refuseTimeout = 30 * time.Second
 
-// ReadyMeta waits for RUNNING, checks the pod's node and address, and returns its SSH and node
+// ReadyMeta waits for RUNNING, checks the pod's node, price and address, and returns its SSH,
+// node and price
 func (p *Provider) ReadyMeta(ctx context.Context, ref provider.Ref) (map[string]string, error) {
 	id, ok := podID(ref)
 	if !ok {
@@ -36,7 +37,13 @@ func (p *Provider) ReadyMeta(ctx context.Context, ref provider.Ref) (map[string]
 		meta[metaNode] = node
 	}
 	if d.Price != nil {
-		meta[metaHourlyMicros] = strconv.FormatInt(micros(*d.Price), 10)
+		price := micros(*d.Price)
+		if limit, capped := orderCap(ref); capped && price > limit {
+			return nil, p.refuseBoot(ctx, ref, fmt.Errorf("lium pod %s on node %s costs more "+
+				"than the order's cap, %d micros an hour over %d", id, meta[metaNode], price,
+				limit))
+		}
+		meta[metaHourlyMicros] = strconv.FormatInt(price, 10)
 	}
 	addr, err := netip.ParseAddr(d.Executor.Address)
 	if err != nil || p.refuses(addr) {
@@ -136,16 +143,14 @@ func (p *Provider) moveRefused(ref provider.Ref, d podDetail) string {
 		return "has another GPU type"
 	case d.Price == nil || micros(*d.Price) > s.MaxHourlyMicros:
 		return "costs more than the size's cap"
-	case overOrderCap(ref, micros(*d.Price)):
-		return "costs more than the order's cap"
 	}
 	return ""
 }
 
-// overOrderCap reports a price over the cap the pod's order set, false for an order without one
-func overOrderCap(ref provider.Ref, price int64) bool {
+// orderCap is the cap the pod's order set on its node's hour, false for an order without one
+func orderCap(ref provider.Ref) (int64, bool) {
 	limit, err := strconv.ParseInt(ref.Meta[metaMaxHourly], 10, 64)
-	return err == nil && limit > 0 && price > limit
+	return limit, err == nil && limit > 0
 }
 
 // allowedCountry is design 3.5's country rule for a pod's own node

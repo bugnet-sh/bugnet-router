@@ -178,21 +178,28 @@ func TestLiumCreateRentsUnderTheOrderCap(t *testing.T) {
 	})
 }
 
-func TestLiumMoveOverTheOrderCapRefused(t *testing.T) {
+func TestLiumPodOverTheOrderCapRefused(t *testing.T) {
 	for name, c := range map[string]struct {
 		price float64
+		moved bool
 		pass  bool
-	}{"at the cap": {0.28, true}, "over the cap": {0.29, false}} {
+	}{
+		"moved at the cap":                        {0.28, true, true},
+		"moved over the cap":                      {0.29, true, false},
+		"priced over the cap where it was rented": {0.29, false, false},
+	} {
 		t.Run(name, func(t *testing.T) {
 			f, p := liveFake(t)
 			req := createReq(freshKey())
 			req.MaxHourlyMicros = 280_000
 			ref := mustCreate(t, p, req)
 			f.setPod(ref.ID, func(fp *fakePod) {
-				fp.status = "RUNNING"
-				fp.node, fp.machine, fp.tier, fp.country = "node-moved",
-					"NVIDIA GeForce RTX 3090", "secure", "FR"
-				fp.nodeGPUs, fp.gpus, fp.price = 1, 1, c.price
+				fp.status, fp.price = "RUNNING", c.price
+				if c.moved {
+					fp.node, fp.machine, fp.tier, fp.country = "node-moved",
+						"NVIDIA GeForce RTX 3090", "secure", "FR"
+					fp.nodeGPUs, fp.gpus = 1, 1
+				}
 			})
 			meta, err := p.ReadyMeta(context.Background(), ref)
 			if c.pass {
