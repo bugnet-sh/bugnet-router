@@ -93,6 +93,9 @@ type Placement struct {
 	// none, and the manifest holds os and tools
 	ImageVersion  string
 	ImageManifest []byte
+	// RentedHourlyMicros is what the node the sandbox runs on costs an hour as rented, 0 when
+	// unknown or the provider prices no node on its own
+	RentedHourlyMicros int64
 }
 
 // PlacementSource is the resolved source of an estimate, which a placement copies at create
@@ -198,7 +201,7 @@ const placementColumns = `id, handle_sha256, order_id, package_id, state, coales
 	end_evidence, coalesce(end_actor, ''), egress_source, egress_source_bind,
 	egress_source_read_at, degraded_since, cost_micros, edge_bytes, egress_bytes,
 	coalesce(start_path, ''), sandbox_created_at, paid_at, hedged, coalesce(image_version, ''),
-	image_manifest`
+	image_manifest, rented_hourly_micros`
 
 func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
@@ -216,7 +219,8 @@ func (s *Store) scanPlacement(row pgx.Row) (Placement, error) {
 		&p.SourceUnread,
 		&p.PaidMicros, &p.EndEvidence, &p.EndActor, &src, &bind, &readAt,
 		&p.DegradedSince, &p.CostMicros, &p.EdgeBytes, &p.EgressBytes, &p.StartPath,
-		&p.SandboxCreatedAt, &p.PaidAt, &p.Hedged, &p.ImageVersion, &p.ImageManifest)
+		&p.SandboxCreatedAt, &p.PaidAt, &p.Hedged, &p.ImageVersion, &p.ImageManifest,
+		&p.RentedHourlyMicros)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Placement{}, ErrNotFound
 	}
@@ -597,6 +601,19 @@ func (s *Store) MarkPlacementReady(
 		where id = $1 and state = $8`,
 		PlacementReady, ref.Provider, raw, size, utc(readyAt), utc(deadline), PlacementPlacing,
 		version, manifest)
+}
+
+// SetRentedHourly records what the node of the placement's sandbox costs an hour as rented
+func (s *Store) SetRentedHourly(ctx context.Context, id uuid.UUID, micros int64) error {
+	tag, err := s.q.Exec(ctx, `update placements set rented_hourly_micros = $2 where id = $1`,
+		id, micros)
+	if err != nil {
+		return fmt.Errorf("set rented hourly of %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("set rented hourly of %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 // SetPlacementStart records how a placing placement's sandbox came to be and, for a pooled one,
