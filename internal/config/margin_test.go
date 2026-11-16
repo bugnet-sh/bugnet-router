@@ -107,8 +107,9 @@ func TestConfigGPUMargin(t *testing.T) {
 	h200 := gpuPackage("gpu-h200-10m", gpu.H200, 141, 2_780_000)
 	cpu := catalog.Package{ID: "cpu-10m", Minutes: 10, PriceMicros: 1, FixedPrice: true,
 		Resources: provider.Resources{VCPU: 2, MemoryMiB: 2048, DiskGiB: 10}}
-	// Placement never starts an extension, so its price is never held to the start fee
-	more := gpuPackage("gpu-h200-10m-more", gpu.H200, 141, 1)
+	// An extension bills its minutes on the sandbox's server, never a start fee, so hf's 834,997
+	// for 10 minutes sets its least fixed price
+	more := gpuPackage("gpu-h200-10m-more", gpu.H200, 141, 918_497)
 	more.ExtensionOf = h200.ID
 	// A live package is priced at the marked up cost of the server it lands on
 	live := gpuPackage("gpu-h200-10m", gpu.H200, 141, 0)
