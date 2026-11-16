@@ -159,9 +159,9 @@ check_stats() {
 	warn "http://127.0.0.1:8082/api/stats did not answer 200 within 60 s"
 }
 
-# The loopback rule of DP 10.12.7.1 (9443 and 19443) needs bugnet-nft, which waits for Task 43B
+# The loopback rule of DP 10.12.7.1 (9443 and 19443) needs bugnet-nft, not installed yet
 check_loopback() {
-	warn "skipped: who may connect to 127.0.0.1:9443 and :19443 waits for bugnet-nft (Task 43B)"
+	warn "skipped: no bugnet-nft, so any local user may connect to 127.0.0.1:9443 (README 12)"
 }
 
 # Egress's payments_timeout stays above Payments' sign_timeout (XS 6.17)

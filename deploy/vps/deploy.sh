@@ -10,7 +10,7 @@
 #   sudo ./deploy.sh x402-index --router <index.json>
 #                                                 allowed_shared_hosts from it, then roll router-api
 #
-# Every step is idempotent. It never prints a secret. README.md is the runbook.
+# Every step is idempotent. It never prints a secret. RUNBOOK.md is the order of operations.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

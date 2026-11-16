@@ -6,9 +6,8 @@
 # deploy maps refuses an empty ipv4. ipv6 stays empty without IPv6 (DP question 15).
 ipv4 = "62.72.21.74"         # the test VPS, production since 2026-11-09
 ipv6 = "2a02:4780:c:ab47::1"
-# DP question 1, answered (c) on 2026-11-07: admin SSH stays on 22, HAProxy's frontend ssh binds
-# 2222, and the router's names.ssh_port is 2222. The dev front's test VPS runs front.sh with its
-# admin SSH on 2222, so a front render there passes --site with admin_ssh_port = 2222.
+# DP question 1 was answered (c) for a separate server; production is the test VPS, so admin SSH
+# stays on 2222 and HAProxy's frontend ssh binds 2201.
 admin_ssh_port = 2222        # this VPS keeps admin SSH on 2222
 ssh_gateway_port = 2201      # off the admin port; ssh.providers is empty until SSH rows pass
 ssh_gateway_ip = ""          # empty binds every address, the second IPv4 under (b)

@@ -19,7 +19,7 @@ Secrets are made and kept on the VPS only; the Mac never makes, reads or prints 
 
 | Unit | User | Listens on |
 | --- | --- | --- |
-| `haproxy` | `haproxy` | `:443`, `:2222` (SSH gateway), `:2200` (dev SSH) |
+| `haproxy` | `haproxy` | `:443`, `:2201` (SSH gateway), `:2200` (dev SSH) |
 | `bugnet-edge@<v>` | `bugnet-edge` | `127.0.0.1:8443`, `:80`, metrics `127.0.0.1:9101` |
 | `bugnet-secrets@<v>` | `bugnet-secrets` | `127.0.0.1:8445`, metrics `9104` |
 | `bugnet-sessions@<v>` | `bugnet-sessions` | `127.0.0.1:8448`, metrics `9105` |
@@ -34,13 +34,13 @@ Secrets are made and kept on the VPS only; the Mac never makes, reads or prints 
 Binaries live in `/opt/bugnet/<router|edge|ssh|egress|certs|run>/<version>/`, with `current`
 pointing at the version that passed. `bugnet-dev` sits beside `router-api`. Ubuntu 24.04 has no
 `valkey` package, so `deploy.sh` then installs `redis-server` and runs it in group `valkey` with
-the same socket, so every name above stays. ufw allows TCP 22, 80, 443, 2200 and 2222 and denies
-the rest, UDP 443 included.
+the same socket, so every name above stays. ufw allows TCP 80, 443, 2200, 2201 and 2222 (admin
+SSH) and denies the rest, UDP 443 included.
 
 ## 2. The split (DP 15.2)
 
 `ship.sh` runs `bugnet-dev deploy maps` with `names.toml` and `site.toml` and ships the result in
-`maps/`. Production adds `frontend ssh` on `ssh_gateway_port` (2222, DP 1 answer c) and the
+`maps/`. Production adds `frontend ssh` on `ssh_gateway_port` (2201, `site.toml`) and the
 production wildcard. `deploy.sh` installs the maps and runs `haproxy -c` before every reload; a
 refused config leaves the old one.
 
@@ -136,8 +136,9 @@ Hand-offs by team:
 
 On the Mac, in `bugnet-router`, with the checkouts beside it on the commits to ship:
 
-1. The founder gives the VPS's IPv4 (and IPv6), and an admin user with sudo on port 22. Write
-   them into `deploy/vps/site.toml`'s `ipv4` and `ipv6`, and commit.
+1. The founder gives the VPS's IPv4 (and IPv6), and an admin user with sudo on the admin SSH
+   port (`site.toml` `admin_ssh_port`, 2222 on production). Write them into
+   `deploy/vps/site.toml`'s `ipv4` and `ipv6`, and commit.
 2. The founder adds the DNS records of section 4, and puts the DNS token on the VPS:
    `sudo install -d -m 0755 /etc/bugnet && sudo install -m 0600 /dev/null /etc/bugnet/certs.env
    && sudoedit /etc/bugnet/certs.env` with the line `CF_DNS_API_TOKEN=<token>`.
@@ -156,10 +157,11 @@ On the Mac, in `bugnet-router`, with the checkouts beside it on the commits to s
    a key, an env name or `order_token_public_key` is missing, and lists each. Expected: `check.sh`
    passes and the last line is `deployed <version>`.
 8. From the Mac: `curl -sI https://preview.bugnet.sh/` answers with HSTS.
-9. Secrets and x402 on Boat and boxd: in `config/router.toml` set
-   `secrets.providers = ["boat", "boxd"]`, `ca_cert_file = "/etc/bugnet/egress-ca.pem"` and
+9. Secrets and x402: in `config/router.toml` set `secrets.providers` (production:
+   `["boat", "e2b", "boxd"]`), `ca_cert_file = "/etc/bugnet/egress-ca.pem"` and
    `egress_ips = ["<IPv4>", "<IPv6>"]`, then ship again (step 7). x402 pays only on a provider in
-   `secrets.providers`. E2B joins once its templates carry the production CA (Task 39 step 8).
+   `secrets.providers`. A provider joins once its image trusts the production egress CA; E2B
+   joined on 2026-11-10 with the 2026.11.3 templates.
 10. Once Payments runs on 8447, 8449 and 8450, and the gateway has its release, the reviewed
     index (section 9).
 
@@ -246,7 +248,9 @@ the test VPS keeps admin SSH on 2222, so pass a site file with `admin_ssh_port =
 
 1. The VPS's IPv4, IPv6 and SSH access (section 7 step 1).
 2. The DNS records of section 4, and the DNS token (step 2).
-3. Admin SSH stays on 22 (DP 1 answered c on 2026-11-07); the SSH gateway takes 2222.
+3. Admin SSH on 2222 and the SSH gateway on 2201. DP 1 was answered (c) on 2026-11-07 (admin on
+   22, gateway on 2222) for a separate server; production is the test VPS, so `site.toml` moved
+   both. `ssh.providers` is empty, so no sandbox is offered SSH.
 4. Everything else is `deploy.sh`'s work.
 
 Until an answer comes, the default stays:
@@ -261,22 +265,18 @@ Until an answer comes, the default stays:
 | DP 18, the trace backend | No traces | Waits for Tasks 42 and 42B |
 | CP 22, 23, image builds | Dev templates | The registry in `pins.conf`, the Boat image key at its prompt |
 
-## 12. Not in this deploy yet
+## 12. Built but not on in production (2026-11-16)
 
-Each waits for its task to merge on `feat/router-v1-rest`; the deploy gains it then.
+Tasks 29 to 43 of the data-plane plan and the mining pool list ship in the production build. These
+are built and stay off:
 
-- `bugnet-nft.service`, `egress.nft` and `dev-front.nft` (Task 43B): `check.sh` skips the
-  loopback rule of DP 10.12.7.1 (who may connect to `127.0.0.1:9443` and `:19443`).
-- Task 43, the source-address check in the router: no setting yet.
-- `[telemetry]` and `BUGNET_OTLP_AUTHORIZATION` (Tasks 42, 42B): no traces.
-- `[health]` probe workers and canaries (Task 33), and `[pools]` (Tasks 40 to 40D): `check.sh`'s
-  pool floor counts them once their tables exist, 44 then.
-- Tasks 32 (limit polling), 34 (reconcile), 35 (capacity and spend), 36 (abuse tools), 37 (the
-  leak test) and 38 (benchmarks and retention): no settings or units.
-- Tasks 41 and 41B, the base image: no `[images]` blocks; E2B keeps the dev templates and stays
-  out of `secrets.providers`.
-- Task 29 (the wallet byte cap) and Task 30 (the estimator's learning loop): defaults only.
-- Task 31, webhooks: `hooks.providers = []`, so no webhook secrets.
-- The mining pool list: none is published, so `/etc/bugnet/mining-pools.txt` is absent and the
-  router logs that harden blocks no pools.
-- `vm-test.sh deploy`: not written; the controller runs the deploy against a VM or the VPS.
+- `bugnet-nft.service` with `egress.nft` (DP 10.12.7.1): `deploy.sh` does not install them, so
+  nothing limits which local user may connect to `127.0.0.1:9443`, and `check.sh` prints a
+  warning. `front.sh` installs `dev-front.nft` only on a dev front.
+- Traces (Tasks 42, 42B): no `[telemetry]` table and no `BUGNET_OTLP_AUTHORIZATION`.
+- Provider webhooks (Task 31): `hooks.providers` is empty, so no webhook secrets.
+- Warm pools (Tasks 40 to 40D): no `[pools]` table.
+- Hedged starts: `[hedge] enabled = false` (pricing D5).
+- SSH into a sandbox: `ssh.providers` is empty.
+- `vm-test.sh deploy`: not written; the controller runs the deploy against the VPS.
+- GPU providers (Lium, Hugging Face): on `feat/gpu-adapters`, not merged.
