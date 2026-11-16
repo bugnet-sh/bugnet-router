@@ -259,7 +259,7 @@ func TestBoatTargetKeepsTheSSHUnits(t *testing.T) {
 		`test "$(jq -r .sbx_server_sha256.amd64 ` + image.ManifestPath + `)" = ` + sbx +
 		`; echo kept`
 	payload := t.TempDir()
-	runner := filepath.Join(root, "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
+	runner := filepath.Join(root, "..", "run", "dist", "bugnet-run-linux-amd64")
 	for src, dst := range map[string]string{
 		filepath.Join(root, "deploy/image/setup-image.sh"): "setup-image.sh",
 		filepath.Join(root, "deploy/image/pins.conf"):      "pins.conf",

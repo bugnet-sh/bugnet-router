@@ -1020,7 +1020,7 @@ func TestCommittedFilesLoad(t *testing.T) {
 	for path, suffix := range map[string]string{
 		dev.PackagesFile: "/config/dev-packages.json", dev.LocalRoot: "/bin/local",
 		dev.LocalRunnerPath:    "/bin/bugnet-run",
-		dev.RunnerLinuxAMD64:   "/bugnet-run/dist/bugnet-run-linux-amd64",
+		dev.RunnerLinuxAMD64:   "/run/dist/bugnet-run-linux-amd64",
 		dev.Hardening.PoolList: "/config/dev-mining-pools.txt",
 	} {
 		if !filepath.IsAbs(path) || !strings.HasSuffix(path, suffix) {

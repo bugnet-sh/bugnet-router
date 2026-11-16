@@ -10,7 +10,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
-edges=$(cd "$repo/../bugnet-edges" && pwd)
+edges=$(cd "$repo/../edges" && pwd)
 
 die() {
 	printf 'vm-test.sh: %s\n' "$*" >&2

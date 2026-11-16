@@ -56,10 +56,10 @@ func poolMember(t *testing.T, p provider.Provider, tag string) provider.Ref {
 	if err := p.WaitReady(ctx, ref); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	build := filepath.Join("..", "..", "..", "bugnet-run", "dist", "bugnet-run-linux-amd64")
+	build := filepath.Join("..", "..", "..", "run", "dist", "bugnet-run-linux-amd64")
 	data, err := os.ReadFile(build)
 	if err != nil {
-		t.Fatalf("no bugnet-run build at %s, run make -C ../bugnet-run build: %v", build, err)
+		t.Fatalf("no bugnet-run build at %s, run make -C ../run build: %v", build, err)
 	}
 	if err := p.WriteFile(ctx, ref, poolRunner, data, 0o755); err != nil {
 		t.Fatalf("upload the runner: %v", err)

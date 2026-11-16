@@ -20,7 +20,7 @@ listen_addr = "127.0.0.1:8081"
 prefix = "bn:dev:"
 
 [runner]
-linux_amd64 = "../bugnet-run/dist/bugnet-run-linux-amd64"   # make build in bugnet-run writes it
+linux_amd64 = "../run/dist/bugnet-run-linux-amd64"   # make -C ../run build writes it
 
 [images]                      # no build yet, so accept stays empty
 channel = "dev"

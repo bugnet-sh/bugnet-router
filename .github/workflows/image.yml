@@ -29,35 +29,35 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: bugnet-router
+        working-directory: router
     env:
       SIBLINGS_REF: feat/router-v1-rest
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: bugnet-router
+          path: router
           persist-credentials: false
 
-      # go.mod replaces bugnet-proto and bugnet-run with ../bugnet-proto and ../bugnet-run
+      # go.mod replaces bugnet-proto and bugnet-run with ../proto and ../run
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bugnet-sh/bugnet-proto
           ref: ${{ env.SIBLINGS_REF }}
-          path: bugnet-proto
+          path: proto
           persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bugnet-sh/bugnet-run
           ref: ${{ env.SIBLINGS_REF }}
-          path: bugnet-run
+          path: run
           persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: bugnet-router/go.mod
-          cache-dependency-path: bugnet-router/go.sum
+          cache-dependency-path: router/go.sum
 
       - name: Pick the channel
         id: channel
@@ -74,7 +74,7 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
 
       - name: Build bugnet-run
-        run: make -C ../bugnet-run build
+        run: make -C ../run build
 
       # The CA is public, kept outside every repository, and checked against pins.conf by build.sh
       - name: Write the CA certificate

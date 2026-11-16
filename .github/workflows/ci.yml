@@ -21,7 +21,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: bugnet-router
+        working-directory: router
 
     # internal/testenv gives unit tests a fresh Postgres database and Valkey prefix
     services:
@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: bugnet-router
+          path: router
           persist-credentials: false
 
       # Siblings use the branch of the same name, else the pull request's base, else main
@@ -89,25 +89,25 @@ jobs:
           echo "proto=$proto" >> "$GITHUB_OUTPUT"
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
-      # go.mod replaces bugnet-proto and bugnet-run with ../bugnet-proto and ../bugnet-run
+      # go.mod replaces bugnet-proto and bugnet-run with ../proto and ../run
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bugnet-sh/bugnet-proto
           ref: ${{ steps.siblings.outputs.proto }}
-          path: bugnet-proto
+          path: proto
           persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bugnet-sh/bugnet-run
           ref: ${{ steps.siblings.outputs.run }}
-          path: bugnet-run
+          path: run
           persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: bugnet-router/go.mod
-          cache-dependency-path: bugnet-router/go.sum
+          cache-dependency-path: router/go.sum
 
       - name: gofmt
         run: |
@@ -129,7 +129,7 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
-          working-directory: bugnet-router
+          working-directory: router
 
       # Live provider, stack and x402local tests skip without their keys and BUGNET_TEST_* flags
       - name: go test

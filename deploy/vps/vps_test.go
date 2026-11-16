@@ -158,7 +158,7 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 		}
 		return path
 	}
-	for _, name := range []string{"bugnet-proto", "bugnet-run", "bugnet-edges", "bugnet-router"} {
+	for _, name := range []string{"proto", "run", "edges", "router"} {
 		canon := filepath.Join(tmp, name)
 		git(tmp, "init", "-q", "-b", "main", canon)
 		git(canon, "commit", "-q", "--allow-empty", "-m", "one")
@@ -166,8 +166,8 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 		git(canon, "update-ref", "refs/remotes/origin/main", "HEAD")
 		git(canon, "worktree", "add", "-q", "-b", "lane", filepath.Join(tmp, "lane", name))
 	}
-	canon, lane := ship(filepath.Join(tmp, "bugnet-router")), ship(filepath.Join(tmp, "lane",
-		"bugnet-router"))
+	canon, lane := ship(filepath.Join(tmp, "router")), ship(filepath.Join(tmp, "lane",
+		"router"))
 	check := func(script string, pass bool, want string, flags ...string) {
 		t.Helper()
 		cmd := exec.Command("bash", append([]string{script, "--check-heads"}, flags...)...)
@@ -179,8 +179,8 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 	}
 	check(canon, true, " main ")
 	check(lane, true, " lane ")
-	laneProto, laneRun := filepath.Join(tmp, "lane", "bugnet-proto"), filepath.Join(tmp, "lane",
-		"bugnet-run")
+	laneProto, laneRun := filepath.Join(tmp, "lane", "proto"), filepath.Join(tmp, "lane",
+		"run")
 	git(laneProto, "update-ref", "refs/remotes/origin/lane", "HEAD~1")
 	check(lane, false, "not at origin/lane")
 	git(laneProto, "update-ref", "-d", "refs/remotes/origin/lane")
@@ -189,11 +189,11 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 	git(laneRun, "checkout", "-q", "-b", "old")
 	check(lane, false, " old ")
 	check(lane, true, "WARNING", "--allow-mixed")
-	err := os.WriteFile(filepath.Join(tmp, "bugnet-proto", "x.go"), []byte("package x\n"), 0o644)
+	err := os.WriteFile(filepath.Join(tmp, "proto", "x.go"), []byte("package x\n"), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 	check(canon, true, "ok, untracked build files (1)")
-	git(filepath.Join(tmp, "bugnet-edges"), "commit", "-q", "--allow-empty", "-m", "three")
+	git(filepath.Join(tmp, "edges"), "commit", "-q", "--allow-empty", "-m", "three")
 	check(canon, false, "not at origin/main")
 }
