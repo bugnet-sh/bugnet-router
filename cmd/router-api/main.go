@@ -432,10 +432,12 @@ func checkGPUMargin(reg *provider.Registry, cfg config.Config, cat *catalog.Cata
 	return cfg.CheckGPUMargin(cat.All(), reg.Ordered())
 }
 
-// checkPackages logs each start package no configured provider can place at its price, health aside
+// checkPackages logs each start package no configured provider can place at its price, health
+// aside, and once how many GPU start packages none can place
 func checkPackages(
 	log *slog.Logger, e *placement.Engine, cat *catalog.Catalog, cfg config.Config,
 ) {
+	gpus := 0
 	for _, pkg := range cat.All() {
 		if pkg.ExtensionOf != "" {
 			continue
@@ -443,10 +445,19 @@ func checkPackages(
 		in := placement.Inputs{
 			Package: pkg, Rule: cfg.Pricing.Rule, ImageAccept: cfg.Images.Accept,
 		}
-		if len(e.Lands(in)) == 0 {
+		switch {
+		case len(e.Lands(in)) > 0:
+		case pkg.Resources.GPUCount > 0:
+			// GPU packages wait on a GPU provider or its first node listing, as on a dev stack
+			gpus++
+		default:
 			log.Error("no configured provider can place a start package", "package", pkg.ID,
 				"fixed_price", pkg.FixedPrice, "markup_bp", cfg.Pricing.Rule.MarkupBP)
 		}
+	}
+	if gpus > 0 {
+		log.Warn("no configured provider can place some GPU start packages now",
+			"gpu_packages", gpus, "gpu_order", cfg.GPUOrder)
 	}
 }
 

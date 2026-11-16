@@ -449,3 +449,49 @@ func checked(
 	slices.Sort(named)
 	return named
 }
+
+// TestStartWarnsOnceForGPUPackagesThatLandNowhere logs one warning counting the GPU start packages
+// no configured provider places, as with the dev catalog on local alone
+func TestStartWarnsOnceForGPUPackagesThatLandNowhere(t *testing.T) {
+	reg, err := provider.NewRegistry([]provider.Provider{cheapProvider(t)}, provider.Features{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := placement.New(reg, downHealth{}, nil)
+	gpuPkg := func(id, extends string) string {
+		return fmt.Sprintf(`{"id": %q, "resources": {"vcpu": 4, "memory_mib": 12288, `+
+			`"disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"}, `+
+			`"minutes": 10, "price_micros": 97722, "extension_of": %q}`, id, extends)
+	}
+	cat, err := catalog.Load(writeTemp(t, "packages.json", []byte(`{"packages": [`+
+		strings.Join([]string{
+			gpuPkg("gpu-a", ""), gpuPkg("gpu-a-more", "gpu-a"), gpuPkg("gpu-b", ""),
+			`{"id": "fits", "resources": {"vcpu": 2, "memory_mib": 2048, "disk_gib": 10}, ` +
+				`"minutes": 10}`,
+		}, ", ")+`]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	var cfg config.Config
+	cfg.Pricing.Rule = pricing.Rule{MarkupBP: 1000}
+	checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), e, cat, cfg)
+	lines := slices.Collect(strings.Lines(logs.String()))
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") ||
+		!strings.Contains(lines[0], "gpu_packages=2") {
+		t.Fatalf("logged %q, want one warning counting 2 GPU start packages", lines)
+	}
+
+	// The dev catalog on a local provider alone logs its 27 GPU packages in that one line
+	dev, err := catalog.Load("../../config/dev-packages.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	checkPackages(slog.New(slog.NewTextHandler(&logs, nil)), e, dev, cfg)
+	lines = slices.Collect(strings.Lines(logs.String()))
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") ||
+		!strings.Contains(lines[0], "gpu_packages=27") {
+		t.Fatalf("logged %q, want one warning counting the dev catalog's 27 GPU packages", lines)
+	}
+}
