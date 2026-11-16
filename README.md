@@ -813,19 +813,19 @@ place under `images.accept` and its fixed price, health aside, and still starts.
 `CreatePlacement` with the order's estimate id honors the held quote when the order's
 `amount_micros`, less its x402 allowance and fee, covers the held price. The first such order claims
 the quote and a retry of it keeps the claim, so a quote holds for one order. The start goes to the
-cheapest server the payment covers, as it would without a quote. When none does, the quoted server
-takes it while its cost now is at most the payment plus `pricing.quote_rise_micros`, 30000 in
-production, one Boat start fee step. That bounds what Bugnet loses on a run quoted just before a
-price change. Otherwise the payment must cover a live candidate. An order that pays less answers
-`FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata holds `package_id`, `paid_micros`
-and `price_micros`, the live price. A start is recorded as a failed, refundable placement with
-reason `price_changed` and a `placement.failed` event, so Payments refunds it in full. A retry
-answers `PRICE_CHANGED` again with the price now, which can be at or below `paid_micros` if the
-price fell since. A live order that paid 0 runs only on a server priced 0. `ExtendPlacement` checks
-that the payment, less the same allowance and fee, covers the extension's price on the placement's
-own server. One that pays less answers `PRICE_CHANGED`, records nothing, and the gateway abandons it
-as it does every refused extension. A retry of an extension already applied answers as the first
-call did, whatever the price now.
+cheapest server the payment covers, a GPU package's first in `gpu_order`, as it would without a
+quote. When none does, the quoted server takes it while its cost now is at most the payment plus
+`pricing.quote_rise_micros`, 30000 in production, one Boat start fee step. That bounds what Bugnet
+loses on a run quoted just before a price change. Otherwise the payment must cover a live candidate.
+An order that pays less answers `FailedPrecondition` with reason `PRICE_CHANGED`, whose metadata
+holds `package_id`, `paid_micros` and `price_micros`, the live price. A start is recorded as a
+failed, refundable placement with reason `price_changed` and a `placement.failed` event, so Payments
+refunds it in full. A retry answers `PRICE_CHANGED` again with the price now, which can be at or
+below `paid_micros` if the price fell since. A live order that paid 0 runs only on a server priced
+0. `ExtendPlacement` checks that the payment, less the same allowance and fee, covers the
+extension's price on the placement's own server. One that pays less answers `PRICE_CHANGED`, records
+nothing, and the gateway abandons it as it does every refused extension. A retry of an extension
+already applied answers as the first call did, whatever the price now.
 
 ## Estimator
 
