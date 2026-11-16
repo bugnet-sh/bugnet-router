@@ -52,6 +52,357 @@
 			"price_micros": 45000,
 			"extension_of": "dev-edge-64m",
 			"edge": {"bytes": "64MiB"}
+		},
+		{
+			"id": "gpu-t4-10m",
+			"resources": {"vcpu": 3, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10,
+			"price_micros": 97722
+		},
+		{
+			"id": "gpu-t4-10m-more",
+			"resources": {"vcpu": 3, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10,
+			"price_micros": 75171,
+			"extension_of": "gpu-t4-10m"
+		},
+		{
+			"id": "gpu-t4-medium-10m",
+			"resources": {"vcpu": 8, "memory_mib": 26624, "disk_gib": 90, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10,
+			"price_micros": 145384
+		},
+		{
+			"id": "gpu-t4-medium-10m-more",
+			"resources": {"vcpu": 8, "memory_mib": 26624, "disk_gib": 90, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10,
+			"price_micros": 111834,
+			"extension_of": "gpu-t4-medium-10m"
+		},
+		{
+			"id": "gpu-l4-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA L4"},
+			"minutes": 10,
+			"price_micros": 193046
+		},
+		{
+			"id": "gpu-l4-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA L4"},
+			"minutes": 10,
+			"price_micros": 148497,
+			"extension_of": "gpu-l4-10m"
+		},
+		{
+			"id": "gpu-a10g-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 240722
+		},
+		{
+			"id": "gpu-a10g-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 185171,
+			"extension_of": "gpu-a10g-10m"
+		},
+		{
+			"id": "gpu-a10g-large-10m",
+			"resources": {"vcpu": 12, "memory_mib": 43008, "disk_gib": 180, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 359884
+		},
+		{
+			"id": "gpu-a10g-large-10m-more",
+			"resources": {"vcpu": 12, "memory_mib": 43008, "disk_gib": 180, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 276834,
+			"extension_of": "gpu-a10g-large-10m"
+		},
+		{
+			"id": "gpu-l40s-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 431384
+		},
+		{
+			"id": "gpu-l40s-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 331834,
+			"extension_of": "gpu-l40s-10m"
+		},
+		{
+			"id": "gpu-a100-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 598222
+		},
+		{
+			"id": "gpu-a100-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 460171,
+			"extension_of": "gpu-a100-10m"
+		},
+		{
+			"id": "gpu-rtxpro6000-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 96, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 657796
+		},
+		{
+			"id": "gpu-rtxpro6000-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 96, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 505997,
+			"extension_of": "gpu-rtxpro6000-10m"
+		},
+		{
+			"id": "gpu-h200-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 141, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 1527168
+		},
+		{
+			"id": "gpu-h200-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 141, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 918497,
+			"extension_of": "gpu-h200-10m"
+		},
+		{
+			"id": "gpu-l4x4-10m",
+			"resources": {"vcpu": 48, "memory_mib": 177383, "disk_gib": 2980, "gpu_count": 4, "gpu_memory_gib": 96, "gpu_model": "NVIDIA L4"},
+			"minutes": 10,
+			"price_micros": 908046
+		},
+		{
+			"id": "gpu-l4x4-10m-more",
+			"resources": {"vcpu": 48, "memory_mib": 177383, "disk_gib": 2980, "gpu_count": 4, "gpu_memory_gib": 96, "gpu_model": "NVIDIA L4"},
+			"minutes": 10,
+			"price_micros": 698497,
+			"extension_of": "gpu-l4x4-10m"
+		},
+		{
+			"id": "gpu-a10g-largex2-10m",
+			"resources": {"vcpu": 24, "memory_mib": 87738, "disk_gib": 931, "gpu_count": 2, "gpu_memory_gib": 48, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 717384
+		},
+		{
+			"id": "gpu-a10g-largex2-10m-more",
+			"resources": {"vcpu": 24, "memory_mib": 87738, "disk_gib": 931, "gpu_count": 2, "gpu_memory_gib": 48, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 551834,
+			"extension_of": "gpu-a10g-largex2-10m"
+		},
+		{
+			"id": "gpu-a10g-largex4-10m",
+			"resources": {"vcpu": 48, "memory_mib": 175476, "disk_gib": 1862, "gpu_count": 4, "gpu_memory_gib": 96, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 1194060
+		},
+		{
+			"id": "gpu-a10g-largex4-10m-more",
+			"resources": {"vcpu": 48, "memory_mib": 175476, "disk_gib": 1862, "gpu_count": 4, "gpu_memory_gib": 96, "gpu_model": "NVIDIA A10G"},
+			"minutes": 10,
+			"price_micros": 918508,
+			"extension_of": "gpu-a10g-largex4-10m"
+		},
+		{
+			"id": "gpu-l40sx4-10m",
+			"resources": {"vcpu": 48, "memory_mib": 364303, "disk_gib": 2980, "gpu_count": 4, "gpu_memory_gib": 192, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 1980546
+		},
+		{
+			"id": "gpu-l40sx4-10m-more",
+			"resources": {"vcpu": 48, "memory_mib": 364303, "disk_gib": 2980, "gpu_count": 4, "gpu_memory_gib": 192, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 1523497,
+			"extension_of": "gpu-l40sx4-10m"
+		},
+		{
+			"id": "gpu-l40sx8-10m",
+			"resources": {"vcpu": 192, "memory_mib": 1462936, "disk_gib": 6053, "gpu_count": 8, "gpu_memory_gib": 384, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 5603208
+		},
+		{
+			"id": "gpu-l40sx8-10m-more",
+			"resources": {"vcpu": 192, "memory_mib": 1462936, "disk_gib": 6053, "gpu_count": 8, "gpu_memory_gib": 384, "gpu_model": "NVIDIA L40S"},
+			"minutes": 10,
+			"price_micros": 4310160,
+			"extension_of": "gpu-l40sx8-10m"
+		},
+		{
+			"id": "gpu-a100x4-10m",
+			"resources": {"vcpu": 48, "memory_mib": 541687, "disk_gib": 3725, "gpu_count": 4, "gpu_memory_gib": 320, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 2385722
+		},
+		{
+			"id": "gpu-a100x4-10m-more",
+			"resources": {"vcpu": 48, "memory_mib": 541687, "disk_gib": 3725, "gpu_count": 4, "gpu_memory_gib": 320, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 1835171,
+			"extension_of": "gpu-a100x4-10m"
+		},
+		{
+			"id": "gpu-a100x8-10m",
+			"resources": {"vcpu": 96, "memory_mib": 1083374, "disk_gib": 7450, "gpu_count": 8, "gpu_memory_gib": 640, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 4769046
+		},
+		{
+			"id": "gpu-a100x8-10m-more",
+			"resources": {"vcpu": 96, "memory_mib": 1083374, "disk_gib": 7450, "gpu_count": 8, "gpu_memory_gib": 640, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"price_micros": 3668497,
+			"extension_of": "gpu-a100x8-10m"
+		},
+		{
+			"id": "gpu-h200x2-10m",
+			"resources": {"vcpu": 46, "memory_mib": 488281, "disk_gib": 5587, "gpu_count": 2, "gpu_memory_gib": 282, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 2385722
+		},
+		{
+			"id": "gpu-h200x2-10m-more",
+			"resources": {"vcpu": 46, "memory_mib": 488281, "disk_gib": 5587, "gpu_count": 2, "gpu_memory_gib": 282, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 1835171,
+			"extension_of": "gpu-h200x2-10m"
+		},
+		{
+			"id": "gpu-h200x4-10m",
+			"resources": {"vcpu": 92, "memory_mib": 976562, "disk_gib": 11175, "gpu_count": 4, "gpu_memory_gib": 564, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 4769046
+		},
+		{
+			"id": "gpu-h200x4-10m-more",
+			"resources": {"vcpu": 92, "memory_mib": 976562, "disk_gib": 11175, "gpu_count": 4, "gpu_memory_gib": 564, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 3668497,
+			"extension_of": "gpu-h200x4-10m"
+		},
+		{
+			"id": "gpu-h200x8-10m",
+			"resources": {"vcpu": 184, "memory_mib": 1953125, "disk_gib": 22351, "gpu_count": 8, "gpu_memory_gib": 1128, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 9535722
+		},
+		{
+			"id": "gpu-h200x8-10m-more",
+			"resources": {"vcpu": 184, "memory_mib": 1953125, "disk_gib": 22351, "gpu_count": 8, "gpu_memory_gib": 1128, "gpu_model": "NVIDIA H200"},
+			"minutes": 10,
+			"price_micros": 7335171,
+			"extension_of": "gpu-h200x8-10m"
+		},
+		{
+			"id": "gpu-rtxpro6000x2-10m",
+			"resources": {"vcpu": 46, "memory_mib": 488281, "disk_gib": 884, "gpu_count": 2, "gpu_memory_gib": 192, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 1313222
+		},
+		{
+			"id": "gpu-rtxpro6000x2-10m-more",
+			"resources": {"vcpu": 46, "memory_mib": 488281, "disk_gib": 884, "gpu_count": 2, "gpu_memory_gib": 192, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 1010171,
+			"extension_of": "gpu-rtxpro6000x2-10m"
+		},
+		{
+			"id": "gpu-rtxpro6000x4-10m",
+			"resources": {"vcpu": 92, "memory_mib": 976562, "disk_gib": 1769, "gpu_count": 4, "gpu_memory_gib": 384, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 2624046
+		},
+		{
+			"id": "gpu-rtxpro6000x4-10m-more",
+			"resources": {"vcpu": 92, "memory_mib": 976562, "disk_gib": 1769, "gpu_count": 4, "gpu_memory_gib": 384, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 2018497,
+			"extension_of": "gpu-rtxpro6000x4-10m"
+		},
+		{
+			"id": "gpu-rtxpro6000x8-10m",
+			"resources": {"vcpu": 184, "memory_mib": 1953125, "disk_gib": 3539, "gpu_count": 8, "gpu_memory_gib": 768, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 5245722
+		},
+		{
+			"id": "gpu-rtxpro6000x8-10m-more",
+			"resources": {"vcpu": 184, "memory_mib": 1953125, "disk_gib": 3539, "gpu_count": 8, "gpu_memory_gib": 768, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"price_micros": 4035171,
+			"extension_of": "gpu-rtxpro6000x8-10m"
+		},
+		{
+			"id": "gpu-rtx3090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 3090"},
+			"minutes": 10,
+			"price_micros": 109085
+		},
+		{
+			"id": "gpu-rtx3090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 3090"},
+			"minutes": 10,
+			"price_micros": 64168,
+			"extension_of": "gpu-rtx3090-10m"
+		},
+		{
+			"id": "gpu-rtx4090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 4090"},
+			"minutes": 10,
+			"price_micros": 218168
+		},
+		{
+			"id": "gpu-rtx4090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 4090"},
+			"minutes": 10,
+			"price_micros": 128334,
+			"extension_of": "gpu-rtx4090-10m"
+		},
+		{
+			"id": "gpu-rtx5090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 32, "gpu_model": "NVIDIA RTX 5090"},
+			"minutes": 10,
+			"price_micros": 296085
+		},
+		{
+			"id": "gpu-rtx5090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 32, "gpu_model": "NVIDIA RTX 5090"},
+			"minutes": 10,
+			"price_micros": 174168,
+			"extension_of": "gpu-rtx5090-10m"
+		},
+		{
+			"id": "gpu-rtx6000ada-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA RTX 6000 Ada"},
+			"minutes": 10,
+			"price_micros": 342835
+		},
+		{
+			"id": "gpu-rtx6000ada-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA RTX 6000 Ada"},
+			"minutes": 10,
+			"price_micros": 201668,
+			"extension_of": "gpu-rtx6000ada-10m"
+		},
+		{
+			"id": "gpu-h100-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA H100 80GB"},
+			"minutes": 10,
+			"price_micros": 903835
+		},
+		{
+			"id": "gpu-h100-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA H100 80GB"},
+			"minutes": 10,
+			"price_micros": 531668,
+			"extension_of": "gpu-h100-10m"
 		}
 	]
 }
