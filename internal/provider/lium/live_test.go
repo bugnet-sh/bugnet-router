@@ -1040,6 +1040,12 @@ func liveEvents(t *testing.T, p *Provider, id string) string {
 // liveGuestStops are CP G1's acts, each run on a pod of its own
 var liveGuestStops = []struct{ name, script string }{
 	{"poweroff", `(poweroff 2>&1 || true); sleep 3; poweroff -f 2>&1; echo "poweroff -f $?"`},
+	// The image has no poweroff, so the reboot call it would make comes from python3
+	{"reboot-call", `nohup python3 -c 'import ctypes, time
+time.sleep(2)
+libc = ctypes.CDLL(None, use_errno=True)
+print(libc.reboot(0x4321FEDC), ctypes.get_errno())' > /tmp/g1.log 2>&1 &
+echo started`},
 	{"kill-1", `kill -9 1 2>&1; echo "kill $?"; sleep 2; ps -o pid,args -p 1 2>&1`},
 	{"sshd", `cat > /tmp/g1.sh <<'EOF'
 sleep 2
