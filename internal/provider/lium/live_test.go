@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -701,10 +703,29 @@ func liveCancelKills(t *testing.T, p *Provider, ref provider.Ref) {
 	}
 }
 
+// liveRepoPath moves a settings path, which loading resolved against the test's directory, to the
+// module root where config/dev.toml's relative paths start
+func liveRepoPath(t *testing.T, resolved string) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("the source path of the live test is unknown")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", rel)
+}
+
 // liveRunner puts the lane's bugnet-run on the pod when the baked one differs, as boot does
 func liveRunner(t *testing.T, p *Provider, ref provider.Ref) string {
 	t.Helper()
-	data, err := os.ReadFile(livetest.Settings(t).RunnerLinuxAMD64)
+	data, err := os.ReadFile(liveRepoPath(t, livetest.Settings(t).RunnerLinuxAMD64))
 	if err != nil {
 		t.Fatalf("the lane's runner: %v", err)
 	}
@@ -730,7 +751,7 @@ func liveHardenSpec(t *testing.T) []byte {
 	if !ok || !rule.NoGateway || !rule.Required {
 		t.Fatalf("lium's hardening rule is %+v, want required with no_gateway", rule)
 	}
-	pools, err := config.LoadPoolList(cfg.Hardening.PoolList)
+	pools, err := config.LoadPoolList(liveRepoPath(t, cfg.Hardening.PoolList))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,11 +793,12 @@ ip route 2>&1; cat /etc/resolv.conf`)
 	runner := liveRunner(t, p, ref)
 	ctx, cancel := context.WithTimeout(t.Context(), liveOp)
 	defer cancel()
-	if err := p.WriteFile(ctx, ref, "/tmp/bugnet/harden-spec.json", liveHardenSpec(t),
-		0o600); err != nil {
-		t.Fatal(err)
-	}
+	spec := liveHardenSpec(t)
 	for i := range 2 {
+		// harden deletes its spec once read, as the saga writes it before each run
+		if err := p.WriteFile(ctx, ref, "/tmp/bugnet/harden-spec.json", spec, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		out, code := liveSh(t, p, ref, runner+
 			" harden --spec /tmp/bugnet/harden-spec.json 2>&1")
 		t.Logf("harden %d (exit %d): %s", i+1, code, strings.TrimSpace(out))
