@@ -135,6 +135,23 @@ func TestLiumDestroy(t *testing.T) {
 	}
 }
 
+// Lium keeps a deleted pod as DELETING a while and refuses its removal as a state conflict
+func TestLiumSetLifetimeOnADeletingPodIsNotFound(t *testing.T) {
+	f := newFake(t)
+	f.slowDelete = true
+	p := f.provider(t, testOptions(), time.Now)
+	pod := f.addPod(fakePod{created: time.Now().Add(-time.Minute)})
+	ref := podRef(pod, true)
+	if err := p.Destroy(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	err := p.SetLifetime(context.Background(), ref, time.Now().Add(time.Minute))
+	wantCode(t, err, provider.CodeNotFound, false)
+	err = p.SetLifetime(context.Background(), provider.Ref{Provider: "lium", ID: pod.id},
+		time.Now().Add(time.Minute))
+	wantCode(t, err, provider.CodeNotFound, false)
+}
+
 func TestLiumSetLifetime(t *testing.T) {
 	f := newFake(t)
 	p := f.provider(t, testOptions(), time.Now)

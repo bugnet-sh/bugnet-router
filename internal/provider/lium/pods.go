@@ -379,7 +379,21 @@ func (p *Provider) SetLifetime(ctx context.Context, ref provider.Ref, until time
 	_, err = p.api.do(ctx, call{
 		method: http.MethodPost, route: podRoute(id, "/schedule-removal"), body: body,
 	}, nil)
+	if codeOf(err) == codePodStateConflict && p.deleting(ctx, id) {
+		// Lium refuses the removal of a pod it is deleting as a state conflict
+		return &provider.Error{Code: provider.CodeNotFound,
+			Err: fmt.Errorf("lium pod %s is being deleted: %w", id, err)}
+	}
 	return err
+}
+
+// deleting reports a pod Lium no longer has or is deleting
+func (p *Provider) deleting(ctx context.Context, id string) bool {
+	d, err := p.getPod(ctx, id)
+	if e, ok := provider.AsError(err); ok && e.Code == provider.CodeNotFound {
+		return true
+	}
+	return err == nil && d.Status == statusDeleting
 }
 
 // createdAt reads the creation time Create kept in the ref, or asks Lium when the ref lacks it

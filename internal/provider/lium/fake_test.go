@@ -154,6 +154,8 @@ type fakeLium struct {
 	startStatus string
 	// podIP is the executor address of every pod rented
 	podIP string
+	// slowDelete keeps a deleted pod as DELETING, as Lium does for a while after the delete
+	slowDelete bool
 
 	// sh is where the pods' sshds run commands, sshds each pod's sshd by pod id
 	sh    fakeShell

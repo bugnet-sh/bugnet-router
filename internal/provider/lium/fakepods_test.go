@@ -262,7 +262,11 @@ func (f *fakeLium) deletePod(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "The pod has another name")
 		return
 	}
-	delete(f.pods, id)
+	if f.slowDelete {
+		p.status = statusDeleting
+	} else {
+		delete(f.pods, id)
+	}
 	sshd := f.sshds[id]
 	f.mu.Unlock()
 	if sshd != nil {
@@ -281,12 +285,18 @@ func (f *fakeLium) scheduleRemoval(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	p, ok := f.pods[r.PathValue("id")]
-	if ok {
+	deleting := ok && p.status == statusDeleting
+	if ok && !deleting {
 		p.removal = body.At
 	}
 	f.mu.Unlock()
-	if !ok {
+	switch {
+	case !ok:
 		writeError(w, http.StatusNotFound, "pod_not_found", "No such pod on this account")
+		return
+	case deleting:
+		writeError(w, http.StatusBadRequest, "pod_state_conflict",
+			"Pod is already being deleted")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
