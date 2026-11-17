@@ -43,6 +43,8 @@ const (
 	// liveReady bounds a rent and its wait for SSH, a cold pull of our image included
 	liveReady = 15 * time.Minute
 	liveOp    = 3 * time.Minute
+	// liveRemoval is when Lium removes a row's pod after ready, whatever this machine does
+	liveRemoval = 15 * time.Minute
 )
 
 // liveFloor is the dev packages' GPU, the floor every live rent asks SizeFor to cover
@@ -152,8 +154,17 @@ type livePod struct {
 	sent, rented, running, ready time.Time
 }
 
-// liveRent rents a pod under labels, waits for SSH and deletes it when the test ends
+// liveRent rents a pod under labels, waits for SSH, has Lium remove it liveRemoval later and
+// deletes it when the test ends
 func liveRent(t *testing.T, p *Provider, labels map[string]string) *livePod {
+	t.Helper()
+	return liveRentFor(t, p, labels, liveRemoval)
+}
+
+// liveRentFor is liveRent with Lium's removal set removeAfter past ready, none when 0
+func liveRentFor(
+	t *testing.T, p *Provider, labels map[string]string, removeAfter time.Duration,
+) *livePod {
 	t.Helper()
 	lp := &livePod{key: liveHex(16), labels: labels}
 	if labels == nil {
@@ -177,6 +188,11 @@ func liveRent(t *testing.T, p *Provider, labels map[string]string) *livePod {
 	t.Cleanup(func() { liveDestroy(t, p, lp.ref) })
 	liveLogBody(t, p, lp.key)
 	lp.wait(ctx, t, p)
+	if removeAfter > 0 {
+		if err := p.SetLifetime(ctx, lp.ref, time.Now().Add(removeAfter)); err != nil {
+			t.Fatalf("schedule the pod's removal: %v", err)
+		}
+	}
 	return lp
 }
 
@@ -892,7 +908,7 @@ func TestLiveLIUM10NoSecrets(t *testing.T) {
 func TestLiveLIUM8Removal(t *testing.T) {
 	p := liveProvider(t)
 	liveGuard(t, p, 600_000)
-	long := liveRent(t, p, nil)
+	long := liveRentFor(t, p, nil, 0)
 	created := liveCreated(t, p, long.ref)
 	t.Logf("long pod %s created_at %v, RUNNING at %v", long.ref.ID, created, long.running.UTC())
 	liveDetail(t, p, long.ref.ID)
@@ -1060,7 +1076,7 @@ func TestLiveLIUM16GuestStops(t *testing.T) {
 
 // liveGuestStop runs one act on a fresh pod and watches it up to 15 minutes
 func liveGuestStop(t *testing.T, p *Provider, script string) {
-	ref := liveRent(t, p, nil).ref
+	ref := liveRentFor(t, p, nil, 25*time.Minute).ref
 	liveShow(t, p, ref, "processes before", "ps -eo pid,ppid,args | head -30")
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	out, code, err := liveExec(ctx, p, ref, script)
