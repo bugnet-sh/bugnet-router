@@ -486,6 +486,13 @@ backup_database() {
 		die "the backup failed, so nothing was changed"
 }
 
+# Whether the nft table text accepts USER, by name or by the uid that nft 1.1 lists
+allows_user() {
+	local uid
+	uid=$(id -u "$2" 2>/dev/null) || return 1
+	[[ $1 == *"skuid \"$2\" accept"* || $1 == *"skuid $uid accept"* ]]
+}
+
 # install_loopback_rule lets only haproxy and the router connect to egress's 9443 (DP 10.12.7.1,
 # founder pick 3a). The nftables package's own service stays disabled, since it flushes the ruleset
 install_loopback_rule() {
@@ -495,8 +502,11 @@ install_loopback_rule() {
 	systemctl daemon-reload
 	systemctl enable --quiet bugnet-nft.service
 	systemctl restart bugnet-nft.service
-	nft list table inet bugnet_egress_lo | grep -q 'skuid "bugnet-router" accept' ||
+	local table
+	table=$(nft list table inet bugnet_egress_lo)
+	if ! allows_user "$table" haproxy || ! allows_user "$table" bugnet-router; then
 		die "the loopback rule for egress did not load"
+	fi
 	say "only haproxy and the router may connect to 127.0.0.1:9443"
 }
 

@@ -159,6 +159,13 @@ check_stats() {
 	warn "http://127.0.0.1:8082/api/stats did not answer 200 within 60 s"
 }
 
+# Whether the nft table text accepts USER, by name or by the uid that nft 1.1 lists
+allows_user() {
+	local uid
+	uid=$(id -u "$2" 2>/dev/null) || return 1
+	[[ $1 == *"skuid \"$2\" accept"* || $1 == *"skuid $uid accept"* ]]
+}
+
 # The loopback rule of DP 10.12.7.1: only haproxy and the router reach egress's 9443
 check_loopback() {
 	local table
@@ -166,8 +173,8 @@ check_loopback() {
 		bad "bugnet-nft.service is not enabled, so the loopback rule is lost at the next boot"
 	fi
 	table=$(nft list table inet bugnet_egress_lo 2>/dev/null)
-	if [[ $table != *'skuid "haproxy" accept'* || $table != *'skuid "bugnet-router" accept'* ||
-		$table != *'dport 9443 reject'* ]]; then
+	if ! allows_user "$table" haproxy || ! allows_user "$table" bugnet-router ||
+		[[ $table != *'dport 9443 reject'* ]]; then
 		bad "the loopback rule bugnet_egress_lo is not loaded"
 		return
 	fi

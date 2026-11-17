@@ -305,3 +305,27 @@ func TestBackupEncryptsKeysAndKeepsFourteen(t *testing.T) {
 			len(again), len(work))
 	}
 }
+
+func TestLoopbackCheckReadsUserNamesAndUids(t *testing.T) {
+	for _, script := range []string{"check.sh", "deploy.sh", "front.sh"} {
+		fn := regexp.MustCompile(`(?ms)^allows_user\(\) \{.*?^\}`).FindString(read(t, script))
+		if fn == "" {
+			t.Fatalf("%s has no allows_user", script)
+		}
+		for _, tc := range []struct {
+			table string
+			pass  bool
+		}{
+			{`meta skuid "root" accept`, true},
+			{`meta skuid 0 accept`, true},
+			{`meta skuid 01 accept`, false},
+			{`meta skuid "haproxy" accept`, false},
+		} {
+			err := exec.Command("bash", "-c", fn+"\nallows_user \"$1\" root", "-", tc.table).Run()
+			if (err == nil) != tc.pass {
+				t.Errorf("%s: allows_user %q root passed %v, want %v", script, tc.table, err == nil,
+					tc.pass)
+			}
+		}
+	}
+}
