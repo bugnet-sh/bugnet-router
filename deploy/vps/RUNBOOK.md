@@ -27,11 +27,11 @@ Owners are agent sessions, and a session's name changes when it restarts. When t
 | Website | The website `bugnet.sh` and the session page | bugnet-a8 | bugnet-7f, bugnet-17 |
 | Demo | Demo filming; the founder sets production freezes | none | bugnet-65 |
 
-## Live versions on 2026-11-16
+## Live versions on 2026-11-17
 
 | Part | Version |
 | --- | --- |
-| bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261116-0541-99efd3d`: `99efd3d`, `e51a997`, `ecfff7d`, `161224b` (deployed 05:44Z from `deploy/prod` in `lanes/c1`; previous `20261114-0112-e0ce937`) |
+| bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261117-1045-33deb08`: `33deb08`, `109942f`, `4ce44d2`, `0ef6c07` (deployed 2026-11-17 10:48Z from `deploy/prod` in `lanes/c1`; previous `20261116-0541-99efd3d`) |
 | Gateway | `4ef8d70` (deployed 2026-11-16 07:00Z with internal `deploy/gateway/deploy.sh`; `400d608` stays installed for rollback) |
 | Payments | `f88af40` (deployed 2026-11-16 06:59Z; router refunds under 1000 micros are kept, pricing D4) |
 | Website | `120e579` (`bugnet-website@20261114T014318Z-120e579`) |
@@ -70,8 +70,8 @@ Every port is on `127.0.0.1` unless it says otherwise. HAProxy splits TCP 443 by
   link, Payments in `/opt/bugnet/payments/<v>`, the gateway in `/opt/bugnet/gateway/<v>`, the
   website in `/opt/bugnet/website/<v>`, settings in `/etc/bugnet/`, keys in `/etc/bugnet/keys/`.
 - The dev front (tunnel user, dev backends 18443 to 19443, port 2200) shares this VPS.
-- Not deployed yet: `bugnet-nft.service` (README section 12). `deploy.sh` installs it from the
-  next ship on (founder pick 3a), and `check.sh loopback` then proves the rule for 9443.
+- `bugnet-nft.service` holds the loopback rule for 9443 since 2026-11-17 (founder pick 3a), and
+  `check.sh loopback` proves it.
 - Router backups: `bugnet-router-backup.timer` every night at 03:15 UTC, and `deploy.sh` before
   every deploy (founder pick 2a, section 5.7).
 
@@ -98,7 +98,7 @@ or, for Payments and the gateway, a release of that service.
 | Reserve | built; the gateway never calls it | none |
 | Traces | off in the router and the gateway | no `[traces]` table |
 | Provider webhooks | off | no `[hooks]` table |
-| Loopback rule for egress 9443 | not installed yet; `deploy.sh` installs `bugnet-nft.service` at the next ship (pick 3a) | `check.sh loopback` |
+| Loopback rule for egress 9443 | on since 2026-11-17: haproxy and the router only (pick 3a) | `bugnet-nft.service`; `check.sh loopback` |
 | Router backups | the database and `/etc/bugnet/keys` every night at 03:15 UTC and before each deploy, encrypted with age (pick 2a) | `bugnet-router-backup.timer`; section 5.7 |
 | Payments `[router]` claims | on: `get_order`, `check_payer`, `token_payer_claims`, `allowance_claim`, `token_issued_at`, `fee_claim` (since 2026-11-14 01:19 UTC) | `/etc/bugnet/payments.toml` `[router]` |
 | Paying by address (deposits) | on since 2026-11-12 | `/etc/bugnet/payments.toml` `[deposits]` |

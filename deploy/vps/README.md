@@ -56,6 +56,9 @@ refused config leaves the old one.
 - `BUGNET_DATABASE_URL` is
   `postgres://bugnet_router@/bugnet?host=/var/run/postgresql&pool_max_conns=48`.
 
+`deploy.sh` installs `bugnet-nft.service` with `egress.nft` (DP 10.12.7.1, founder pick 3a, live
+since 2026-11-17); `front.sh` installs `dev-front.nft` only on a dev front.
+
 `check.sh` proves after every deploy: only `bugnet-router` opens either store, and nobody reaches
 them over TCP; `pool_max_conns` is at least the River workers plus 8 (36 today); no unit failed,
 `bugnet-certs` and the backup included; every `/readyz` answers; only haproxy and the router reach
@@ -270,15 +273,11 @@ Until an answer comes, the default stays:
 | DP 18, the trace backend | No traces | Waits for Tasks 42 and 42B |
 | CP 22, 23, image builds | Dev templates | The registry in `pins.conf`, the Boat image key at its prompt |
 
-## 12. Built but not on in production (2026-11-16)
+## 12. Built but not on in production (2026-11-17)
 
 Tasks 29 to 43 of the data-plane plan and the mining pool list ship in the production build. These
 are built and stay off:
 
-- `bugnet-nft.service` with `egress.nft` (DP 10.12.7.1): `deploy.sh` installs them from the next
-  ship on (founder pick 3a), and `check.sh loopback` proves that a user other than haproxy and
-  the router cannot connect to `127.0.0.1:9443`. `front.sh` installs `dev-front.nft` only on a
-  dev front.
 - Traces (Tasks 42, 42B): no `[telemetry]` table and no `BUGNET_OTLP_AUTHORIZATION`.
 - Provider webhooks (Task 31): `hooks.providers` is empty, so no webhook secrets.
 - Warm pools (Tasks 40 to 40D): no `[pools]` table.
