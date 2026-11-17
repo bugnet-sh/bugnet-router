@@ -640,7 +640,7 @@ type Refund struct {
 }
 
 // refunds prices unused seconds from the newest order back to the start, each order's seconds
-// at its own price per second, amount_micros / seconds_bought rounded down (CP 3.3)
+// at its own price per second, (amount_micros + fee_micros) / seconds_bought rounded down (CP 3.3)
 func refunds(newestFirst []store.Order, unused int64) []Refund {
 	out := []Refund{}
 	for _, o := range newestFirst {
@@ -649,7 +649,7 @@ func refunds(newestFirst []store.Order, unused int64) []Refund {
 			break
 		}
 		take := min(unused, o.SecondsBought)
-		price := o.AmountMicros / o.SecondsBought
+		price := (o.AmountMicros + o.FeeMicros) / o.SecondsBought
 		out = append(out, Refund{OrderID: o.ID, RefundMicros: price * take})
 		unused -= take
 	}

@@ -92,7 +92,7 @@ func TestOrdersNewestFirstEndWithTheStart(t *testing.T) {
 	ctx := t.Context()
 	p, _, err := s.CreatePlacement(ctx, store.NewPlacement{
 		HandleSHA256: []byte("h1"), OrderID: "start", PackageID: "p", AmountMicros: 50000,
-		SecondsBought: 600,
+		FeeMicros: 3000, SecondsBought: 600,
 	})
 	eq(t, err, nil)
 	ready(t, s, p)
@@ -111,6 +111,10 @@ func TestOrdersNewestFirstEndWithTheStart(t *testing.T) {
 	}
 	eq(t, ids, []string{"e2", "e1", "start"})
 	eq(t, orders[0].SecondsBought, int64(300))
+	eq(t, []int64{orders[2].AmountMicros, orders[2].FeeMicros}, []int64{50000, 3000})
+	o, err := s.OrderByID(ctx, "start")
+	eq(t, err, nil)
+	eq(t, o.FeeMicros, int64(3000))
 }
 
 func TestFailedRefundsCountsTheDay(t *testing.T) {

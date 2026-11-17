@@ -213,6 +213,13 @@ EOF
 	say "tunnel may listen on ${listens[*]}"
 }
 
+# Whether the nft table text accepts USER, by name or by the uid that nft 1.1 lists
+allows_user() {
+	local uid
+	uid=$(id -u "$2" 2>/dev/null) || return 1
+	[[ $1 == *"skuid \"$2\" accept"* || $1 == *"skuid $uid accept"* ]]
+}
+
 # install_loopback_rule lets only haproxy connect to the dev tunnel's VPS end (DP 10.12.7.1). The
 # nftables package stays disabled, since its own service flushes the ruleset
 install_loopback_rule() {
@@ -222,7 +229,7 @@ install_loopback_rule() {
 	systemctl daemon-reload
 	systemctl enable --quiet bugnet-nft.service
 	systemctl restart bugnet-nft.service
-	nft list table inet bugnet_dev_front_lo | grep -q 'skuid "haproxy" accept' ||
+	allows_user "$(nft list table inet bugnet_dev_front_lo)" haproxy ||
 		die "the loopback rule for the tunnel port did not load"
 	say "only haproxy may connect to 127.0.0.1:19443"
 }

@@ -159,9 +159,47 @@ check_stats() {
 	warn "http://127.0.0.1:8082/api/stats did not answer 200 within 60 s"
 }
 
-# The loopback rule of DP 10.12.7.1 (9443 and 19443) needs bugnet-nft, which waits for Task 43B
+# Whether the nft table text accepts USER, by name or by the uid that nft 1.1 lists
+allows_user() {
+	local uid
+	uid=$(id -u "$2" 2>/dev/null) || return 1
+	[[ $1 == *"skuid \"$2\" accept"* || $1 == *"skuid $uid accept"* ]]
+}
+
+# The loopback rule of DP 10.12.7.1: only haproxy and the router reach egress's 9443
 check_loopback() {
-	warn "skipped: who may connect to 127.0.0.1:9443 and :19443 waits for bugnet-nft (Task 43B)"
+	local table
+	if ! systemctl is-enabled --quiet bugnet-nft.service; then
+		bad "bugnet-nft.service is not enabled, so the loopback rule is lost at the next boot"
+	fi
+	table=$(nft list table inet bugnet_egress_lo 2>/dev/null)
+	if ! allows_user "$table" haproxy || ! allows_user "$table" bugnet-router ||
+		[[ $table != *'dport 9443 reject'* ]]; then
+		bad "the loopback rule bugnet_egress_lo is not loaded"
+		return
+	fi
+	# nobody stands in for any other local user, whose connection the rule must refuse
+	if timeout 5 runuser -u nobody -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/9443' 2>/dev/null; then
+		bad "a user other than haproxy and the router connected to 127.0.0.1:9443"
+	else
+		ok "only haproxy and the router may connect to 127.0.0.1:9443"
+	fi
+}
+
+# The nightly backup (founder pick 2a): the timer runs and the newest backup is under 36 hours old
+check_backup() {
+	local newest
+	if ! systemctl is-active --quiet bugnet-router-backup.timer; then
+		bad "bugnet-router-backup.timer is not active"
+		return
+	fi
+	newest=$(find /var/backups/bugnet-router -maxdepth 1 -type f \
+		-name 'router-????????T??????Z.tar.age' -mmin -2160 2>/dev/null | sort | tail -n 1)
+	if [[ -z $newest ]]; then
+		bad "no router backup in /var/backups/bugnet-router is under 36 hours old"
+	else
+		ok "the newest router backup is ${newest##*/}"
+	fi
 }
 
 # Egress's payments_timeout stays above Payments' sign_timeout (XS 6.17)
@@ -249,6 +287,7 @@ main() {
 		check_units
 		check_ready
 		check_loopback
+		check_backup
 		check_x402
 		check_stats
 		;;
@@ -256,11 +295,13 @@ main() {
 	pool) check_pool ;;
 	units) check_units ;;
 	ready) check_ready ;;
+	loopback) check_loopback ;;
+	backup) check_backup ;;
 	x402) check_x402 ;;
 	timeouts) check_timeouts ;;
 	stats) check_stats ;;
 	*)
-		echo "usage: check.sh [all|stores|pool|units|ready|x402|timeouts|stats]" >&2
+		echo "usage: check.sh [all|stores|pool|units|ready|loopback|backup|x402|timeouts|stats]" >&2
 		exit 2
 		;;
 	esac

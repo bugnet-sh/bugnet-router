@@ -152,9 +152,12 @@ say "rendering the HAProxy and bugnet-certs files from names.toml and $site"
 (cd "$router" && go run ./cmd/bugnet-dev deploy maps --names "$here/names.toml" \
 	--site "$site" --out "$bundle/maps" >/dev/null)
 
-cp "$here/deploy.sh" "$here/check.sh" "$here/bugnet-ops" "$bundle/"
+cp "$here/deploy.sh" "$here/check.sh" "$here/bugnet-ops" "$here/router-backup.sh" "$bundle/"
 cp -R "$here/systemd" "$here/postgres" "$here/valkey" "$bundle/"
-cp "$here"/config/*.toml "$bundle/config/"
+# egress.nft only: front.sh installs dev-front.nft on a dev front
+mkdir -p "$bundle/nftables"
+cp "$here/nftables/egress.nft" "$bundle/nftables/"
+cp "$here"/config/*.toml "$here/config/router-backup-recipients.txt" "$bundle/config/"
 cp "$router/config/packages.json" "$bundle/config/packages.json"
 cp "$here/config/mining-pools.txt" "$bundle/config/mining-pools.txt"
 if [[ -n $mtls ]]; then

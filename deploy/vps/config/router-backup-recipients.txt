@@ -1,0 +1,2 @@
+# The router backups' public key (pick 2a); the private key stays on the Mac, never the server
+age14e6egcemzy95g7zy4sucflp72rpjpthemrhty5ftdy8dkrdddqnq544y9x

@@ -1,0 +1,30 @@
+# Backs up the router's database and /etc/bugnet/keys into /var/backups/bugnet-router (founder
+# pick 2a), started by bugnet-router-backup.timer; deploy.sh installs the script and both units
+[Unit]
+Description=Bugnet router backup, the database and keys encrypted with age
+After=postgresql.service
+
+[Service]
+Type=oneshot
+# Runs as root, the default, to read the keys and write the root-only folder; the script runs
+# pg_dump as postgres through runuser, which needs root's setuid and setgid, so no
+# CapabilityBoundingSet. No User= line: on systemd 259, User=root with NoNewPrivileges=yes makes
+# runuser fail with "cannot set user id"
+ExecStart=/usr/local/lib/bugnet/router-backup.sh /etc/bugnet/router-backup-recipients.txt
+ReadWritePaths=/var/backups/bugnet-router
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# The Postgres socket only
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
+Nice=10
+# Bounds a dump that hangs, for example on a lock; the script removes its work folder when stopped
+TimeoutStartSec=30min

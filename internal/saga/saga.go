@@ -373,10 +373,10 @@ func (s *Saga) Create(
 	np := store.NewPlacement{
 		ID: uuid.New(), HandleSHA256: sha, OrderID: c.OrderID, PackageID: pkg.ID, KeyID: s.keyID,
 		NeedsSecrets: req.Secrets, FeePayer: c.FeePayer, AmountMicros: c.PackageMicros(),
-		SecondsBought: int64(pkg.Minutes) * 60,
-		Tx:            c.Tx,
-		Source:        in.Source,
-		PaidAt:        s.paidAt(c, arrived),
+		FeeMicros: c.FeeMicros, SecondsBought: int64(pkg.Minutes) * 60,
+		Tx:     c.Tx,
+		Source: in.Source,
+		PaidAt: s.paidAt(c, arrived),
 	}
 	bind := s.bindTo(in, pkg)
 	t := terms{paid: c.PackageMicros()}
@@ -588,8 +588,8 @@ func (s *Saga) record(
 		// The order keeps the claim and the placement the decision (CP 7.1, 7.5)
 		id, inserted, err := ts.InsertOrder(ctx, store.Order{
 			ID: np.OrderID, Kind: store.OrderStart, PlacementID: np.ID, Payer: c.Payer,
-			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros, SecondsBought: np.SecondsBought,
-			Tx: np.Tx,
+			FeePayer: np.FeePayer, AmountMicros: np.AmountMicros, FeeMicros: np.FeeMicros,
+			SecondsBought: np.SecondsBought, Tx: np.Tx,
 		})
 		if err != nil {
 			return err

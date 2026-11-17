@@ -10,7 +10,7 @@
 #   sudo ./deploy.sh x402-index --router <index.json>
 #                                                 allowed_shared_hosts from it, then roll router-api
 #
-# Every step is idempotent. It never prints a secret. README.md is the runbook.
+# Every step is idempotent. It never prints a secret. RUNBOOK.md is the order of operations.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -110,7 +110,9 @@ check_bundle() {
 		postgres/pg_ident.conf valkey/bugnet.conf config/router.toml config/edge.toml \
 		config/secrets-route.toml config/sessions.toml config/ssh.toml config/egress.toml \
 		config/packages.json config/mining-pools.txt systemd/valkey-server.service.d/bugnet.conf \
-		systemd/bugnet-certs.service systemd/bugnet-certs.timer systemd/router-worker.service; do
+		systemd/bugnet-certs.service systemd/bugnet-certs.timer systemd/router-worker.service \
+		router-backup.sh config/router-backup-recipients.txt systemd/bugnet-router-backup.service \
+		systemd/bugnet-router-backup.timer systemd/bugnet-nft.service nftables/egress.nft; do
 		[[ -f $here/$f ]] || die "$here/$f is missing; build the bundle with ship.sh"
 	done
 	for f in "${units[@]}"; do
@@ -169,7 +171,7 @@ preflight() {
 #### Host setup
 
 install_packages() {
-	local want=(haproxy postgresql ufw curl openssl) missing=() p
+	local want=(haproxy postgresql ufw curl openssl age nftables) missing=() p
 	if dpkg-query -W -f='${Status}' valkey-server 2>/dev/null | grep -q 'ok installed' ||
 		{ apt-cache policy valkey-server 2>/dev/null | grep -q 'Candidate: [0-9]'; }; then
 		want+=(valkey-server valkey-tools)
@@ -457,6 +459,57 @@ install_certs() {
 	done
 }
 
+# install_backup puts the nightly backup in place (founder pick 2a): its script, the public key
+# it encrypts to and both units
+install_backup() {
+	install -d -o root -g root -m 0755 /usr/local/lib/bugnet
+	# The unit's ReadWritePaths must exist before it starts
+	install -d -o root -g root -m 0700 /var/backups/bugnet-router
+	install -o root -g root -m 0755 "$here/router-backup.sh" /usr/local/lib/bugnet/
+	install -o root -g root -m 0644 "$here/config/router-backup-recipients.txt" "$etc/"
+	install -o root -g root -m 0644 "$here/systemd/bugnet-router-backup.service" \
+		"$here/systemd/bugnet-router-backup.timer" /etc/systemd/system/
+	systemctl daemon-reload
+	systemctl enable --quiet --now bugnet-router-backup.timer
+}
+
+# backup_database backs up the database before anything else changes, so every migration has a
+# backup from just before it. A failed backup stops the deploy with nothing changed
+backup_database() {
+	if ! runuser -u postgres -- psql -Atqc "select 1 from pg_database where datname = 'bugnet'" |
+		grep -qx 1; then
+		say "no bugnet database yet, so no backup before this first deploy"
+		return
+	fi
+	say "backing up the database and $keys before the deploy"
+	/usr/local/lib/bugnet/router-backup.sh "$etc/router-backup-recipients.txt" ||
+		die "the backup failed, so nothing was changed"
+}
+
+# Whether the nft table text accepts USER, by name or by the uid that nft 1.1 lists
+allows_user() {
+	local uid
+	uid=$(id -u "$2" 2>/dev/null) || return 1
+	[[ $1 == *"skuid \"$2\" accept"* || $1 == *"skuid $uid accept"* ]]
+}
+
+# install_loopback_rule lets only haproxy and the router connect to egress's 9443 (DP 10.12.7.1,
+# founder pick 3a). The nftables package's own service stays disabled, since it flushes the ruleset
+install_loopback_rule() {
+	install -d -o root -g root -m 0755 "$etc/nftables"
+	install -o root -g root -m 0644 "$here/nftables/egress.nft" "$etc/nftables/"
+	install -o root -g root -m 0644 "$here/systemd/bugnet-nft.service" /etc/systemd/system/
+	systemctl daemon-reload
+	systemctl enable --quiet bugnet-nft.service
+	systemctl restart bugnet-nft.service
+	local table
+	table=$(nft list table inet bugnet_egress_lo)
+	if ! allows_user "$table" haproxy || ! allows_user "$table" bugnet-router; then
+		die "the loopback rule for egress did not load"
+	fi
+	say "only haproxy and the router may connect to 127.0.0.1:9443"
+}
+
 migrate() {
 	say "migrating the database with router-api $version"
 	systemd-run --wait --pipe --quiet --collect -p User=bugnet-router \
@@ -566,6 +619,8 @@ cmd_deploy() {
 	check_bundle
 	preflight
 	install_packages
+	install_backup
+	backup_database
 	install_users
 	install_postgres
 	install_valkey
@@ -574,6 +629,7 @@ cmd_deploy() {
 	install_units
 	install_haproxy
 	install_firewall
+	install_loopback_rule
 	install_certs
 	migrate
 

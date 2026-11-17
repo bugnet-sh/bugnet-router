@@ -576,7 +576,7 @@ func TestEndReasonWords(t *testing.T) {
 		{"terminated", "a_new_reason", "", "other"},
 		{"terminated", "", "", "other"},
 		{"failed", "stop", "", "stop"},
-		// Task 28B's reasons, abuse and blocks unnamed until the founder answers CP 20.12
+		// Task 28B's reasons, abuse and blocks unnamed as the founder chose in CP 20.12
 		{"terminated", "wallet_blocked", "", "stopped_by_bugnet"},
 		{"terminating", "control_lost", "", "stopped_by_bugnet"},
 		{"terminated", "sandbox_exited", "", "sandbox_exited"},
