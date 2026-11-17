@@ -31,7 +31,7 @@ Owners are agent sessions, and a session's name changes when it restarts. When t
 
 | Part | Version |
 | --- | --- |
-| bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261117-1045-33deb08`: `33deb08`, `109942f`, `4ce44d2`, `0ef6c07` (deployed 2026-11-17 10:48Z from `deploy/prod` in `lanes/c1`; previous `20261116-0541-99efd3d`) |
+| bugnet-router, bugnet-edges, bugnet-run, bugnet-proto | release `20261117-1724-d81e4a5`: `d81e4a5`, `109942f`, `3ddbadb`, `0ef6c07` (deployed 2026-11-17 17:28Z from `deploy/prod` in `lanes/c1`, GPU on Lium; previous `20261117-1045-33deb08`) |
 | Gateway | `4ef8d70` (deployed 2026-11-16 07:00Z with internal `deploy/gateway/deploy.sh`; `400d608` stays installed for rollback) |
 | Payments | `f88af40` (deployed 2026-11-16 06:59Z; router refunds under 1000 micros are kept, pricing D4) |
 | Website | `120e579` (`bugnet-website@20261114T014318Z-120e579`) |
@@ -86,7 +86,8 @@ or, for Payments and the gateway, a release of that service.
 
 | Switch | State | Where |
 | --- | --- | --- |
-| Placement providers | boat, e2b, boxd | `router.toml` `providers` |
+| Placement providers | boat, e2b, boxd; lium for GPU packages alone (since 2026-11-17) | `router.toml` `providers`, `gpu_order = ["lium"]` |
+| GPU (Lium) | 8 single-GPU sizes T4 to H100, 3 pods at most, never secrets, previews or SSH; the Lium balance pays every run and must cover 15 minutes of each slot | `[lium]`, `[[lium.sizes]]`, `[images.lium]`; `LIUM_API_KEY`, `LIUM_SSH_SEED` in `router.env` |
 | Previews | boat, e2b, boxd | `[previews] providers` |
 | Sealed secrets and x402 | boat, e2b, boxd (x402 pays only on a provider listed here) | `[secrets] providers` |
 | SSH into a sandbox | off: no provider | `[ssh] providers = []` |
