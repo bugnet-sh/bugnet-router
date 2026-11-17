@@ -90,7 +90,11 @@ func Base(secrets bool) Allowlist {
 	return a
 }
 
-// providerEnv lists the variables each provider always injects, E2B's UNVERIFIED, Lium's unknown
+// liumHostKeys are the pod's sshd host keys, which Lium's bootstrap makes at each start
+const liumHostKeys = "etc/ssh/ssh_host_*_key"
+
+// providerEnv lists the variables each provider always injects, E2B's UNVERIFIED, and Lium's
+// NVIDIA_VISIBLE_DEVICES and NVIDIA_DRIVER_CAPABILITIES carry no secret shape
 var providerEnv = map[string][]string{
 	"boat":  {"ASCII_TOKEN", "BOAT_ID"},
 	"koyeb": {"SANDBOX_SECRET", "BUGNET_LABELS"},
@@ -99,9 +103,12 @@ var providerEnv = map[string][]string{
 	"hf": {"JOB_ID", "ACCELERATOR", "CPU_CORES", "MEMORY", "SBX_PORT"},
 }
 
-// For is Base plus the variables provider always injects
+// For is Base plus the variables provider always injects, and Lium's own pod host keys
 func For(provider string, secrets bool) Allowlist {
 	a := Base(secrets)
+	if provider == "lium" {
+		a.Allow = append(a.Allow, Allow{Shape: "private-key", Path: liumHostKeys})
+	}
 	for _, name := range providerEnv[provider] {
 		a.Allow = append(a.Allow, Allow{Shape: Anywhere, Env: name})
 		a.Names = append(a.Names, name)

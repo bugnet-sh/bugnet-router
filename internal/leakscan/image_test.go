@@ -48,6 +48,13 @@ func TestScanImageStockHostKeyIsAFinding(t *testing.T) {
 	f, err = ScanImage(mk().file("root/id", key).archive(), nil, "boat")
 	eq(t, err, nil)
 	eq(t, len(f), 1)
+	// Lium's bootstrap makes the host keys of every pod, the image check's too
+	f, err = ScanImage(mk().archive(), nil, "lium")
+	eq(t, err, nil)
+	eq(t, len(f), 0)
+	f, err = ScanImage(mk().file("root/id", key).archive(), nil, "lium")
+	eq(t, err, nil)
+	eq(t, len(f), 1)
 }
 
 func TestScanImageNeverPrintsValues(t *testing.T) {

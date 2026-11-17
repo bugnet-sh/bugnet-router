@@ -218,9 +218,30 @@ func TestHFVariablesAllowedOnHFAlone(t *testing.T) {
 		return newFixture(t).environ(5, "JOB_ID=hf_"+strings.Repeat("c", 30)).archive()
 	}
 	eq(t, rules(scan(t, job(), nil, For("hf", false))), []string(nil))
-	// Lium's injected variables are unknown until a live pod shows them
+	// Lium injects only NVIDIA_VISIBLE_DEVICES and NVIDIA_DRIVER_CAPABILITIES (LIUM10)
 	eq(t, rules(scan(t, job(), nil, For("lium", false))),
 		[]string{"shape hugging-face proc/5/environ"})
+}
+
+// Lium's sshd bootstrap makes the pod's own host keys at each start, never one of ours
+func TestLiumHostKeysAllowedOnLiumAlone(t *testing.T) {
+	pem := "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+	pod := func(extra string) *bytes.Reader {
+		return newFixture(t).
+			file("etc/ssh/ssh_host_ed25519_key", pem, extra).
+			file("etc/ssh/ssh_host_rsa_key", pem).
+			file("etc/ssh/other_key", pem).archive()
+	}
+	eq(t, rules(scan(t, pod(""), nil, For("lium", false))),
+		[]string{"shape private-key etc/ssh/other_key"})
+	eq(t, rules(scan(t, pod(""), nil, For("boat", false))),
+		[]string{"shape private-key etc/ssh/other_key",
+			"shape private-key etc/ssh/ssh_host_ed25519_key",
+			"shape private-key etc/ssh/ssh_host_rsa_key"})
+	n := Needles{{Name: "LIUM_API_KEY", Value: []byte("lium-needle-value")}}
+	eq(t, rules(scan(t, pod("lium-needle-value"), n, For("lium", false))),
+		[]string{"needle LIUM_API_KEY raw etc/ssh/ssh_host_ed25519_key",
+			"shape private-key etc/ssh/other_key"})
 }
 
 func TestAllowedShapesNeedTheirPlace(t *testing.T) {
