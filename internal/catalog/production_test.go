@@ -7,6 +7,7 @@ import (
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
 	"github.com/bugnet-sh/bugnet-router/internal/config"
 	"github.com/bugnet-sh/bugnet-router/internal/placement"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 	"github.com/bugnet-sh/bugnet-router/internal/providers"
 )
 
@@ -19,6 +20,13 @@ func (upHealth) ReadyP95(string) time.Duration { return 0 }
 // productionEngine builds production's providers from its settings, each with a stand-in key
 func productionEngine(t *testing.T) (*placement.Engine, config.Config) {
 	t.Helper()
+	reg, cfg := productionRegistry(t)
+	return placement.New(reg, upHealth{}, nil), cfg
+}
+
+// productionRegistry builds production's providers from its settings with stand-in secrets
+func productionRegistry(t *testing.T) (*provider.Registry, config.Config) {
+	t.Helper()
 	cfg, err := config.LoadFile("../../deploy/vps/config/router.toml")
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +35,7 @@ func productionEngine(t *testing.T) (*placement.Engine, config.Config) {
 	for _, name := range cfg.Providers {
 		cfg.ProviderKeys[name] = "stand-in-key"
 	}
+	cfg.ProviderSeeds = map[string][]byte{"lium": make([]byte, 32)}
 	reg, err := providers.Build(cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +43,7 @@ func productionEngine(t *testing.T) (*placement.Engine, config.Config) {
 	if len(reg.Ordered()) == 0 {
 		t.Fatal("production runs no provider")
 	}
-	return placement.New(reg, upHealth{}, nil), cfg
+	return reg, cfg
 }
 
 // TestProductionCatalog holds each package to a live price that lands on a production server
@@ -51,6 +60,10 @@ func TestProductionCatalog(t *testing.T) {
 		t.Fatalf("production marks cost up %d bp, want 1000", cfg.Pricing.Rule.MarkupBP)
 	}
 	for _, p := range c.All() {
+		if p.Resources.GPUCount > 0 {
+			// Lium prices each live node, TestProductionGPUPackagesLandOnLium checks the sizes
+			continue
+		}
 		if p.FixedPrice {
 			t.Errorf("package %s sets price_micros, production quotes every package live", p.ID)
 		}

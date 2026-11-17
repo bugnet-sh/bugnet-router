@@ -53,7 +53,9 @@ declare -A env_names=(
 	[egress]="BUGNET_EGRESS_TOKEN BUGNET_EGRESS_FETCH_TOKEN"
 )
 declare -A provider_env=([boat]=BOAT_API_KEY [e2b]=E2B_API_KEY [boxd]=BOXD_API_KEY
-	[koyeb]=KOYEB_API_TOKEN)
+	[koyeb]=KOYEB_API_TOKEN [lium]=LIUM_API_KEY)
+# The 32-byte seed each listed provider derives its sandboxes' keys from
+declare -A provider_seed=([lium]=LIUM_SSH_SEED)
 database_url='postgres://bugnet_router@/bugnet?host=/var/run/postgresql&pool_max_conns=48'
 
 die() {
@@ -145,6 +147,8 @@ preflight() {
 	providers=$(toml_get "$here/config/router.toml" "" providers | tr -d '[]",')
 	for p in $providers; do
 		n=${provider_env[$p]:-}
+		[[ -z $n ]] || has_name "$etc/router.env" "$n" || missing+=("$n in $etc/router.env")
+		n=${provider_seed[$p]:-}
 		[[ -z $n ]] || has_name "$etc/router.env" "$n" || missing+=("$n in $etc/router.env")
 	done
 	for n in $(toml_get "$here/maps/certs.toml" "" dns_env | tr -d '[]",'); do
@@ -709,7 +713,7 @@ Public values for the hand-offs (DP 15.5, Task 39 step 7):
 
 Still to add by hand, with sudoedit (names only, README.md "Secrets"):
 EOF
-	for n in E2B_API_KEY BOAT_API_KEY BOXD_API_KEY BUGNET_GITHUB_TOKEN; do
+	for n in E2B_API_KEY BOAT_API_KEY BOXD_API_KEY LIUM_API_KEY BUGNET_GITHUB_TOKEN; do
 		has_name "$etc/router.env" "$n" || printf '  %s in %s/router.env\n' "$n" "$etc"
 	done
 	has_name "$etc/certs.env" CF_DNS_API_TOKEN ||

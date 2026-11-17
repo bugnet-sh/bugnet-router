@@ -43,6 +43,94 @@
 			"resources": {"vcpu": 8, "memory_mib": 16384, "disk_gib": 100, "gpu_count": 0, "gpu_memory_gib": 0},
 			"minutes": 10,
 			"extension_of": "xlarge-10m"
+		},
+		{
+			"id": "gpu-t4-10m",
+			"resources": {"vcpu": 3, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-t4-10m-more",
+			"resources": {"vcpu": 3, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 16, "gpu_model": "NVIDIA T4"},
+			"minutes": 10,
+			"extension_of": "gpu-t4-10m"
+		},
+		{
+			"id": "gpu-a100-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-a100-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA A100 80GB"},
+			"minutes": 10,
+			"extension_of": "gpu-a100-10m"
+		},
+		{
+			"id": "gpu-rtxpro6000-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 96, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-rtxpro6000-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 96, "gpu_model": "NVIDIA RTX PRO 6000"},
+			"minutes": 10,
+			"extension_of": "gpu-rtxpro6000-10m"
+		},
+		{
+			"id": "gpu-rtx3090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 3090"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-rtx3090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 3090"},
+			"minutes": 10,
+			"extension_of": "gpu-rtx3090-10m"
+		},
+		{
+			"id": "gpu-rtx4090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 4090"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-rtx4090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 24, "gpu_model": "NVIDIA RTX 4090"},
+			"minutes": 10,
+			"extension_of": "gpu-rtx4090-10m"
+		},
+		{
+			"id": "gpu-rtx5090-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 32, "gpu_model": "NVIDIA RTX 5090"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-rtx5090-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 32, "gpu_model": "NVIDIA RTX 5090"},
+			"minutes": 10,
+			"extension_of": "gpu-rtx5090-10m"
+		},
+		{
+			"id": "gpu-rtx6000ada-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA RTX 6000 Ada"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-rtx6000ada-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 48, "gpu_model": "NVIDIA RTX 6000 Ada"},
+			"minutes": 10,
+			"extension_of": "gpu-rtx6000ada-10m"
+		},
+		{
+			"id": "gpu-h100-10m",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA H100 80GB"},
+			"minutes": 10
+		},
+		{
+			"id": "gpu-h100-10m-more",
+			"resources": {"vcpu": 4, "memory_mib": 12288, "disk_gib": 40, "gpu_count": 1, "gpu_memory_gib": 80, "gpu_model": "NVIDIA H100 80GB"},
+			"minutes": 10,
+			"extension_of": "gpu-h100-10m"
 		}
 	]
 }

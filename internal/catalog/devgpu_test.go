@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bugnet-sh/bugnet-router/internal/catalog"
+	"github.com/bugnet-sh/bugnet-router/internal/provider"
 )
 
 // devGPU are design 5.4's GPU packages without the two Q4 keeps out of the EU
@@ -59,15 +60,45 @@ func TestDevGPUPackages(t *testing.T) {
 	}
 }
 
-// TestProductionSellsNoGPUYet keeps GPU packages out of production until lium and hf serve there
-func TestProductionSellsNoGPUYet(t *testing.T) {
+// TestProductionGPUPackagesLandOnLium holds each production GPU package to a production Lium size
+func TestProductionGPUPackagesLandOnLium(t *testing.T) {
 	c, err := catalog.Load("../../config/packages.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range c.All() {
-		if p.Resources.GPUCount > 0 {
-			t.Errorf("package %s is a GPU package, which would land nowhere in production", p.ID)
+	reg, _ := productionRegistry(t)
+	var lium provider.Provider
+	for _, p := range reg.Ordered() {
+		if p.Name() == "lium" {
+			lium = p
 		}
+	}
+	if lium == nil {
+		t.Fatal("production lists no lium provider")
+	}
+	sizer, ok := lium.(interface{ Sizes() []provider.Size })
+	if !ok {
+		t.Fatal("the lium provider lists no sizes")
+	}
+	gpu := 0
+	for _, p := range c.All() {
+		f := p.Resources
+		if f.GPUCount == 0 {
+			continue
+		}
+		gpu++
+		// SizeFor's own rule without its live node list, which a test has none of
+		fits := slices.ContainsFunc(sizer.Sizes(), func(s provider.Size) bool {
+			r := s.Resources
+			return r.GPUModel == f.GPUModel && r.VCPU >= f.VCPU && r.MemoryMiB >= f.MemoryMiB &&
+				r.DiskGiB >= f.DiskGiB && r.GPUCount >= f.GPUCount &&
+				r.GPUMemoryGiB >= f.GPUMemoryGiB
+		})
+		if !fits {
+			t.Errorf("package %s fits no production lium size", p.ID)
+		}
+	}
+	if gpu != 16 {
+		t.Errorf("production lists %d GPU packages, want 16", gpu)
 	}
 }

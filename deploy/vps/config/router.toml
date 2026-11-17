@@ -6,7 +6,8 @@
 # pubkey` (bugnet-payments deploy/README.md section 5). router-api refuses to start while empty.
 order_token_public_key = "loAtatGXwc4DPBvSFHHjSShoEDhB/eam3sZCFuYHzHw="
 packages_file = "/etc/bugnet/packages.json"
-providers = ["boat", "e2b", "boxd"]
+providers = ["boat", "e2b", "boxd", "lium"]
+gpu_order = ["lium"]          # GPU packages land on Lium alone, hf waits (founder, 2026-11-17)
 deployment_id = "main"
 events_url = "http://127.0.0.1:8447/v1/events"
 
@@ -86,6 +87,124 @@ enabled = false
 
 [reconcile]
 cost_alert_fraction = 0.03
+
+[lium]                        # GPU pods since 2026-11-17, never in secrets, previews or ssh
+max_concurrent = 3            # also sets the balance headroom, small while the balance is
+termination = "lifetime"      # LIUM8 shows schedule-removal replaces the deploy-time removal
+ready_timeout = "6m"          # rent to RUNNING and SSH took 65 to 92 s on 2026-11-17
+start_billed = "3m"           # Lium bills from the rent, a router boot was ready in 85 s
+key_daily_budget_micros = 0   # the key has no daily budget at Lium
+
+# Single-GPU sizes up to H100, so the headroom fits a small balance
+[[lium.sizes]]
+size = "lium-t4"
+model = "NVIDIA T4"
+match = ["NVIDIA T4 Tensor Core GPU"]
+gpus = 1
+gpu_memory_gib = 16
+vcpu = 3
+memory_mib = 14336
+disk_gib = 200
+max_hourly_micros = 300000
+
+[[lium.sizes]]
+size = "lium-rtx3090"
+model = "NVIDIA RTX 3090"
+match = ["NVIDIA GeForce RTX 3090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 350000
+
+[[lium.sizes]]
+size = "lium-rtx4090"
+model = "NVIDIA RTX 4090"
+match = ["NVIDIA GeForce RTX 4090"]
+gpus = 1
+gpu_memory_gib = 24
+vcpu = 8
+memory_mib = 28672
+disk_gib = 200
+max_hourly_micros = 700000
+
+[[lium.sizes]]
+size = "lium-rtx5090"
+model = "NVIDIA RTX 5090"
+match = ["NVIDIA GeForce RTX 5090"]
+gpus = 1
+gpu_memory_gib = 32
+vcpu = 8
+memory_mib = 20480
+disk_gib = 400
+max_hourly_micros = 950000
+
+[[lium.sizes]]
+size = "lium-rtx6000ada"
+model = "NVIDIA RTX 6000 Ada"
+match = ["NVIDIA RTX 6000 Ada Generation"]
+gpus = 1
+gpu_memory_gib = 48
+vcpu = 8
+memory_mib = 57344
+disk_gib = 250
+max_hourly_micros = 1100000
+
+[[lium.sizes]]
+size = "lium-a100"
+model = "NVIDIA A100 80GB"
+match = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
+gpus = 1
+gpu_memory_gib = 80
+vcpu = 12
+memory_mib = 112640
+disk_gib = 900
+max_hourly_micros = 1500000
+
+[[lium.sizes]]
+size = "lium-rtxpro6000"
+model = "NVIDIA RTX PRO 6000"
+match = [
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"]
+gpus = 1
+gpu_memory_gib = 96
+vcpu = 6
+memory_mib = 57344
+disk_gib = 180
+max_hourly_micros = 1800000
+
+[[lium.sizes]]
+size = "lium-h100"
+model = "NVIDIA H100 80GB"
+match = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 PCIe"]
+gpus = 1
+gpu_memory_gib = 80
+vcpu = 12
+memory_mib = 184320
+disk_gib = 180
+max_hourly_micros = 2900000
+
+[images.lium]                 # from deploy/image/builds/prod-2026.11.3.json, as images.e2b
+version = "2026.11.3"
+ref = "ghcr.io/bugnet-sh/bugnet-base@sha256:2a471ceb0c0ca15563b40dd4421f27f81815765e5d5c4e44619da96ad176fb19"
+os = "ubuntu-24.04"
+[images.lium.tools]
+curl = "8.5"
+docker = "none"
+gcc = "13.3"
+git = "2.43"
+hf = "2.4"
+make = "4.3"
+nft = "1.0"
+node = "24.22"
+pnpm = "12.18"
+python3 = "3.12"
+sshd = "9.6"
+tar = "1.35"
+uv = "0.13"
 
 [hf]
 # "baked" runs the image's own sbx-server, which needs images.hf.version 2026.11.4 or later
