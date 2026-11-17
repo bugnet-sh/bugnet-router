@@ -70,8 +70,10 @@ Every port is on `127.0.0.1` unless it says otherwise. HAProxy splits TCP 443 by
   link, Payments in `/opt/bugnet/payments/<v>`, the gateway in `/opt/bugnet/gateway/<v>`, the
   website in `/opt/bugnet/website/<v>`, settings in `/etc/bugnet/`, keys in `/etc/bugnet/keys/`.
 - The dev front (tunnel user, dev backends 18443 to 19443, port 2200) shares this VPS.
-- Not deployed yet: `bugnet-nft.service` (README section 12), so `check.sh` skips the loopback
-  rule for 9443.
+- Not deployed yet: `bugnet-nft.service` (README section 12). `deploy.sh` installs it from the
+  next ship on (founder pick 3a), and `check.sh loopback` then proves the rule for 9443.
+- Router backups: `bugnet-router-backup.timer` every night at 03:15 UTC, and `deploy.sh` before
+  every deploy (founder pick 2a, section 5.7).
 
 **Ports differ from the README.** README sections 7 and 11 say admin SSH on 22 and the SSH
 gateway on 2222: that was the plan for a separate production server. Production is the test VPS,
@@ -96,7 +98,8 @@ or, for Payments and the gateway, a release of that service.
 | Reserve | built; the gateway never calls it | none |
 | Traces | off in the router and the gateway | no `[traces]` table |
 | Provider webhooks | off | no `[hooks]` table |
-| Loopback rule for egress 9443 | not installed (`bugnet-nft.service`) | `check.sh` prints a warning |
+| Loopback rule for egress 9443 | not installed yet; `deploy.sh` installs `bugnet-nft.service` at the next ship (pick 3a) | `check.sh loopback` |
+| Router backups | the database and `/etc/bugnet/keys` every night at 03:15 UTC and before each deploy, encrypted with age (pick 2a) | `bugnet-router-backup.timer`; section 5.7 |
 | Payments `[router]` claims | on: `get_order`, `check_payer`, `token_payer_claims`, `allowance_claim`, `token_issued_at`, `fee_claim` (since 2026-11-14 01:19 UTC) | `/etc/bugnet/payments.toml` `[router]` |
 | Paying by address (deposits) | on since 2026-11-12 | `/etc/bugnet/payments.toml` `[deposits]` |
 
@@ -275,12 +278,13 @@ The wallet addresses are as printed on 2026-11-09; confirm with `--pubkeys` befo
 - With the founder: the cold wallet key, the Cloudflare token, the provider API keys, the Helius
   RPC key.
 
-Back up `/etc/bugnet/keys/` off the VPS, encrypted. Today nothing does: on 2026-11-16 the VPS had
-no backup job for `/etc/bugnet/keys/` or for the router's `bugnet` database (the only backup
-timer is `bugnet-payments-backup.timer`, for Payments' database), and no off-VPS copy is on
-record. Losing `egress-ca.key` means rebuilding the base image and the E2B templates; losing
-`egress_box_k1` means a new gateway pin, bridge and secret page (below). A router backup is a
-decision for the founder (2026-11-16).
+`bugnet-router-backup.timer` backs up `/etc/bugnet/keys/` with the router's `bugnet` database
+every night, encrypted to a key that lives only on the Mac,
+`~/.config/bugnet/router-backup.agekey` (section 5.7). The backups stay on the VPS: no off-VPS
+copy is on record, so losing the server loses them too. Losing `egress-ca.key` means rebuilding the
+base image and the E2B templates; losing `egress_box_k1` means a new gateway pin, bridge and
+secret page (below). Losing the Mac's backup key makes every backup unreadable: keep a copy of it
+off the Mac.
 
 A new box key means a new gateway pin, then a new bridge and secret page, before the router lists
 it (bugnet-gateway `CONTRIBUTING.md`, Sealing keys).
@@ -297,11 +301,10 @@ One `ship.sh` run ships all of them: it builds `router-api`, `router-worker`, `b
 1. **Freeze.** Ask the founder whether a filming freeze is on. During one, no restart and no
    redeploy.
 2. **Ship from `lanes/c1`.** Production ships from branch `deploy/prod` in the four checkouts of
-   the workspace's `lanes/c1` (`bugnet-router`, `bugnet-edges`, `bugnet-run`, `bugnet-proto`),
-   and `ship.sh` is run from `lanes/c1/bugnet-router`. Fast-forward each `deploy/prod` to the
-   commit you mean to ship, then push it (`bugnet-run`'s `deploy/prod` is local only). The
-   integration branch `feat/router-v1-rest` in the canonical checkouts must be that commit or
-   behind it. A stale sibling broke production once (section 11.1).
+   the workspace's `lanes/c1` (`router`, `edges`, `run`, `proto`), and `ship.sh` is run from
+   `lanes/c1/router`. Fast-forward each `deploy/prod` to the commit you mean to ship, then push
+   it. The integration branch `feat/router-v1-rest` in the canonical checkouts must be that commit
+   or behind it. A stale sibling broke production once (section 11.1).
 3. **Clean trees.** Commit everything. `ship.sh` builds what is checked out.
 4. **Head check.** Run `deploy/vps/ship.sh --check-heads` first: it checks the four checkouts and
    builds nothing. Every ship runs the same check, prints one line per checkout and stops on a
@@ -311,7 +314,7 @@ One `ship.sh` run ships all of them: it builds `router-api`, `router-worker`, `b
 
 ### 5.2 First time only
 
-In the order the 2026-11-09 deploy followed. On the Mac, in `bugnet-router`, unless a step says
+In the order the 2026-11-09 deploy followed. On the Mac, in `router`, unless a step says
 the VPS:
 
 1. Keys, made on the VPS:
@@ -405,11 +408,14 @@ ship.sh: building linux/amd64 binaries
 ship.sh: rendering the HAProxy and bugnet-certs files from names.toml and .../deploy/vps/site.toml
 ship.sh: copying the bundle to <admin>@62.72.21.74:bugnet-deploy/<v> over port 2222
 ship.sh: running on the VPS: cd ~/bugnet-deploy/<v> && sudo ./deploy.sh <v> ./bin
+deploy.sh: backing up the database and /etc/bugnet/keys before the deploy
+router-backup.sh: wrote /var/backups/bugnet-router/router-<UTC stamp>.tar.age (<N> bytes)
 deploy.sh: postgres takes peer logins on its socket only
 deploy.sh: <valkey-server|redis-server>.service listens on /run/valkey/valkey.sock only
 deploy.sh: installed <v> under /opt/bugnet
 deploy.sh: haproxy serves 443, 2200 and 2201
 deploy.sh: ufw already allows TCP 80 443 2200 2201 2222 alone
+deploy.sh: only haproxy and the router may connect to 127.0.0.1:9443
 deploy.sh: migrating the database with router-api <v>
 deploy.sh: starting router-api@<v>
 deploy.sh: starting bugnet-edge@<v>
@@ -424,7 +430,8 @@ check.sh: ok only bugnet-router opens the data stores, users: haproxy and the se
 check.sh: ok pool_max_conns 48 is at least the workers' floor of 36
 check.sh: ok no unit failed
 check.sh: ok every service answers /readyz
-check.sh: warning skipped: no bugnet-nft, so any local user may connect to 127.0.0.1:9443 (README 12)
+check.sh: ok only haproxy and the router may connect to 127.0.0.1:9443
+check.sh: ok the newest router backup is router-<UTC stamp>.tar.age
 check.sh: ok egress payments_timeout 3s is above Payments' sign_timeout 2s
 check.sh: ok x402 ports, files and settings checked
 check.sh: ok the stats feed answers on 8082
@@ -470,7 +477,8 @@ sudo /opt/bugnet/check.sh
 sudo /opt/bugnet/check.sh x402
 ```
 
-Names: `all`, `stores`, `pool`, `units`, `ready`, `x402`, `timeouts`, `stats`.
+Names: `all`, `stores`, `pool`, `units`, `ready`, `loopback`, `backup`, `x402`, `timeouts`,
+`stats`.
 
 ### 5.5 Page bundles
 
@@ -533,6 +541,76 @@ sudo systemctl restart 'bugnet-secrets@*'
   sudo bugnet-ops pubkey --event
   ```
 
+### 5.7 Backups and restore
+
+`bugnet-router-backup.timer` runs `bugnet-router-backup.service` every night at 03:15 UTC, up to
+15 minutes later, an hour after the Payments backup; a night the server was off runs at the next
+boot. `deploy.sh` runs the same backup before it changes anything, so every migration has a
+backup from just before it, and a failed backup stops the deploy with nothing changed. The
+service runs `/usr/local/lib/bugnet/router-backup.sh` ([router-backup.sh](router-backup.sh)) as
+root:
+
+- `pg_dump --format=custom bugnet` as `postgres`, checked with `pg_restore --list`;
+- that dump (`database.dump`) and `/etc/bugnet/keys/` (`keys/`) as one tar, encrypted with age to
+  the public key in `/etc/bugnet/router-backup-recipients.txt`
+  ([config/router-backup-recipients.txt](config/router-backup-recipients.txt));
+- `/var/backups/bugnet-router/router-<UTC stamp>.tar.age`, mode `0600`, in a `root:root 0700`
+  folder. The newest 14 stay. A failed run exits non-zero and leaves no partial file.
+
+The private key is `~/.config/bugnet/router-backup.agekey` on the Mac, made on 2026-11-17, and
+never on the server: nothing on the VPS can read a backup. The env files are not in a backup;
+`/etc/bugnet/router.env` and the other env files must be made again on a new server
+(section 5.2). To change the key, put the new public key in the recipients file, commit and ship;
+backups made before still need the old key.
+
+Check:
+
+```sh
+systemctl list-timers bugnet-router-backup.timer
+sudo /opt/bugnet/check.sh backup                      # ok the newest router backup is ...
+sudo journalctl -u bugnet-router-backup -o cat -n 20  # router-backup.sh: wrote ... (N bytes)
+sudo systemctl start bugnet-router-backup.service     # one now
+```
+
+**Read a backup (Mac).** On the VPS, copy one out for the admin user; it stays encrypted:
+
+```sh
+sudo install -o bugnet -m 0600 /var/backups/bugnet-router/router-<stamp>.tar.age ~/
+```
+
+Then on the Mac:
+
+```sh
+scp -P 2222 bugnet@62.72.21.74:router-<stamp>.tar.age .
+mkdir router-<stamp> && age -d -i ~/.config/bugnet/router-backup.agekey router-<stamp>.tar.age |
+    tar -x -C router-<stamp> -f -
+pg_restore --list router-<stamp>/database.dump | head
+```
+
+**Restore a key.** Copy the one file back, `root:root 0600`, and restart the units that load it
+as a credential (`bugnet-egress@`, `bugnet-ssh@`): a ship does that.
+
+**Restore the database.** Only for a broken database or a migration that went wrong, and only
+with the founder's go. The router's rows written after the backup are lost: placements, orders it
+saw and refunds it asked Payments for. Payments keeps its own records, so the Payments owner
+compares orders and refunds after the backup's time before the router starts again. On the VPS,
+with `database.dump` copied to the admin user's home:
+
+```sh
+sudo runuser -u postgres -- createdb -O bugnet_router bugnet_restoring
+sudo runuser -u postgres -- pg_restore --exit-on-error --single-transaction \
+    -d bugnet_restoring < ~/database.dump
+sudo systemctl stop router-worker.service 'router-api@*'
+sudo runuser -u postgres -- psql -c 'alter database bugnet rename to bugnet_before_<stamp>' \
+    -c 'alter database bugnet_restoring rename to bugnet'
+cd ~/bugnet-deploy/<current> && sudo ./deploy.sh <current> ./bin
+```
+
+The kept database `bugnet_before_<stamp>` has no `pg_hba.conf` line, so only `postgres` opens it.
+The ship migrates the restored database to the current schema and starts the router. Drop the kept
+database once nothing in it is needed: `sudo runuser -u postgres -- dropdb bugnet_before_<stamp>`.
+Shred `database.dump` on both machines afterwards.
+
 ## 6. Payments
 
 Payments runs as `bugnet-payments@<v>` from `/opt/bugnet/payments/<v>`, with
@@ -541,7 +619,7 @@ bugnet-payments `deploy/README.md`. Start order: the router first, then Payments
 
 ### 6.1 Build and copy the release tarball (Mac)
 
-In a bugnet-payments checkout at the release commit, with `../bugnet-proto` beside it:
+In a `payments` checkout at the release commit, with `../proto` beside it:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -899,7 +977,7 @@ columns or indexes, or drops a constraint (00025 drops two CHECK constraints). B
 back, read the Up halves:
 
 ```sh
-git -C lanes/c1/bugnet-router diff <old commit>..<new commit> -- migrations/
+git -C lanes/c1/router diff <old commit>..<new commit> -- migrations/
 ```
 
 If one drops or renames a column or table, or adds `NOT NULL` without a default, do not roll
@@ -1007,7 +1085,7 @@ Before:
 Router side:
 
 - [ ] `ship.sh` ended with `deploy.sh: deployed <v>`.
-- [ ] Every `check.sh` line is `ok`, apart from the `bugnet-nft` warning.
+- [ ] Every `check.sh` line is `ok`.
 - [ ] `curl -sI https://preview.bugnet.sh/` shows `strict-transport-security`.
 
 Payments, gateway, website:

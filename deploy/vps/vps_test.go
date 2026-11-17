@@ -1,12 +1,19 @@
 package vps
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/bugnet-sh/bugnet-router/internal/testenv"
 )
 
 func TestEgressUnitLoadsX402Credential(t *testing.T) {
@@ -196,4 +203,105 @@ func TestShipRefusesMixedHeads(t *testing.T) {
 	check(canon, true, "ok, untracked build files (1)")
 	git(filepath.Join(tmp, "edges"), "commit", "-q", "--allow-empty", "-m", "three")
 	check(canon, false, "not at origin/main")
+}
+
+func TestBackupEncryptsKeysAndKeepsFourteen(t *testing.T) {
+	for _, tool := range []string{"age", "age-keygen", "pg_dump", "pg_restore"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	db := testenv.DatabaseURL(t)
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, "create table orders (id text primary key); insert into orders "+
+		"values ('o1')")
+	_ = conn.Close(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	identity, recipients := filepath.Join(tmp, "id"), filepath.Join(tmp, "recipients.txt")
+	keys, out := filepath.Join(tmp, "keys"), filepath.Join(tmp, "out")
+	if b, err := exec.Command("age-keygen", "-o", identity).CombinedOutput(); err != nil {
+		t.Fatalf("age-keygen: %v\n%s", err, b)
+	}
+	pub, err := exec.Command("age-keygen", "-y", identity).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{recipients: "# a comment\n" + string(pub),
+		filepath.Join(keys, "egress-ca.key"):        "not a real key\n",
+		filepath.Join(out, "router-keepme.tar.age"): ""} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for d := 1; d <= 15; d++ {
+		name := filepath.Join(out, fmt.Sprintf("router-202610%02dT031500Z.tar.age", d))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backup := func(database string) error {
+		cmd := exec.Command("bash", "router-backup.sh", recipients)
+		cmd.Env = append(os.Environ(), "BUGNET_ROUTER_BACKUP_DIR="+out,
+			"BUGNET_ROUTER_BACKUP_KEYS="+keys, "BUGNET_ROUTER_BACKUP_DB="+database,
+			"BUGNET_ROUTER_BACKUP_PG_USER=")
+		b, err := cmd.CombinedOutput()
+		t.Logf("router-backup.sh:\n%s", b)
+		return err
+	}
+	if err := backup(db); err != nil {
+		t.Fatal(err)
+	}
+	names, err := filepath.Glob(filepath.Join(out, "router-2*.tar.age"))
+	if err != nil || len(names) != 14 {
+		t.Fatalf("kept %d backups (%v), want 14", len(names), err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "router-keepme.tar.age")); err != nil {
+		t.Errorf("a file the script did not name was removed: %v", err)
+	}
+	newest := names[len(names)-1]
+	if fi, err := os.Stat(newest); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("the newest backup is %v (%v), want mode 0600", fi.Mode(), err)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("the backup folder is %v (%v), want mode 0700", fi.Mode(), err)
+	}
+	if bytes.Contains([]byte(read(t, newest)), []byte("not a real key")) {
+		t.Error("the backup holds the key file in plain text")
+	}
+	ex := filepath.Join(tmp, "extract")
+	if err := os.Mkdir(ex, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sh := `age -d -i "$1" "$2" | tar -x -C "$3" -f -`
+	b, err := exec.Command("bash", "-c", sh, "-", identity, newest, ex).CombinedOutput()
+	if err != nil {
+		t.Fatalf("decrypt: %v\n%s", err, b)
+	}
+	if got := read(t, filepath.Join(ex, "keys", "egress-ca.key")); got != "not a real key\n" {
+		t.Errorf("keys/egress-ca.key holds %q", got)
+	}
+	list, err := exec.Command("pg_restore", "--list", filepath.Join(ex, "database.dump")).Output()
+	if err != nil || !bytes.Contains(list, []byte("TABLE DATA public orders")) {
+		t.Errorf("the dump lacks the orders rows (%v):\n%s", err, list)
+	}
+
+	if err := backup(db + "_missing"); err == nil {
+		t.Error("a backup of a missing database passed")
+	}
+	again, _ := filepath.Glob(filepath.Join(out, "router-2*.tar.age"))
+	work, _ := filepath.Glob(filepath.Join(out, ".router-*"))
+	if len(again) != 14 || len(work) != 0 {
+		t.Errorf("a failed backup left %d backups and %d work folders, want 14 and 0",
+			len(again), len(work))
+	}
 }

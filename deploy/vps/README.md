@@ -58,8 +58,13 @@ refused config leaves the old one.
 
 `check.sh` proves after every deploy: only `bugnet-router` opens either store, and nobody reaches
 them over TCP; `pool_max_conns` is at least the River workers plus 8 (36 today); no unit failed,
-`bugnet-certs` included; every `/readyz` answers; the stats feed answers (a warning only); and the
-x402 checks of section 9.
+`bugnet-certs` and the backup included; every `/readyz` answers; only haproxy and the router reach
+egress's 9443; a router backup is under 36 hours old; the stats feed answers (a warning only); and
+the x402 checks of section 9.
+
+`bugnet-router-backup.timer` backs up the `bugnet` database and `/etc/bugnet/keys/` every night,
+encrypted with age to a key kept off the server, and `deploy.sh` does the same before every
+deploy (founder pick 2a, RUNBOOK 5.7).
 
 ## 4. DNS and certificates (DP 15.4)
 
@@ -134,7 +139,7 @@ Hand-offs by team:
 
 ## 7. First deploy
 
-On the Mac, in `bugnet-router`, with the checkouts beside it on the commits to ship:
+On the Mac, in `router`, with the checkouts beside it on the commits to ship:
 
 1. The founder gives the VPS's IPv4 (and IPv6), and an admin user with sudo on the admin SSH
    port (`site.toml` `admin_ssh_port`, 2222 on production). Write them into
@@ -175,8 +180,8 @@ deploy/vps/ship.sh --copy-only <admin>@<IPv4>     # copy only, then run the prin
 deploy/vps/ship.sh --check-heads                  # check the four checkouts, build nothing
 ```
 
-Before building, `ship.sh` checks the four checkouts it builds from (`bugnet-proto`, `bugnet-run`,
-`bugnet-edges` beside `bugnet-router`). Each must be clean, with no changed tracked files and none
+Before building, `ship.sh` checks the four checkouts it builds from (`proto`, `run`, `edges`
+beside `router`). Each must be clean, with no changed tracked files and none
 marked skip-worktree or assume-unchanged, and on the router's branch. The canonical checkout (the
 repository's main worktree) must be at `origin/<branch>` as last fetched; `ship.sh` never fetches,
 so run `git fetch` first. Another worktree, such as a deploy lane, must contain the canonical
@@ -270,9 +275,10 @@ Until an answer comes, the default stays:
 Tasks 29 to 43 of the data-plane plan and the mining pool list ship in the production build. These
 are built and stay off:
 
-- `bugnet-nft.service` with `egress.nft` (DP 10.12.7.1): `deploy.sh` does not install them, so
-  nothing limits which local user may connect to `127.0.0.1:9443`, and `check.sh` prints a
-  warning. `front.sh` installs `dev-front.nft` only on a dev front.
+- `bugnet-nft.service` with `egress.nft` (DP 10.12.7.1): `deploy.sh` installs them from the next
+  ship on (founder pick 3a), and `check.sh loopback` proves that a user other than haproxy and
+  the router cannot connect to `127.0.0.1:9443`. `front.sh` installs `dev-front.nft` only on a
+  dev front.
 - Traces (Tasks 42, 42B): no `[telemetry]` table and no `BUGNET_OTLP_AUTHORIZATION`.
 - Provider webhooks (Task 31): `hooks.providers` is empty, so no webhook secrets.
 - Warm pools (Tasks 40 to 40D): no `[pools]` table.
