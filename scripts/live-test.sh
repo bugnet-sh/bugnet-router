@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs live tests against the real providers named, each one of boxd, e2b, koyeb or boat.
+# Runs live tests against the real providers named, each one of boxd, e2b, koyeb, boat or lium.
 #
 # scripts/live-test.sh [--timeout DURATION]
 #   [--suite adapters|dataplane|control|leak|sessions|trace|image|bench] [--front local|vps]
@@ -101,8 +101,9 @@ for provider in "$@"; do
 	e2b) keys+=(E2B_API_KEY) ;;
 	koyeb) keys+=(KOYEB_API_TOKEN) ;;
 	boat) keys+=(BOAT_API_KEY) ;;
+	lium) keys+=(LIUM_API_KEY LIUM_SSH_SEED) ;;
 	*)
-		echo "live-test: unknown provider $provider, want boxd, e2b, koyeb or boat" >&2
+		echo "live-test: unknown provider $provider, want boxd, e2b, koyeb, boat or lium" >&2
 		exit 2
 		;;
 	esac

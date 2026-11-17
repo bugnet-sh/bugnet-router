@@ -25,6 +25,25 @@ linux_amd64 = "../run/dist/bugnet-run-linux-amd64"   # make -C ../run build writ
 [images]                      # no build yet, so accept stays empty
 channel = "dev"
 
+[images.lium]                 # from deploy/image/builds/prod-2026.11.3.json, as production's e2b
+version = "2026.11.3"
+ref = "ghcr.io/bugnet-sh/bugnet-base@sha256:2a471ceb0c0ca15563b40dd4421f27f81815765e5d5c4e44619da96ad176fb19"
+os = "ubuntu-24.04"
+[images.lium.tools]
+curl = "8.5"
+docker = "none"
+gcc = "13.3"
+git = "2.43"
+hf = "2.4"
+make = "4.3"
+nft = "1.0"
+node = "24.22"
+pnpm = "12.18"
+python3 = "3.12"
+sshd = "9.6"
+tar = "1.35"
+uv = "0.13"
+
 [names]                       # the live-test set, which the VPS fronts beside production
 preview_domain = "preview.dev.bugnet.sh"
 transfer_host = "transfer.dev.bugnet.sh"
